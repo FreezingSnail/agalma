@@ -8,6 +8,7 @@
 pub mod cli;
 pub mod composition;
 pub mod config;
+pub mod provider_proxy;
 
 use std::process::ExitCode;
 

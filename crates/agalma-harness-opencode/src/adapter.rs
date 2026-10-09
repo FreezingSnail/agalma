@@ -54,6 +54,8 @@ const PROMPT_TURN: &str = "Reply with exactly: AGALMA_OK. Do not use any tools."
 /// Prompt for the long-running turn the cancellation scenario interrupts.
 const PROMPT_CANCEL: &str =
     "Count slowly from 1 to 1000, one number per line. Do not use any tools. Do not stop before 1000.";
+/// Hosts that must bypass the provider proxy (loopback control traffic).
+const NO_PROXY: &str = "127.0.0.1,localhost";
 
 /// Attempt-scoped configuration for one [`OpenCodeHarness`].
 ///
@@ -77,6 +79,14 @@ pub struct OpenCodeHarnessConfig {
     pub program: Option<PathBuf>,
     /// Model override; when `None`, `AGALMA_MODEL` then [`DEFAULT_MODEL`].
     pub model: Option<String>,
+    /// Optional parent-owned forward-proxy URL (e.g. `http://127.0.0.1:41234`).
+    ///
+    /// When set, the confined server receives `HTTPS_PROXY`/`HTTP_PROXY` (and
+    /// their lower-case forms) plus `NO_PROXY=127.0.0.1,localhost`, so provider
+    /// egress tunnels through the parent while loopback control traffic
+    /// bypasses the proxy. When `None`, no proxy variables are injected (an
+    /// unconfined or otherwise network-enabled launch stays reachable).
+    pub proxy_url: Option<String>,
     /// How long `start_attempt` waits for `/api/info` to answer.
     pub readiness_timeout: Duration,
 }
@@ -97,6 +107,7 @@ impl OpenCodeHarnessConfig {
             extra_ro: None,
             program: None,
             model: None,
+            proxy_url: None,
             readiness_timeout: Duration::from_secs(30),
         }
     }
@@ -263,10 +274,32 @@ impl OpenCodeHarness {
         // on ancestors of the attempt dir, while `fs.realPath` reads each one.
         // Vendor workaround, confined here; the checkout carries no
         // `opencode.json` so nothing is loaded from it.
+        //
+        // TODO(M0 workaround): this is an explicit short-circuit, not a real
+        // fix. OpenCode still walks ancestor directories for project config, and
+        // the profile's global `file-read-metadata` cannot satisfy a content
+        // read of those ancestors. Retire when either (a) the confine profile
+        // renders read-only ancestor roots, or (b) the attempt/state-dir layout
+        // places every ancestor inside an already-permitted path. Tracked with
+        // the config-discovery caveat in `docs/spikes/s0b-confinement.md`.
         env.insert(
             "OPENCODE_CONFIG_DIR".to_string(),
             workspace_abs.to_string_lossy().into_owned(),
         );
+
+        // Provider egress: when the composition root supplies a parent-owned
+        // loopback proxy, the confined server must route provider traffic
+        // through it (the S0b profile denies arbitrary network). Loopback
+        // control traffic (this server's own API, the nerve bridge) must bypass
+        // the proxy, hence NO_PROXY. Both cases are set because runtimes differ
+        // on which spelling they read; bun honours the upper-case pair.
+        if let Some(proxy_url) = self.config.proxy_url.as_deref().filter(|u| !u.is_empty()) {
+            for key in ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"] {
+                env.insert(key.to_string(), proxy_url.to_string());
+            }
+            env.insert("NO_PROXY".to_string(), NO_PROXY.to_string());
+            env.insert("no_proxy".to_string(), NO_PROXY.to_string());
+        }
 
         let spec = LaunchSpec {
             program: program.to_string_lossy().into_owned(),

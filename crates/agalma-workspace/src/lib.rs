@@ -46,6 +46,42 @@ impl Workspace {
             ContractError::KnownFailure("no checkout has been prepared in this workspace".into())
         })
     }
+
+    /// Derive the merge receipt for an already-landed integration.
+    ///
+    /// Returns `Some(MergeReceipt)` when `main` already points at the candidate
+    /// branch HEAD and the candidate is ahead of the recorded base (i.e. the
+    /// compare-and-update in [`WorkspaceApi::integrate`] completed but its
+    /// completion was not recorded before a crash). Returns `None` when the
+    /// merge has not happened, so the caller may safely [`WorkspaceApi::integrate`].
+    ///
+    /// This performs no update: recovery reconciles from Git state instead of
+    /// re-merging. It records the repository as the current one so a follow-up
+    /// [`WorkspaceApi::tag`] targets the same checkout.
+    pub fn integrated_receipt(
+        &mut self,
+        checkout: &Checkout,
+    ) -> Result<Option<MergeReceipt>, ContractError> {
+        let repo = PathBuf::from(&checkout.path);
+        let Some(main) = rev_parse_opt(&repo, "refs/heads/main")? else {
+            return Ok(None);
+        };
+        let Some(candidate) =
+            rev_parse_opt(&repo, &format!("refs/heads/{}", checkout.candidate_branch))?
+        else {
+            return Ok(None);
+        };
+        self.current_repo = Some(repo);
+        if candidate != checkout.base_sha && main == candidate {
+            Ok(Some(MergeReceipt {
+                expected_main_sha: checkout.base_sha.clone(),
+                result_sha: main,
+                candidate_sha: candidate,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 impl WorkspaceApi for Workspace {
@@ -276,6 +312,21 @@ fn ensure_tag(repo: &Path, name: &str, sha: &str) -> Result<(), ContractError> {
 
 fn rev_parse(repo: &Path, rev: &str) -> Result<String, ContractError> {
     Ok(git_ok(repo, &["rev-parse", rev])?.trim().to_string())
+}
+
+/// `git rev-parse -q --verify <rev>`: `Some(sha)` when the ref resolves, else
+/// `None` (a missing branch is not an error for reconciliation).
+fn rev_parse_opt(repo: &Path, rev: &str) -> Result<Option<String>, ContractError> {
+    let out = git(repo, &["rev-parse", "-q", "--verify", rev])?;
+    if !out.success {
+        return Ok(None);
+    }
+    let sha = out.stdout.trim();
+    if sha.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(sha.to_string()))
+    }
 }
 
 struct GitOutput {

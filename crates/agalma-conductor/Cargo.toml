@@ -22,4 +22,8 @@ agalma-workspace = { path = "../agalma-workspace" }
 agalma-harness-opencode = { path = "../agalma-harness-opencode" }
 clap = { workspace = true }
 tokio = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+rusqlite = { workspace = true }

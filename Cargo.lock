@@ -13,6 +13,8 @@ dependencies = [
  "agalma-sandbox",
  "agalma-workspace",
  "clap",
+ "rusqlite",
+ "serde",
  "serde_json",
  "tokio",
 ]

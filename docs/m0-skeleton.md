@@ -1,8 +1,9 @@
 # M0 — skeleton design
 
-Task: `agalma-4ui.1` (M0-D1). Epic: `agalma-4ui`. Status: design. Authored by
-orchestrator; gates all implementation beads. Implementation via worker waves;
-orchestrator reviews, commits, closes beads.
+Task: `agalma-4ui.1` (M0-D1). Epic: `agalma-4ui`. Status: implemented; exit
+evidence in `docs/m0-exit-evidence.md` (epic `agalma-4ui` closed). Authored by
+orchestrator; gated all implementation beads. Implementation via worker waves;
+orchestrator reviewed, committed, and closed beads.
 
 Refs: `docs/architecture.md` §2, §3.1, §3.6, §13 M0; `docs/component-contracts.md`
 (Contract tiers, Harness contract); S0 results: `docs/spikes/s0a-harness.md`,

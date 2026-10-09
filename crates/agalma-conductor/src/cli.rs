@@ -15,12 +15,12 @@ pub struct Cli {
 /// Conductor subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Run the conductor against a fixture task.
+    /// Run (or resume) the conductor against a fixture task.
     Run(RunArgs),
     /// Clear the kill latch and resume dispatch (human-only).
-    Resume,
+    Resume(StateArgs),
     /// Report ledger and execution status.
-    Status,
+    Status(StateArgs),
 }
 
 /// Arguments for `agalma run`.
@@ -38,4 +38,13 @@ pub struct RunArgs {
     /// Override the model identifier.
     #[arg(long, value_name = "ID")]
     pub model: Option<String>,
+}
+
+/// Arguments shared by the human `resume`/`status` subcommands.
+#[derive(Debug, Args)]
+pub struct StateArgs {
+    /// Override the state directory (defaults to `AGALMA_STATE_DIR` or the
+    /// platform application-support directory).
+    #[arg(long, value_name = "DIR")]
+    pub state_dir: Option<PathBuf>,
 }

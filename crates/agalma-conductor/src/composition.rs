@@ -79,7 +79,6 @@ impl Composition {
                 execution_definition_version: EXECUTION_DEFINITION_VERSION,
             },
         );
-        executor.recover()?;
 
         let workspace = Workspace::new(state_dir.clone());
 
@@ -132,6 +131,10 @@ impl Composition {
         executor.add_activity(ExecutionPhase::Build, acts.build);
         executor.add_activity(ExecutionPhase::Verify, acts.verify);
         executor.add_activity(ExecutionPhase::Integrate, acts.integrate);
+        // Boot gates (schema already checked by the ledger open): replay events,
+        // projection agreement, and survivor reconciliation. Must run after the
+        // activities are registered so probes can terminate survivors.
+        executor.recover()?;
 
         Ok(Composition {
             executor,

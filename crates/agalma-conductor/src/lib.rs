@@ -1,8 +1,9 @@
 //! Agalma conductor.
 //!
-//! Composition root for the Agalma factory (see [`composition`]); M0.7 wires the
-//! real phase activities (see [`phases`]) so `agalma run --fixture <dir> --once`
-//! executes one hardcoded task end-to-end. Dependency direction is
+//! Composition root for the Agalma factory (see [`composition`]); M0.8 wires the
+//! real phase activities with recovery reconciliation (see [`phases`]) so
+//! `agalma run --fixture <dir> --once` executes one hardcoded task end-to-end and
+//! a restart resumes the durable execution at its phase. Dependency direction is
 //! `conductor -> implementations -> contracts`; the architecture lint in
 //! `tests/architecture.rs` enforces impl-to-impl isolation.
 
@@ -12,6 +13,7 @@ pub mod config;
 pub mod phases;
 pub mod provider_proxy;
 pub mod task;
+pub mod workers;
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -19,13 +21,15 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use agalma_contracts::{
-    ExecutionApi, ExecutionPhase, ExecutionStatus, LedgerApi, StepOutcome, TaskId,
+    ExecutionApi, ExecutionId, ExecutionPhase, ExecutionState, ExecutionStatus, LedgerApi,
+    StepOutcome, TaskId,
 };
+use agalma_execution::{Executor, LEDGER_SCHEMA_VERSION};
 use agalma_ledger::SqliteLedger;
 use clap::Parser;
 use tokio::signal::unix::{signal, SignalKind};
 
-use crate::cli::{Cli, Command, RunArgs};
+use crate::cli::{Cli, Command, RunArgs, StateArgs};
 use crate::composition::Composition;
 use crate::config::{Config, PHASE_PLAN};
 
@@ -34,8 +38,8 @@ pub async fn run() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Run(args) => run_command(args).await,
-        Command::Resume => resume_command(),
-        Command::Status => status_command(),
+        Command::Resume(args) => resume_command(&args),
+        Command::Status(args) => status_command(&args),
     }
 }
 
@@ -66,10 +70,31 @@ async fn run_command(args: RunArgs) -> ExitCode {
         }
     };
 
+    // Boot gate 1: refuse to run under an incompatible physical schema. The
+    // executor also parks dispatch under a mismatch, but running is pointless.
+    match composition.executor.ledger().schema_version() {
+        Ok(version) if version == LEDGER_SCHEMA_VERSION => {}
+        Ok(version) => {
+            eprintln!(
+                "agalma: incompatible ledger schema {version} (expected {LEDGER_SCHEMA_VERSION}) \
+                 at {}; refusing to run",
+                composition.ledger_path().display()
+            );
+            return ExitCode::FAILURE;
+        }
+        Err(err) => {
+            eprintln!("agalma: cannot read ledger schema: {err}");
+            return ExitCode::FAILURE;
+        }
+    }
+
     install_signal_handler(composition.ledger_path().to_path_buf());
 
     let task_id = TaskId::new(composition.task.id.clone());
-    let execution = match composition.executor.start(&task_id) {
+    // Boot gates 2-4 (replay, projection agreement, survivor reconciliation) ran
+    // inside `Composition::build` via `Executor::recover`. Resume the durable
+    // execution when one is incomplete, else start a fresh generation.
+    let execution = match resume_or_start(&mut composition.executor, &task_id) {
         Ok(execution) => execution,
         Err(err) => {
             eprintln!("agalma: cannot start execution: {err}");
@@ -95,10 +120,44 @@ async fn run_command(args: RunArgs) -> ExitCode {
     }
 }
 
+/// Resume an incomplete execution for `task_id`, or start a new generation.
+///
+/// A completed, parked, or failed execution is terminal: a restart starts a new
+/// generation instead of resurrecting it.
+fn resume_or_start(
+    executor: &mut Executor<SqliteLedger>,
+    task_id: &TaskId,
+) -> Result<ExecutionId, agalma_contracts::ContractError> {
+    let mut candidate: Option<(u32, ExecutionId)> = None;
+    for record in executor.ledger().executions()? {
+        if &record.task_id != task_id {
+            continue;
+        }
+        let terminal = matches!(
+            record.state,
+            ExecutionState::Completed | ExecutionState::Parked | ExecutionState::Failed
+        ) || matches!(record.phase, ExecutionPhase::Done | ExecutionPhase::Parked);
+        if terminal {
+            continue;
+        }
+        if candidate
+            .as_ref()
+            .map(|(generation, _)| record.generation > *generation)
+            .unwrap_or(true)
+        {
+            candidate = Some((record.generation, record.execution_id.clone()));
+        }
+    }
+    match candidate {
+        Some((_, execution)) => Ok(execution),
+        None => executor.start(task_id),
+    }
+}
+
 /// Drive one execution to a terminal state (or a stop signal).
 fn drive(
-    executor: &mut agalma_execution::Executor<SqliteLedger>,
-    execution: &agalma_contracts::ExecutionId,
+    executor: &mut Executor<SqliteLedger>,
+    execution: &ExecutionId,
     state_dir: &std::path::Path,
 ) -> Result<ExecutionStatus, agalma_contracts::ContractError> {
     // Sentinel checked before every dispatch (design: `<state>/STOP`).
@@ -126,7 +185,8 @@ fn drive(
 }
 
 /// SIGTERM/SIGINT: persist the kill latch through a second ledger connection and
-/// exit cleanly. Full recovery/termination accounting is M0.8.
+/// exit cleanly. Task owner: M0.8. Survivor workers left behind are reconciled on
+/// the next boot.
 fn install_signal_handler(ledger_path: PathBuf) {
     tokio::spawn(async move {
         let mut sigint = match signal(SignalKind::interrupt()) {
@@ -175,8 +235,8 @@ fn report(status: &ExecutionStatus) {
     );
 }
 
-fn resume_command() -> ExitCode {
-    let state_dir = match crate::config::resolve_state_dir(None) {
+fn resume_command(args: &StateArgs) -> ExitCode {
+    let state_dir = match crate::config::resolve_state_dir(args.state_dir.as_deref()) {
         Ok(dir) => dir,
         Err(err) => {
             eprintln!("agalma: {err}");
@@ -204,8 +264,8 @@ fn resume_command() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn status_command() -> ExitCode {
-    let state_dir = match crate::config::resolve_state_dir(None) {
+fn status_command(args: &StateArgs) -> ExitCode {
+    let state_dir = match crate::config::resolve_state_dir(args.state_dir.as_deref()) {
         Ok(dir) => dir,
         Err(err) => {
             eprintln!("agalma: {err}");

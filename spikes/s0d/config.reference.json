@@ -1,0 +1,18 @@
+{
+  "binding_id": "binding/reference/s0d",
+  "component_api": "HarnessApi",
+  "api_version": 0,
+  "implementation": "reference",
+  "implementation_version": "s0d-reference-v1",
+  "capabilities": [],
+  "required_capabilities": [],
+  "optional_capabilities": [
+    "session_fork",
+    "synthetic_feedback",
+    "model_switch",
+    "constrained_generation",
+    "compaction",
+    "context_hooks"
+  ],
+  "config_hash": "static:reference:v1"
+}

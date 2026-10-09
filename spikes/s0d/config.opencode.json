@@ -1,0 +1,18 @@
+{
+  "binding_id": "binding/opencode/s0d",
+  "component_api": "HarnessApi",
+  "api_version": 0,
+  "implementation": "opencode",
+  "implementation_version": "2.0.15",
+  "capabilities": [],
+  "required_capabilities": [],
+  "optional_capabilities": [
+    "session_fork",
+    "synthetic_feedback",
+    "model_switch",
+    "constrained_generation",
+    "compaction",
+    "context_hooks"
+  ],
+  "config_hash": "static:opencode:v1"
+}

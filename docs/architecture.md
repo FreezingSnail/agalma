@@ -218,7 +218,10 @@ project-scoped `/api/worktree` list/create/refresh/delete, `GET /api/event` (SSE
 Server auth is Basic (user `opencode`); the password comes from `OPENCODE_PASSWORD`
 or the service file — there is no `--password` flag. SSE is volatile by contract;
 reconciliation uses the durable session log or the idle barrier, never assumed SSE
-continuity. Full observations: `docs/spikes/s0a-harness.md`.
+continuity. S0d found the durable log emitting only a sync marker in isolated runs
+(server event table empty); until its persistence is confirmed, reconciliation
+falls back to the session projection. [open] Full observations:
+`docs/spikes/s0a-harness.md`, `docs/spikes/s0d-seam-freeze.md`.
 
 ### 3.3 OpenCode nerve plugin (TypeScript)
 
@@ -756,7 +759,8 @@ porting a mechanism; build only what the data justifies.
   Production conditions: conductor-side fail-closed launch gate, attempt-scoped
   `TMPDIR`/`XDG_*`, per-attempt rendered toolchain read paths, narrowed
   `mach-lookup`, and termination that kills the process group/tree — a leader
-  SIGTERM alone orphans descendants.
+  SIGTERM alone orphans descendants, and macOS may reject a group signal
+  (signal descendants explicitly; S0d).
 - Verification runs separately under a sandbox, with protected tests readable
   but unwritable. Candidate build scripts and tests receive the same confinement.
 - Permission rulesets per agent supplement the OS boundary. Integration and

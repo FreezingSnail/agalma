@@ -1,0 +1,13 @@
+[package]
+name = "s0d"
+version = "0.1.0"
+edition = "2021"
+description = "S0d spike: harness seam freeze — frozen contract, deterministic reference adapter, OpenCode adapter, scenario driver, static decision baselines"
+publish = false
+
+[[bin]]
+name = "s0d"
+path = "src/main.rs"
+
+# Zero dependencies: std only. `cargo build --offline` must succeed.
+[dependencies]

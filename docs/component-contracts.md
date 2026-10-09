@@ -151,8 +151,8 @@ native API to the conductor:
 | `CreateSession` | Create a fresh phase context from canonical role/model, prompts, skills, handoff artifacts, and factory-tool bindings |
 | `RunTurn` | Start a bounded turn, returning an operation handle for asynchronous observation |
 | `InspectOperation` / `ReadEvents` | Report running/terminal/unknown state and normalized progress, tool outcomes, usage, errors, and result artifact references; recover after stream interruption |
-| `CancelOperation` | Request interruption, expose whether it has completed, and retain enough evidence for reconciliation |
-| `CloseSession` / `StopAttempt` | Release session resources and confirm process cleanup through `SandboxApi`, including descendants |
+| `CancelOperation` | Request interruption; return acknowledgment and termination state separately (`CancelAck`); retain enough evidence for reconciliation |
+| `CloseSession` / `StopAttempt` | Release session resources; confirm process cleanup through `SandboxApi`, including descendants, returning cleanup evidence (`StopEvidence`) |
 
 Normalized events include turn started/completed/failed, tool outcome, usage
 snapshot, intervention request, and runtime failure. Persist needed evidence and
@@ -166,6 +166,9 @@ hooks, synthetic feedback, compaction, and constrained generation. If a capabili
 is unavailable, the conductor chooses a declared supported plan, such as starting
 a fresh session with an explicit handoff. A profile that requires the capability
 cannot bind that adapter. Safety requirements have no permissive fallback.
+The MVP baseline profile (`mvp-baseline`) requires none of these; a binding
+declares required and optional capability sets and the bind gate refuses any
+binding whose required set is unmet (S0d).
 
 The OpenCode implementation owns `opencode serve` invocation, version/auth
 discovery, its HTTP client and SSE translation, `.opencode` configuration, native

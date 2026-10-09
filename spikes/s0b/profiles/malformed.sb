@@ -1,0 +1,6 @@
+;; S0b fail-closed fixture: syntactically malformed profile.
+;; Missing closing paren and an unknown operator. sandbox-exec MUST refuse to run.
+(version 1)
+(deny default)
+(allow file-read* (subpath "/usr")
+(allow this-is-not-an-operator)

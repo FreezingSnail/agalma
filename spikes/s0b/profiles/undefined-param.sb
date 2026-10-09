@@ -1,0 +1,6 @@
+;; S0b fail-closed fixture: references a profile parameter that is never
+;; supplied on the command line. sandbox-exec MUST refuse to run rather than
+;; proceeding with an undefined parameter (fail open).
+(version 1)
+(deny default)
+(allow file-read* (subpath (param "UNDEFINED_ATTEMPT")))

@@ -751,6 +751,12 @@ porting a mechanism; build only what the data justifies.
   directories. Writes are
   restricted to those directories; the main checkout, ledger, conductor state,
   personal credentials, and protected evaluation files are inaccessible.
+  S0b proved the boundary on macOS 26.6.2 (59/59 assertions, fail-closed
+  initialization, negligible idle overhead; [results](spikes/s0b-confinement.md)).
+  Production conditions: conductor-side fail-closed launch gate, attempt-scoped
+  `TMPDIR`/`XDG_*`, per-attempt rendered toolchain read paths, narrowed
+  `mach-lookup`, and termination that kills the process group/tree — a leader
+  SIGTERM alone orphans descendants.
 - Verification runs separately under a sandbox, with protected tests readable
   but unwritable. Candidate build scripts and tests receive the same confinement.
 - Permission rulesets per agent supplement the OS boundary. Integration and
@@ -763,7 +769,8 @@ porting a mechanism; build only what the data justifies.
   files, environment variables, or service responses.
 - Unattended execution requires successful sandbox initialization. Failure
   parks the task without launching the worker. `sandbox-exec` is deprecated;
-  compatibility is proved in S0. If confinement cannot be established, a Linux
+  compatibility and the deny matrix are proved in S0b (macOS 26.6.2; re-verify
+  on OS upgrades). If confinement cannot be established, a Linux
   container in a VM is required before unattended execution.
 - Protected paths: bench, guards, policy files. Denied by rules and checked
   before merge; the factory never edits its own judge.

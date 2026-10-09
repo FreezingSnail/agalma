@@ -89,11 +89,23 @@ pub trait LedgerApi {
     /// Events for an execution, in monotonic sequence order.
     fn events(&self, id: &ExecutionId) -> Result<Vec<ExecutionEvent>, ContractError>;
 
+    /// Recorded receipt for a completed operation, if any.
+    ///
+    /// This is the idempotency anchor: re-delivering a completed operation
+    /// returns this recorded receipt instead of repeating the effect.
+    fn operation_receipt(
+        &self,
+        id: &OperationId,
+    ) -> Result<Option<OperationReceipt>, ContractError>;
+
     /// Whether the kill latch is set.
     fn kill_latch(&self) -> Result<bool, ContractError>;
 
     /// Set or clear the kill latch.
     fn set_kill_latch(&mut self, latched: bool) -> Result<(), ContractError>;
+
+    /// Insert or update a component binding record.
+    fn upsert_binding(&mut self, binding: &BindingRecord) -> Result<(), ContractError>;
 
     /// All component binding records.
     fn bindings(&self) -> Result<Vec<BindingRecord>, ContractError>;

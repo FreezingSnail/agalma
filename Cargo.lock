@@ -53,6 +53,7 @@ name = "agalma-sandbox"
 version = "0.1.0"
 dependencies = [
  "agalma-contracts",
+ "tokio",
 ]
 
 [[package]]

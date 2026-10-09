@@ -1,0 +1,91 @@
+(version 1)
+(deny default)
+
+;; ---------------------------------------------------------------------------
+;; Product confine profile: worker + descendants (M0.4, from S0b).
+;; Deny-by-default. Fails closed: malformed/missing/param-less profile ->
+;; sandbox-exec refuses to run the command (S0b probe row10).
+;;
+;; Parameters supplied by the SandboxApi launcher:
+;;   ATTEMPT   -> attempt-owned writable/readable dir
+;;   PROTECTED -> protected tests dir (readable, NOT writable)
+;;   SOCKDIR   -> parent-owned unix socket dir (nerve bridge)
+;;   EXTRA_RO  -> extra read-only root (harness install tree)
+;; Every referenced parameter MUST be supplied or sandbox-exec fails closed.
+;;
+;; TODO(mach-lookup narrowing): `(allow mach-lookup)` is deliberately broad for
+;;   M0 — dyld/Foundation/system services need it for any functioning process.
+;;   It does not re-enable file or network access, but the production profile
+;;   should restrict it to an observed required-service allowlist. Open item
+;;   inherited from S0b; tracked for M3 hardening.
+;; ---------------------------------------------------------------------------
+
+;; --- process control ---------------------------------------------------------
+(allow process-fork)
+(allow process-exec)
+(allow signal (target self))
+
+;; --- path traversal: stat-only metadata (no content read) -------------------
+(allow file-read-metadata)
+
+;; --- device nodes (devfs is a separate mount, not under file subpaths) ------
+(allow file-read* file-write*
+    (literal "/dev/null")
+    (literal "/dev/zero")
+    (literal "/dev/random")
+    (literal "/dev/urandom")
+    (literal "/dev/tty")
+    (literal "/dev/stdin")
+    (literal "/dev/stdout")
+    (literal "/dev/stderr"))
+(allow file-read* (literal "/dev/dtracehelper"))
+
+;; --- system reads needed to exec any binary (dyld, libs, locales) -----------
+(allow file-read*
+    (subpath "/usr")
+    (subpath "/bin")
+    (subpath "/sbin")
+    (subpath "/System")
+    (subpath "/Library")
+    (subpath "/dev")
+    (subpath "/etc")
+    (subpath "/private/etc")
+    (subpath "/private/var/db")
+    (subpath "/private/var/run")
+    (subpath "/private/var/select")
+    (literal "/")
+    (literal "/private")
+    (literal "/private/var"))
+
+;; --- attempt-owned working area: full read/write ----------------------------
+(allow file-read* file-write*
+    (subpath (param "ATTEMPT")))
+
+;; --- protected tests: readable, NOT writable ---------------------------------
+(allow file-read* (subpath (param "PROTECTED")))
+
+;; --- node runtime (opencode) reads its own install tree ---------------------
+(allow file-read*
+    (subpath "/opt/homebrew")
+    (subpath "/usr/local"))
+
+;; --- optional extra read-only root (e.g. harness install tree) --------------
+;; Always supplied by the launcher (undefined param would fail closed).
+(allow file-read* (subpath (param "EXTRA_RO")))
+
+;; --- mach services required for a functioning process ------------------------
+;; TODO(mach-lookup narrowing) — see header. Broad for M0.
+(allow mach-lookup)
+
+;; --- network: loopback HTTP + parent-owned unix socket only ------------------
+(allow network-bind (local ip "localhost:*"))
+(allow network-inbound (local ip "localhost:*"))
+(allow network-outbound
+    (remote ip "localhost:*")
+    (remote unix-socket (subpath (param "SOCKDIR"))))
+
+;; --- sysctl / info -----------------------------------------------------------
+(allow sysctl-read)
+
+;; --- toolchain: Xcode command-line tools / SDK (read-only) ------------------
+(allow file-read* (subpath "/Applications/Xcode.app"))

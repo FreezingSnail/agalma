@@ -7,3 +7,7 @@ publish = false
 
 [dependencies]
 agalma-contracts = { path = "../agalma-contracts" }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

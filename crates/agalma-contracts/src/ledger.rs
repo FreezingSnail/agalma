@@ -83,6 +83,13 @@ pub trait LedgerApi {
     /// Read one execution row.
     fn execution(&self, id: &ExecutionId) -> Result<Option<ExecutionRecord>, ContractError>;
 
+    /// All execution rows, ordered by execution id.
+    ///
+    /// Recovery needs to enumerate durable executions (including those with no
+    /// pending intent) to reconstruct each from its events and compare against
+    /// the projection.
+    fn executions(&self) -> Result<Vec<ExecutionRecord>, ContractError>;
+
     /// Pending (unconsumed) dispatch intents.
     fn pending_intents(&self) -> Result<Vec<DispatchIntent>, ContractError>;
 

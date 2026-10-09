@@ -7,3 +7,10 @@ publish = false
 
 [dependencies]
 agalma-contracts = { path = "../agalma-contracts" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+agalma-ledger = { path = "../agalma-ledger" }
+rusqlite = { workspace = true }

@@ -38,15 +38,35 @@ pub struct ExecutionStatus {
     pub phase: ExecutionPhase,
     pub state: ExecutionState,
     pub attempt: u32,
+    /// Unconsumed dispatch intents for this execution (logical operations that
+    /// have been durably announced but not yet completed).
+    pub pending_operations: Vec<OperationId>,
+    /// Reason recorded when the execution parked, if any.
+    pub parked_reason: Option<String>,
 }
 
 /// Outcome of one logical step.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum StepOutcome {
-    /// A logical operation was dispatched and now awaits completion.
-    Dispatched { operation: OperationId },
-    /// The execution advanced to a new phase.
-    Advanced { phase: ExecutionPhase },
+    /// A pending operation was delivered and its receipt recorded. `duplicate`
+    /// is true when a recorded receipt was returned instead of repeating the
+    /// effect; `reconciled` is true when an already-present effect was
+    /// completed without repeating it.
+    Dispatched {
+        operation: OperationId,
+        reconciled: bool,
+        duplicate: bool,
+    },
+    /// The execution advanced into `phase`; `operation` is the newly ready
+    /// logical operation (its dispatch intent is durable).
+    Advanced {
+        phase: ExecutionPhase,
+        operation: OperationId,
+    },
+    /// Nothing to do (terminal phase with no pending work).
+    Idle { phase: ExecutionPhase },
+    /// Dispatch was blocked (kill latch / cancellation); no effect ran.
+    Blocked { operation: Option<OperationId> },
     /// The execution parked with a reason.
     Parked { reason: String },
 }

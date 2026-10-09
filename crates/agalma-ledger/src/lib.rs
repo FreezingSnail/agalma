@@ -341,22 +341,26 @@ impl LedgerApi for SqliteLedger {
                 "SELECT execution_id,task_id,generation,phase,state,attempt,revision \
                  FROM executions WHERE execution_id=?1",
                 params![id.as_str()],
-                |row| {
-                    let phase: String = row.get(3)?;
-                    let state: String = row.get(4)?;
-                    Ok(ExecutionRecord {
-                        execution_id: ExecutionId::new(row.get::<_, String>(0)?),
-                        task_id: TaskId::new(row.get::<_, String>(1)?),
-                        generation: row.get::<_, i64>(2)? as u32,
-                        phase: phase_from(&phase).ok_or_else(|| bad_column(3, "phase"))?,
-                        state: state_from(&state).ok_or_else(|| bad_column(4, "state"))?,
-                        attempt: row.get::<_, i64>(5)? as u32,
-                        revision: row.get::<_, i64>(6)? as u64,
-                    })
-                },
+                execution_from_row,
             )
             .optional()
             .map_err(db_err)
+    }
+
+    fn executions(&self) -> Result<Vec<ExecutionRecord>, ContractError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT execution_id,task_id,generation,phase,state,attempt,revision \
+                 FROM executions ORDER BY execution_id",
+            )
+            .map_err(db_err)?;
+        let rows = stmt.query_map([], execution_from_row).map_err(db_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(db_err)?);
+        }
+        Ok(out)
     }
 
     fn operation_receipt(
@@ -515,6 +519,20 @@ impl LedgerApi for SqliteLedger {
     fn schema_version(&self) -> Result<u32, ContractError> {
         Ok(self.stored_schema_version()?.unwrap_or(0))
     }
+}
+
+fn execution_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExecutionRecord> {
+    let phase: String = row.get(3)?;
+    let state: String = row.get(4)?;
+    Ok(ExecutionRecord {
+        execution_id: ExecutionId::new(row.get::<_, String>(0)?),
+        task_id: TaskId::new(row.get::<_, String>(1)?),
+        generation: row.get::<_, i64>(2)? as u32,
+        phase: phase_from(&phase).ok_or_else(|| bad_column(3, "phase"))?,
+        state: state_from(&state).ok_or_else(|| bad_column(4, "state"))?,
+        attempt: row.get::<_, i64>(5)? as u32,
+        revision: row.get::<_, i64>(6)? as u64,
+    })
 }
 
 fn write_state(

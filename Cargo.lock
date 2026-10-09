@@ -30,6 +30,11 @@ name = "agalma-execution"
 version = "0.1.0"
 dependencies = [
  "agalma-contracts",
+ "agalma-ledger",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -37,6 +42,9 @@ name = "agalma-harness-opencode"
 version = "0.1.0"
 dependencies = [
  "agalma-contracts",
+ "agalma-sandbox",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

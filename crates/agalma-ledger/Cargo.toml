@@ -1,0 +1,9 @@
+[package]
+name = "agalma-ledger"
+version.workspace = true
+edition.workspace = true
+description = "Agalma ledger service. Owning wave: M0.2 — SQLite behind LedgerApi; SQL stays private."
+publish = false
+
+[dependencies]
+agalma-contracts = { path = "../agalma-contracts" }

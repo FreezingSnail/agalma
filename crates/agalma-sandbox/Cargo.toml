@@ -1,0 +1,9 @@
+[package]
+name = "agalma-sandbox"
+version.workspace = true
+edition.workspace = true
+description = "Agalma sandbox service. Owning wave: M0.4 — Seatbelt launch/terminate; profile render."
+publish = false
+
+[dependencies]
+agalma-contracts = { path = "../agalma-contracts" }

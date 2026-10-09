@@ -1,0 +1,24 @@
+[package]
+name = "agalma-conductor"
+version.workspace = true
+edition.workspace = true
+description = "Agalma conductor: CLI (`agalma`), composition root, and daemon. Owning wave: M0.1 (skeleton) / M0.7 (smoke)."
+publish = false
+
+[[bin]]
+name = "agalma"
+path = "src/main.rs"
+
+[lib]
+name = "agalma_conductor"
+path = "src/lib.rs"
+
+[dependencies]
+agalma-contracts = { path = "../agalma-contracts" }
+agalma-ledger = { path = "../agalma-ledger" }
+agalma-execution = { path = "../agalma-execution" }
+agalma-sandbox = { path = "../agalma-sandbox" }
+agalma-workspace = { path = "../agalma-workspace" }
+agalma-harness-opencode = { path = "../agalma-harness-opencode" }
+clap = { workspace = true }
+tokio = { workspace = true }

@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/agalma-contracts",
+    "crates/agalma-ledger",
+    "crates/agalma-execution",
+    "crates/agalma-sandbox",
+    "crates/agalma-workspace",
+    "crates/agalma-harness-opencode",
+    "crates/agalma-conductor",
+]
+# Spike packages are standalone; they are not part of the product workspace.
+exclude = ["spikes"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+# Pinned per docs/m0-dependencies.md. Exact `=` versions; `cargo update` is a
+# reviewed change. No crate beyond this shortlist may be fetched without
+# explicit user approval.
+[workspace.dependencies]
+tokio = { version = "=1.53.2", features = [
+    "rt-multi-thread",
+    "macros",
+    "process",
+    "net",
+    "time",
+    "sync",
+    "signal",
+    "io-util",
+] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+thiserror = "=2.0.21"
+clap = { version = "=4.6.7", features = ["derive"] }

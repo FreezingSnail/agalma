@@ -15,6 +15,9 @@ use crate::ids::ExecutionId;
 pub struct Checkout {
     pub path: String,
     pub base_sha: String,
+    /// Candidate branch holding the execution's build output; the git ref name
+    /// is derived from the execution id (git refs forbid `:`).
+    pub candidate_branch: String,
 }
 
 /// Evidence of a compare-and-update integration.
@@ -48,7 +51,11 @@ pub trait WorkspaceApi {
     fn tag(&mut self, name: &str, sha: &str) -> Result<(), ContractError>;
 
     /// Reconcile checkout state against recorded receipts.
-    fn reconcile(&mut self, checkout: &Checkout) -> Result<(), ContractError>;
+    ///
+    /// Reports whether the candidate is already integrated (`main` is at the
+    /// candidate HEAD, which is ahead of the base) without re-merging; the
+    /// caller completes any missing ledger/tag records from the receipt.
+    fn reconcile(&mut self, checkout: &Checkout) -> Result<bool, ContractError>;
 
     /// Revert to a commit.
     fn revert(&mut self, sha: &str) -> Result<(), ContractError>;

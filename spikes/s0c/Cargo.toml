@@ -1,0 +1,13 @@
+[package]
+name = "s0c"
+version = "0.1.0"
+edition = "2021"
+description = "S0c spike: minimal serial executor durability semantics over SQLite via the sqlite3 CLI"
+publish = false
+
+[[bin]]
+name = "s0c"
+path = "src/main.rs"
+
+# Zero dependencies: std only. `cargo build --release --offline` must succeed.
+[dependencies]

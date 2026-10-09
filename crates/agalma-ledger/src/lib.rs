@@ -10,6 +10,14 @@
 //! dispatch intents in ONE transaction. No external I/O runs inside a
 //! transaction. `schema_version` mismatch refuses/parks and never auto-migrates.
 //!
+//! ## Schema v2
+//!
+//! Schema v2 adds the additive `decisions`, `decision_outcomes`, and `digests`
+//! tables. `open()` migrates v1 → v2 only when every execution is terminal;
+//! with any in-flight execution it returns [`ContractError::KnownFailure`] and
+//! leaves the database untouched (no in-flight migration). A stored version
+//! that is neither 1 nor 2 is never migrated; use fails with a schema mismatch.
+//!
 //! ## Sequence assignment
 //!
 //! `execution_events.sequence` is owned by the ledger: any sequence supplied in
@@ -22,9 +30,9 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use agalma_contracts::{
-    BindingRecord, BindingState, CommitBatch, CommitReceipt, ContractError, DispatchIntent,
-    ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState, LedgerApi,
-    OperationId, OperationReceipt, TaskId,
+    BindingRecord, BindingState, CommitBatch, CommitReceipt, ContractError, DecisionOutcome,
+    DecisionRequest, DigestRecord, DispatchIntent, ExecutionEvent, ExecutionId, ExecutionPhase,
+    ExecutionRecord, ExecutionState, LedgerApi, OperationId, OperationReceipt, TaskId,
 };
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -33,13 +41,13 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 mod tests;
 
 /// Persisted physical schema version. Bump only with a migration.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Physical schema v1: S0c seed plus `component_bindings`.
 ///
 /// `IF NOT EXISTS` makes first-open idempotent; it never alters an existing
 /// table, so a stored schema with a different version is left untouched.
-const SCHEMA_SQL: &str = r#"
+const SCHEMA_V1_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -97,6 +105,30 @@ CREATE TABLE IF NOT EXISTS component_bindings (
 INSERT OR IGNORE INTO kill_latch(id,active,updated_at) VALUES (1,0,0);
 "#;
 
+/// Additive schema v2: durable decisions and per-execution digests.
+const SCHEMA_V2_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS decisions (
+  operation_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  inputs_hash TEXT NOT NULL,
+  request_json TEXT NOT NULL,
+  recorded_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS decision_outcomes (
+  operation_id TEXT PRIMARY KEY,
+  outcome_json TEXT NOT NULL,
+  recorded_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS digests (
+  execution_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  digest_json TEXT NOT NULL,
+  artifact_ref TEXT,
+  recorded_at INTEGER NOT NULL,
+  PRIMARY KEY (execution_id, version)
+);
+"#;
+
 /// SQLite-backed [`LedgerApi`].
 pub struct SqliteLedger {
     conn: Connection,
@@ -152,6 +184,21 @@ impl SqliteLedger {
             .map_err(db_err)?;
         Ok(())
     }
+
+    /// Simulate a genuine v1 database: drop the additive v2 tables and record
+    /// schema version 1. Test-only; used to exercise the migration path.
+    #[cfg(test)]
+    fn downgrade_to_v1(&self) -> Result<(), ContractError> {
+        self.conn
+            .execute_batch(
+                "DROP TABLE IF EXISTS decisions; \
+                 DROP TABLE IF EXISTS decision_outcomes; \
+                 DROP TABLE IF EXISTS digests; \
+                 UPDATE meta SET value='1' WHERE key='schema_version';",
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
 }
 
 fn configure(conn: &Connection) -> Result<(), ContractError> {
@@ -165,23 +212,68 @@ fn configure(conn: &Connection) -> Result<(), ContractError> {
 }
 
 fn ensure_schema(conn: &Connection) -> Result<(), ContractError> {
-    conn.execute_batch(SCHEMA_SQL).map_err(db_err)?;
-    if meta_value(conn, "schema_version")?.is_none() {
-        let now = now_ms();
-        let stmts: [(&str, String); 3] = [
-            ("schema_version", SCHEMA_VERSION.to_string()),
-            ("sqlite_version", rusqlite::version().to_string()),
-            ("created_at", now.to_string()),
-        ];
-        for (key, value) in stmts {
-            conn.execute(
-                "INSERT OR IGNORE INTO meta(key,value) VALUES(?1,?2)",
-                params![key, value],
-            )
-            .map_err(db_err)?;
+    conn.execute_batch(SCHEMA_V1_SQL).map_err(db_err)?;
+    match meta_value(conn, "schema_version")? {
+        None => {
+            // Fresh database: create v2 and record the version.
+            conn.execute_batch(SCHEMA_V2_SQL).map_err(db_err)?;
+            let now = now_ms();
+            let stmts: [(&str, String); 3] = [
+                ("schema_version", SCHEMA_VERSION.to_string()),
+                ("sqlite_version", rusqlite::version().to_string()),
+                ("created_at", now.to_string()),
+            ];
+            for (key, value) in stmts {
+                conn.execute(
+                    "INSERT OR IGNORE INTO meta(key,value) VALUES(?1,?2)",
+                    params![key, value],
+                )
+                .map_err(db_err)?;
+            }
+        }
+        Some(raw) => {
+            let version: u32 = raw.parse().unwrap_or(0);
+            if version == 1 {
+                // Auto-migrate v1 → v2 only when every execution is terminal.
+                if !all_executions_terminal(conn)? {
+                    return Err(ContractError::KnownFailure(
+                        "refusing v1 -> v2 migration: in-flight executions present \
+                         (no in-flight migration)"
+                            .to_string(),
+                    ));
+                }
+                conn.execute_batch(SCHEMA_V2_SQL).map_err(db_err)?;
+                conn.execute(
+                    "UPDATE meta SET value=?1 WHERE key='schema_version'",
+                    params![SCHEMA_VERSION.to_string()],
+                )
+                .map_err(db_err)?;
+            }
+            // Version 2: tables already present. Any other version is a future
+            // or unknown schema: leave it untouched; use refuses until corrected.
         }
     }
     Ok(())
+}
+
+/// True when every execution row is in a terminal state (`completed`, `failed`,
+/// `parked`). An empty database is vacuously terminal. Unknown states count as
+/// non-terminal so migration refuses rather than guessing.
+fn all_executions_terminal(conn: &Connection) -> Result<bool, ContractError> {
+    let mut stmt = conn
+        .prepare("SELECT state FROM executions")
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(db_err)?;
+    for row in rows {
+        let state = row.map_err(db_err)?;
+        match state_from(&state) {
+            Some(ExecutionState::Completed | ExecutionState::Failed | ExecutionState::Parked) => {}
+            _ => return Ok(false),
+        }
+    }
+    Ok(true)
 }
 
 impl LedgerApi for SqliteLedger {
@@ -519,6 +611,118 @@ impl LedgerApi for SqliteLedger {
     fn schema_version(&self) -> Result<u32, ContractError> {
         Ok(self.stored_schema_version()?.unwrap_or(0))
     }
+
+    fn record_decision(&mut self, request: &DecisionRequest) -> Result<(), ContractError> {
+        self.ensure_compatible()?;
+        let inputs_hash = decision_inputs_hash(request)?;
+        if let Some(existing) = read_decision_hash(&self.conn, request.operation_id.as_str())? {
+            if existing != inputs_hash {
+                return Err(ContractError::Conflict(format!(
+                    "decision {} reused with different inputs (existing={existing}, new={inputs_hash})",
+                    request.operation_id
+                )));
+            }
+            return Ok(());
+        }
+        self.conn
+            .execute(
+                "INSERT INTO decisions(operation_id,kind,inputs_hash,request_json,recorded_at) \
+                 VALUES(?1,?2,?3,?4,?5)",
+                params![
+                    request.operation_id.as_str(),
+                    request.kind.as_str(),
+                    inputs_hash,
+                    serde_json::to_string(request).map_err(json_err)?,
+                    sql_u64(now_ms()),
+                ],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    fn record_decision_outcome(
+        &mut self,
+        operation_id: &OperationId,
+        outcome: &DecisionOutcome,
+    ) -> Result<(), ContractError> {
+        self.ensure_compatible()?;
+        // A recorded outcome is terminal: a late or duplicate result never
+        // supersedes it.
+        if self.decision_outcome(operation_id)?.is_some() {
+            return Ok(());
+        }
+        self.conn
+            .execute(
+                "INSERT INTO decision_outcomes(operation_id,outcome_json,recorded_at) \
+                 VALUES(?1,?2,?3)",
+                params![
+                    operation_id.as_str(),
+                    serde_json::to_string(outcome).map_err(json_err)?,
+                    sql_u64(now_ms()),
+                ],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    fn decision_outcome(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<DecisionOutcome>, ContractError> {
+        self.conn
+            .query_row(
+                "SELECT outcome_json FROM decision_outcomes WHERE operation_id=?1",
+                params![operation_id.as_str()],
+                |row| {
+                    let raw: String = row.get(0)?;
+                    serde_json::from_str(&raw).map_err(|e| conversion_err(0, e))
+                },
+            )
+            .optional()
+            .map_err(db_err)
+    }
+
+    fn record_digest(&mut self, digest: &DigestRecord) -> Result<(), ContractError> {
+        self.ensure_compatible()?;
+        self.conn
+            .execute(
+                "INSERT INTO digests(execution_id,version,digest_json,artifact_ref,recorded_at) \
+                 VALUES(?1,?2,?3,?4,?5) \
+                 ON CONFLICT(execution_id,version) DO UPDATE SET \
+                   digest_json=excluded.digest_json, artifact_ref=excluded.artifact_ref, \
+                   recorded_at=excluded.recorded_at",
+                params![
+                    digest.execution_id.as_str(),
+                    i64::from(digest.version),
+                    serde_json::to_string(digest).map_err(json_err)?,
+                    digest.artifact_ref.as_ref().map(|a| a.as_str().to_string()),
+                    sql_u64(digest.recorded_at_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    fn digests_for_execution(
+        &self,
+        execution_id: &ExecutionId,
+    ) -> Result<Vec<DigestRecord>, ContractError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT digest_json FROM digests WHERE execution_id=?1 ORDER BY version")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params![execution_id.as_str()], |row| {
+                let raw: String = row.get(0)?;
+                serde_json::from_str(&raw).map_err(|e| conversion_err(0, e))
+            })
+            .map_err(db_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(db_err)?);
+        }
+        Ok(out)
+    }
 }
 
 fn execution_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExecutionRecord> {
@@ -607,6 +811,39 @@ fn read_intent_raw(
     )
     .optional()
     .map_err(db_err)
+}
+
+fn read_decision_hash(
+    conn: &Connection,
+    operation_id: &str,
+) -> Result<Option<String>, ContractError> {
+    conn.query_row(
+        "SELECT inputs_hash FROM decisions WHERE operation_id=?1",
+        params![operation_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(db_err)
+}
+
+/// Deterministic content hash pinning a decision request's inputs.
+///
+/// `serde_json` serializes a struct in declaration order, so the canonical JSON
+/// is stable for a given request value. FNV-1a is used because the pinned
+/// dependency set has no hash crate; it is a conflict detector, not a security
+/// primitive.
+fn decision_inputs_hash(request: &DecisionRequest) -> Result<String, ContractError> {
+    let bytes = serde_json::to_vec(request).map_err(json_err)?;
+    Ok(format!("fnv1a64:{:016x}", fnv1a64(&bytes)))
+}
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// Revision reported by a commit: the transitioned execution's revision when a

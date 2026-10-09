@@ -13,9 +13,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 
 use agalma_contracts::{
-    BindingId, BindingRecord, BindingState, CommitBatch, ContractError, DispatchIntent,
-    ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState, LedgerApi,
-    OperationId, OperationReceipt, TaskId,
+    ArtifactRef, BindingId, BindingRecord, BindingState, CommitBatch, ContractError, DecisionKind,
+    DecisionOutcome, DecisionPin, DecisionRequest, DigestRecord, DispatchIntent, ExecutionEvent,
+    ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState, LedgerApi, OperationId,
+    OperationReceipt, TaskId,
 };
 
 use crate::{SqliteLedger, SCHEMA_VERSION};
@@ -357,7 +358,10 @@ fn wal_mode_active_and_sqlite_version_recorded() {
         "bundled SQLite version recorded in meta"
     );
     assert!(ledger.meta("created_at").unwrap().is_some());
-    assert_eq!(ledger.meta("schema_version").unwrap().as_deref(), Some("1"));
+    assert_eq!(
+        ledger.meta("schema_version").unwrap().as_deref(),
+        Some(SCHEMA_VERSION.to_string().as_str())
+    );
 }
 
 #[test]
@@ -394,4 +398,205 @@ fn component_bindings_round_trip() {
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].generation, 2);
     assert_eq!(loaded[0].state, BindingState::Draining);
+}
+
+fn decision_request(exec: &ExecutionId) -> DecisionRequest {
+    DecisionRequest {
+        version: 1,
+        operation_id: OperationId::derive(exec, "triage"),
+        kind: DecisionKind::TriagePickNext,
+        context: json!({}),
+        artifacts: vec![],
+        options: vec![agalma_contracts::DecisionOption {
+            option_id: "task-a".to_string(),
+            attributes: json!({ "priority": 1, "age_ms": 10 }),
+        }],
+        deadline_unix_ms: now_ms() + 60_000,
+        pin: DecisionPin {
+            policy: "triage.pick-next/v1".to_string(),
+            genome: "genome/v0".to_string(),
+            model: "static".to_string(),
+        },
+    }
+}
+
+#[test]
+fn decision_request_recorded_and_pinned_to_inputs() {
+    let dir = run_dir("decisions");
+    reset_dir(&dir);
+    let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
+    let exec = fixture_exec();
+    let request = decision_request(&exec);
+
+    // Idempotent for identical contents.
+    ledger.record_decision(&request).unwrap();
+    ledger.record_decision(&request).unwrap();
+
+    // Same operation id with changed contents is a conflict.
+    let changed = DecisionRequest {
+        options: vec![agalma_contracts::DecisionOption {
+            option_id: "task-b".to_string(),
+            attributes: json!({ "priority": 2, "age_ms": 5 }),
+        }],
+        ..request.clone()
+    };
+    let err = ledger.record_decision(&changed).unwrap_err();
+    assert!(matches!(err, ContractError::Conflict(_)), "err={err:?}");
+}
+
+#[test]
+fn decision_outcome_is_terminal_and_recovers() {
+    let dir = run_dir("decision-outcome");
+    reset_dir(&dir);
+    let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
+    let exec = fixture_exec();
+    let request = decision_request(&exec);
+    ledger.record_decision(&request).unwrap();
+
+    let applied = DecisionOutcome::Applied {
+        chosen: Some("task-a".to_string()),
+        scores: vec![],
+    };
+    ledger
+        .record_decision_outcome(&request.operation_id, &applied)
+        .unwrap();
+    assert_eq!(
+        ledger.decision_outcome(&request.operation_id).unwrap(),
+        Some(applied.clone())
+    );
+
+    // A late/different result never supersedes the recorded outcome.
+    let late = DecisionOutcome::Parked {
+        reason: "late".to_string(),
+    };
+    ledger
+        .record_decision_outcome(&request.operation_id, &late)
+        .unwrap();
+    assert_eq!(
+        ledger.decision_outcome(&request.operation_id).unwrap(),
+        Some(applied)
+    );
+
+    // Reopen: the recorded outcome survives for recovery reuse.
+    drop(ledger);
+    let reopened = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
+    assert_eq!(
+        reopened.decision_outcome(&request.operation_id).unwrap(),
+        Some(DecisionOutcome::Applied {
+            chosen: Some("task-a".to_string()),
+            scores: vec![],
+        })
+    );
+}
+
+#[test]
+fn digest_rows_round_trip_ordered_by_version() {
+    let dir = run_dir("digests");
+    reset_dir(&dir);
+    let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
+    let exec = fixture_exec();
+
+    for version in [2u32, 1u32] {
+        ledger
+            .record_digest(&DigestRecord {
+                execution_id: exec.clone(),
+                version,
+                summary: json!({ "cost_usd": 0.0, "files": ["a.md"] }),
+                artifact_ref: Some(ArtifactRef::derive("digest")),
+                recorded_at_unix_ms: now_ms(),
+            })
+            .unwrap();
+    }
+
+    let digests = ledger.digests_for_execution(&exec).unwrap();
+    assert_eq!(
+        digests.iter().map(|d| d.version).collect::<Vec<_>>(),
+        vec![1, 2],
+        "digests are ordered by version"
+    );
+    assert_eq!(digests[0].artifact_ref, Some(ArtifactRef::derive("digest")));
+
+    // Upsert by (execution, version) replaces in place.
+    ledger
+        .record_digest(&DigestRecord {
+            execution_id: exec.clone(),
+            version: 1,
+            summary: json!({ "cost_usd": 0.0, "files": ["b.md"] }),
+            artifact_ref: None,
+            recorded_at_unix_ms: now_ms(),
+        })
+        .unwrap();
+    let digests = ledger.digests_for_execution(&exec).unwrap();
+    assert_eq!(digests.len(), 2);
+    assert_eq!(digests[0].artifact_ref, None);
+}
+
+#[test]
+fn migration_v1_to_v2_when_all_executions_terminal() {
+    let dir = run_dir("migrate-terminal");
+    reset_dir(&dir);
+    let path = dir.join("ledger.sqlite");
+    let exec = fixture_exec();
+
+    {
+        let mut ledger = SqliteLedger::open(&path).unwrap();
+        ledger
+            .commit(CommitBatch {
+                expected_revision: None,
+                state: Some(record(
+                    &exec,
+                    ExecutionPhase::Done,
+                    ExecutionState::Completed,
+                )),
+                events: vec![],
+                receipts: vec![],
+                intents: vec![],
+            })
+            .unwrap();
+        ledger.downgrade_to_v1().unwrap();
+        assert_eq!(ledger.schema_version().unwrap(), 1);
+    }
+
+    let mut ledger = SqliteLedger::open(&path).unwrap();
+    assert_eq!(
+        ledger.schema_version().unwrap(),
+        SCHEMA_VERSION,
+        "terminal v1 database migrates to v2"
+    );
+    // v2 surface is live after migration.
+    let request = decision_request(&exec);
+    ledger.record_decision(&request).unwrap();
+}
+
+#[test]
+fn migration_v1_to_v2_refused_with_in_flight_execution() {
+    let dir = run_dir("migrate-inflight");
+    reset_dir(&dir);
+    let path = dir.join("ledger.sqlite");
+    let exec = fixture_exec();
+
+    {
+        let mut ledger = SqliteLedger::open(&path).unwrap();
+        ledger
+            .commit(CommitBatch {
+                expected_revision: None,
+                state: Some(record(
+                    &exec,
+                    ExecutionPhase::Build,
+                    ExecutionState::Running,
+                )),
+                events: vec![],
+                receipts: vec![],
+                intents: vec![],
+            })
+            .unwrap();
+        ledger.downgrade_to_v1().unwrap();
+    }
+
+    let err = SqliteLedger::open(&path).map(|_| ()).unwrap_err();
+    assert!(matches!(err, ContractError::KnownFailure(_)), "err={err:?}");
+    assert!(
+        err.to_string().contains("in-flight"),
+        "reason must name in-flight executions: {err}"
+    );
 }

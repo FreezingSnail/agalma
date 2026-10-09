@@ -1,0 +1,13 @@
+[package]
+name = "agalma-decision"
+version.workspace = true
+edition.workspace = true
+description = "Agalma decision service. Owning wave: M1.5 — static baselines and durable decision outcomes behind DecisionApi; no model inference in M1."
+publish = false
+
+[dependencies]
+agalma-contracts = { path = "../agalma-contracts" }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+agalma-ledger = { path = "../agalma-ledger" }

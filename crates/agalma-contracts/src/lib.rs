@@ -12,15 +12,21 @@
 //! implementation crate depends on another implementation crate.
 
 pub mod binding;
+pub mod decision;
 pub mod error;
 pub mod execution;
 pub mod harness;
 pub mod ids;
 pub mod ledger;
 pub mod sandbox;
+pub mod taskqueue;
 pub mod workspace;
 
 pub use binding::{BindingRecord, BindingState};
+pub use decision::{
+    DecisionApi, DecisionAttempt, DecisionKind, DecisionOption, DecisionOutcome, DecisionPin,
+    DecisionRequest, DecisionResponse, DecisionScore, FallbackReason, DECISION_API_VERSION,
+};
 pub use error::ContractError;
 pub use execution::{ExecutionApi, ExecutionPhase, ExecutionState, ExecutionStatus, StepOutcome};
 pub use harness::{
@@ -32,8 +38,12 @@ pub use harness::{
 };
 pub use ids::{ArtifactRef, AttemptId, BindingId, ExecutionId, OperationId, SessionId, TaskId};
 pub use ledger::{
-    CommitBatch, CommitReceipt, DispatchIntent, ExecutionEvent, ExecutionRecord, LedgerApi,
-    OperationReceipt,
+    CommitBatch, CommitReceipt, DigestRecord, DispatchIntent, ExecutionEvent, ExecutionRecord,
+    LedgerApi, OperationReceipt,
 };
 pub use sandbox::{LaunchSpec, SandboxApi, SandboxChild};
+pub use taskqueue::{
+    ClaimEvidence, ReadyTasks, SkipReason, SkippedIssue, Task, TaskFamily, TaskPriority,
+    TaskQueueApi,
+};
 pub use workspace::{Checkout, MergeReceipt, WorkspaceApi};

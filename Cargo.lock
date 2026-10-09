@@ -29,6 +29,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "agalma-decision"
+version = "0.1.0"
+dependencies = [
+ "agalma-contracts",
+ "agalma-ledger",
+ "serde_json",
+]
+
+[[package]]
 name = "agalma-execution"
 version = "0.1.0"
 dependencies = [
@@ -65,6 +74,15 @@ version = "0.1.0"
 dependencies = [
  "agalma-contracts",
  "tokio",
+]
+
+[[package]]
+name = "agalma-taskqueue"
+version = "0.1.0"
+dependencies = [
+ "agalma-contracts",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -9,9 +9,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::binding::BindingRecord;
+use crate::decision::{DecisionOutcome, DecisionRequest};
 use crate::error::ContractError;
 use crate::execution::{ExecutionPhase, ExecutionState};
-use crate::ids::{ExecutionId, OperationId, TaskId};
+use crate::ids::{ArtifactRef, ExecutionId, OperationId, TaskId};
 
 /// Durable row for one execution.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +76,22 @@ pub struct CommitReceipt {
     pub committed_at_unix_ms: u64,
 }
 
+/// One derived per-execution digest row (schema v2).
+///
+/// Cost/usage are derived from existing `execution_events`; this row stores the
+/// derived summary plus the optional artifact path. `version` is per-execution
+/// and monotonic.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DigestRecord {
+    pub execution_id: ExecutionId,
+    pub version: u32,
+    /// Derived summary (cost/usage, files, commands+outcomes, repairs, wall time).
+    pub summary: Value,
+    /// Path/reference to the serialized digest artifact, when one was written.
+    pub artifact_ref: Option<ArtifactRef>,
+    pub recorded_at_unix_ms: u64,
+}
+
 /// Ledger contract. SQL, transactions, and the physical schema stay private.
 pub trait LedgerApi {
     /// Atomically commit a batch, or return a conflict/failure.
@@ -119,4 +136,33 @@ pub trait LedgerApi {
 
     /// Stored schema version. A mismatched version parks, never auto-migrates.
     fn schema_version(&self) -> Result<u32, ContractError>;
+
+    /// Persist a decision request before dispatch (schema v2 `decisions`).
+    ///
+    /// Idempotent for identical contents; reusing an operation ID with changed
+    /// contents is a conflict (the caller must use a new operation ID).
+    fn record_decision(&mut self, request: &DecisionRequest) -> Result<(), ContractError>;
+
+    /// Persist the validated outcome for an operation (before scheduling
+    /// dependent work). A recorded outcome is terminal and never overwritten.
+    fn record_decision_outcome(
+        &mut self,
+        operation_id: &OperationId,
+        outcome: &DecisionOutcome,
+    ) -> Result<(), ContractError>;
+
+    /// Recorded decision outcome for an operation, if any (recovery reuse).
+    fn decision_outcome(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<DecisionOutcome>, ContractError>;
+
+    /// Insert or replace a derived digest row (schema v2 `digests`).
+    fn record_digest(&mut self, digest: &DigestRecord) -> Result<(), ContractError>;
+
+    /// Digest rows for an execution, ordered by `version`.
+    fn digests_for_execution(
+        &self,
+        execution_id: &ExecutionId,
+    ) -> Result<Vec<DigestRecord>, ContractError>;
 }

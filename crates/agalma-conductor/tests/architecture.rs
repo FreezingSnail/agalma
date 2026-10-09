@@ -21,6 +21,8 @@ const IMPL_CRATES: &[&str] = &[
     "agalma-sandbox",
     "agalma-workspace",
     "agalma-harness-opencode",
+    "agalma-decision",
+    "agalma-taskqueue",
 ];
 
 fn workspace_root() -> PathBuf {

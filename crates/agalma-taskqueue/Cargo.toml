@@ -1,0 +1,14 @@
+[package]
+name = "agalma-taskqueue"
+version.workspace = true
+edition.workspace = true
+description = "Agalma bd task-queue adapter (M1.1): fenced-block intake, atomic claims, status projection."
+publish = false
+
+[dependencies]
+agalma-contracts = { path = "../agalma-contracts" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

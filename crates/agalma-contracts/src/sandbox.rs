@@ -15,10 +15,12 @@ use crate::ids::AttemptId;
 /// A confined launch request.
 ///
 /// `profile` is the filesystem path of the rendered sandbox profile (e.g. a
-/// Seatbelt `worker.sb`). The four `attempt_dir`/`protected_dir`/`sock_dir`/
-/// `extra_ro` fields are the values substituted into the profile's parameters;
-/// the implementation supplies every one of them and refuses to launch when the
-/// profile is missing or references an unknown parameter (fail-closed).
+/// Seatbelt `worker.sb`). The `attempt_dir`/`protected_dir`/`sock_dir` fields
+/// plus up to three entries of `extra_ro_roots` are the values substituted into
+/// the profile's parameters; the implementation supplies every one of them and
+/// refuses to launch when the profile is missing or references an unknown
+/// parameter (fail-closed). `extra_ro_roots` may hold fewer than three roots;
+/// the launcher must still render every slot (unused slots are inert).
 ///
 /// `env` is the complete child environment. The caller owns attempt-scoping:
 /// `TMPDIR` and `XDG_*` must point inside `attempt_dir`, because the profile
@@ -37,8 +39,11 @@ pub struct LaunchSpec {
     pub protected_dir: String,
     /// Parent-owned Unix-socket directory (Seatbelt `SOCKDIR`).
     pub sock_dir: String,
-    /// Extra read-only root, e.g. the harness install tree (Seatbelt `EXTRA_RO`).
-    pub extra_ro: String,
+    /// Extra read-only roots, e.g. the harness install tree and toolchain homes
+    /// (Seatbelt `EXTRA_RO`, `EXTRA_RO2`, `EXTRA_RO3` in order). At most three
+    /// are honoured; the launcher always renders all three slots, padding
+    /// unused ones with an inert value.
+    pub extra_ro_roots: Vec<String>,
 }
 
 /// Opaque handle to a launched confined child.

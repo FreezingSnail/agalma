@@ -15,4 +15,4 @@ pub mod profile;
 pub mod seatbelt;
 
 pub use profile::{PRODUCT_PROFILE, SUPPLIED_PARAMS};
-pub use seatbelt::SeatbeltSandbox;
+pub use seatbelt::{SandboxOutput, SeatbeltSandbox};

@@ -141,7 +141,10 @@ Reuse S0c fixture cases where the semantics overlap (tests ported into
 ## Sandbox details
 
 Product profile at `crates/agalma-sandbox/profiles/worker.sb` (from S0b, params
-`ATTEMPT`, `PROTECTED`, `SOCKDIR`, `EXTRA_RO`). Conditions: fail-closed render
+`ATTEMPT`, `PROTECTED`, `SOCKDIR`, `EXTRA_RO`, `EXTRA_RO2`, `EXTRA_RO3`). The
+launcher always renders all three `EXTRA_RO*` slots; unused slots carry an inert
+placeholder (`/dev/null`, already read-permitted) because `sandbox-exec` rejects
+an empty `(subpath ...)` pattern. Conditions: fail-closed render
 gate; attempt-scoped `TMPDIR`/`XDG_*`; toolchain read roots rendered;
 termination signals descendants explicitly (macOS EPERM on group signal) then
 verifies; `mach-lookup` stays broad for M0 with a TODO + open item.

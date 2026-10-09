@@ -21,16 +21,33 @@ pub const PARAM_ATTEMPT: &str = "ATTEMPT";
 pub const PARAM_PROTECTED: &str = "PROTECTED";
 /// Profile parameter: parent-owned Unix-socket directory.
 pub const PARAM_SOCKDIR: &str = "SOCKDIR";
-/// Profile parameter: extra read-only root.
+/// Profile parameter: extra read-only root (slot 1).
 pub const PARAM_EXTRA_RO: &str = "EXTRA_RO";
+/// Profile parameter: extra read-only root (slot 2).
+pub const PARAM_EXTRA_RO2: &str = "EXTRA_RO2";
+/// Profile parameter: extra read-only root (slot 3).
+pub const PARAM_EXTRA_RO3: &str = "EXTRA_RO3";
+
+/// Number of extra read-only root slots the launcher always renders.
+pub const EXTRA_RO_SLOTS: usize = 3;
+
+/// Inert placeholder for an unused extra read-only slot.
+///
+/// `sandbox-exec` rejects an empty `(subpath ...)` pattern at profile-compile
+/// time, so an unused slot must carry a harmless existing path instead. `/dev/null`
+/// is already read-permitted by the product profile, so it can never widen
+/// access; the slot is inert.
+pub const INERT_EXTRA_RO: &str = "/dev/null";
 
 /// Every parameter the launcher supplies. A profile that references any other
 /// name can never be fully substituted and must fail closed.
-pub const SUPPLIED_PARAMS: [&str; 4] = [
+pub const SUPPLIED_PARAMS: [&str; 6] = [
     PARAM_ATTEMPT,
     PARAM_PROTECTED,
     PARAM_SOCKDIR,
     PARAM_EXTRA_RO,
+    PARAM_EXTRA_RO2,
+    PARAM_EXTRA_RO3,
 ];
 
 /// Why a profile was rejected. Rendered by the launcher as a `KnownFailure`.

@@ -98,7 +98,7 @@ impl Run {
             attempt_dir: self.path_str(&self.attempt),
             protected_dir: self.path_str(&self.protected),
             sock_dir: self.path_str(&self.sock),
-            extra_ro: self.path_str(&self.extra_ro),
+            extra_ro_roots: vec![self.path_str(&self.extra_ro)],
         }
     }
 }

@@ -13,6 +13,7 @@ dependencies = [
  "agalma-sandbox",
  "agalma-workspace",
  "clap",
+ "serde_json",
  "tokio",
 ]
 

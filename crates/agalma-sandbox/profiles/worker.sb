@@ -10,8 +10,12 @@
 ;;   ATTEMPT   -> attempt-owned writable/readable dir
 ;;   PROTECTED -> protected tests dir (readable, NOT writable)
 ;;   SOCKDIR   -> parent-owned unix socket dir (nerve bridge)
-;;   EXTRA_RO  -> extra read-only root (harness install tree)
+;;   EXTRA_RO  -> extra read-only root (e.g. harness install tree)
+;;   EXTRA_RO2 -> additional read-only root (e.g. toolchain home)
+;;   EXTRA_RO3 -> additional read-only root
 ;; Every referenced parameter MUST be supplied or sandbox-exec fails closed.
+;; The launcher always renders all THREE extra-root slots; unused slots carry
+;; an inert placeholder (`/dev/null`) so the profile never fails to compile.
 ;;
 ;; TODO(mach-lookup narrowing): `(allow mach-lookup)` is deliberately broad for
 ;;   M0 — dyld/Foundation/system services need it for any functioning process.
@@ -69,9 +73,11 @@
     (subpath "/opt/homebrew")
     (subpath "/usr/local"))
 
-;; --- optional extra read-only root (e.g. harness install tree) --------------
-;; Always supplied by the launcher (undefined param would fail closed).
+;; --- optional extra read-only roots (harness install tree, toolchain homes) --
+;; The launcher always supplies all three slots; unused slots are inert.
 (allow file-read* (subpath (param "EXTRA_RO")))
+(allow file-read* (subpath (param "EXTRA_RO2")))
+(allow file-read* (subpath (param "EXTRA_RO3")))
 
 ;; --- mach services required for a functioning process ------------------------
 ;; TODO(mach-lookup narrowing) — see header. Broad for M0.

@@ -75,6 +75,14 @@ pub struct OpenCodeHarnessConfig {
     /// Extra read-only root (Seatbelt `EXTRA_RO`). When `None`, derived from the
     /// resolved opencode install tree.
     pub extra_ro: Option<PathBuf>,
+    /// Additional read-only roots rendered into the remaining extra-root slots
+    /// (Seatbelt `EXTRA_RO2`, `EXTRA_RO3`), e.g. toolchain homes the confined
+    /// worker needs (`~/.cargo`, `~/.rustup`). At most two are honoured.
+    pub extra_ro_roots: Vec<PathBuf>,
+    /// Additional environment variables for the confined server, merged over
+    /// the adapter's base environment (e.g. `RUSTUP_HOME`, `CARGO_HOME`,
+    /// `PATH` additions for the toolchain).
+    pub extra_env: BTreeMap<String, String>,
     /// Explicit opencode binary; when `None`, `OPENCODE_BIN` then `PATH`.
     pub program: Option<PathBuf>,
     /// Model override; when `None`, `AGALMA_MODEL` then [`DEFAULT_MODEL`].
@@ -105,6 +113,8 @@ impl OpenCodeHarnessConfig {
             protected_dir: protected_dir.into(),
             sock_dir: sock_dir.into(),
             extra_ro: None,
+            extra_ro_roots: Vec::new(),
+            extra_env: BTreeMap::new(),
             program: None,
             model: None,
             proxy_url: None,
@@ -132,6 +142,10 @@ pub struct OpenCodeHarness {
     turn_seq: u32,
     sessions: Vec<SessionHandle>,
     session_native: BTreeMap<String, String>,
+    /// Per-session prompt text resolved from `CreateSessionRequest::prompts_ref`
+    /// when it names a readable file; absent entries fall back to the canned
+    /// turn prompt.
+    session_prompts: BTreeMap<String, String>,
     ops: BTreeMap<String, OcOp>,
     stopped: bool,
 }
@@ -167,6 +181,7 @@ impl OpenCodeHarness {
             turn_seq: 0,
             sessions: Vec::new(),
             session_native: BTreeMap::new(),
+            session_prompts: BTreeMap::new(),
             ops: BTreeMap::new(),
             stopped: false,
         }
@@ -211,11 +226,13 @@ impl OpenCodeHarness {
             .clone()
             .ok_or_else(|| ContractError::KnownFailure("attempt id not allocated".to_string()))?;
         let program = self.resolve_program()?;
-        let extra_ro = self
+        let opencode_root = self
             .config
             .extra_ro
             .clone()
             .unwrap_or_else(|| derive_extra_ro(&program));
+        let mut extra_ro_roots = vec![opencode_root];
+        extra_ro_roots.extend(self.config.extra_ro_roots.iter().cloned());
 
         // Isolated attempt tree: <attempt>/{xdg-config,xdg-data,xdg-cache,
         // xdg-state,tmp,work}. `work` is the attempt-scoped HOME.
@@ -301,6 +318,13 @@ impl OpenCodeHarness {
             env.insert("no_proxy".to_string(), NO_PROXY.to_string());
         }
 
+        // Caller-supplied environment (toolchain homes, PATH additions) merges
+        // over the base environment. This is how the confined worker gets a
+        // usable `cargo`/`rustc` without the parent environment leaking in.
+        for (key, value) in &self.config.extra_env {
+            env.insert(key.clone(), value.clone());
+        }
+
         let spec = LaunchSpec {
             program: program.to_string_lossy().into_owned(),
             args: vec![
@@ -317,7 +341,10 @@ impl OpenCodeHarness {
             attempt_dir: root.to_string_lossy().into_owned(),
             protected_dir: protected.to_string_lossy().into_owned(),
             sock_dir: sock.to_string_lossy().into_owned(),
-            extra_ro: extra_ro.to_string_lossy().into_owned(),
+            extra_ro_roots: extra_ro_roots
+                .iter()
+                .map(|root| root.to_string_lossy().into_owned())
+                .collect(),
         };
 
         let child = self.sandbox.launch(spec)?;
@@ -497,6 +524,9 @@ impl HarnessApi for OpenCodeHarness {
         let handle = SessionHandle {
             id: SessionId::derive(&attempt, self.session_seq),
         };
+        if let Some(prompt) = resolve_prompt(&req.prompts_ref) {
+            self.session_prompts.insert(handle.id.to_string(), prompt);
+        }
         self.session_native.insert(handle.id.to_string(), native);
         self.sessions.push(handle.clone());
         Ok(handle)
@@ -519,7 +549,12 @@ impl HarnessApi for OpenCodeHarness {
             .clone()
             .ok_or_else(|| ContractError::KnownFailure("start_attempt first".to_string()))?;
         self.turn_seq += 1;
-        let body = json!({ "text": prompt_for(&req.input_ref) }).to_string();
+        let prompt = self
+            .session_prompts
+            .get(session.id.as_str())
+            .cloned()
+            .unwrap_or_else(|| prompt_for(&req.input_ref));
+        let body = json!({ "text": prompt }).to_string();
         let path = format!("/api/session/{native}/prompt");
         let (code, resp) = self
             .http()?
@@ -589,6 +624,7 @@ impl HarnessApi for OpenCodeHarness {
             let path = format!("/api/session/{native}");
             let _ = self.http()?.request("DELETE", &path, None);
         }
+        self.session_prompts.remove(session.id.as_str());
         self.sessions.retain(|s| s.id != session.id);
         Ok(())
     }
@@ -633,6 +669,21 @@ fn prompt_for(input_ref: &ArtifactRef) -> String {
         PROMPT_CANCEL.to_string()
     } else {
         PROMPT_TURN.to_string()
+    }
+}
+
+/// Resolve a `prompts_ref` that names a readable file on the parent filesystem
+/// into its text. The conductor points this at its builder prompt; the live
+/// smoke tests pass a canonical artifact name that does not resolve, so the
+/// canned turn prompt is used instead.
+fn resolve_prompt(prompts_ref: &str) -> Option<String> {
+    let path = Path::new(prompts_ref);
+    if path.is_file() {
+        fs::read_to_string(path)
+            .ok()
+            .filter(|text| !text.is_empty())
+    } else {
+        None
     }
 }
 
@@ -726,6 +777,26 @@ mod tests {
             PROMPT_CANCEL
         );
         assert_eq!(prompt_for(&ArtifactRef::derive("turn-1")), PROMPT_TURN);
+    }
+
+    #[test]
+    fn resolve_prompt_reads_existing_file_and_rejects_artifact_names() {
+        assert_eq!(resolve_prompt("artifact:builder-prompts"), None);
+        assert_eq!(resolve_prompt("/definitely/not/a/file"), None);
+        // Run dirs live under `target/test-runs/` (never /tmp).
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("test-runs");
+        fs::create_dir_all(&dir).expect("create run dir");
+        let path = dir.join(format!("harness-prompt-{}.txt", std::process::id()));
+        fs::write(&path, "fix it").expect("write prompt");
+        assert_eq!(
+            resolve_prompt(&path.to_string_lossy()),
+            Some("fix it".into())
+        );
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

@@ -150,7 +150,7 @@ fn confined_direct_network_exit_code(root: &Path) -> i32 {
         attempt_dir: attempt.to_string_lossy().into_owned(),
         protected_dir: protected.to_string_lossy().into_owned(),
         sock_dir: sock.to_string_lossy().into_owned(),
-        extra_ro: protected.to_string_lossy().into_owned(),
+        extra_ro_roots: vec![protected.to_string_lossy().into_owned()],
     };
     let child = sandbox.launch(spec).expect("launch confined network probe");
     let deadline = Instant::now() + Duration::from_secs(20);

@@ -71,7 +71,7 @@ impl WorkspaceApi for Workspace {
         let dest = self
             .base_dir
             .join("runs")
-            .join(execution.as_str())
+            .join(execution_dir_name(execution))
             .join("checkout");
         if dest.exists() {
             fs::remove_dir_all(&dest).map_err(|e| {
@@ -193,6 +193,18 @@ impl WorkspaceApi for Workspace {
         }
         Ok(())
     }
+}
+
+/// Filesystem-safe directory component derived from an execution id.
+///
+/// The opaque execution id contains `:` (`exec:<task>:<gen>`), which is legal
+/// in a POSIX path but breaks tools that compose `:`-separated environment
+/// variables (e.g. cargo builds `DYLD_FALLBACK_LIBRARY_PATH` and rejects a
+/// segment containing `:`). The run directory therefore uses this sanitized
+/// form (`exec-fix-answer-1`); the ledger keeps the opaque id unchanged. It
+/// matches the candidate-branch suffix so paths and refs agree.
+pub fn execution_dir_name(execution: &ExecutionId) -> String {
+    sanitize_ref(execution.as_str())
 }
 
 /// Git ref component derived from an execution id.

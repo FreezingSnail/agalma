@@ -7,10 +7,12 @@ name = "agalma-conductor"
 version = "0.1.0"
 dependencies = [
  "agalma-contracts",
+ "agalma-decision",
  "agalma-execution",
  "agalma-harness-opencode",
  "agalma-ledger",
  "agalma-sandbox",
+ "agalma-taskqueue",
  "agalma-workspace",
  "clap",
  "rusqlite",

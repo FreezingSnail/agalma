@@ -53,7 +53,7 @@ use agalma_execution::{
     Activity, ActivityError, ActivityNext, ActivityOutcome, EffectProbe, OperationContext,
 };
 use agalma_harness_opencode::{OpenCodeHarness, OpenCodeHarnessConfig};
-use agalma_sandbox::SeatbeltSandbox;
+use agalma_sandbox::{SandboxOutput, SeatbeltSandbox};
 use agalma_workspace::Workspace;
 use serde_json::json;
 
@@ -136,6 +136,22 @@ pub struct PhaseDeps {
     pub turn_timeout: Duration,
     /// Bound on the verify command.
     pub verify_timeout: Duration,
+    /// Repo mode (M1): when set, checkout clones `origin` at `base_ref` and
+    /// verify runs the task's acceptance commands instead of `cargo test`.
+    pub repo: Option<RepoMode>,
+}
+
+/// Repo-mode parameters carried per execution (M1 queue-driven conductor).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepoMode {
+    /// Origin repository cloned at checkout and integrated into at integrate.
+    pub origin: PathBuf,
+    /// Base ref the candidate branches from (`main`).
+    pub base_ref: String,
+    /// Task title, rendered into the per-attempt builder prompt.
+    pub task_title: String,
+    /// Acceptance commands run by Rust, each as its own launch.
+    pub acceptance: Vec<String>,
 }
 
 /// Shared handles for one executor.
@@ -174,15 +190,27 @@ pub fn activities_with_mode(
             state: Rc::clone(&state),
         }),
     };
-    let verify: Box<dyn Activity> = match mode {
-        ActivityMode::Live => Box::new(VerifyActivity {
+    // Repo mode always runs the real acceptance runner (`VerifyActivity`); only
+    // the model call is replaced in scripted mode. The `sandboxed` flag selects
+    // Seatbelt (`Live`) vs. an in-process launch (`Scripted`, tests).
+    let verify: Box<dyn Activity> = if deps.repo.is_some() {
+        Box::new(VerifyActivity {
             deps: deps.clone(),
             state: Rc::clone(&state),
-        }),
-        ActivityMode::Scripted => Box::new(ScriptedVerifyActivity {
-            deps: deps.clone(),
-            state: Rc::clone(&state),
-        }),
+            sandboxed: mode == ActivityMode::Live,
+        })
+    } else {
+        match mode {
+            ActivityMode::Live => Box::new(VerifyActivity {
+                deps: deps.clone(),
+                state: Rc::clone(&state),
+                sandboxed: true,
+            }),
+            ActivityMode::Scripted => Box::new(ScriptedVerifyActivity {
+                deps: deps.clone(),
+                state: Rc::clone(&state),
+            }),
+        }
     };
     PhaseActivities {
         intake: Box::new(NoopActivity),
@@ -238,6 +266,28 @@ fn contract_err(err: ContractError) -> ActivityError {
     }
 }
 
+/// Run one acceptance command in-process (scripted/deterministic tests only).
+/// Mirrors the Seatbelt one-shot contract: captured exit code and output.
+fn run_in_process(
+    command: &str,
+    cwd: &str,
+    env: &BTreeMap<String, String>,
+) -> Result<SandboxOutput, ActivityError> {
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(cwd)
+        .env_clear()
+        .envs(env)
+        .output()
+        .map_err(|e| ActivityError::KnownFailure(format!("run acceptance `{command}`: {e}")))?;
+    Ok(SandboxOutput {
+        exit_code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
 /// `intake` is a no-op that hands off to `checkout`.
 struct NoopActivity;
 
@@ -278,12 +328,25 @@ fn checkout_outcome(checkout: &Checkout) -> ActivityOutcome {
 
 impl Activity for CheckoutActivity {
     fn execute(&mut self, ctx: &OperationContext) -> Result<ActivityOutcome, ActivityError> {
-        let template = self.deps.fixture.to_string_lossy().into_owned();
-        let checkout = self
-            .workspace
-            .borrow_mut()
-            .prepare(&template, &ctx.execution_id)
-            .map_err(contract_err)?;
+        let checkout = match &self.deps.repo {
+            Some(repo) => self
+                .workspace
+                .borrow_mut()
+                .prepare_repo(
+                    &repo.origin,
+                    &repo.base_ref,
+                    &ctx.execution_id,
+                    &self.deps.state_dir,
+                )
+                .map_err(contract_err)?,
+            None => {
+                let template = self.deps.fixture.to_string_lossy().into_owned();
+                self.workspace
+                    .borrow_mut()
+                    .prepare(&template, &ctx.execution_id)
+                    .map_err(contract_err)?
+            }
+        };
         workers::write_json(
             &checkout_artifact_path(&self.deps.state_dir, &ctx.execution_id),
             &checkout,
@@ -371,6 +434,27 @@ fn build_reconcile(
 }
 
 impl BuildActivity {
+    /// Write the per-attempt builder prompt under `<run>/prompts/` and return
+    /// its path. The base prompt (`prompts/builder.md`) is the M0 text; repo
+    /// mode appends the task title, acceptance commands, and any prior failure
+    /// or diagnosis artifact.
+    fn write_attempt_prompt(
+        &self,
+        root: &Path,
+        ctx: &OperationContext,
+    ) -> Result<PathBuf, ActivityError> {
+        let base = std::fs::read_to_string(&self.deps.builder_prompt).unwrap_or_default();
+        let text = render_builder_prompt(&base, &self.deps, root, ctx.attempt);
+        let dir = root.join("prompts");
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| ActivityError::KnownFailure(format!("create prompt dir: {e}")))?;
+        let path = dir.join(format!("builder@{}.md", ctx.attempt));
+        std::fs::write(&path, text).map_err(|e| {
+            ActivityError::KnownFailure(format!("write prompt {}: {e}", path.display()))
+        })?;
+        Ok(path)
+    }
+
     fn run_turn(&self, ctx: &OperationContext) -> Result<ActivityOutcome, ActivityError> {
         let checkout = self
             .state
@@ -381,6 +465,10 @@ impl BuildActivity {
             .map_err(|e| ActivityError::KnownFailure(format!("create run root: {e}")))?;
         let protected = canonical_dir(&root.join("protected"))?;
         let sock = canonical_dir(&root.join("sock"))?;
+        // Parameterize the base builder prompt per attempt: the model sees the
+        // task title, the acceptance commands, and the captured failure text (or
+        // a verifier diagnosis artifact when M1.3 writes one).
+        let prompt_path = self.write_attempt_prompt(&root, ctx)?;
 
         let mut config =
             OpenCodeHarnessConfig::new(&self.deps.profile_path, &root, &protected, &sock);
@@ -428,7 +516,7 @@ impl BuildActivity {
         }
         mark_started(&self.deps, &ctx.execution_id, "build", ctx.attempt)?;
 
-        let outcome = self.drive(&mut harness, &attempt, ctx);
+        let outcome = self.drive(&mut harness, &attempt, ctx, &prompt_path);
         let evidence = harness.stop_attempt(&attempt);
         if let Ok(evidence) = &evidence {
             if !evidence.process_group_gone {
@@ -458,12 +546,13 @@ impl BuildActivity {
         harness: &mut OpenCodeHarness,
         _attempt: &AttemptHandle,
         ctx: &OperationContext,
+        prompt_path: &Path,
     ) -> Result<ActivityOutcome, ActivityError> {
         let session = harness
             .create_session(CreateSessionRequest {
                 role: self.deps.role.clone(),
                 model: self.deps.model.clone(),
-                prompts_ref: self.deps.builder_prompt.to_string_lossy().into_owned(),
+                prompts_ref: prompt_path.to_string_lossy().into_owned(),
                 handoff_refs: Vec::new(),
                 tool_policy_ref: ArtifactRef::derive("tool-policy").to_string(),
             })
@@ -626,10 +715,14 @@ impl Activity for ScriptedBuildActivity {
 // verify (live)
 // ---------------------------------------------------------------------------
 
-/// `verify`: a separate confined `cargo test` run; exit code is the verdict.
+/// `verify`: a separate confined `cargo test` run (M0) or the task's acceptance
+/// command list (repo mode, M1); exit codes are the verdict.
 struct VerifyActivity {
     deps: PhaseDeps,
     state: Rc<RefCell<RunState>>,
+    /// Run acceptance commands under Seatbelt (`Live`) or in-process
+    /// (`Scripted`, deterministic tests).
+    sandboxed: bool,
 }
 
 /// Probe a verify attempt via its durable markers.
@@ -661,8 +754,137 @@ fn verify_reconcile(
     })
 }
 
+impl VerifyActivity {
+    /// Repo mode: run the task's acceptance commands, each as its own launch,
+    /// from the candidate checkout. Any non-zero exit is the verdict; the failing
+    /// command and its output are captured under `<run>/artifacts/`.
+    fn run_acceptance(&self, ctx: &OperationContext) -> Result<ActivityOutcome, ActivityError> {
+        let checkout = self
+            .state
+            .borrow_mut()
+            .ensure_checkout(&self.deps.state_dir, &ctx.execution_id)?;
+        let repo = self
+            .deps
+            .repo
+            .as_ref()
+            .ok_or_else(|| ActivityError::KnownFailure("repo mode required".into()))?;
+        let root = run_root(&self.deps.state_dir, &ctx.execution_id);
+        let attempt_dir = canonical_dir(&root)?;
+        let protected = canonical_dir(&root.join("protected"))?;
+        let sock = canonical_dir(&root.join("sock"))?;
+        let tmp = canonical_dir(&root.join("verify-tmp"))?;
+        let home = canonical_dir(&root.join("verify-home"))?;
+        let artifacts = canonical_dir(&root.join("artifacts"))?;
+        mark_started(&self.deps, &ctx.execution_id, "verify", ctx.attempt)?;
+
+        let mut env = self.deps.toolchain_env.clone();
+        env.insert("HOME".to_string(), home.to_string_lossy().into_owned());
+        env.insert("TMPDIR".to_string(), tmp.to_string_lossy().into_owned());
+        let mut path = env
+            .get("PATH")
+            .cloned()
+            .unwrap_or_else(|| "/usr/bin:/bin".to_string());
+        path.push_str(":/usr/bin:/bin:/usr/sbin:/sbin");
+        env.insert("PATH".to_string(), path);
+
+        let mut sandbox = SeatbeltSandbox::new();
+        for (index, command) in repo.acceptance.iter().enumerate() {
+            let log_path = artifacts.join(format!("acceptance@{}-{index}.log", ctx.attempt));
+            let output = if self.sandboxed {
+                let spec = LaunchSpec {
+                    program: "sh".to_string(),
+                    args: vec!["-c".to_string(), command.clone()],
+                    cwd: checkout.path.clone(),
+                    env: env.clone(),
+                    profile: self.deps.profile_path.to_string_lossy().into_owned(),
+                    attempt: AttemptId::derive(ctx.attempt),
+                    attempt_dir: attempt_dir.to_string_lossy().into_owned(),
+                    protected_dir: protected.to_string_lossy().into_owned(),
+                    sock_dir: sock.to_string_lossy().into_owned(),
+                    extra_ro_roots: self
+                        .deps
+                        .extra_ro_roots
+                        .iter()
+                        .map(|root| root.to_string_lossy().into_owned())
+                        .collect(),
+                };
+                sandbox
+                    .run(&spec, self.deps.verify_timeout)
+                    .map_err(contract_err)?
+            } else {
+                run_in_process(command, &checkout.path, &env)?
+            };
+            let log = format!(
+                "$ {command} (exit {})\n--- stdout ---\n{}\n--- stderr ---\n{}\n",
+                output.exit_code, output.stdout, output.stderr
+            );
+            std::fs::write(&log_path, log).map_err(|e| {
+                ActivityError::KnownFailure(format!("write verify log {}: {e}", log_path.display()))
+            })?;
+            if output.exit_code != 0 {
+                let failure_path = artifacts.join(format!("failure@{}.txt", ctx.attempt));
+                let failure = format!(
+                    "command {index} failed (exit {}): {command}\n--- stdout ---\n{}\n--- stderr ---\n{}\n",
+                    output.exit_code, output.stdout, output.stderr
+                );
+                std::fs::write(&failure_path, &failure).map_err(|e| {
+                    ActivityError::KnownFailure(format!(
+                        "write failure {}: {e}",
+                        failure_path.display()
+                    ))
+                })?;
+                eprintln!(
+                    "agalma: verify attempt {} red (exit {}): {command}",
+                    ctx.attempt, output.exit_code
+                );
+                let outcome = ActivityOutcome {
+                    result: json!({
+                        "status": "red",
+                        "exit_code": output.exit_code,
+                        "attempt": ctx.attempt,
+                        "command": command,
+                        "artifact": log_path.to_string_lossy(),
+                    }),
+                    next: ActivityNext::Retry {
+                        failure: ArtifactRef::derive(&format!("verify@{}", ctx.attempt)),
+                    },
+                };
+                workers::write_done(
+                    &self.deps.state_dir,
+                    &ctx.execution_id,
+                    "verify",
+                    ctx.attempt,
+                    &outcome,
+                )?;
+                return Ok(outcome);
+            }
+        }
+
+        let outcome = ActivityOutcome {
+            result: json!({
+                "status": "green",
+                "exit_code": 0,
+                "attempt": ctx.attempt,
+                "commands": repo.acceptance.len(),
+            }),
+            next: ActivityNext::Advance,
+        };
+        workers::write_done(
+            &self.deps.state_dir,
+            &ctx.execution_id,
+            "verify",
+            ctx.attempt,
+            &outcome,
+        )?;
+        Ok(outcome)
+    }
+}
+
 impl Activity for VerifyActivity {
     fn execute(&mut self, ctx: &OperationContext) -> Result<ActivityOutcome, ActivityError> {
+        if self.deps.repo.is_some() {
+            return self.run_acceptance(ctx);
+        }
         let checkout = self
             .state
             .borrow_mut()
@@ -837,16 +1059,21 @@ fn integrate_tag(checkout: &Checkout) -> String {
     )
 }
 
-fn integrate_outcome(
-    receipt: &agalma_contracts::MergeReceipt,
-    checkout: &Checkout,
-) -> ActivityOutcome {
+/// Repo-mode integration tag (`m1/<execution>`).
+fn repo_integrate_tag(checkout: &Checkout) -> String {
+    format!(
+        "m1/{}",
+        checkout.candidate_branch.trim_start_matches("candidate/")
+    )
+}
+
+fn integrate_outcome(receipt: &agalma_contracts::MergeReceipt, tag: &str) -> ActivityOutcome {
     ActivityOutcome {
         result: json!({
             "expected_main_sha": receipt.expected_main_sha,
             "candidate_sha": receipt.candidate_sha,
             "result_sha": receipt.result_sha,
-            "tag": integrate_tag(checkout),
+            "tag": tag,
         }),
         next: ActivityNext::Advance,
     }
@@ -859,6 +1086,23 @@ impl Activity for IntegrateActivity {
             .borrow_mut()
             .ensure_checkout(&self.deps.state_dir, &ctx.execution_id)?;
         let mut workspace = self.workspace.borrow_mut();
+
+        // Repo mode (M1): CAS the origin's `main` to the candidate and tag the
+        // origin `m1/<exec>`.
+        if let Some(repo) = &self.deps.repo {
+            let tag = repo_integrate_tag(&checkout);
+            if let Some(receipt) = workspace
+                .origin_receipt(&checkout, &repo.origin)
+                .map_err(contract_err)?
+            {
+                return Ok(integrate_outcome(&receipt, &tag));
+            }
+            let receipt = workspace
+                .integrate_origin(&checkout, &repo.origin, &checkout.base_sha)
+                .map_err(contract_err)?;
+            return Ok(integrate_outcome(&receipt, &tag));
+        }
+
         // Guard against a double merge if the probe missed an already-landed
         // integration: reconcile from Git state instead of re-merging.
         if let Some(receipt) = workspace
@@ -869,12 +1113,13 @@ impl Activity for IntegrateActivity {
             workspace
                 .tag(&tag, &receipt.result_sha)
                 .map_err(contract_err)?;
-            return Ok(integrate_outcome(&receipt, &checkout));
+            return Ok(integrate_outcome(&receipt, &tag));
         }
         let receipt = workspace
             .integrate(&checkout, &checkout.base_sha)
             .map_err(contract_err)?;
-        Ok(integrate_outcome(&receipt, &checkout))
+        let tag = integrate_tag(&checkout);
+        Ok(integrate_outcome(&receipt, &tag))
     }
 
     fn effect_present(&mut self, ctx: &OperationContext) -> EffectProbe {
@@ -885,7 +1130,18 @@ impl Activity for IntegrateActivity {
         else {
             return EffectProbe::Ambiguous;
         };
-        match self.workspace.borrow_mut().integrated_receipt(&checkout) {
+        let mut workspace = self.workspace.borrow_mut();
+        if let Some(repo) = &self.deps.repo {
+            return match workspace.origin_receipt(&checkout, &repo.origin) {
+                Ok(Some(_)) => EffectProbe::Present,
+                Ok(None) => EffectProbe::Absent,
+                Err(err) => {
+                    eprintln!("agalma: repo integrate probe failed: {err}");
+                    EffectProbe::Ambiguous
+                }
+            };
+        }
+        match workspace.integrated_receipt(&checkout) {
             Ok(Some(_)) => EffectProbe::Present,
             Ok(None) => EffectProbe::Absent,
             Err(err) => {
@@ -901,6 +1157,18 @@ impl Activity for IntegrateActivity {
             .borrow_mut()
             .ensure_checkout(&self.deps.state_dir, &ctx.execution_id)?;
         let mut workspace = self.workspace.borrow_mut();
+        if let Some(repo) = &self.deps.repo {
+            let tag = repo_integrate_tag(&checkout);
+            let receipt = workspace
+                .origin_receipt(&checkout, &repo.origin)
+                .map_err(contract_err)?
+                .ok_or_else(|| {
+                    ActivityError::KnownFailure(
+                        "integrate reconcile: origin main is not at the candidate".to_string(),
+                    )
+                })?;
+            return Ok(integrate_outcome(&receipt, &tag));
+        }
         let receipt = workspace
             .integrated_receipt(&checkout)
             .map_err(contract_err)?
@@ -913,7 +1181,7 @@ impl Activity for IntegrateActivity {
         workspace
             .tag(&tag, &receipt.result_sha)
             .map_err(contract_err)?;
-        Ok(integrate_outcome(&receipt, &checkout))
+        Ok(integrate_outcome(&receipt, &tag))
     }
 }
 
@@ -1004,6 +1272,43 @@ fn apply_scripted_fix(checkout_path: &str) -> Result<(), ActivityError> {
     .map_err(|e| ActivityError::KnownFailure(format!("apply scripted fix {}: {e}", src.display())))
 }
 
+/// Render the per-attempt builder prompt: the base prompt plus (in repo mode)
+/// the task title, acceptance commands, and any prior failure/diagnosis artifact.
+fn render_builder_prompt(base: &str, deps: &PhaseDeps, root: &Path, attempt: u32) -> String {
+    let Some(repo) = &deps.repo else {
+        return base.to_string();
+    };
+    let mut out = String::new();
+    out.push_str(base);
+    out.push_str("\n\n---\n\n## Task\n\n");
+    out.push_str(&format!("Title: {}\n", repo.task_title));
+    out.push_str("\nAcceptance commands (run by the conductor; every one must exit 0):\n\n");
+    for (index, command) in repo.acceptance.iter().enumerate() {
+        out.push_str(&format!("{}. `{command}`\n", index + 1));
+    }
+    if attempt > 1 {
+        let failure = root
+            .join("artifacts")
+            .join(format!("failure@{}.txt", attempt - 1));
+        if let Ok(text) = std::fs::read_to_string(&failure) {
+            out.push_str("\n## Previous attempt failure\n\n```text\n");
+            out.push_str(text.trim_end());
+            out.push_str("\n```\n");
+        }
+        let diagnosis = root
+            .join("artifacts")
+            .join(format!("diagnosis@{}.md", attempt - 1));
+        if let Ok(text) = std::fs::read_to_string(&diagnosis) {
+            out.push_str("\n## Verifier diagnosis\n\n");
+            out.push_str(&text);
+            if !text.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
 /// Poll `inspect_operation` until terminal or `timeout`; `None` on timeout.
 fn poll_terminal(
     harness: &mut OpenCodeHarness,
@@ -1054,4 +1359,86 @@ fn cargo_bin() -> Result<PathBuf, ActivityError> {
                 "cargo binary not found (set CARGO or CARGO_HOME)".to_string(),
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn deps(repo: Option<RepoMode>) -> PhaseDeps {
+        PhaseDeps {
+            state_dir: PathBuf::from("state"),
+            fixture: PathBuf::from("fixture"),
+            model: "test/offline".to_string(),
+            role: "builder".to_string(),
+            profile_path: PathBuf::from("worker.sb"),
+            builder_prompt: PathBuf::from("builder.md"),
+            proxy_url: None,
+            extra_ro_roots: Vec::new(),
+            toolchain_env: BTreeMap::new(),
+            turn_timeout: Duration::from_secs(1),
+            verify_timeout: Duration::from_secs(1),
+            repo,
+        }
+    }
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("test-runs")
+            .join(format!("phases-{name}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(dir.join("artifacts")).expect("scratch dir");
+        dir
+    }
+
+    #[test]
+    fn render_prompt_without_repo_returns_base() {
+        let base = "base prompt";
+        let text = render_builder_prompt(base, &deps(None), Path::new("."), 1);
+        assert_eq!(text, base);
+    }
+
+    #[test]
+    fn render_prompt_repo_mode_includes_title_and_acceptance() {
+        let deps = deps(Some(RepoMode {
+            origin: PathBuf::from("origin"),
+            base_ref: "main".to_string(),
+            task_title: "Fix the thing".to_string(),
+            acceptance: vec!["sh -c 'true'".to_string(), "cargo test".to_string()],
+        }));
+        let text = render_builder_prompt("base", &deps, Path::new("."), 1);
+        assert!(text.contains("Fix the thing"), "{text}");
+        assert!(text.contains("sh -c 'true'"), "{text}");
+        assert!(text.contains("cargo test"), "{text}");
+    }
+
+    #[test]
+    fn render_prompt_retry_includes_captured_failure_and_diagnosis() {
+        let dir = scratch_dir("prompt-retry");
+        std::fs::write(
+            dir.join("artifacts").join("failure@1.txt"),
+            "command 0 failed: grep MAGIC",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("artifacts").join("diagnosis@1.md"),
+            "the function returns 0",
+        )
+        .unwrap();
+        let deps = deps(Some(RepoMode {
+            origin: PathBuf::from("origin"),
+            base_ref: "main".to_string(),
+            task_title: "Fix".to_string(),
+            acceptance: vec!["sh -c 'true'".to_string()],
+        }));
+        let text = render_builder_prompt("base", &deps, &dir, 2);
+        assert!(text.contains("grep MAGIC"), "{text}");
+        assert!(text.contains("the function returns 0"), "{text}");
+    }
 }

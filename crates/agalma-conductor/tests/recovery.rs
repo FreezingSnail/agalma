@@ -98,6 +98,7 @@ fn build_harness(state_dir: &Path) -> Harness {
         toolchain_env: BTreeMap::new(),
         turn_timeout: Duration::from_secs(1),
         verify_timeout: Duration::from_secs(1),
+        repo: None,
     };
     let workspace = Rc::new(RefCell::new(Workspace::new(state_dir.to_path_buf())));
     let state = Rc::new(RefCell::new(RunState::default()));

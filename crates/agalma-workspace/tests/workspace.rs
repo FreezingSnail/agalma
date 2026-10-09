@@ -265,3 +265,143 @@ fn prepare_leaves_template_untouched() {
     ws.prepare(template_dir().to_str().unwrap(), &exec).unwrap();
     assert_eq!(before, dir_checksum(&template_dir()));
 }
+
+// ---------------------------------------------------------------------------
+// Repo mode (M1): clone an origin, CAS-integrate into the origin.
+// ---------------------------------------------------------------------------
+
+/// Create an origin repo with a seed commit and return `(dir, seed_sha)`.
+fn seed_origin(name: &str) -> (PathBuf, String) {
+    let dir = run_dir(name).join("origin");
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(
+        dir.join("src").join("lib.rs"),
+        "pub fn answer() -> u32 { 0 }\n",
+    )
+    .unwrap();
+    git(&dir, &["init", "-q", "-b", "main"]);
+    git(&dir, &["config", "user.name", "Agalma"]);
+    git(&dir, &["config", "user.email", "agalma@localhost"]);
+    git(&dir, &["add", "-A"]);
+    git(&dir, &["commit", "-qm", "seed"]);
+    let seed = git(&dir, &["rev-parse", "refs/heads/main"]);
+    (dir, seed)
+}
+
+fn write_fix(checkout: &str) {
+    fs::write(
+        Path::new(checkout).join("src").join("lib.rs"),
+        "pub fn answer() -> u32 { 42 }\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn prepare_repo_clones_candidate_from_origin() {
+    let (origin, seed) = seed_origin("repo-prepare");
+    let base_dir = origin.parent().unwrap().to_path_buf();
+    let mut ws = Workspace::new(&base_dir);
+    let exec = ExecutionId::new("exec:fix-answer:1");
+
+    let checkout = ws.prepare_repo(&origin, "main", &exec, &base_dir).unwrap();
+    let repo = Path::new(&checkout.path);
+
+    assert!(repo.join(".git").is_dir(), "independent git metadata");
+    assert_eq!(checkout.base_sha, seed, "base sha is the origin ref sha");
+    assert_eq!(checkout.candidate_branch, "candidate/exec-fix-answer-1");
+    assert_eq!(git(repo, &["rev-parse", "HEAD"]), seed);
+    assert_eq!(
+        git(repo, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        checkout.candidate_branch
+    );
+    // The origin's branch is not moved by checkout.
+    assert_eq!(git(&origin, &["rev-parse", "refs/heads/main"]), seed);
+}
+
+#[test]
+fn integrate_origin_cas_and_tag_merge_candidate() {
+    let (origin, seed) = seed_origin("repo-integrate");
+    let base_dir = origin.parent().unwrap().to_path_buf();
+    let mut ws = Workspace::new(&base_dir);
+    let exec = ExecutionId::new("exec:fix-answer:1");
+
+    let checkout = ws.prepare_repo(&origin, "main", &exec, &base_dir).unwrap();
+    write_fix(&checkout.path);
+
+    let receipt = ws
+        .integrate_origin(&checkout, &origin, &checkout.base_sha)
+        .unwrap();
+    assert_eq!(receipt.expected_main_sha, seed);
+    assert_ne!(receipt.candidate_sha, seed);
+    assert_eq!(receipt.result_sha, receipt.candidate_sha);
+
+    assert_eq!(
+        git(&origin, &["rev-parse", "refs/heads/main"]),
+        receipt.result_sha
+    );
+    assert_eq!(
+        git(&origin, &["rev-parse", "refs/tags/m1/exec-fix-answer-1"]),
+        receipt.result_sha
+    );
+    assert!(Workspace::origin_merged(&origin, &receipt.candidate_sha).unwrap());
+}
+
+#[test]
+fn integrate_origin_wrong_expected_is_conflict_and_leaves_main() {
+    let (origin, seed) = seed_origin("repo-conflict");
+    let base_dir = origin.parent().unwrap().to_path_buf();
+    let mut ws = Workspace::new(&base_dir);
+    let exec = ExecutionId::new("exec:fix-answer:1");
+
+    let checkout = ws.prepare_repo(&origin, "main", &exec, &base_dir).unwrap();
+    write_fix(&checkout.path);
+
+    let err = ws
+        .integrate_origin(
+            &checkout,
+            &origin,
+            "0000000000000000000000000000000000000000",
+        )
+        .unwrap_err();
+    assert!(matches!(err, ContractError::Conflict(_)), "got {err:?}");
+    assert_eq!(
+        git(&origin, &["rev-parse", "refs/heads/main"]),
+        seed,
+        "main unchanged on conflict"
+    );
+    assert!(
+        git_opt(
+            &origin,
+            &[
+                "rev-parse",
+                "-q",
+                "--verify",
+                "refs/tags/m1/exec-fix-answer-1"
+            ]
+        )
+        .is_none(),
+        "no tag on conflict"
+    );
+}
+
+#[test]
+fn origin_receipt_detects_landed_merge_without_reintegrating() {
+    let (origin, seed) = seed_origin("repo-reconcile");
+    let base_dir = origin.parent().unwrap().to_path_buf();
+    let mut ws = Workspace::new(&base_dir);
+    let exec = ExecutionId::new("exec:fix-answer:1");
+
+    let checkout = ws.prepare_repo(&origin, "main", &exec, &base_dir).unwrap();
+    write_fix(&checkout.path);
+    assert!(ws.origin_receipt(&checkout, &origin).unwrap().is_none());
+
+    let receipt = ws
+        .integrate_origin(&checkout, &origin, &checkout.base_sha)
+        .unwrap();
+    let derived = ws
+        .origin_receipt(&checkout, &origin)
+        .unwrap()
+        .expect("landed merge is detectable");
+    assert_eq!(derived.candidate_sha, receipt.candidate_sha);
+    assert_eq!(derived.expected_main_sha, seed);
+}

@@ -20,6 +20,8 @@ agalma-execution = { path = "../agalma-execution" }
 agalma-sandbox = { path = "../agalma-sandbox" }
 agalma-workspace = { path = "../agalma-workspace" }
 agalma-harness-opencode = { path = "../agalma-harness-opencode" }
+agalma-taskqueue = { path = "../agalma-taskqueue" }
+agalma-decision = { path = "../agalma-decision" }
 clap = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

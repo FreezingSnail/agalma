@@ -64,6 +64,7 @@ fn dummy_deps(state_dir: &Path) -> PhaseDeps {
         toolchain_env: BTreeMap::new(),
         turn_timeout: Duration::from_secs(1),
         verify_timeout: Duration::from_secs(1),
+        repo: None,
     }
 }
 

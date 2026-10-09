@@ -107,7 +107,7 @@ impl Composition {
             ))
         })?;
 
-        let (extra_ro_roots, toolchain_env) = toolchain(config)?;
+        let (extra_ro_roots, toolchain_env) = toolchain()?;
 
         let deps = PhaseDeps {
             state_dir: state_dir.clone(),
@@ -121,6 +121,7 @@ impl Composition {
             toolchain_env,
             turn_timeout: DEFAULT_TURN_TIMEOUT,
             verify_timeout: DEFAULT_VERIFY_TIMEOUT,
+            repo: None,
         };
 
         let shared_state = Rc::new(RefCell::new(RunState::default()));
@@ -161,7 +162,7 @@ impl Composition {
 /// homes must be readable inside the sandwich; `RUSTUP_HOME` and
 /// `RUSTUP_TOOLCHAIN` must be set because the isolated `HOME` is not the user's.
 /// Writes stay denied: only these read-only roots are added.
-fn toolchain(_config: &Config) -> Result<(Vec<PathBuf>, BTreeMap<String, String>), ContractError> {
+pub(crate) fn toolchain() -> Result<(Vec<PathBuf>, BTreeMap<String, String>), ContractError> {
     let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
         ContractError::KnownFailure("HOME is not set; cannot locate toolchain".into())
     })?;

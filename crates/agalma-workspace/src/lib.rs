@@ -47,6 +47,180 @@ impl Workspace {
         })
     }
 
+    /// Prepare an isolated checkout by cloning an origin repository (**repo
+    /// mode**, M1).
+    ///
+    /// The checkout is an independent repository (`git clone --no-hardlinks`)
+    /// under `<base_dir>/runs/<exec>/checkout`, with its own Git metadata, so
+    /// candidate history never shares the origin's object store until
+    /// [`Workspace::integrate_origin`] transfers it. A candidate branch
+    /// `candidate/<exec>` is created at the origin's `base_ref` SHA and
+    /// `base_sha` records that SHA (the expected pre-integration `main`).
+    pub fn prepare_repo(
+        &mut self,
+        origin_path: &Path,
+        base_ref: &str,
+        execution: &ExecutionId,
+        base_dir: &Path,
+    ) -> Result<Checkout, ContractError> {
+        if !origin_path.is_dir() {
+            return Err(ContractError::KnownFailure(format!(
+                "origin is not a directory: {}",
+                origin_path.display()
+            )));
+        }
+        let base_sha = rev_parse(origin_path, base_ref)?;
+
+        let dest = base_dir
+            .join("runs")
+            .join(execution_dir_name(execution))
+            .join("checkout");
+        if dest.exists() {
+            fs::remove_dir_all(&dest).map_err(|e| {
+                ContractError::KnownFailure(format!(
+                    "cannot reset checkout {}: {e}",
+                    dest.display()
+                ))
+            })?;
+        }
+        let parent = dest
+            .parent()
+            .ok_or_else(|| ContractError::KnownFailure("checkout has no parent".into()))?;
+        fs::create_dir_all(parent).map_err(|e| {
+            ContractError::KnownFailure(format!("cannot create {}: {e}", parent.display()))
+        })?;
+
+        let origin_arg = origin_path.to_string_lossy().into_owned();
+        let dest_arg = dest.to_string_lossy().into_owned();
+        git_ok(parent, &["clone", "--no-hardlinks", &origin_arg, &dest_arg])?;
+        git_ok(&dest, &["config", "user.name", "Agalma"])?;
+        git_ok(&dest, &["config", "user.email", "agalma@localhost"])?;
+        let candidate_branch = candidate_branch(execution);
+        git_ok(&dest, &["checkout", "-b", &candidate_branch, &base_sha])?;
+
+        self.current_repo = Some(dest.clone());
+        Ok(Checkout {
+            path: dest.to_string_lossy().into_owned(),
+            base_sha,
+            candidate_branch,
+        })
+    }
+
+    /// Integrate a repo-mode candidate into the origin with expected-SHA CAS.
+    ///
+    /// Commits the dirty candidate tree, transfers the candidate objects into
+    /// the origin (fetch from the checkout, refs untouched), then
+    /// `git -C <origin> update-ref refs/heads/main <candidate> <expected>`. A
+    /// mismatch returns [`ContractError::Conflict`] without moving `main`. On
+    /// success the origin is tagged `m1/<exec>`.
+    pub fn integrate_origin(
+        &self,
+        checkout: &Checkout,
+        origin_path: &Path,
+        expected_main_sha: &str,
+    ) -> Result<MergeReceipt, ContractError> {
+        let repo = PathBuf::from(&checkout.path);
+        let candidate_sha = commit_candidate(&repo, checkout)?;
+
+        // Fail closed on a moved `main` *before* transferring objects: no
+        // mutation at all on conflict.
+        let current_main = rev_parse(origin_path, "refs/heads/main")?;
+        if current_main != expected_main_sha {
+            return Err(ContractError::Conflict(format!(
+                "main moved: expected {expected_main_sha}, found {current_main}"
+            )));
+        }
+
+        // Transfer candidate objects into the origin's object store without
+        // moving any ref: `git fetch` writes FETCH_HEAD only.
+        let repo_arg = repo.to_string_lossy().into_owned();
+        let branch_ref = format!("refs/heads/{}", checkout.candidate_branch);
+        git_ok(origin_path, &["fetch", "--no-tags", &repo_arg, &branch_ref])?;
+
+        let out = git(
+            origin_path,
+            &[
+                "update-ref",
+                "refs/heads/main",
+                &candidate_sha,
+                expected_main_sha,
+            ],
+        )?;
+        if !out.success {
+            return Err(ContractError::Conflict(format!(
+                "refs/heads/main compare-and-swap failed: {}",
+                out.stderr.trim()
+            )));
+        }
+
+        ensure_tag(
+            origin_path,
+            &repo_tag_for_branch(&checkout.candidate_branch),
+            &candidate_sha,
+        )?;
+
+        Ok(MergeReceipt {
+            expected_main_sha: expected_main_sha.to_string(),
+            candidate_sha: candidate_sha.clone(),
+            result_sha: candidate_sha,
+        })
+    }
+
+    /// Whether the origin's `main` already points at `candidate_sha`.
+    pub fn origin_merged(origin_path: &Path, candidate_sha: &str) -> Result<bool, ContractError> {
+        Ok(rev_parse_opt(origin_path, "refs/heads/main")?.as_deref() == Some(candidate_sha))
+    }
+
+    /// The candidate branch HEAD SHA in `checkout`'s repository.
+    pub fn candidate_sha(&self, checkout: &Checkout) -> Result<String, ContractError> {
+        rev_parse(
+            Path::new(&checkout.path),
+            &format!("refs/heads/{}", checkout.candidate_branch),
+        )
+    }
+
+    /// Derive a receipt for an already-landed repo-mode integration.
+    ///
+    /// Returns `Some` when the origin's `main` is already at the candidate (and
+    /// the candidate is ahead of base). Performs no mutation; recovery uses it
+    /// to complete without re-integrating.
+    pub fn origin_receipt(
+        &self,
+        checkout: &Checkout,
+        origin_path: &Path,
+    ) -> Result<Option<MergeReceipt>, ContractError> {
+        let candidate_sha = self.candidate_sha(checkout)?;
+        if candidate_sha == checkout.base_sha || !Self::origin_merged(origin_path, &candidate_sha)?
+        {
+            return Ok(None);
+        }
+        Ok(Some(MergeReceipt {
+            expected_main_sha: checkout.base_sha.clone(),
+            candidate_sha: candidate_sha.clone(),
+            result_sha: candidate_sha,
+        }))
+    }
+
+    /// Compare-and-swap the origin's `main` back to `to_sha` (repo-mode revert).
+    pub fn revert_origin(
+        &self,
+        origin_path: &Path,
+        to_sha: &str,
+        from_sha: &str,
+    ) -> Result<(), ContractError> {
+        let out = git(
+            origin_path,
+            &["update-ref", "refs/heads/main", to_sha, from_sha],
+        )?;
+        if !out.success {
+            return Err(ContractError::Conflict(format!(
+                "repo revert compare-and-swap failed: {}",
+                out.stderr.trim()
+            )));
+        }
+        Ok(())
+    }
+
     /// Derive the merge receipt for an already-landed integration.
     ///
     /// Returns `Some(MergeReceipt)` when `main` already points at the candidate
@@ -255,6 +429,12 @@ fn candidate_branch(execution: &ExecutionId) -> String {
 fn tag_for_branch(branch: &str) -> String {
     let suffix = branch.strip_prefix("candidate/").unwrap_or(branch);
     format!("m0/{suffix}")
+}
+
+/// Repo-mode integration tag for a candidate branch (`m1/<execution>`).
+fn repo_tag_for_branch(branch: &str) -> String {
+    let suffix = branch.strip_prefix("candidate/").unwrap_or(branch);
+    format!("m1/{suffix}")
 }
 
 fn sanitize_ref(raw: &str) -> String {

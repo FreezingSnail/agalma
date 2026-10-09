@@ -17,10 +17,32 @@ pub struct Cli {
 pub enum Command {
     /// Run (or resume) the conductor against a fixture task.
     Run(RunArgs),
+    /// Queue-driven work loop over a real repository (M1).
+    Work(WorkArgs),
     /// Clear the kill latch and resume dispatch (human-only).
     Resume(StateArgs),
     /// Report ledger and execution status.
     Status(StateArgs),
+}
+
+/// Arguments for `agalma work`.
+#[derive(Debug, Args)]
+pub struct WorkArgs {
+    /// Origin repository; also the bd workspace for the task backlog (M1).
+    #[arg(long, value_name = "PATH")]
+    pub repo: PathBuf,
+    /// Execute a single task and exit (0 on done, nonzero on park).
+    #[arg(long)]
+    pub once: bool,
+    /// Process at most this many tasks before exiting.
+    #[arg(long, value_name = "N")]
+    pub max_tasks: Option<u32>,
+    /// Override the state directory.
+    #[arg(long, value_name = "DIR")]
+    pub state_dir: Option<PathBuf>,
+    /// Override the model identifier.
+    #[arg(long, value_name = "ID")]
+    pub model: Option<String>,
 }
 
 /// Arguments for `agalma run`.

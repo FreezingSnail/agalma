@@ -13,6 +13,7 @@ pub mod config;
 pub mod phases;
 pub mod provider_proxy;
 pub mod task;
+pub mod work;
 pub mod workers;
 
 use std::fs::OpenOptions;
@@ -38,6 +39,7 @@ pub async fn run() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Run(args) => run_command(args).await,
+        Command::Work(args) => crate::work::run_work(args),
         Command::Resume(args) => resume_command(&args),
         Command::Status(args) => status_command(&args),
     }
@@ -187,7 +189,7 @@ fn drive(
 /// SIGTERM/SIGINT: persist the kill latch through a second ledger connection and
 /// exit cleanly. Task owner: M0.8. Survivor workers left behind are reconciled on
 /// the next boot.
-fn install_signal_handler(ledger_path: PathBuf) {
+pub(crate) fn install_signal_handler(ledger_path: PathBuf) {
     tokio::spawn(async move {
         let mut sigint = match signal(SignalKind::interrupt()) {
             Ok(stream) => stream,
@@ -323,12 +325,12 @@ fn status_command(args: &StateArgs) -> ExitCode {
 ///
 /// A live pid holding the lock refuses a second conductor; a stale lock (dead
 /// pid) is reclaimed. Removed on drop.
-struct LockGuard {
+pub(crate) struct LockGuard {
     path: PathBuf,
 }
 
 impl LockGuard {
-    fn acquire(state_dir: &std::path::Path) -> Result<Self, String> {
+    pub(crate) fn acquire(state_dir: &std::path::Path) -> Result<Self, String> {
         std::fs::create_dir_all(state_dir)
             .map_err(|e| format!("cannot create state dir {}: {e}", state_dir.display()))?;
         let path = state_dir.join("conductor.lock");

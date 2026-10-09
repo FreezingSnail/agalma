@@ -538,6 +538,32 @@ impl LedgerApi for SqliteLedger {
         Ok(())
     }
 
+    fn lease_generation(&self, task: &TaskId) -> Result<u32, ContractError> {
+        let key = lease_key(task);
+        Ok(meta_value(&self.conn, &key)?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0))
+    }
+
+    fn begin_lease(&mut self, task: &TaskId) -> Result<u32, ContractError> {
+        self.ensure_compatible()?;
+        // The conductor holds the state-dir lock, so a single connection owns
+        // the read-modify-write; WAL + IMMEDIATE would be the guard if not.
+        let key = lease_key(task);
+        let next = self
+            .lease_generation(task)?
+            .checked_add(1)
+            .ok_or_else(|| ContractError::KnownFailure("lease generation overflow".to_string()))?;
+        self.conn
+            .execute(
+                "INSERT INTO meta(key,value) VALUES(?1,?2) \
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![key, next.to_string()],
+            )
+            .map_err(db_err)?;
+        Ok(next)
+    }
+
     fn upsert_binding(&mut self, binding: &BindingRecord) -> Result<(), ContractError> {
         self.conn
             .execute(
@@ -869,6 +895,11 @@ fn derived_execution_id(batch: &CommitBatch) -> Option<&str> {
         return Some(receipt.execution_id.as_str());
     }
     batch.intents.first().map(|i| i.execution_id.as_str())
+}
+
+/// `meta` key holding a task's current lease generation.
+fn lease_key(task: &TaskId) -> String {
+    format!("lease_generation:{}", task.as_str())
 }
 
 fn meta_value(conn: &Connection, key: &str) -> Result<Option<String>, ContractError> {

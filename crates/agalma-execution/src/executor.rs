@@ -90,6 +90,13 @@ pub enum DispatchOutcome {
         operation: OperationId,
         result: Value,
     },
+    /// The operation carries a lease older than the task's current lease: the
+    /// claim was superseded by a re-claim, so the effect is refused (M1.6).
+    StaleLease {
+        operation: OperationId,
+        lease: u32,
+        current: u32,
+    },
     Parked {
         reason: String,
     },
@@ -214,6 +221,18 @@ impl<L: LedgerApi> Executor<L> {
                 })
             }
             EffectProbe::Absent => {
+                // Stale-lease gate: a re-claim superseded this operation's
+                // claim. Refuse before any effect runs. A *present* effect is
+                // still reconciled above (completing an already-landed merge is
+                // not a new effect and is required by expiry recovery).
+                let current = self.ledger.lease_generation(&record.task_id)?;
+                if ctx.lease_generation < current {
+                    return Ok(DispatchOutcome::StaleLease {
+                        operation: operation.clone(),
+                        lease: ctx.lease_generation,
+                        current,
+                    });
+                }
                 let outcome = self.execute(&ctx)?;
                 maybe_crash("after_effect_before_completion");
                 self.complete(&ctx, &outcome, false)?;
@@ -285,6 +304,28 @@ impl<L: LedgerApi> Executor<L> {
         Ok(0)
     }
 
+    /// Lease generation pinned in the `execution_created` event (fallback: the
+    /// execution row's `generation`, so pre-M1.6 records stay fenceable).
+    fn lease_for(&self, execution: &ExecutionId) -> Result<u32, ContractError> {
+        for event in self.ledger.events(execution)? {
+            if event.kind == "execution_created" {
+                if let Some(lease) = event
+                    .payload
+                    .get("lease_generation")
+                    .and_then(Value::as_u64)
+                {
+                    return Ok(lease as u32);
+                }
+                return Ok(event
+                    .payload
+                    .get("generation")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(1) as u32);
+            }
+        }
+        Ok(0)
+    }
+
     fn max_attempts(&self, execution: &ExecutionId) -> Result<u32, ContractError> {
         for event in self.ledger.events(execution)? {
             if event.kind == "execution_created" {
@@ -326,6 +367,7 @@ impl<L: LedgerApi> Executor<L> {
         let payload = ReceiptPayload {
             result: outcome.result.clone(),
             next: outcome.next.clone(),
+            lease_generation: ctx.lease_generation,
         };
         let receipt = OperationReceipt {
             operation_id: ctx.operation_id.clone(),
@@ -347,6 +389,7 @@ impl<L: LedgerApi> Executor<L> {
                 "operation_id": ctx.operation_id,
                 "phase": phase_str(ctx.phase),
                 "attempt": ctx.attempt,
+                "lease_generation": ctx.lease_generation,
                 "reconciled": reconciled,
                 "next": outcome.next,
             }),
@@ -480,6 +523,7 @@ impl<L: LedgerApi> Executor<L> {
     ) -> Result<OperationId, ContractError> {
         let now = now_ms();
         let operation = operation_for(execution, phase, attempt);
+        let lease_generation = self.lease_for(execution)?;
         let state = ExecutionRecord {
             phase,
             state: ExecutionState::Running,
@@ -529,6 +573,7 @@ impl<L: LedgerApi> Executor<L> {
                 kind: phase_str(phase).to_string(),
                 step: step_of(phase, attempt),
                 attempt,
+                lease_generation,
                 inputs,
             })
             .map_err(json_err)?,
@@ -579,6 +624,10 @@ impl<L: LedgerApi> Executor<L> {
 impl<L: LedgerApi> ExecutionApi for Executor<L> {
     fn start(&mut self, task: &TaskId) -> Result<ExecutionId, ContractError> {
         let generation = self.next_generation(task)?;
+        // Each claim cycle begins a new, strictly increasing lease generation.
+        // It is persisted here (with the execution-created event and first
+        // dispatch intent) before any dispatch.
+        let lease_generation = self.ledger.begin_lease(task)?;
         let execution = ExecutionId::derive(task, generation);
         let now = now_ms();
         let record = ExecutionRecord {
@@ -597,6 +646,7 @@ impl<L: LedgerApi> ExecutionApi for Executor<L> {
             payload: json!({
                 "task_id": task,
                 "generation": generation,
+                "lease_generation": lease_generation,
                 "attempt": 1,
                 "max_attempts": self.config.max_attempts,
                 "execution_version": self.config.execution_definition_version,
@@ -611,6 +661,7 @@ impl<L: LedgerApi> ExecutionApi for Executor<L> {
                 kind: phase_str(ExecutionPhase::Intake).to_string(),
                 step: step_of(ExecutionPhase::Intake, 1),
                 attempt: 1,
+                lease_generation,
                 inputs: json!({ "task_id": task, "generation": generation }),
             })
             .map_err(json_err)?,
@@ -679,6 +730,15 @@ impl<L: LedgerApi> ExecutionApi for Executor<L> {
                     operation,
                     reconciled: false,
                     duplicate: true,
+                }),
+                DispatchOutcome::StaleLease {
+                    operation: _,
+                    lease,
+                    current,
+                } => Ok(StepOutcome::Parked {
+                    reason: format!(
+                        "stale lease {lease} (task lease is {current}); operation refused"
+                    ),
                 }),
                 DispatchOutcome::Parked { reason } => Ok(StepOutcome::Parked { reason }),
                 DispatchOutcome::Blocked => Ok(StepOutcome::Blocked {
@@ -844,6 +904,8 @@ impl<L: LedgerApi> Executor<L> {
 struct ReceiptPayload {
     result: Value,
     next: ActivityNext,
+    #[serde(default)]
+    lease_generation: u32,
 }
 
 /// Durable dispatch-intent payload.
@@ -852,6 +914,8 @@ struct IntentPayload {
     kind: String,
     step: String,
     attempt: u32,
+    #[serde(default)]
+    lease_generation: u32,
     inputs: Value,
 }
 
@@ -873,6 +937,11 @@ fn build_context(
         task_id: record.task_id.clone(),
         phase,
         attempt: payload.attempt,
+        lease_generation: if payload.lease_generation == 0 {
+            record.generation
+        } else {
+            payload.lease_generation
+        },
         inputs: payload.inputs,
     })
 }

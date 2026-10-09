@@ -12,6 +12,7 @@ pub mod composition;
 pub mod config;
 pub mod phases;
 pub mod provider_proxy;
+pub mod reconcile;
 pub mod task;
 pub mod work;
 pub mod workers;
@@ -27,10 +28,11 @@ use agalma_contracts::{
 };
 use agalma_execution::{Executor, LEDGER_SCHEMA_VERSION};
 use agalma_ledger::SqliteLedger;
+use agalma_taskqueue::BdTaskQueue;
 use clap::Parser;
 use tokio::signal::unix::{signal, SignalKind};
 
-use crate::cli::{Cli, Command, RunArgs, StateArgs};
+use crate::cli::{Cli, Command, ReconcileArgs, RunArgs, StateArgs};
 use crate::composition::Composition;
 use crate::config::{Config, PHASE_PLAN};
 
@@ -40,6 +42,7 @@ pub async fn run() -> ExitCode {
     match cli.command {
         Command::Run(args) => run_command(args).await,
         Command::Work(args) => crate::work::run_work(args),
+        Command::Reconcile(args) => reconcile_command(&args),
         Command::Resume(args) => resume_command(&args),
         Command::Status(args) => status_command(&args),
     }
@@ -264,6 +267,51 @@ fn resume_command(args: &StateArgs) -> ExitCode {
     let _ = std::fs::remove_file(state_dir.join("STOP"));
     println!("agalma: kill latch cleared; dispatch may resume");
     ExitCode::SUCCESS
+}
+
+/// `agalma reconcile`: compare the ledger against the bd projection and rewrite
+/// the projection to match (ledger wins). Prints a reconcile summary.
+fn reconcile_command(args: &ReconcileArgs) -> ExitCode {
+    let state_dir = match crate::config::resolve_state_dir(args.state_dir.as_deref()) {
+        Ok(dir) => dir,
+        Err(err) => {
+            eprintln!("agalma: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let repo = match std::fs::canonicalize(&args.repo) {
+        Ok(repo) => repo,
+        Err(err) => {
+            eprintln!("agalma: repo {}: {err}", args.repo.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let ledger_path = state_dir.join("ledger.sqlite");
+    if !ledger_path.exists() {
+        println!("agalma: no ledger at {}", ledger_path.display());
+        return ExitCode::SUCCESS;
+    }
+    let ledger = match SqliteLedger::open(&ledger_path) {
+        Ok(ledger) => ledger,
+        Err(err) => {
+            eprintln!(
+                "agalma: cannot open ledger {}: {err}",
+                ledger_path.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut queue = BdTaskQueue::new(&repo);
+    match crate::reconcile::reconcile_projection(&ledger, &mut queue) {
+        Ok(summary) => {
+            println!("{}", summary.render());
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("agalma: reconcile failed: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn status_command(args: &StateArgs) -> ExitCode {

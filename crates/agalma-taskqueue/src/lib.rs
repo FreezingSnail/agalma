@@ -11,5 +11,5 @@
 mod bd;
 pub mod block;
 
-pub use bd::{BdTaskQueue, PARKED_LABEL};
+pub use bd::{BdTaskQueue, IssueProjection, PARKED_LABEL};
 pub use block::{parse_task_block, BlockError, TaskBlock};

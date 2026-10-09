@@ -19,6 +19,8 @@ pub enum Command {
     Run(RunArgs),
     /// Queue-driven work loop over a real repository (M1).
     Work(WorkArgs),
+    /// Reconcile the bd projection against the ledger (ledger wins).
+    Reconcile(ReconcileArgs),
     /// Clear the kill latch and resume dispatch (human-only).
     Resume(StateArgs),
     /// Report ledger and execution status.
@@ -43,6 +45,17 @@ pub struct WorkArgs {
     /// Override the model identifier.
     #[arg(long, value_name = "ID")]
     pub model: Option<String>,
+}
+
+/// Arguments for `agalma reconcile`.
+#[derive(Debug, Args)]
+pub struct ReconcileArgs {
+    /// Origin repository; also the bd workspace for the task backlog (M1).
+    #[arg(long, value_name = "PATH")]
+    pub repo: PathBuf,
+    /// Override the state directory.
+    #[arg(long, value_name = "DIR")]
+    pub state_dir: Option<PathBuf>,
 }
 
 /// Arguments for `agalma run`.

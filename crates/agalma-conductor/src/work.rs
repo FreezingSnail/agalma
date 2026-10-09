@@ -17,8 +17,13 @@
 //!    `done` closes the issue, `parked` adds the `parked` label and a reason.
 //!
 //! The loop keeps the M0 controls: the SIGTERM latch, the `STOP` sentinel, boot
-//! recovery ordering, and `--once` for tests. Fencing, duplicate dispatch, and
-//! projection reconcile are M1.6; the verifier diagnosis is M1.3.
+//! recovery ordering, and `--once` for tests. M1.6 adds **fenced leases** (a
+//! monotonic per-task lease generation recorded with the claim and carried by
+//! dispatch intents, receipts, and worker records; stale-lease operations are
+//! refused before they can produce an effect), **expiry recovery** (already
+//! landed merges complete without re-merging, live survivors are terminated with
+//! evidence, ambiguous effects park), and a **ledger-vs-projection reconcile**
+//! run on boot and via `agalma reconcile`. The verifier diagnosis is M1.3.
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -118,6 +123,17 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
     // Boot recovery: drive any non-terminal execution to a terminal state before
     // admitting new work (recovery ordering).
     recover_inflight(&repo, &state_dir, &model, proxy_url.clone(), &mut queue)?;
+
+    // Boot projection reconcile: rewrite the bd projection to match the ledger
+    // (ledger wins) before admitting new work. Best-effort: a reconcile failure
+    // must not block the work loop.
+    match SqliteLedger::open(&ledger_path) {
+        Ok(ledger) => match crate::reconcile::reconcile_projection(&ledger, &mut queue) {
+            Ok(summary) => eprintln!("agalma: {}", summary.render()),
+            Err(err) => eprintln!("agalma: boot reconcile failed: {err}"),
+        },
+        Err(err) => eprintln!("agalma: boot reconcile skipped: {err}"),
+    }
 
     let mut processed: u32 = 0;
     let mut last: Option<Terminal> = None;
@@ -256,7 +272,8 @@ fn run_task(
         .execution(&execution)?
         .map(|record| record.generation)
         .unwrap_or(1);
-    record_claim(&mut executor, &execution, evidence, generation)?;
+    let lease = execution_lease(&executor, &execution, generation);
+    record_claim(&mut executor, &execution, evidence, generation, lease)?;
 
     let terminal = drive_task(
         &mut executor,
@@ -264,7 +281,7 @@ fn run_task(
         state_dir,
         queue,
         &task.task_id,
-        generation,
+        lease,
     )?;
     match &terminal {
         Terminal::Done => {
@@ -337,6 +354,7 @@ fn record_claim(
     execution: &ExecutionId,
     evidence: &ClaimEvidence,
     generation: u32,
+    lease: u32,
 ) -> Result<(), ContractError> {
     let event = ExecutionEvent {
         execution_id: execution.clone(),
@@ -348,7 +366,7 @@ fn record_claim(
             "assignee": evidence.assignee,
             "started_at": evidence.started_at,
             "generation": generation,
-            "lease_generation": generation,
+            "lease_generation": lease,
         }),
         recorded_at_unix_ms: now_ms(),
     };
@@ -394,13 +412,14 @@ fn recover_inflight(
             }
         };
         let mut executor = build_executor(state_dir, model, proxy_url.clone(), &task, repo)?;
+        let lease = execution_lease(&executor, &record.execution_id, record.generation);
         match drive_task(
             &mut executor,
             &record.execution_id,
             state_dir,
             queue,
             &record.task_id,
-            1,
+            lease,
         )? {
             Terminal::Done => {
                 let _ = queue.close_task(&record.task_id, "done: green (recovered)");
@@ -493,6 +512,33 @@ fn phase_deps(
             acceptance: task.acceptance.clone(),
         }),
     })
+}
+
+/// Lease generation pinned in an execution's `execution_created` event
+/// (fallback: its task generation).
+fn execution_lease(
+    executor: &Executor<SqliteLedger>,
+    execution: &ExecutionId,
+    fallback: u32,
+) -> u32 {
+    executor
+        .ledger()
+        .events(execution)
+        .ok()
+        .and_then(|events| {
+            events.iter().find_map(|event| {
+                if event.kind != "execution_created" {
+                    return None;
+                }
+                event
+                    .payload
+                    .get("lease_generation")
+                    .and_then(|v| v.as_u64())
+                    .or_else(|| event.payload.get("generation").and_then(|v| v.as_u64()))
+            })
+        })
+        .map(|v| v as u32)
+        .unwrap_or(fallback)
 }
 
 /// Stable label for an execution phase.

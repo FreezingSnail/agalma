@@ -39,25 +39,36 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use agalma_contracts::harness::{
-    AttemptHandle, CreateSessionRequest, HarnessApi, Limits, OperationHandle, OperationState,
-    RunTurnRequest, StartAttemptRequest,
+    AttemptHandle, Completeness, CreateSessionRequest, HarnessApi, Limits, OperationHandle,
+    OperationState, RunTurnRequest, StartAttemptRequest, Usage,
 };
 use agalma_contracts::ids::{ArtifactRef, AttemptId};
 use agalma_contracts::sandbox::LaunchSpec;
-use agalma_contracts::{Checkout, ContractError, WorkspaceApi};
+use agalma_contracts::{
+    Checkout, ContractError, DecisionApi, DecisionAttempt, DecisionKind, DecisionOption,
+    DecisionPin, DecisionRequest, LedgerApi, OperationId, WorkspaceApi, DECISION_API_VERSION,
+};
+use agalma_decision::{StaticDecider, RETRY_ESCALATE_BASELINE};
 use agalma_execution::{
     Activity, ActivityError, ActivityNext, ActivityOutcome, EffectProbe, OperationContext,
 };
 use agalma_harness_opencode::{OpenCodeHarness, OpenCodeHarnessConfig};
+use agalma_ledger::SqliteLedger;
 use agalma_sandbox::{SandboxOutput, SeatbeltSandbox};
 use agalma_workspace::Workspace;
 use serde_json::json;
 
 use crate::workers::{self, Survivor};
+
+/// The verifier prompt shipped with the conductor. A fresh verifier session is
+/// created from this text on a red verify; the per-attempt prompt appends the
+/// concrete input/output artifact paths.
+pub const VERIFIER_PROMPT: &str = include_str!("../prompts/verifier.md");
 
 /// Environment variable selecting the activity implementation set.
 pub const ACTIVITY_MODE_ENV: &str = "AGALMA_ACTIVITY_MODE";
@@ -198,6 +209,7 @@ pub fn activities_with_mode(
             deps: deps.clone(),
             state: Rc::clone(&state),
             sandboxed: mode == ActivityMode::Live,
+            scripted: mode == ActivityMode::Scripted,
         })
     } else {
         match mode {
@@ -205,6 +217,7 @@ pub fn activities_with_mode(
                 deps: deps.clone(),
                 state: Rc::clone(&state),
                 sandboxed: true,
+                scripted: false,
             }),
             ActivityMode::Scripted => Box::new(ScriptedVerifyActivity {
                 deps: deps.clone(),
@@ -434,27 +447,6 @@ fn build_reconcile(
 }
 
 impl BuildActivity {
-    /// Write the per-attempt builder prompt under `<run>/prompts/` and return
-    /// its path. The base prompt (`prompts/builder.md`) is the M0 text; repo
-    /// mode appends the task title, acceptance commands, and any prior failure
-    /// or diagnosis artifact.
-    fn write_attempt_prompt(
-        &self,
-        root: &Path,
-        ctx: &OperationContext,
-    ) -> Result<PathBuf, ActivityError> {
-        let base = std::fs::read_to_string(&self.deps.builder_prompt).unwrap_or_default();
-        let text = render_builder_prompt(&base, &self.deps, root, ctx.attempt);
-        let dir = root.join("prompts");
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| ActivityError::KnownFailure(format!("create prompt dir: {e}")))?;
-        let path = dir.join(format!("builder@{}.md", ctx.attempt));
-        std::fs::write(&path, text).map_err(|e| {
-            ActivityError::KnownFailure(format!("write prompt {}: {e}", path.display()))
-        })?;
-        Ok(path)
-    }
-
     fn run_turn(&self, ctx: &OperationContext) -> Result<ActivityOutcome, ActivityError> {
         let checkout = self
             .state
@@ -468,7 +460,7 @@ impl BuildActivity {
         // Parameterize the base builder prompt per attempt: the model sees the
         // task title, the acceptance commands, and the captured failure text (or
         // a verifier diagnosis artifact when M1.3 writes one).
-        let prompt_path = self.write_attempt_prompt(&root, ctx)?;
+        let prompt_path = write_builder_prompt(&self.deps, &root, ctx)?;
 
         let mut config =
             OpenCodeHarnessConfig::new(&self.deps.profile_path, &root, &protected, &sock);
@@ -510,13 +502,16 @@ impl BuildActivity {
                 "build",
                 ctx.attempt,
                 ctx.operation_id.as_str(),
+                ctx.lease_generation,
                 pid,
                 pid,
             )?;
         }
         mark_started(&self.deps, &ctx.execution_id, "build", ctx.attempt)?;
 
+        let started = Instant::now();
         let outcome = self.drive(&mut harness, &attempt, ctx, &prompt_path);
+        let wall_ms = started.elapsed().as_millis() as u64;
         let evidence = harness.stop_attempt(&attempt);
         if let Ok(evidence) = &evidence {
             if !evidence.process_group_gone {
@@ -524,6 +519,18 @@ impl BuildActivity {
             }
         }
         if let Ok(outcome) = &outcome {
+            // Per-attempt cost: attribute the turn's usage to this build attempt.
+            let usage = usage_from_result(&outcome.result);
+            record_usage_event(
+                &self.deps.state_dir,
+                &ctx.execution_id,
+                &ctx.operation_id,
+                "build",
+                &self.deps.role,
+                ctx.attempt,
+                usage,
+                wall_ms,
+            )?;
             workers::write_done(
                 &self.deps.state_dir,
                 &ctx.execution_id,
@@ -579,6 +586,7 @@ impl BuildActivity {
                     "tokens_in": usage.tokens_in,
                     "tokens_out": usage.tokens_out,
                     "cost_usd": usage.cost_usd,
+                    "completeness": usage.completeness.label(),
                 }),
                 next: ActivityNext::Advance,
             }),
@@ -655,6 +663,13 @@ impl Activity for ScriptedBuildActivity {
             "build",
             ctx.attempt,
         );
+        // Write the per-attempt builder prompt deterministically so the retry
+        // prompt (with the prior diagnosis) is observable in scripted tests.
+        let root = run_root(&self.deps.state_dir, &ctx.execution_id);
+        std::fs::create_dir_all(&root)
+            .map_err(|e| ActivityError::KnownFailure(format!("create run root: {e}")))?;
+        write_builder_prompt(&self.deps, &root, ctx)?;
+        let started = Instant::now();
 
         let (pid, mut child) = spawn_sleeper()?;
         workers::record_worker(
@@ -663,6 +678,7 @@ impl Activity for ScriptedBuildActivity {
             "build",
             ctx.attempt,
             ctx.operation_id.as_str(),
+            ctx.lease_generation,
             pid,
             pid,
         )?;
@@ -684,6 +700,16 @@ impl Activity for ScriptedBuildActivity {
             result: json!({ "status": "scripted-build", "attempt": ctx.attempt }),
             next: ActivityNext::Advance,
         };
+        record_usage_event(
+            &self.deps.state_dir,
+            &ctx.execution_id,
+            &ctx.operation_id,
+            "build",
+            &self.deps.role,
+            ctx.attempt,
+            zero_usage(),
+            started.elapsed().as_millis() as u64,
+        )?;
         workers::write_done(
             &self.deps.state_dir,
             &ctx.execution_id,
@@ -723,6 +749,9 @@ struct VerifyActivity {
     /// Run acceptance commands under Seatbelt (`Live`) or in-process
     /// (`Scripted`, deterministic tests).
     sandboxed: bool,
+    /// Scripted mode replaces the fresh verifier diagnosis session with a
+    /// deterministic, file-backed stand-in (no model call).
+    scripted: bool,
 }
 
 /// Probe a verify attempt via its durable markers.
@@ -758,6 +787,11 @@ impl VerifyActivity {
     /// Repo mode: run the task's acceptance commands, each as its own launch,
     /// from the candidate checkout. Any non-zero exit is the verdict; the failing
     /// command and its output are captured under `<run>/artifacts/`.
+    ///
+    /// On red, a *fresh* verifier session diagnoses the failure from file-only
+    /// inputs (candidate diff + captured failure), the retry/escalate/park choice
+    /// is recorded through the pinned static `retry.escalate` baseline, and an
+    /// exhausted bound writes a postmortem before the executor parks the task.
     fn run_acceptance(&self, ctx: &OperationContext) -> Result<ActivityOutcome, ActivityError> {
         let checkout = self
             .state
@@ -787,6 +821,7 @@ impl VerifyActivity {
         path.push_str(":/usr/bin:/bin:/usr/sbin:/sbin");
         env.insert("PATH".to_string(), path);
 
+        let started = Instant::now();
         let mut sandbox = SeatbeltSandbox::new();
         for (index, command) in repo.acceptance.iter().enumerate() {
             let log_path = artifacts.join(format!("acceptance@{}-{index}.log", ctx.attempt));
@@ -837,6 +872,36 @@ impl VerifyActivity {
                     "agalma: verify attempt {} red (exit {}): {command}",
                     ctx.attempt, output.exit_code
                 );
+                // Per-attempt cost: the Rust-run acceptance has no model usage,
+                // but its wall time is recorded for the digest.
+                record_usage_event(
+                    &self.deps.state_dir,
+                    &ctx.execution_id,
+                    &ctx.operation_id,
+                    "verify",
+                    "acceptance",
+                    ctx.attempt,
+                    zero_usage(),
+                    started.elapsed().as_millis() as u64,
+                )?;
+                // Handoff via files only: candidate diff + captured failure.
+                write_candidate_diff(&checkout, &artifacts, ctx.attempt)?;
+                let diagnosis = self.diagnose(&checkout, &root, &artifacts, ctx, &failure_path)?;
+                let max_attempts = execution_max_attempts(&self.deps.state_dir, &ctx.execution_id)?;
+                record_retry_decision(
+                    &self.deps.state_dir,
+                    &ctx.execution_id,
+                    ctx.attempt,
+                    max_attempts,
+                )?;
+                if ctx.attempt >= max_attempts {
+                    write_postmortem(
+                        &self.deps.state_dir,
+                        &ctx.execution_id,
+                        ctx.attempt,
+                        max_attempts,
+                    )?;
+                }
                 let outcome = ActivityOutcome {
                     result: json!({
                         "status": "red",
@@ -844,6 +909,8 @@ impl VerifyActivity {
                         "attempt": ctx.attempt,
                         "command": command,
                         "artifact": log_path.to_string_lossy(),
+                        "diagnosis": diagnosis.to_string_lossy(),
+                        "wall_ms": started.elapsed().as_millis() as u64,
                     }),
                     next: ActivityNext::Retry {
                         failure: ArtifactRef::derive(&format!("verify@{}", ctx.attempt)),
@@ -860,12 +927,24 @@ impl VerifyActivity {
             }
         }
 
+        let wall_ms = started.elapsed().as_millis() as u64;
+        record_usage_event(
+            &self.deps.state_dir,
+            &ctx.execution_id,
+            &ctx.operation_id,
+            "verify",
+            "acceptance",
+            ctx.attempt,
+            zero_usage(),
+            wall_ms,
+        )?;
         let outcome = ActivityOutcome {
             result: json!({
                 "status": "green",
                 "exit_code": 0,
                 "attempt": ctx.attempt,
                 "commands": repo.acceptance.len(),
+                "wall_ms": wall_ms,
             }),
             next: ActivityNext::Advance,
         };
@@ -877,6 +956,193 @@ impl VerifyActivity {
             &outcome,
         )?;
         Ok(outcome)
+    }
+
+    /// Render and write the per-attempt verifier prompt under `<run>/prompts/`.
+    fn write_verifier_prompt(
+        &self,
+        root: &Path,
+        ctx: &OperationContext,
+    ) -> Result<PathBuf, ActivityError> {
+        let text = render_verifier_prompt(VERIFIER_PROMPT, &self.deps, root, ctx.attempt);
+        let dir = root.join("prompts");
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| ActivityError::KnownFailure(format!("create prompt dir: {e}")))?;
+        let path = dir.join(format!("verifier@{}.md", ctx.attempt));
+        std::fs::write(&path, text).map_err(|e| {
+            ActivityError::KnownFailure(format!("write prompt {}: {e}", path.display()))
+        })?;
+        Ok(path)
+    }
+
+    /// Produce `artifacts/diagnosis@<attempt>.md` from a *fresh* verifier
+    /// session. Scripted mode writes a deterministic diagnosis; live mode runs a
+    /// read-only OpenCode session whose prompt names the file-only inputs and the
+    /// diagnosis output path.
+    fn diagnose(
+        &self,
+        checkout: &Checkout,
+        root: &Path,
+        artifacts: &Path,
+        ctx: &OperationContext,
+        failure_path: &Path,
+    ) -> Result<PathBuf, ActivityError> {
+        let diagnosis_path = artifacts.join(format!("diagnosis@{}.md", ctx.attempt));
+        let prompt_path = self.write_verifier_prompt(root, ctx)?;
+        let started = Instant::now();
+        let usage = if self.scripted {
+            let failure = std::fs::read_to_string(failure_path).unwrap_or_default();
+            let diff =
+                std::fs::read_to_string(artifacts.join(format!("diff@{}.patch", ctx.attempt)))
+                    .unwrap_or_default();
+            std::fs::write(
+                &diagnosis_path,
+                render_scripted_diagnosis(ctx.attempt, &failure, &diff),
+            )
+            .map_err(|e| {
+                ActivityError::KnownFailure(format!(
+                    "write diagnosis {}: {e}",
+                    diagnosis_path.display()
+                ))
+            })?;
+            append_effect(
+                &self.deps.state_dir,
+                &ctx.execution_id,
+                "verifier",
+                ctx.attempt,
+            )?;
+            zero_usage()
+        } else {
+            self.run_verifier_session(
+                checkout,
+                root,
+                ctx,
+                &prompt_path,
+                failure_path,
+                &diagnosis_path,
+            )?
+        };
+        record_usage_event(
+            &self.deps.state_dir,
+            &ctx.execution_id,
+            &ctx.operation_id,
+            "verify",
+            "verifier",
+            ctx.attempt,
+            usage,
+            started.elapsed().as_millis() as u64,
+        )?;
+        Ok(diagnosis_path)
+    }
+
+    /// Live verifier: a fresh confined OpenCode attempt/session, read-only with
+    /// respect to the checkout. Returns the session usage.
+    fn run_verifier_session(
+        &self,
+        checkout: &Checkout,
+        root: &Path,
+        ctx: &OperationContext,
+        prompt_path: &Path,
+        failure_path: &Path,
+        diagnosis_path: &Path,
+    ) -> Result<Usage, ActivityError> {
+        let protected = canonical_dir(&root.join("protected"))?;
+        let sock = canonical_dir(&root.join("sock"))?;
+        let mut config =
+            OpenCodeHarnessConfig::new(&self.deps.profile_path, root, &protected, &sock);
+        config.model = Some(self.deps.model.clone());
+        config.proxy_url = self.deps.proxy_url.clone();
+        config.extra_ro_roots = self.deps.extra_ro_roots.clone();
+        config.extra_env = self.deps.toolchain_env.clone();
+
+        let mut harness = OpenCodeHarness::new(Box::new(SeatbeltSandbox::new()), config);
+        let attempt = harness
+            .start_attempt(StartAttemptRequest {
+                workspace: checkout.path.clone(),
+                role: "verifier".to_string(),
+                genome_ref: ArtifactRef::derive("genome").to_string(),
+                constraints_ref: ArtifactRef::derive("platform-constraints").to_string(),
+                limits: Limits {
+                    wall_ms: self.deps.turn_timeout.as_millis() as u64,
+                    tokens: 0,
+                    cost_micros: 0,
+                },
+                operation_id: ctx.operation_id.clone(),
+            })
+            .map_err(contract_err)?;
+        let usage =
+            self.run_verifier_turn(&mut harness, ctx, prompt_path, failure_path, diagnosis_path);
+        let _ = harness.stop_attempt(&attempt);
+        usage
+    }
+
+    fn run_verifier_turn(
+        &self,
+        harness: &mut OpenCodeHarness,
+        ctx: &OperationContext,
+        prompt_path: &Path,
+        failure_path: &Path,
+        diagnosis_path: &Path,
+    ) -> Result<Usage, ActivityError> {
+        let diff_path = run_root(&self.deps.state_dir, &ctx.execution_id)
+            .join("artifacts")
+            .join(format!("diff@{}.patch", ctx.attempt));
+        let session = harness
+            .create_session(CreateSessionRequest {
+                role: "verifier".to_string(),
+                model: self.deps.model.clone(),
+                prompts_ref: prompt_path.to_string_lossy().into_owned(),
+                handoff_refs: vec![
+                    ArtifactRef::derive(&format!("diff@{}", ctx.attempt)),
+                    ArtifactRef::derive(&format!("failure@{}", ctx.attempt)),
+                ],
+                tool_policy_ref: ArtifactRef::derive("tool-policy-verifier").to_string(),
+            })
+            .map_err(contract_err)?;
+        let op = harness
+            .run_turn(
+                &session,
+                RunTurnRequest {
+                    input_ref: ArtifactRef::derive("verifier-turn"),
+                    bounded_turns: 1,
+                    deadline_ms: self.deps.turn_timeout.as_millis() as u64,
+                },
+            )
+            .map_err(contract_err)?;
+        let state = poll_terminal(harness, &op, self.deps.turn_timeout);
+        let _ = harness.close_session(&session);
+        let usage = match state {
+            Some(OperationState::Completed { usage, .. }) => usage,
+            Some(OperationState::Failed { reason }) => {
+                eprintln!("agalma: verifier session failed: {reason}");
+                zero_usage()
+            }
+            _ => {
+                let _ = harness.cancel_operation(&op);
+                zero_usage()
+            }
+        };
+        // The verifier is expected to write the diagnosis itself (the prompt
+        // names the absolute output path). If it did not, record a fallback so
+        // the retry still has a diagnosis artifact and the inputs are visible.
+        if !diagnosis_path.exists() {
+            let fallback = format!(
+                "# Verifier diagnosis (attempt {})\n\n## cause\n\n\
+                 Verifier session produced no diagnosis file; see inputs `{}` and `{}`.\n\n\
+                 ## suggested fix\n\nInspect the candidate diff against the captured failure.\n\n\
+                 ## evidence\n\nSee the failure and diff artifacts.\n\n## confidence\n\n0.0 — no diagnosis produced.\n",
+                ctx.attempt,
+                diff_path.display(),
+                failure_path.display(),
+            );
+            std::fs::write(diagnosis_path, fallback).map_err(|e| {
+                ActivityError::KnownFailure(format!(
+                    "write fallback diagnosis {}: {e}",
+                    diagnosis_path.display()
+                ))
+            })?;
+        }
+        Ok(usage)
     }
 }
 
@@ -1272,8 +1538,56 @@ fn apply_scripted_fix(checkout_path: &str) -> Result<(), ActivityError> {
     .map_err(|e| ActivityError::KnownFailure(format!("apply scripted fix {}: {e}", src.display())))
 }
 
-/// Render the per-attempt builder prompt: the base prompt plus (in repo mode)
+/// Write the per-attempt builder prompt under `<run>/prompts/` and return its
+/// path. The base prompt (`prompts/builder.md`) is the M0 text; repo mode appends
 /// the task title, acceptance commands, and any prior failure/diagnosis artifact.
+fn write_builder_prompt(
+    deps: &PhaseDeps,
+    root: &Path,
+    ctx: &OperationContext,
+) -> Result<PathBuf, ActivityError> {
+    let base = std::fs::read_to_string(&deps.builder_prompt).unwrap_or_default();
+    let text = render_builder_prompt(&base, deps, root, ctx.attempt);
+    let dir = root.join("prompts");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| ActivityError::KnownFailure(format!("create prompt dir: {e}")))?;
+    let path = dir.join(format!("builder@{}.md", ctx.attempt));
+    std::fs::write(&path, text).map_err(|e| {
+        ActivityError::KnownFailure(format!("write prompt {}: {e}", path.display()))
+    })?;
+    Ok(path)
+}
+
+/// Reconstruct a [`Usage`] from an activity result payload (best effort).
+fn usage_from_result(result: &serde_json::Value) -> Usage {
+    let tokens_in = result
+        .get("tokens_in")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let tokens_out = result
+        .get("tokens_out")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let cost_usd = result
+        .get("cost_usd")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let completeness = match result.get("completeness").and_then(|v| v.as_str()) {
+        Some("Complete") => Completeness::Complete,
+        Some("Partial") => Completeness::Partial,
+        _ => Completeness::Unknown,
+    };
+    Usage {
+        tokens_in,
+        tokens_out,
+        cost_usd,
+        completeness,
+    }
+}
+
+/// Render the per-attempt builder prompt: the base prompt plus (in repo mode)
+/// the task title, acceptance commands, and the prior failure/diagnosis artifacts
+/// (both inlined and referenced by path, so the builder can re-read them).
 fn render_builder_prompt(base: &str, deps: &PhaseDeps, root: &Path, attempt: u32) -> String {
     let Some(repo) = &deps.repo else {
         return base.to_string();
@@ -1291,7 +1605,10 @@ fn render_builder_prompt(base: &str, deps: &PhaseDeps, root: &Path, attempt: u32
             .join("artifacts")
             .join(format!("failure@{}.txt", attempt - 1));
         if let Ok(text) = std::fs::read_to_string(&failure) {
-            out.push_str("\n## Previous attempt failure\n\n```text\n");
+            out.push_str(&format!(
+                "\n## Previous attempt failure\n\nArtifact: `{}`\n\n```text\n",
+                failure.display()
+            ));
             out.push_str(text.trim_end());
             out.push_str("\n```\n");
         }
@@ -1299,7 +1616,10 @@ fn render_builder_prompt(base: &str, deps: &PhaseDeps, root: &Path, attempt: u32
             .join("artifacts")
             .join(format!("diagnosis@{}.md", attempt - 1));
         if let Ok(text) = std::fs::read_to_string(&diagnosis) {
-            out.push_str("\n## Verifier diagnosis\n\n");
+            out.push_str(&format!(
+                "\n## Verifier diagnosis\n\nArtifact: `{}`\n\n",
+                diagnosis.display()
+            ));
             out.push_str(&text);
             if !text.ends_with('\n') {
                 out.push('\n');
@@ -1307,6 +1627,297 @@ fn render_builder_prompt(base: &str, deps: &PhaseDeps, root: &Path, attempt: u32
         }
     }
     out
+}
+
+/// Render the per-attempt verifier prompt: the base verifier prompt plus the
+/// file-only input paths and the absolute diagnosis output path.
+fn render_verifier_prompt(base: &str, deps: &PhaseDeps, root: &Path, attempt: u32) -> String {
+    let artifacts = root.join("artifacts");
+    let mut out = String::new();
+    out.push_str(base);
+    out.push_str("\n\n---\n\n## This attempt\n\n");
+    if let Some(repo) = &deps.repo {
+        out.push_str(&format!("Task title: {}\n\n", repo.task_title));
+    }
+    out.push_str(&format!(
+        "Attempt: {attempt}\n\nInputs (read both):\n\
+         - candidate diff: `{}`\n\
+         - captured failure: `{}`\n\n\
+         Do not modify the repository. Write your diagnosis to:\n\
+         `{}`\n",
+        artifacts.join(format!("diff@{attempt}.patch")).display(),
+        artifacts.join(format!("failure@{attempt}.txt")).display(),
+        artifacts.join(format!("diagnosis@{attempt}.md")).display(),
+    ));
+    out
+}
+
+/// Deterministic scripted diagnosis (no model call). Emits the four verifier
+/// sections so the retry prompt and tests can rely on the format.
+fn render_scripted_diagnosis(attempt: u32, failure: &str, diff: &str) -> String {
+    let evidence = failure.lines().take(20).collect::<Vec<_>>().join("\n");
+    let diff_lines = diff.lines().count();
+    format!(
+        "# Verifier diagnosis (attempt {attempt})\n\n\
+         ## cause\n\nThe candidate change does not satisfy the acceptance command: the \
+         acceptance output shows the expected marker is absent from the fixed source.\n\n\
+         ## suggested fix\n\nMake the minimal source change the acceptance command \
+         checks for (see the captured failure). Do not weaken the acceptance test.\n\n\
+         ## evidence\n\n```text\n{evidence}\n```\n\nCandidate diff: {diff_lines} line(s).\n\n\
+         ## confidence\n\n0.6 — derived deterministically from the captured failure.\n",
+    )
+}
+
+/// Write `artifacts/diff@<attempt>.patch`: the candidate working tree against the
+/// recorded base SHA (`git diff <base>` in the checkout).
+fn write_candidate_diff(
+    checkout: &Checkout,
+    artifacts: &Path,
+    attempt: u32,
+) -> Result<PathBuf, ActivityError> {
+    let out = Command::new("git")
+        .arg("--no-pager")
+        .args(["diff", checkout.base_sha.as_str(), "--no-color"])
+        .current_dir(&checkout.path)
+        .env("GIT_PAGER", "cat")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|e| ActivityError::KnownFailure(format!("git diff candidate: {e}")))?;
+    if !out.status.success() {
+        return Err(ActivityError::KnownFailure(format!(
+            "git diff candidate failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    let path = artifacts.join(format!("diff@{attempt}.patch"));
+    std::fs::write(&path, &out.stdout)
+        .map_err(|e| ActivityError::KnownFailure(format!("write diff {}: {e}", path.display())))?;
+    Ok(path)
+}
+
+/// A fully-known zero usage (Rust-run acceptance and the scripted verifier).
+pub(crate) fn zero_usage() -> Usage {
+    Usage {
+        tokens_in: 0,
+        tokens_out: 0,
+        cost_usd: 0.0,
+        completeness: Completeness::Complete,
+    }
+}
+
+/// Record a per-attempt `usage` execution event (cost/wall-time attribution for
+/// the M1.4 digest). Events are additive and ignored by the phase fold.
+#[allow(clippy::too_many_arguments)]
+fn record_usage_event(
+    state_dir: &Path,
+    execution: &agalma_contracts::ExecutionId,
+    operation_id: &OperationId,
+    phase: &str,
+    role: &str,
+    attempt: u32,
+    usage: Usage,
+    wall_ms: u64,
+) -> Result<(), ActivityError> {
+    let mut ledger = SqliteLedger::open(state_dir.join("ledger.sqlite")).map_err(contract_err)?;
+    let event = agalma_contracts::ExecutionEvent {
+        execution_id: execution.clone(),
+        sequence: 0,
+        kind: "usage".to_string(),
+        payload: json!({
+            "operation_id": operation_id,
+            "phase": phase,
+            "role": role,
+            "attempt": attempt,
+            "tokens_in": usage.tokens_in,
+            "tokens_out": usage.tokens_out,
+            "cost_usd": usage.cost_usd,
+            "completeness": usage.completeness.label(),
+            "wall_ms": wall_ms,
+        }),
+        recorded_at_unix_ms: now_ms(),
+    };
+    ledger
+        .commit(agalma_contracts::CommitBatch {
+            expected_revision: None,
+            state: None,
+            events: vec![event],
+            receipts: vec![],
+            intents: vec![],
+        })
+        .map_err(contract_err)?;
+    Ok(())
+}
+
+/// `max_attempts` recorded in the `execution_created` event.
+fn execution_max_attempts(
+    state_dir: &Path,
+    execution: &agalma_contracts::ExecutionId,
+) -> Result<u32, ActivityError> {
+    let ledger = SqliteLedger::open(state_dir.join("ledger.sqlite")).map_err(contract_err)?;
+    for event in ledger.events(execution).map_err(contract_err)? {
+        if event.kind == "execution_created" {
+            return Ok(event
+                .payload
+                .get("max_attempts")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1) as u32);
+        }
+    }
+    Err(ActivityError::KnownFailure(
+        "no execution_created event for retry decision".to_string(),
+    ))
+}
+
+/// Record the `retry.escalate` decision for a red verify through the pinned
+/// static baseline. In M1 escalation is a recorded no-op (same model): with
+/// `tier == max_tier == 0` the baseline retries while attempts remain and parks
+/// once they are exhausted.
+fn record_retry_decision(
+    state_dir: &Path,
+    execution: &agalma_contracts::ExecutionId,
+    attempt: u32,
+    max_attempts: u32,
+) -> Result<(), ActivityError> {
+    let ledger = SqliteLedger::open(state_dir.join("ledger.sqlite")).map_err(contract_err)?;
+    let mut decider = StaticDecider::new(ledger);
+    let options: Vec<DecisionOption> = ["retry", "escalate", "park"]
+        .iter()
+        .map(|id| DecisionOption {
+            option_id: (*id).to_string(),
+            attributes: json!({ "action": id }),
+        })
+        .collect();
+    let request = DecisionRequest {
+        version: DECISION_API_VERSION,
+        operation_id: OperationId::new(format!("op:retry:{execution}:{attempt}")),
+        kind: DecisionKind::RetryEscalate,
+        context: json!({
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "tier": 0,
+            "max_tier": 0,
+            "verdict": "retryable",
+        }),
+        artifacts: vec![
+            ArtifactRef::derive(&format!("failure@{attempt}")),
+            ArtifactRef::derive(&format!("diagnosis@{attempt}")),
+        ],
+        options,
+        deadline_unix_ms: 0,
+        pin: DecisionPin {
+            policy: RETRY_ESCALATE_BASELINE.to_string(),
+            genome: "genome/v0".to_string(),
+            model: "static".to_string(),
+        },
+    };
+    let outcome = decider
+        .decide(&request, DecisionAttempt::Baseline)
+        .map_err(contract_err)?;
+    eprintln!("agalma: retry.escalate attempt {attempt}/{max_attempts} -> {outcome:?}");
+    Ok(())
+}
+
+/// Write `artifacts/postmortem.md` when a red verify exhausts `max_attempts`:
+/// attempts, per-attempt verdicts, retry decisions, and recorded cost.
+fn write_postmortem(
+    state_dir: &Path,
+    execution: &agalma_contracts::ExecutionId,
+    attempt: u32,
+    max_attempts: u32,
+) -> Result<PathBuf, ActivityError> {
+    let ledger = SqliteLedger::open(state_dir.join("ledger.sqlite")).map_err(contract_err)?;
+    let events = ledger.events(execution).map_err(contract_err)?;
+
+    let mut out = String::new();
+    out.push_str(&format!("# Postmortem — {execution}\n\n"));
+    out.push_str(&format!(
+        "Parked after {attempt} of {max_attempts} attempts: the acceptance commands did not pass.\n\n"
+    ));
+
+    out.push_str("## Attempts\n\n");
+    out.push_str("| attempt | phase | verdict | wall_ms |\n|---|---|---|---|\n");
+    for event in &events {
+        if event.kind != "usage" {
+            continue;
+        }
+        let n = event
+            .payload
+            .get("attempt")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let phase = event
+            .payload
+            .get("phase")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let role = event
+            .payload
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let wall = event
+            .payload
+            .get("wall_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        out.push_str(&format!("| {n} | {phase} ({role}) | recorded | {wall} |\n"));
+    }
+
+    out.push_str("\n## Verdicts\n\n");
+    for n in 1..=attempt {
+        let receipt = ledger
+            .operation_receipt(&OperationId::derive(execution, &format!("verify@{n}")))
+            .map_err(contract_err)?;
+        let verdict = receipt
+            .as_ref()
+            .and_then(|r| r.result.pointer("/result/status"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(if n == attempt { "red" } else { "unknown" });
+        out.push_str(&format!("- attempt {n}: verify = {verdict}\n"));
+    }
+
+    out.push_str("\n## Decisions\n\n");
+    for n in 1..=attempt {
+        let op = OperationId::new(format!("op:retry:{execution}:{n}"));
+        let outcome = ledger.decision_outcome(&op).map_err(contract_err)?;
+        out.push_str(&format!("- attempt {n}: retry.escalate = {outcome:?}\n"));
+    }
+
+    let cost: f64 = events
+        .iter()
+        .filter(|e| e.kind == "usage")
+        .filter_map(|e| e.payload.get("cost_usd").and_then(|v| v.as_f64()))
+        .sum();
+    let tokens_in: u64 = events
+        .iter()
+        .filter(|e| e.kind == "usage")
+        .filter_map(|e| e.payload.get("tokens_in").and_then(|v| v.as_u64()))
+        .sum();
+    let tokens_out: u64 = events
+        .iter()
+        .filter(|e| e.kind == "usage")
+        .filter_map(|e| e.payload.get("tokens_out").and_then(|v| v.as_u64()))
+        .sum();
+    out.push_str("\n## Cost\n\n");
+    out.push_str(&format!(
+        "- total cost_usd: {cost:.6}\n- total tokens_in: {tokens_in}\n- total tokens_out: {tokens_out}\n"
+    ));
+
+    let artifacts = canonical_dir(&run_root(state_dir, execution).join("artifacts"))?;
+    let path = artifacts.join("postmortem.md");
+    std::fs::write(&path, out).map_err(|e| {
+        ActivityError::KnownFailure(format!("write postmortem {}: {e}", path.display()))
+    })?;
+    Ok(path)
+}
+
+/// Current unix time in milliseconds.
+fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Poll `inspect_operation` until terminal or `timeout`; `None` on timeout.

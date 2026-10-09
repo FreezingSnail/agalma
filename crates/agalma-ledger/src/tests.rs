@@ -600,3 +600,41 @@ fn migration_v1_to_v2_refused_with_in_flight_execution() {
         "reason must name in-flight executions: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Lease generations (M1.6)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lease_generation_starts_at_zero_and_increments_per_claim() {
+    let dir = run_dir("lease-counter");
+    reset_dir(&dir);
+    let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
+    let task = TaskId::new("fix-answer");
+
+    assert_eq!(ledger.lease_generation(&task).unwrap(), 0, "unclaimed");
+    assert_eq!(ledger.begin_lease(&task).unwrap(), 1);
+    assert_eq!(ledger.begin_lease(&task).unwrap(), 2);
+    assert_eq!(ledger.lease_generation(&task).unwrap(), 2, "latest wins");
+
+    // A different task has an independent counter.
+    let other = TaskId::new("other-task");
+    assert_eq!(ledger.lease_generation(&other).unwrap(), 0);
+    assert_eq!(ledger.begin_lease(&other).unwrap(), 1);
+    assert_eq!(ledger.lease_generation(&task).unwrap(), 2, "isolated");
+}
+
+#[test]
+fn lease_generation_persists_across_reopen() {
+    let dir = run_dir("lease-persist");
+    reset_dir(&dir);
+    let path = dir.join("ledger.sqlite");
+    let task = TaskId::new("fix-answer");
+    {
+        let mut ledger = SqliteLedger::open(&path).unwrap();
+        assert_eq!(ledger.begin_lease(&task).unwrap(), 1);
+    }
+    let mut ledger = SqliteLedger::open(&path).unwrap();
+    assert_eq!(ledger.lease_generation(&task).unwrap(), 1);
+    assert_eq!(ledger.begin_lease(&task).unwrap(), 2);
+}

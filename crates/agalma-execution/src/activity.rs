@@ -22,6 +22,10 @@ pub struct OperationContext {
     pub phase: ExecutionPhase,
     /// 1-based attempt number (build/verify retries increment it).
     pub attempt: u32,
+    /// Lease generation of the claim that owns this operation (M1.6 fencing).
+    /// Persisted with the dispatch intent; stale-leased operations are rejected
+    /// before they can produce an effect.
+    pub lease_generation: u32,
     /// Phase inputs recorded durably with the dispatch intent.
     pub inputs: Value,
 }

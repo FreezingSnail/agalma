@@ -122,6 +122,23 @@ pub trait LedgerApi {
         id: &OperationId,
     ) -> Result<Option<OperationReceipt>, ContractError>;
 
+    /// The task's current lease generation, or `0` when never claimed.
+    ///
+    /// A lease generation is a monotonic per-task counter incremented once per
+    /// claim cycle ([`LedgerApi::begin_lease`]). It fences dispatch intents,
+    /// operation receipts, and worker records: an operation tagged with a lease
+    /// older than the task's current lease is stale and must not produce an
+    /// effect.
+    fn lease_generation(&self, task: &TaskId) -> Result<u32, ContractError>;
+
+    /// Begin a new claim cycle for `task`: increment and persist its lease
+    /// generation, returning the new value (starts at `1`).
+    ///
+    /// This is the durable half of the atomic claim gate: `bd --claim` elects a
+    /// single winner, and the winner's lease generation fences every subsequent
+    /// operation and worker record against re-claims.
+    fn begin_lease(&mut self, task: &TaskId) -> Result<u32, ContractError>;
+
     /// Whether the kill latch is set.
     fn kill_latch(&self) -> Result<bool, ContractError>;
 

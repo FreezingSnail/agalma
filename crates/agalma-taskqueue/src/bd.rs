@@ -85,6 +85,33 @@ impl BdTaskQueue {
         }
         Ok(out.stdout)
     }
+
+    /// Read an issue's current projection (status, assignee, labels, comment
+    /// bodies). Used by the ledger-vs-projection reconcile (M1.6).
+    pub fn projection(&self, id: &TaskId) -> Result<IssueProjection, ContractError> {
+        let stdout = self.bd_ok(&["show", id.as_str(), "--json", "--include-comments"])?;
+        let issue = parse_issues(&stdout)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| ContractError::KnownFailure(format!("task {id}: not found")))?;
+        Ok(issue.into_projection())
+    }
+
+    /// Set an issue's status. `closed` goes through `bd close` (which records a
+    /// reason); every other status is a direct `bd update --status`.
+    pub fn set_status(&mut self, id: &TaskId, status: &str) -> Result<(), ContractError> {
+        if status == "closed" {
+            return self.close_task(id, "reconcile: ledger is source of truth");
+        }
+        self.bd_ok(&["update", id.as_str(), "--status", status])?;
+        Ok(())
+    }
+
+    /// Remove a label from an issue (no-op when absent).
+    pub fn remove_label(&mut self, id: &TaskId, label: &str) -> Result<(), ContractError> {
+        self.bd_ok(&["update", id.as_str(), "--remove-label", label])?;
+        Ok(())
+    }
 }
 
 impl TaskQueueApi for BdTaskQueue {
@@ -173,6 +200,35 @@ struct BdOutput {
     stderr: String,
 }
 
+/// One comment on an issue (only the body text is consumed).
+#[derive(Debug, Deserialize)]
+struct BdComment {
+    #[serde(default)]
+    text: Option<String>,
+}
+
+/// A task's current bd projection: the derived state the reconcile compares
+/// against the ledger.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IssueProjection {
+    pub status: String,
+    pub assignee: Option<String>,
+    pub labels: Vec<String>,
+    pub comments: Vec<String>,
+}
+
+impl IssueProjection {
+    /// Whether the projection carries `label`.
+    pub fn has_label(&self, label: &str) -> bool {
+        self.labels.iter().any(|l| l == label)
+    }
+
+    /// Whether any comment body contains `needle`.
+    pub fn has_comment(&self, needle: &str) -> bool {
+        self.comments.iter().any(|c| c.contains(needle))
+    }
+}
+
 /// Subset of the bd issue JSON the adapter consumes.
 #[derive(Debug, Deserialize)]
 struct BdIssue {
@@ -187,6 +243,8 @@ struct BdIssue {
     started_at: Option<String>,
     #[serde(default)]
     labels: Option<Vec<String>>,
+    #[serde(default)]
+    comments: Option<Vec<BdComment>>,
 }
 
 impl BdIssue {
@@ -194,6 +252,20 @@ impl BdIssue {
         self.labels
             .as_deref()
             .is_some_and(|labels| labels.iter().any(|l| l == label))
+    }
+
+    fn into_projection(self) -> IssueProjection {
+        IssueProjection {
+            status: self.status,
+            assignee: self.assignee,
+            labels: self.labels.unwrap_or_default(),
+            comments: self
+                .comments
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|c| c.text)
+                .collect(),
+        }
     }
 
     fn into_task(self, block: crate::block::TaskBlock) -> Task {

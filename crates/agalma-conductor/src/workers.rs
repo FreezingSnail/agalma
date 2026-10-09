@@ -36,6 +36,10 @@ pub struct WorkerRecord {
     pub attempt: u32,
     pub phase: String,
     pub operation_id: String,
+    /// Lease generation of the claim that launched this worker (M1.6 fencing).
+    /// Defaults to `0` for records written before M1.6.
+    #[serde(default)]
+    pub lease_generation: u32,
     pub started_at_unix_ms: u64,
 }
 
@@ -131,12 +135,14 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
 }
 
 /// Record a freshly launched worker.
+#[allow(clippy::too_many_arguments)]
 pub fn record_worker(
     state_dir: &Path,
     execution: &ExecutionId,
     phase: &str,
     attempt: u32,
     operation_id: &str,
+    lease_generation: u32,
     pid: u32,
     pgid: u32,
 ) -> Result<(), ActivityError> {
@@ -146,6 +152,7 @@ pub fn record_worker(
         attempt,
         phase: phase.to_string(),
         operation_id: operation_id.to_string(),
+        lease_generation,
         started_at_unix_ms: now_ms(),
     };
     write_json(&worker_path(state_dir, execution, phase, attempt), &record)
@@ -234,6 +241,7 @@ pub fn reconcile_survivor(
         "phase": phase,
         "attempt": attempt,
         "operation_id": record.operation_id,
+        "lease_generation": record.lease_generation,
         "pid": record.pid,
         "pgid": record.pgid,
         "process_group_gone": evidence.process_group_gone,

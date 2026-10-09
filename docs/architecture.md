@@ -208,10 +208,17 @@ Owns everything inside an agent turn:
   can use a separate `DecisionApi` implementation (§3.7)
 
 OpenCode adapter endpoints at MVP (private hand-rolled async Rust client; generate
-later from the spec): `GET /api/info`, `/api/model`, `/api/provider`, `/api/agent`,
-`POST /api/session`, `POST /api/session/{id}/prompt|wait|interrupt|model|agent|synthetic|compact`,
+later from the spec; corrected against v2.0.15 in S0a): `GET /api/info`,
+`/api/model`, `/api/provider`, `/api/agent`, `POST /api/session`,
+`POST /api/session/{id}/prompt|interrupt|model|agent|synthetic|compact`,
+`POST /api/session/{id}/shell`, `POST /api/experimental/session/{id}/wait`,
 `GET /api/session/{id}/diff`, `GET /api/experimental/session/stats`,
-`POST /api/location/reload`, `/api/worktree` CRUD, `GET /api/event` (SSE).
+`GET /api/experimental/session/{id}/log?follow=true`, `POST /api/location/reload`,
+project-scoped `/api/worktree` list/create/refresh/delete, `GET /api/event` (SSE).
+Server auth is Basic (user `opencode`); the password comes from `OPENCODE_PASSWORD`
+or the service file — there is no `--password` flag. SSE is volatile by contract;
+reconciliation uses the durable session log or the idle barrier, never assumed SSE
+continuity. Full observations: `docs/spikes/s0a-harness.md`.
 
 ### 3.3 OpenCode nerve plugin (TypeScript)
 
@@ -244,8 +251,9 @@ Boundary rules:
   from the pinned genome; reload via `POST /api/location/reload` is private to the
   adapter. Consumers request advertised capabilities through Agalma APIs.
 
-**[open]** Whether `tool.execute.before` can block a call or only mutate its
-input. Verify in S0.
+**[resolved in S0a]** `tool.execute.before` can both mutate `event.input` in
+place and block a call by failing the hook; execution uses post-hook input.
+See `docs/spikes/s0a-harness.md`.
 
 ### 3.4 agalma-mcp (Rust MCP server)
 

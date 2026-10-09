@@ -297,31 +297,37 @@ fn red_verify_produces_diagnosis_then_retries_then_parks() {
         assert!(pm.contains(needle), "postmortem has {needle}: {pm}");
     }
 
-    // The verifier is scripted read-only: the only changed path in the checkout
-    // is the builder's source edit — no artifact/prompt leaked into the tree.
+    // M1.4: verify commits the candidate working tree on the candidate branch
+    // before running acceptance, so the checkout is clean and the candidate SHA
+    // is what the pristine verification checkout (and integration) use. No
+    // artifact/prompt leaked into the tree.
     let checkout = run_root.join("checkout");
     let status = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(&checkout)
         .output()
         .expect("git status");
-    let changed: Vec<&str> = std::str::from_utf8(&status.stdout)
-        .expect("utf8")
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .collect();
-    assert_eq!(
-        changed.len(),
-        1,
-        "only the builder edit is present: {changed:?}"
-    );
     assert!(
-        changed[0].ends_with("src/lib.rs"),
-        "the sole change is the builder's source: {changed:?}"
+        String::from_utf8_lossy(&status.stdout).trim().is_empty(),
+        "candidate tree is clean after the pre-verify commit: {}",
+        String::from_utf8_lossy(&status.stdout)
     );
     assert!(
         !checkout.join("artifacts").exists(),
         "no verifier artifacts inside the checkout"
+    );
+
+    // The builder's source edit is committed on the candidate branch: the
+    // candidate HEAD is one commit ahead of the base and touches src/lib.rs.
+    let changed = Command::new("git")
+        .args(["show", "--name-only", "--pretty=format:", "HEAD"])
+        .current_dir(&checkout)
+        .output()
+        .expect("git show");
+    let changed = String::from_utf8_lossy(&changed.stdout).trim().to_string();
+    assert!(
+        changed.lines().any(|line| line.ends_with("src/lib.rs")),
+        "the candidate commit carries the builder's source: {changed:?}"
     );
 
     // No merge on red.

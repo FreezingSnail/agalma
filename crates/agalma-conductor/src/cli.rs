@@ -25,6 +25,8 @@ pub enum Command {
     Resume(StateArgs),
     /// Report ledger and execution status.
     Status(StateArgs),
+    /// Print the recorded digest for an execution (JSON + one-line summary).
+    Digest(DigestArgs),
 }
 
 /// Arguments for `agalma work`.
@@ -80,6 +82,17 @@ pub struct RunArgs {
 pub struct StateArgs {
     /// Override the state directory (defaults to `AGALMA_STATE_DIR` or the
     /// platform application-support directory).
+    #[arg(long, value_name = "DIR")]
+    pub state_dir: Option<PathBuf>,
+}
+
+/// Arguments for `agalma digest`.
+#[derive(Debug, Args)]
+pub struct DigestArgs {
+    /// Execution id (`exec:<task>:<generation>`).
+    #[arg(long, value_name = "ID")]
+    pub execution: String,
+    /// Override the state directory.
     #[arg(long, value_name = "DIR")]
     pub state_dir: Option<PathBuf>,
 }

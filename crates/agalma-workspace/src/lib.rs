@@ -179,6 +179,58 @@ impl Workspace {
         )
     }
 
+    /// Commit a repo-mode candidate's dirty working tree onto its candidate
+    /// branch and return the branch HEAD SHA (M1.4).
+    ///
+    /// Verification runs on a *pristine clone* of this commit, so the candidate
+    /// change must be committed before verify. Integration later observes a clean
+    /// tree and does not create a second commit, so the digest's candidate SHA
+    /// equals the integrated result SHA.
+    pub fn commit_candidate(&self, checkout: &Checkout) -> Result<String, ContractError> {
+        commit_candidate(&PathBuf::from(&checkout.path), checkout)
+    }
+
+    /// Clone `checkout` at `sha` into `<base_dir>/runs/<execution>/verify`
+    /// (M1.4).
+    ///
+    /// The verification checkout is a separate repository with its own Git
+    /// metadata, checked out detached at `sha`. Only tracked content is cloned,
+    /// so the candidate's untracked files never enter the verification
+    /// environment. An existing verification checkout is reset.
+    pub fn prepare_verify_checkout(
+        &self,
+        checkout: &Checkout,
+        base_dir: &Path,
+        execution: &ExecutionId,
+        sha: &str,
+    ) -> Result<PathBuf, ContractError> {
+        let dest = base_dir
+            .join("runs")
+            .join(execution_dir_name(execution))
+            .join("verify");
+        if dest.exists() {
+            fs::remove_dir_all(&dest).map_err(|e| {
+                ContractError::KnownFailure(format!(
+                    "cannot reset verification checkout {}: {e}",
+                    dest.display()
+                ))
+            })?;
+        }
+        let parent = dest.parent().ok_or_else(|| {
+            ContractError::KnownFailure("verification checkout has no parent".into())
+        })?;
+        fs::create_dir_all(parent).map_err(|e| {
+            ContractError::KnownFailure(format!("cannot create {}: {e}", parent.display()))
+        })?;
+        let src = checkout.path.clone();
+        let dest_arg = dest.to_string_lossy().into_owned();
+        git_ok(parent, &["clone", "--no-hardlinks", &src, &dest_arg])?;
+        git_ok(&dest, &["config", "user.name", "Agalma"])?;
+        git_ok(&dest, &["config", "user.email", "agalma@localhost"])?;
+        git_ok(&dest, &["checkout", "--detach", sha])?;
+        Ok(dest)
+    }
+
     /// Derive a receipt for an already-landed repo-mode integration.
     ///
     /// Returns `Some` when the origin's `main` is already at the candidate (and

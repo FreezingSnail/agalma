@@ -12,8 +12,12 @@
 //!   prompt; the model edits the checkout. The launched worker's pid/pgid is
 //!   recorded durably (see [`crate::workers`]) so a restart can terminate a
 //!   survivor before redispatching.
-//! - `verify`: a *separate* confined `cargo test` run; the exit code is the
-//!   verdict, full output is captured under `<state>/runs/<exec>/artifacts/`.
+//! - `verify`: a *separate* confined run; the exit code is the verdict, full
+//!   output is captured under `<state>/runs/<exec>/artifacts/`. In repo mode
+//!   (M1) the candidate working tree is committed on the candidate branch, a
+//!   **pristine** verification checkout is cloned at that SHA under
+//!   `<run>/verify/` (its own Git metadata), and each task acceptance command
+//!   runs there as its own bounded launch (`accept@<attempt>-<n>.txt`).
 //! - `integrate`: [`WorkspaceApi::integrate`] compare-and-updates `main` and
 //!   tags `m0/<exec>`. Recovery detects an already-landed merge from Git state
 //!   (`main == candidate`) and completes without re-merging.
@@ -207,6 +211,7 @@ pub fn activities_with_mode(
     let verify: Box<dyn Activity> = if deps.repo.is_some() {
         Box::new(VerifyActivity {
             deps: deps.clone(),
+            workspace: Rc::clone(&workspace),
             state: Rc::clone(&state),
             sandboxed: mode == ActivityMode::Live,
             scripted: mode == ActivityMode::Scripted,
@@ -215,6 +220,7 @@ pub fn activities_with_mode(
         match mode {
             ActivityMode::Live => Box::new(VerifyActivity {
                 deps: deps.clone(),
+                workspace: Rc::clone(&workspace),
                 state: Rc::clone(&state),
                 sandboxed: true,
                 scripted: false,
@@ -745,6 +751,9 @@ impl Activity for ScriptedBuildActivity {
 /// command list (repo mode, M1); exit codes are the verdict.
 struct VerifyActivity {
     deps: PhaseDeps,
+    /// Used to commit the candidate before verify and to clone the pristine
+    /// verification checkout (repo mode).
+    workspace: Rc<RefCell<Workspace>>,
     state: Rc<RefCell<RunState>>,
     /// Run acceptance commands under Seatbelt (`Live`) or in-process
     /// (`Scripted`, deterministic tests).
@@ -784,9 +793,12 @@ fn verify_reconcile(
 }
 
 impl VerifyActivity {
-    /// Repo mode: run the task's acceptance commands, each as its own launch,
-    /// from the candidate checkout. Any non-zero exit is the verdict; the failing
-    /// command and its output are captured under `<run>/artifacts/`.
+    /// Repo mode: commit the candidate on the candidate branch, clone a
+    /// pristine verification checkout at that SHA, then run the task's
+    /// acceptance commands there, each as its own launch. Any non-zero exit is
+    /// the verdict; every command's outcome (command, exit code, duration,
+    /// output artifact) is recorded and the failing commands are aggregated
+    /// under `<run>/artifacts/`.
     ///
     /// On red, a *fresh* verifier session diagnoses the failure from file-only
     /// inputs (candidate diff + captured failure), the retry/escalate/park choice
@@ -811,6 +823,32 @@ impl VerifyActivity {
         let artifacts = canonical_dir(&root.join("artifacts"))?;
         mark_started(&self.deps, &ctx.execution_id, "verify", ctx.attempt)?;
 
+        // 1. Commit the candidate working tree on the candidate branch. This
+        //    moves the commit integration used to make *before* verify so the
+        //    pristine verification checkout can be cloned at the candidate SHA.
+        //    Integration later observes a clean tree and merges the same SHA.
+        let candidate_sha = self
+            .workspace
+            .borrow()
+            .commit_candidate(&checkout)
+            .map_err(contract_err)?;
+
+        // 2. Fresh verification environment: a clone of the candidate checkout
+        //    at the candidate SHA with its own Git metadata under `<run>/verify`.
+        //    The candidate checkout's dirty/working tree is never the
+        //    verification environment.
+        let verify_path = self
+            .workspace
+            .borrow()
+            .prepare_verify_checkout(
+                &checkout,
+                &self.deps.state_dir,
+                &ctx.execution_id,
+                &candidate_sha,
+            )
+            .map_err(contract_err)?;
+        let verify_dir = canonical_dir(&verify_path)?;
+
         let mut env = self.deps.toolchain_env.clone();
         env.insert("HOME".to_string(), home.to_string_lossy().into_owned());
         env.insert("TMPDIR".to_string(), tmp.to_string_lossy().into_owned());
@@ -823,13 +861,16 @@ impl VerifyActivity {
 
         let started = Instant::now();
         let mut sandbox = SeatbeltSandbox::new();
+        let mut command_results: Vec<serde_json::Value> = Vec::new();
+        let mut failures: Vec<serde_json::Value> = Vec::new();
         for (index, command) in repo.acceptance.iter().enumerate() {
-            let log_path = artifacts.join(format!("acceptance@{}-{index}.log", ctx.attempt));
+            let log_path = artifacts.join(format!("accept@{}-{index}.txt", ctx.attempt));
+            let cmd_started = Instant::now();
             let output = if self.sandboxed {
                 let spec = LaunchSpec {
                     program: "sh".to_string(),
                     args: vec!["-c".to_string(), command.clone()],
-                    cwd: checkout.path.clone(),
+                    cwd: verify_dir.to_string_lossy().into_owned(),
                     env: env.clone(),
                     profile: self.deps.profile_path.to_string_lossy().into_owned(),
                     attempt: AttemptId::derive(ctx.attempt),
@@ -847,84 +888,122 @@ impl VerifyActivity {
                     .run(&spec, self.deps.verify_timeout)
                     .map_err(contract_err)?
             } else {
-                run_in_process(command, &checkout.path, &env)?
+                run_in_process(command, &verify_dir.to_string_lossy(), &env)?
             };
+            let duration_ms = cmd_started.elapsed().as_millis() as u64;
             let log = format!(
-                "$ {command} (exit {})\n--- stdout ---\n{}\n--- stderr ---\n{}\n",
+                "$ {command}\nexit: {}\nduration_ms: {duration_ms}\n--- stdout ---\n{}\n--- stderr ---\n{}\n",
                 output.exit_code, output.stdout, output.stderr
             );
             std::fs::write(&log_path, log).map_err(|e| {
                 ActivityError::KnownFailure(format!("write verify log {}: {e}", log_path.display()))
             })?;
+            let entry = json!({
+                "attempt": ctx.attempt,
+                "command": command,
+                "exit_code": output.exit_code,
+                "duration_ms": duration_ms,
+                "artifact": log_path.to_string_lossy(),
+            });
+            command_results.push(entry.clone());
             if output.exit_code != 0 {
-                let failure_path = artifacts.join(format!("failure@{}.txt", ctx.attempt));
-                let failure = format!(
-                    "command {index} failed (exit {}): {command}\n--- stdout ---\n{}\n--- stderr ---\n{}\n",
-                    output.exit_code, output.stdout, output.stderr
-                );
-                std::fs::write(&failure_path, &failure).map_err(|e| {
-                    ActivityError::KnownFailure(format!(
-                        "write failure {}: {e}",
-                        failure_path.display()
-                    ))
-                })?;
-                eprintln!(
-                    "agalma: verify attempt {} red (exit {}): {command}",
-                    ctx.attempt, output.exit_code
-                );
-                // Per-attempt cost: the Rust-run acceptance has no model usage,
-                // but its wall time is recorded for the digest.
-                record_usage_event(
-                    &self.deps.state_dir,
-                    &ctx.execution_id,
-                    &ctx.operation_id,
-                    "verify",
-                    "acceptance",
-                    ctx.attempt,
-                    zero_usage(),
-                    started.elapsed().as_millis() as u64,
-                )?;
-                // Handoff via files only: candidate diff + captured failure.
-                write_candidate_diff(&checkout, &artifacts, ctx.attempt)?;
-                let diagnosis = self.diagnose(&checkout, &root, &artifacts, ctx, &failure_path)?;
-                let max_attempts = execution_max_attempts(&self.deps.state_dir, &ctx.execution_id)?;
-                record_retry_decision(
+                failures.push(entry);
+            }
+        }
+
+        if !failures.is_empty() {
+            let first_exit = failures[0]
+                .get("exit_code")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(-1) as i32;
+            let first_command = failures[0]
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let failure_path = artifacts.join(format!("failure@{}.txt", ctx.attempt));
+            let failure = format!(
+                "{} of {} acceptance command(s) failed on attempt {}\n--- failures ---\n{}\n",
+                failures.len(),
+                command_results.len(),
+                ctx.attempt,
+                failures
+                    .iter()
+                    .map(|f| {
+                        format!(
+                            "{} (exit {})",
+                            f.get("command").and_then(|v| v.as_str()).unwrap_or(""),
+                            f.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(-1)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+            std::fs::write(&failure_path, &failure).map_err(|e| {
+                ActivityError::KnownFailure(format!(
+                    "write failure {}: {e}",
+                    failure_path.display()
+                ))
+            })?;
+            eprintln!(
+                "agalma: verify attempt {} red ({} failing): {first_command}",
+                ctx.attempt,
+                failures.len()
+            );
+            // Per-attempt cost: the Rust-run acceptance has no model usage, but
+            // its wall time is recorded for the digest.
+            record_usage_event(
+                &self.deps.state_dir,
+                &ctx.execution_id,
+                &ctx.operation_id,
+                "verify",
+                "acceptance",
+                ctx.attempt,
+                zero_usage(),
+                started.elapsed().as_millis() as u64,
+            )?;
+            // Handoff via files only: candidate diff + captured failure.
+            write_candidate_diff(&checkout, &artifacts, ctx.attempt)?;
+            let diagnosis = self.diagnose(&checkout, &root, &artifacts, ctx, &failure_path)?;
+            let max_attempts = execution_max_attempts(&self.deps.state_dir, &ctx.execution_id)?;
+            record_retry_decision(
+                &self.deps.state_dir,
+                &ctx.execution_id,
+                ctx.attempt,
+                max_attempts,
+            )?;
+            if ctx.attempt >= max_attempts {
+                write_postmortem(
                     &self.deps.state_dir,
                     &ctx.execution_id,
                     ctx.attempt,
                     max_attempts,
                 )?;
-                if ctx.attempt >= max_attempts {
-                    write_postmortem(
-                        &self.deps.state_dir,
-                        &ctx.execution_id,
-                        ctx.attempt,
-                        max_attempts,
-                    )?;
-                }
-                let outcome = ActivityOutcome {
-                    result: json!({
-                        "status": "red",
-                        "exit_code": output.exit_code,
-                        "attempt": ctx.attempt,
-                        "command": command,
-                        "artifact": log_path.to_string_lossy(),
-                        "diagnosis": diagnosis.to_string_lossy(),
-                        "wall_ms": started.elapsed().as_millis() as u64,
-                    }),
-                    next: ActivityNext::Retry {
-                        failure: ArtifactRef::derive(&format!("verify@{}", ctx.attempt)),
-                    },
-                };
-                workers::write_done(
-                    &self.deps.state_dir,
-                    &ctx.execution_id,
-                    "verify",
-                    ctx.attempt,
-                    &outcome,
-                )?;
-                return Ok(outcome);
             }
+            let outcome = ActivityOutcome {
+                result: json!({
+                    "status": "red",
+                    "exit_code": first_exit,
+                    "attempt": ctx.attempt,
+                    "candidate_sha": candidate_sha,
+                    "verify_path": verify_dir.to_string_lossy(),
+                    "command_results": command_results,
+                    "failing_commands": failures,
+                    "diagnosis": diagnosis.to_string_lossy(),
+                    "wall_ms": started.elapsed().as_millis() as u64,
+                }),
+                next: ActivityNext::Retry {
+                    failure: ArtifactRef::derive(&format!("verify@{}", ctx.attempt)),
+                },
+            };
+            workers::write_done(
+                &self.deps.state_dir,
+                &ctx.execution_id,
+                "verify",
+                ctx.attempt,
+                &outcome,
+            )?;
+            return Ok(outcome);
         }
 
         let wall_ms = started.elapsed().as_millis() as u64;
@@ -943,7 +1022,9 @@ impl VerifyActivity {
                 "status": "green",
                 "exit_code": 0,
                 "attempt": ctx.attempt,
-                "commands": repo.acceptance.len(),
+                "candidate_sha": candidate_sha,
+                "verify_path": verify_dir.to_string_lossy(),
+                "command_results": command_results,
                 "wall_ms": wall_ms,
             }),
             next: ActivityNext::Advance,

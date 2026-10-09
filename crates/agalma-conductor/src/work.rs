@@ -283,21 +283,57 @@ fn run_task(
         &task.task_id,
         lease,
     )?;
-    match &terminal {
+    finalize(state_dir, queue, &execution, task, model, lease, &terminal)?;
+    Ok(terminal)
+}
+
+/// Project a terminal outcome to the backlog and record the execution digest
+/// (M1.4). The digest summary line rides a `bd comment` on done/parked;
+/// `Blocked` records nothing.
+fn finalize(
+    state_dir: &Path,
+    queue: &mut BdTaskQueue,
+    execution: &ExecutionId,
+    task: &Task,
+    model: &str,
+    lease: u32,
+    terminal: &Terminal,
+) -> Result<(), ContractError> {
+    let verdict = match terminal {
+        Terminal::Done => Some(crate::digest::Verdict::Green),
+        Terminal::Parked(_) => Some(crate::digest::Verdict::Red),
+        Terminal::Blocked => None,
+    };
+    let mut summary = None;
+    if let Some(verdict) = verdict {
+        match crate::digest::record(state_dir, execution, task, model, verdict) {
+            Ok(digest) => summary = Some(digest.summary_line()),
+            Err(err) => eprintln!("agalma: digest for {execution} failed: {err}"),
+        }
+    }
+
+    match terminal {
         Terminal::Done => {
+            // Comment before closing so the digest rides the issue.
+            if let Some(summary) = &summary {
+                queue.comment(&task.task_id, summary)?;
+            }
             queue.close_task(&task.task_id, "done: green")?;
         }
         Terminal::Parked(reason) => {
             queue.comment(
                 &task.task_id,
-                &format!("phase=parked execution={execution} lease={generation}"),
+                &format!("phase=parked execution={execution} lease={lease}"),
             )?;
             queue.add_label(&task.task_id, PARKED_LABEL)?;
+            if let Some(summary) = &summary {
+                queue.comment(&task.task_id, summary)?;
+            }
             queue.comment(&task.task_id, &format!("parked: {reason}"))?;
         }
         Terminal::Blocked => {}
     }
-    Ok(terminal)
+    Ok(())
 }
 
 /// Drive one execution to a terminal state, projecting each phase transition to
@@ -413,23 +449,23 @@ fn recover_inflight(
         };
         let mut executor = build_executor(state_dir, model, proxy_url.clone(), &task, repo)?;
         let lease = execution_lease(&executor, &record.execution_id, record.generation);
-        match drive_task(
+        let terminal = drive_task(
             &mut executor,
             &record.execution_id,
             state_dir,
             queue,
             &record.task_id,
             lease,
-        )? {
-            Terminal::Done => {
-                let _ = queue.close_task(&record.task_id, "done: green (recovered)");
-            }
-            Terminal::Parked(reason) => {
-                let _ = queue.add_label(&record.task_id, PARKED_LABEL);
-                let _ = queue.comment(&record.task_id, &format!("parked: {reason}"));
-            }
-            Terminal::Blocked => {}
-        }
+        )?;
+        finalize(
+            state_dir,
+            queue,
+            &record.execution_id,
+            &task,
+            model,
+            lease,
+            &terminal,
+        )?;
     }
     Ok(())
 }

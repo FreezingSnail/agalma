@@ -10,6 +10,7 @@
 pub mod cli;
 pub mod composition;
 pub mod config;
+pub mod digest;
 pub mod phases;
 pub mod provider_proxy;
 pub mod reconcile;
@@ -32,7 +33,7 @@ use agalma_taskqueue::BdTaskQueue;
 use clap::Parser;
 use tokio::signal::unix::{signal, SignalKind};
 
-use crate::cli::{Cli, Command, ReconcileArgs, RunArgs, StateArgs};
+use crate::cli::{Cli, Command, DigestArgs, ReconcileArgs, RunArgs, StateArgs};
 use crate::composition::Composition;
 use crate::config::{Config, PHASE_PLAN};
 
@@ -45,6 +46,7 @@ pub async fn run() -> ExitCode {
         Command::Reconcile(args) => reconcile_command(&args),
         Command::Resume(args) => resume_command(&args),
         Command::Status(args) => status_command(&args),
+        Command::Digest(args) => digest_command(&args),
     }
 }
 
@@ -365,6 +367,53 @@ fn status_command(args: &StateArgs) -> ExitCode {
     match ledger.kill_latch() {
         Ok(latched) => println!("kill_latch={latched}"),
         Err(err) => eprintln!("agalma: cannot read kill latch: {err}"),
+    }
+    ExitCode::SUCCESS
+}
+
+/// `agalma digest --execution <id>`: print the latest recorded digest (JSON,
+/// then the one-line summary).
+fn digest_command(args: &DigestArgs) -> ExitCode {
+    let state_dir = match crate::config::resolve_state_dir(args.state_dir.as_deref()) {
+        Ok(dir) => dir,
+        Err(err) => {
+            eprintln!("agalma: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let ledger_path = state_dir.join("ledger.sqlite");
+    if !ledger_path.exists() {
+        eprintln!("agalma: no ledger at {}", ledger_path.display());
+        return ExitCode::FAILURE;
+    }
+    let ledger = match SqliteLedger::open(&ledger_path) {
+        Ok(ledger) => ledger,
+        Err(err) => {
+            eprintln!(
+                "agalma: cannot open ledger {}: {err}",
+                ledger_path.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let execution = ExecutionId::new(args.execution.clone());
+    let digests = match ledger.digests_for_execution(&execution) {
+        Ok(digests) => digests,
+        Err(err) => {
+            eprintln!("agalma: cannot read digests: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(latest) = digests.last() else {
+        eprintln!("agalma: no digest recorded for {execution}");
+        return ExitCode::FAILURE;
+    };
+    match serde_json::to_string_pretty(&latest.summary) {
+        Ok(text) => println!("{text}"),
+        Err(_) => println!("{}", latest.summary),
+    }
+    if let Ok(digest) = serde_json::from_value::<crate::digest::Digest>(latest.summary.clone()) {
+        println!("{}", digest.summary_line());
     }
     ExitCode::SUCCESS
 }

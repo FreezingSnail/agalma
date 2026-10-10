@@ -122,6 +122,32 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
         None
     };
     let proxy_url = proxy.as_ref().map(ProviderProxy::url);
+    // Paid credential state captured at proxy start. Record the audit event
+    // (token-free) and use presence to gate paid route eligibility.
+    let paid_available = proxy
+        .as_ref()
+        .map(|proxy| {
+            let auth = proxy.auth_state();
+            if let Err(err) = crate::provider_auth::record_audit(&state_dir, &auth) {
+                eprintln!(
+                    "agalma: provider_auth audit for {}: {err}",
+                    state_dir.display()
+                );
+            } else if auth.present {
+                eprintln!(
+                    "agalma: paid provider credential present (host={}, fingerprint={})",
+                    auth.host,
+                    auth.fingerprint.as_deref().unwrap_or("-")
+                );
+            } else {
+                eprintln!(
+                    "agalma: paid provider credential absent ({}); paid routes disabled",
+                    auth.reason.as_deref().unwrap_or("unknown")
+                );
+            }
+            auth.present
+        })
+        .unwrap_or(false);
 
     let mut queue = BdTaskQueue::new(&repo);
     let mut decider = StaticDecider::new(SqliteLedger::open(&ledger_path)?);
@@ -136,6 +162,7 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
         &repo,
         &state_dir,
         override_model.as_deref(),
+        paid_available,
         proxy_url.clone(),
         &mut queue,
         harness.clone(),
@@ -179,6 +206,7 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
             &repo,
             &state_dir,
             override_model.as_deref(),
+            paid_available,
             proxy_url.clone(),
             &task,
             &evidence,
@@ -279,15 +307,23 @@ fn run_task(
     repo: &Path,
     state_dir: &Path,
     override_model: Option<&str>,
+    paid_available: bool,
     proxy_url: Option<String>,
     task: &Task,
     evidence: &ClaimEvidence,
     queue: &mut BdTaskQueue,
     harness: HarnessHandle,
 ) -> Result<Terminal, ContractError> {
-    let (builder, verifier) = task_routes(state_dir, task, override_model)?;
+    let (builder, verifier) = task_routes(state_dir, task, override_model, paid_available)?;
     let mut executor = build_executor(
-        state_dir, &builder, &verifier, proxy_url, task, repo, harness,
+        state_dir,
+        &builder,
+        &verifier,
+        paid_available,
+        proxy_url,
+        task,
+        repo,
+        harness,
     )?;
     let execution = executor.start(&task.task_id)?;
     let generation = executor
@@ -324,6 +360,7 @@ fn task_routes(
     state_dir: &Path,
     task: &Task,
     override_model: Option<&str>,
+    paid_available: bool,
 ) -> Result<(RouteSelection, RouteSelection), ContractError> {
     let allow_paid = routing::allow_paid_from_env();
     let builder = routing::resolve_route(
@@ -332,6 +369,7 @@ fn task_routes(
         "builder",
         task.family,
         allow_paid,
+        paid_available,
         override_model,
     )?;
     let verifier = routing::resolve_route(
@@ -340,6 +378,7 @@ fn task_routes(
         "verifier",
         task.family,
         allow_paid,
+        paid_available,
         override_model,
     )?;
     Ok((builder, verifier))
@@ -479,10 +518,12 @@ fn record_claim(
 
 /// Recover executions left non-terminal by a previous run: rebuild the task's
 /// repo-mode activities and drive each to a terminal state.
+#[allow(clippy::too_many_arguments)]
 fn recover_inflight(
     repo: &Path,
     state_dir: &Path,
     override_model: Option<&str>,
+    paid_available: bool,
     proxy_url: Option<String>,
     queue: &mut BdTaskQueue,
     harness: HarnessHandle,
@@ -509,11 +550,12 @@ fn recover_inflight(
                 continue;
             }
         };
-        let (builder, verifier) = task_routes(state_dir, &task, override_model)?;
+        let (builder, verifier) = task_routes(state_dir, &task, override_model, paid_available)?;
         let mut executor = build_executor(
             state_dir,
             &builder,
             &verifier,
+            paid_available,
             proxy_url.clone(),
             &task,
             repo,
@@ -542,10 +584,12 @@ fn recover_inflight(
 }
 
 /// Build a per-task executor with repo-mode activities and the same ledger.
+#[allow(clippy::too_many_arguments)]
 fn build_executor(
     state_dir: &Path,
     builder: &RouteSelection,
     verifier: &RouteSelection,
+    paid_available: bool,
     proxy_url: Option<String>,
     task: &Task,
     repo: &Path,
@@ -559,7 +603,16 @@ fn build_executor(
             execution_definition_version: EXECUTION_DEFINITION_VERSION,
         },
     );
-    let deps = phase_deps(state_dir, builder, verifier, proxy_url, task, repo, harness)?;
+    let deps = phase_deps(
+        state_dir,
+        builder,
+        verifier,
+        paid_available,
+        proxy_url,
+        task,
+        repo,
+        harness,
+    )?;
     let workspace = Rc::new(RefCell::new(Workspace::new(state_dir.to_path_buf())));
     let state = Rc::new(RefCell::new(RunState::default()));
     let acts = activities_with_mode(deps, workspace, state, ActivityMode::from_env());
@@ -573,10 +626,12 @@ fn build_executor(
 
 /// Assemble repo-mode phase wiring, materializing the sandbox profile and the
 /// base builder prompt under the state dir.
+#[allow(clippy::too_many_arguments)]
 fn phase_deps(
     state_dir: &Path,
     builder: &RouteSelection,
     verifier: &RouteSelection,
+    paid_available: bool,
     proxy_url: Option<String>,
     task: &Task,
     repo: &Path,
@@ -615,6 +670,7 @@ fn phase_deps(
         profile_path,
         builder_prompt,
         proxy_url,
+        paid_proxy: paid_available,
         extra_ro_roots,
         toolchain_env,
         turn_timeout: DEFAULT_TURN_TIMEOUT,

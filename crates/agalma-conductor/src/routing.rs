@@ -36,6 +36,8 @@ pub const ALLOW_PAID_ENV: &str = "AGALMA_ALLOW_PAID";
 pub const MODEL_ENV: &str = "AGALMA_MODEL";
 /// Revision marker for the [`MODEL_TABLE`] prices (research snapshot date).
 pub const MODEL_TABLE_REVISION: &str = "2026-10-09";
+/// Provider id served by the paid credential-injecting proxy (`opencode-go`).
+pub const PAID_PROVIDER: &str = "opencode-go";
 
 /// How a spec bills cash.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -343,10 +345,23 @@ pub fn candidates(class: RouteClass) -> &'static [&'static str] {
 }
 
 /// Eligible candidate ids for `class`, dropping paid specs unless `allow_paid`.
+///
+/// Kept for the free/paid policy view (`agalma models`); the paid route also
+/// requires a live credential, see [`eligible_paid`].
 pub fn eligible(class: RouteClass, allow_paid: bool) -> Vec<String> {
+    eligible_paid(class, allow_paid, true)
+}
+
+/// Eligible candidate ids for `class`. A paid spec is admitted only when
+/// `allow_paid` **and** a provider credential is present (`paid_available`);
+/// otherwise the route falls back to its free entries.
+pub fn eligible_paid(class: RouteClass, allow_paid: bool, paid_available: bool) -> Vec<String> {
     candidates(class)
         .iter()
-        .filter(|id| allow_paid || spec(id).map(|s| !s.is_paid()).unwrap_or(false))
+        .filter(|id| match spec(id) {
+            Some(s) => !s.is_paid() || (allow_paid && paid_available),
+            None => false,
+        })
         .map(|id| (*id).to_string())
         .collect()
 }
@@ -437,12 +452,14 @@ impl RouteSelection {
 /// (static baseline). The operation id encodes the class and the selected
 /// variant (free/paid/override) so recovery reuses the same recorded outcome
 /// and a changed configuration is a new decision.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_route(
     state_dir: &Path,
     scope: &str,
     role: &str,
     family: TaskFamily,
     allow_paid: bool,
+    paid_available: bool,
     override_model: Option<&str>,
 ) -> Result<RouteSelection, ContractError> {
     let class = route_class(role, family);
@@ -460,19 +477,25 @@ pub fn resolve_route(
     let override_model = override_model.map(str::trim).filter(|s| !s.is_empty());
     let candidate_ids: Vec<String> = match override_model {
         Some(model) => vec![model.to_string()],
-        None => eligible(class, allow_paid),
+        None => eligible_paid(class, allow_paid, paid_available),
     };
     if candidate_ids.is_empty() {
         return Err(ContractError::KnownFailure(format!(
-            "no eligible route candidates for class {} (allow_paid={allow_paid})",
+            "no eligible route candidates for class {} (allow_paid={allow_paid}, paid_available={paid_available})",
             class.as_str()
         )));
     }
 
+    let paid_active = allow_paid && paid_available;
+    let fallback_reason = if allow_paid && !paid_available {
+        Some("paid route requested but no provider credential is present; using free entries")
+    } else {
+        None
+    };
     let variant = match override_model {
         Some(model) => format!("override-{}", short_hash(model)),
         None => {
-            if allow_paid {
+            if paid_active {
                 "paid".to_string()
             } else {
                 "free".to_string()
@@ -498,6 +521,9 @@ pub fn resolve_route(
             "family": family.as_str(),
             "role": role,
             "allow_paid": allow_paid,
+            "paid_available": paid_available,
+            "paid_active": paid_active,
+            "fallback_reason": fallback_reason,
             "origin": match override_model {
                 Some(_) => RouteOrigin::Override.as_str(),
                 None => RouteOrigin::Static.as_str(),
@@ -550,6 +576,47 @@ pub fn cash_quota(model_id: &str, tokens_in: u64, tokens_out: u64) -> (f64, f64)
     spec(model_id)
         .map(|s| s.cash_quota(tokens_in, tokens_out))
         .unwrap_or((0.0, 0.0))
+}
+
+/// `(cash_usd, quota_usd)` for a completed turn, using the provider-reported
+/// cost when available (`agalma-csw.2`).
+///
+/// For **paid** routes the harness reports the real per-turn dollar cost
+/// (`opencode` `data.cost`); that is the honest cash figure and must be shown.
+/// The table's notional token cost is the quota figure (Go allowance drain).
+/// Free routes are `(0, 0)`. When a paid turn reports no cost, the table
+/// notional is used as the best available cash estimate so paid turns never
+/// silently read `$0`.
+pub fn cash_quota_for_usage(
+    model_id: &str,
+    reported_cost_usd: f64,
+    tokens_in: u64,
+    tokens_out: u64,
+) -> (f64, f64) {
+    let Some(spec) = spec(model_id) else {
+        return (reported_cost_usd, 0.0);
+    };
+    match spec.cash {
+        CashClass::Free => (0.0, 0.0),
+        CashClass::Subscription => {
+            let notional = spec.token_cost_usd(tokens_in, tokens_out);
+            let cash = if reported_cost_usd > 0.0 {
+                reported_cost_usd
+            } else {
+                notional
+            };
+            (cash, notional)
+        }
+        CashClass::PayPerToken => {
+            let notional = spec.token_cost_usd(tokens_in, tokens_out);
+            let cash = if reported_cost_usd > 0.0 {
+                reported_cost_usd
+            } else {
+                notional
+            };
+            (cash, 0.0)
+        }
+    }
 }
 
 /// Render the `agalma models` table plus the active routes and allow-paid state.
@@ -699,6 +766,44 @@ mod tests {
                 .map(String::as_str),
             Some("opencode-go/claude-haiku-5-5")
         );
+    }
+
+    #[test]
+    fn paid_candidates_require_both_opt_in_and_a_credential() {
+        // Opt-in without a token keeps the free entries only.
+        assert_eq!(
+            eligible_paid(RouteClass::Builder, true, false),
+            vec![
+                "opencode/big-pickle".to_string(),
+                "opencode/mimo-v2.6-flash-free".to_string()
+            ],
+            "no token -> free fallback even with AGALMA_ALLOW_PAID"
+        );
+        // Both present: the paid tier leads the verifier list.
+        assert_eq!(
+            eligible_paid(RouteClass::Verifier, true, true)
+                .first()
+                .map(String::as_str),
+            Some("opencode-go/claude-haiku-5-5")
+        );
+    }
+
+    #[test]
+    fn cash_quota_for_usage_surfaces_reported_paid_cost() {
+        // Free route: never any cash.
+        assert_eq!(
+            cash_quota_for_usage("opencode/big-pickle", 0.0, 1_000_000, 1_000_000),
+            (0.0, 0.0)
+        );
+        // Paid route with a provider-reported cost: cash is the real figure,
+        // quota is the notional Go allowance drain.
+        let (cash, quota) =
+            cash_quota_for_usage("opencode-go/deepseek-v4.1-flash", 0.0042, 1_000, 1_000);
+        assert!((cash - 0.0042).abs() < 1e-12, "cash {cash}");
+        assert!(quota > 0.0, "quota notional {quota}");
+        // Paid route with no reported cost falls back to the table notional.
+        let (cash, _) = cash_quota_for_usage("opencode-go/deepseek-v4.1-flash", 0.0, 1_000_000, 0);
+        assert!((cash - 0.15).abs() < 1e-9, "cash {cash}");
     }
 
     #[test]

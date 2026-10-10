@@ -104,6 +104,10 @@ impl Composition {
         // to the harness via `OpenCodeHarnessConfig::proxy_url`.
         let proxy = ProviderProxy::start(ProxyConfig::from_env())
             .map_err(|e| ContractError::KnownFailure(format!("provider proxy: {e}")))?;
+        // Record the token-free provider credential audit (best effort).
+        if let Err(err) = crate::provider_auth::record_audit(&state_dir, &proxy.auth_state()) {
+            eprintln!("agalma: provider_auth audit: {err}");
+        }
 
         let profile_path = state_dir.join("worker.sb");
         std::fs::write(&profile_path, PRODUCT_PROFILE).map_err(|e| {
@@ -137,6 +141,7 @@ impl Composition {
             profile_path,
             builder_prompt,
             proxy_url: Some(proxy.url()),
+            paid_proxy: false,
             extra_ro_roots,
             toolchain_env,
             turn_timeout: DEFAULT_TURN_TIMEOUT,

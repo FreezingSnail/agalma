@@ -13,6 +13,7 @@ pub mod config;
 pub mod digest;
 pub mod harness_binding;
 pub mod phases;
+pub mod provider_auth;
 pub mod provider_proxy;
 pub mod reconcile;
 pub mod routing;

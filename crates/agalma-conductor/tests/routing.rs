@@ -36,6 +36,7 @@ fn builder_route_is_free_first_and_recorded() {
         "builder",
         agalma_contracts::TaskFamily::Fix,
         false,
+        false,
         None,
     )
     .expect("resolve");
@@ -64,6 +65,7 @@ fn builder_route_is_free_first_and_recorded() {
         "builder",
         agalma_contracts::TaskFamily::Fix,
         false,
+        false,
         None,
     )
     .expect("resolve again");
@@ -79,6 +81,7 @@ fn verifier_skips_paid_without_opt_in_and_uses_it_when_allowed() {
         "verifier",
         agalma_contracts::TaskFamily::Feature,
         false,
+        true,
         None,
     )
     .expect("resolve free");
@@ -95,11 +98,51 @@ fn verifier_skips_paid_without_opt_in_and_uses_it_when_allowed() {
         "verifier",
         agalma_contracts::TaskFamily::Feature,
         true,
+        true,
         None,
     )
     .expect("resolve paid");
     assert_eq!(paid.model, "opencode-go/claude-haiku-5-5");
     assert!(paid.is_paid());
+}
+
+#[test]
+fn paid_opt_in_without_a_credential_falls_back_to_free_and_records_reason() {
+    let state_dir = fresh("routing-paid-no-token");
+    let selection = routing::resolve_route(
+        &state_dir,
+        "task-nt",
+        "verifier",
+        agalma_contracts::TaskFamily::Feature,
+        true,
+        false,
+        None,
+    )
+    .expect("resolve");
+    assert_eq!(
+        selection.model, "opencode/big-pickle",
+        "no token -> free fallback"
+    );
+    assert!(!selection.is_paid());
+
+    // The fallback reason is recorded on the route decision context.
+    let conn = rusqlite::Connection::open(state_dir.join("ledger.sqlite")).expect("open ledger");
+    let request_json: String = conn
+        .query_row(
+            "SELECT request_json FROM decisions WHERE operation_id=?1",
+            ["op:route:task-nt:verifier:free"],
+            |row| row.get(0),
+        )
+        .expect("route decision recorded");
+    let request: serde_json::Value = serde_json::from_str(&request_json).expect("decision json");
+    assert_eq!(request["context"]["allow_paid"], true);
+    assert_eq!(request["context"]["paid_available"], false);
+    assert_eq!(request["context"]["paid_active"], false);
+    assert!(
+        request["context"]["fallback_reason"].is_string(),
+        "fallback reason recorded: {}",
+        request["context"]
+    );
 }
 
 #[test]
@@ -110,6 +153,7 @@ fn override_wins_and_is_recorded_as_override() {
         "task-o",
         "builder",
         agalma_contracts::TaskFamily::Fix,
+        true,
         true,
         Some("custom/model-x"),
     )
@@ -130,6 +174,7 @@ fn planner_class_is_static_and_records_no_model() {
         "task-p",
         "planner",
         agalma_contracts::TaskFamily::Feature,
+        true,
         true,
         Some("should-not-be-used"),
     )

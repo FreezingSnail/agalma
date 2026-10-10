@@ -150,6 +150,10 @@ pub struct PhaseDeps {
     pub builder_prompt: PathBuf,
     /// Parent-owned provider proxy URL handed to the confined harness.
     pub proxy_url: Option<String>,
+    /// Whether the paid provider proxy path is active (credential present +
+    /// `AGALMA_ALLOW_PAID`). When true the confined harness config points the
+    /// provider at the loopback proxy with a dummy key (`agalma-csw.2`).
+    pub paid_proxy: bool,
     /// Read-only toolchain roots the confined worker/verify need (`~/.cargo`,
     /// `~/.rustup`).
     pub extra_ro_roots: Vec<PathBuf>,
@@ -545,6 +549,7 @@ impl BuildActivity {
             OpenCodeHarnessConfig::new(&self.deps.profile_path, &root, &protected, &sock);
         config.model = Some(self.deps.model.clone());
         config.proxy_url = self.deps.proxy_url.clone();
+        configure_provider_override(&mut config, &self.deps, &self.deps.model);
         config.extra_ro_roots = self.deps.extra_ro_roots.clone();
         let mut env = self.deps.toolchain_env.clone();
         env.insert(
@@ -1461,6 +1466,7 @@ impl VerifyActivity {
             OpenCodeHarnessConfig::new(&self.deps.profile_path, root, &protected, &sock);
         config.model = Some(self.deps.verifier_model.clone());
         config.proxy_url = self.deps.proxy_url.clone();
+        configure_provider_override(&mut config, &self.deps, &self.deps.verifier_model);
         config.extra_ro_roots = self.deps.extra_ro_roots.clone();
         config.extra_env = self.deps.toolchain_env.clone();
 
@@ -1994,6 +2000,32 @@ fn apply_scripted_fix(checkout_path: &str) -> Result<(), ActivityError> {
     .map_err(|e| ActivityError::KnownFailure(format!("apply scripted fix {}: {e}", src.display())))
 }
 
+/// Point the confined provider at the loopback paid proxy with a dummy key
+/// (`agalma-csw.2`). The real credential stays in the parent proxy; the sandbox
+/// only ever holds `agalma-proxy`.
+fn configure_provider_override(config: &mut OpenCodeHarnessConfig, deps: &PhaseDeps, model: &str) {
+    if !deps.paid_proxy {
+        return;
+    }
+    let Some(proxy_url) = deps.proxy_url.clone().filter(|url| !url.is_empty()) else {
+        return;
+    };
+    let provider = model
+        .split('/')
+        .next()
+        .filter(|p| !p.is_empty())
+        .unwrap_or("");
+    // Only the paid provider is pointed at the injecting proxy; a free
+    // `opencode/<model>` route keeps the transparent CONNECT tunnel (its base is
+    // the Zen endpoint, not the paid Go endpoint the proxy maps to).
+    if provider != crate::routing::PAID_PROVIDER {
+        return;
+    }
+    config.provider_base_url = Some(proxy_url);
+    config.provider_id = Some(provider.to_string());
+    config.provider_api_key = Some("agalma-proxy".to_string());
+}
+
 /// Write the per-attempt builder prompt under `<run>/prompts/` and return its
 /// path. The base prompt (`prompts/builder.md`) is the M0 text; repo mode appends
 /// the task title, acceptance commands, and any prior failure/diagnosis artifact.
@@ -2176,10 +2208,15 @@ fn record_usage_event(
     usage: Usage,
     wall_ms: u64,
 ) -> Result<(), ActivityError> {
-    // H3: attribute cash vs subscription quota separately. Free models are
-    // (0, 0); Go subscription models are cash 0 / notional quota.
-    let (cash_usd, quota_usd) =
-        crate::routing::cash_quota(model, usage.tokens_in, usage.tokens_out);
+    // H3/H6: attribute cash vs subscription quota separately. For paid routes
+    // the provider-reported per-turn cost is the real cash figure; free models
+    // are (0, 0); Go subscription quota is the notional table cost.
+    let (cash_usd, quota_usd) = crate::routing::cash_quota_for_usage(
+        model,
+        usage.cost_usd,
+        usage.tokens_in,
+        usage.tokens_out,
+    );
     let mut ledger = SqliteLedger::open(state_dir.join("ledger.sqlite")).map_err(contract_err)?;
     let event = agalma_contracts::ExecutionEvent {
         execution_id: execution.clone(),
@@ -2653,6 +2690,7 @@ mod tests {
             profile_path: PathBuf::from("worker.sb"),
             builder_prompt: PathBuf::from("builder.md"),
             proxy_url: None,
+            paid_proxy: false,
             extra_ro_roots: Vec::new(),
             toolchain_env: BTreeMap::new(),
             turn_timeout: Duration::from_secs(1),
@@ -2678,6 +2716,76 @@ mod tests {
             .join(format!("phases-{name}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(dir.join("artifacts")).expect("scratch dir");
         dir
+    }
+
+    #[test]
+    fn record_usage_event_attributes_paid_cash_and_quota() {
+        let dir = scratch_dir("usage-cash");
+        let exec = agalma_contracts::ExecutionId::new("exec:usage-cash:1");
+        record_usage_event(
+            &dir,
+            &exec,
+            &OperationId::new("op:usage-cash"),
+            "build",
+            "builder",
+            "opencode-go/deepseek-v4.1-flash",
+            "builder:fix",
+            1,
+            Usage {
+                tokens_in: 1_000,
+                tokens_out: 500,
+                cost_usd: 0.0042,
+                completeness: Completeness::Complete,
+            },
+            1_200,
+        )
+        .expect("record usage");
+        let ledger = SqliteLedger::open(dir.join("ledger.sqlite")).expect("open ledger");
+        let events = ledger.events(&exec).expect("events");
+        let usage = events
+            .iter()
+            .find(|e| e.kind == "usage")
+            .expect("usage event");
+        let cash = usage.payload["cash_usd"].as_f64().unwrap();
+        let quota = usage.payload["quota_usd"].as_f64().unwrap();
+        assert!(cash > 0.0, "paid turn cash: {cash}");
+        assert!(
+            (cash - 0.0042).abs() < 1e-12,
+            "reported cost is cash: {cash}"
+        );
+        assert!(quota > 0.0, "Go allowance quota: {quota}");
+    }
+
+    #[test]
+    fn record_usage_event_keeps_free_turns_at_zero_cash() {
+        let dir = scratch_dir("usage-free");
+        let exec = agalma_contracts::ExecutionId::new("exec:usage-free:1");
+        record_usage_event(
+            &dir,
+            &exec,
+            &OperationId::new("op:usage-free"),
+            "build",
+            "builder",
+            "opencode/big-pickle",
+            "builder:fix",
+            1,
+            Usage {
+                tokens_in: 41_970,
+                tokens_out: 3_361,
+                cost_usd: 0.0,
+                completeness: Completeness::Complete,
+            },
+            1_000,
+        )
+        .expect("record usage");
+        let ledger = SqliteLedger::open(dir.join("ledger.sqlite")).expect("open ledger");
+        let events = ledger.events(&exec).expect("events");
+        let usage = events
+            .iter()
+            .find(|e| e.kind == "usage")
+            .expect("usage event");
+        assert_eq!(usage.payload["cash_usd"].as_f64().unwrap(), 0.0);
+        assert_eq!(usage.payload["quota_usd"].as_f64().unwrap(), 0.0);
     }
 
     #[test]

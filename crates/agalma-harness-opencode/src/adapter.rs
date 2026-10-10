@@ -95,6 +95,16 @@ pub struct OpenCodeHarnessConfig {
     /// bypasses the proxy. When `None`, no proxy variables are injected (an
     /// unconfined or otherwise network-enabled launch stays reachable).
     pub proxy_url: Option<String>,
+    /// Paid HTTP-forward mode (`agalma-csw.2`): when set, the isolated XDG
+    /// config points `provider_id` at `provider_base_url` (the loopback paid
+    /// proxy) with `provider_api_key` as a **dummy** credential. The real token
+    /// never enters the sandbox; the parent proxy injects it upstream.
+    pub provider_base_url: Option<String>,
+    /// Provider id to override (e.g. `opencode-go`). Defaults to `opencode-go`
+    /// when [`OpenCodeHarnessConfig::provider_base_url`] is set.
+    pub provider_id: Option<String>,
+    /// Dummy API key for the overridden provider (never a real credential).
+    pub provider_api_key: Option<String>,
     /// How long `start_attempt` waits for `/api/info` to answer.
     pub readiness_timeout: Duration,
 }
@@ -118,9 +128,39 @@ impl OpenCodeHarnessConfig {
             program: None,
             model: None,
             proxy_url: None,
+            provider_base_url: None,
+            provider_id: None,
+            provider_api_key: None,
             readiness_timeout: Duration::from_secs(30),
         }
     }
+}
+
+/// Default provider id used when no explicit id is configured.
+pub const DEFAULT_PAID_PROVIDER_ID: &str = "opencode-go";
+/// Dummy credential handed to the confined provider in paid mode.
+pub const DUMMY_PROVIDER_KEY: &str = "agalma-proxy";
+
+/// Render the isolated OpenCode config that overrides a provider's base URL
+/// (`agalma-csw.2`).
+///
+/// Shape verified against the OpenCode v2 provider config
+/// (<https://opencode.ai/docs/providers/>, "Base URL"): the provider is keyed by
+/// id under `provider`, and the endpoint is `options.baseURL`. The api key is
+/// provided separately via the provider's env var (`OPENCODE_API_KEY`), so the
+/// config carries no credential.
+pub fn render_provider_config(provider_id: &str, base_url: &str) -> String {
+    serde_json::json!({
+        "$schema": "https://opencode.ai/config.json",
+        "provider": {
+            provider_id: {
+                "options": {
+                    "baseURL": base_url,
+                }
+            }
+        }
+    })
+    .to_string()
 }
 
 struct OcOp {
@@ -303,6 +343,31 @@ impl OpenCodeHarness {
             "OPENCODE_CONFIG_DIR".to_string(),
             workspace_abs.to_string_lossy().into_owned(),
         );
+
+        // Paid HTTP-forward mode: point the provider at the loopback proxy with
+        // a dummy key. The provider config must live in `OPENCODE_CONFIG_DIR`
+        // (== the workspace; see the short-circuit note above), so it is written
+        // there and locally excluded from the candidate commit.
+        if let Some(base_url) = self
+            .config
+            .provider_base_url
+            .clone()
+            .filter(|url| !url.is_empty())
+        {
+            let provider_id = self
+                .config
+                .provider_id
+                .clone()
+                .unwrap_or_else(|| DEFAULT_PAID_PROVIDER_ID.to_string());
+            write_provider_config(&workspace_abs, &provider_id, &base_url)?;
+            env.insert(
+                "OPENCODE_API_KEY".to_string(),
+                self.config
+                    .provider_api_key
+                    .clone()
+                    .unwrap_or_else(|| DUMMY_PROVIDER_KEY.to_string()),
+            );
+        }
 
         // Provider egress: when the composition root supplies a parent-owned
         // loopback proxy, the confined server must route provider traffic
@@ -655,6 +720,38 @@ fn derive_extra_ro(program: &Path) -> PathBuf {
         .unwrap_or_else(|| real.clone())
 }
 
+/// Write the provider base-URL override into `workspace/opencode.json` and, when
+/// the workspace is a git repo, locally exclude it so it never enters the
+/// candidate commit (`agalma-csw.2`).
+fn write_provider_config(
+    workspace: &Path,
+    provider_id: &str,
+    base_url: &str,
+) -> Result<PathBuf, ContractError> {
+    let path = workspace.join("opencode.json");
+    fs::write(&path, render_provider_config(provider_id, base_url)).map_err(|e| {
+        ContractError::KnownFailure(format!("write provider config {}: {e}", path.display()))
+    })?;
+    // Local excludes are per-clone and never committed; a missing `.git` (a
+    // non-repo fixture checkout) is fine — there is no candidate commit then.
+    let exclude = workspace.join(".git").join("info").join("exclude");
+    if workspace.join(".git").is_dir() {
+        if let Some(parent) = exclude.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let existing = fs::read_to_string(&exclude).unwrap_or_default();
+        if !existing.lines().any(|line| line.trim() == "opencode.json") {
+            let mut updated = existing;
+            if !updated.is_empty() && !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            updated.push_str("opencode.json\n");
+            let _ = fs::write(&exclude, updated);
+        }
+    }
+    Ok(path)
+}
+
 /// Split `provider/model` into provider and model id.
 fn split_model(model: &str) -> (String, String) {
     match model.split_once('/') {
@@ -797,6 +894,58 @@ mod tests {
             Some("fix it".into())
         );
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn render_provider_config_uses_options_baseurl_shape() {
+        let json = render_provider_config("opencode-go", "http://127.0.0.1:4444");
+        let value: Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(
+            value
+                .pointer("/provider/opencode-go/options/baseURL")
+                .and_then(Value::as_str),
+            Some("http://127.0.0.1:4444")
+        );
+        // No credential is ever embedded in the config.
+        assert!(!json.contains("Bearer"));
+        assert!(!json.contains("apiKey"));
+    }
+
+    #[test]
+    fn write_provider_config_places_file_and_locally_excludes_it() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("test-runs")
+            .join(format!("provider-config-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let workspace = dir.join("checkout");
+        fs::create_dir_all(workspace.join(".git").join("info")).expect("git info dir");
+        let path = write_provider_config(&workspace, "opencode-go", "http://127.0.0.1:9999")
+            .expect("write config");
+        assert_eq!(path, workspace.join("opencode.json"));
+        let text = fs::read_to_string(&path).expect("read config");
+        assert!(text.contains("http://127.0.0.1:9999"), "{text}");
+        let exclude =
+            fs::read_to_string(workspace.join(".git").join("info").join("exclude")).unwrap();
+        assert!(
+            exclude.lines().any(|l| l.trim() == "opencode.json"),
+            "{exclude}"
+        );
+        // Idempotent: a second write does not duplicate the exclude entry.
+        write_provider_config(&workspace, "opencode-go", "http://127.0.0.1:9999").unwrap();
+        let exclude =
+            fs::read_to_string(workspace.join(".git").join("info").join("exclude")).unwrap();
+        assert_eq!(
+            exclude
+                .lines()
+                .filter(|l| l.trim() == "opencode.json")
+                .count(),
+            1,
+            "{exclude}"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -148,6 +148,7 @@ fn build_harness(
         profile_path: origin.state_dir.join("unused-worker.sb"),
         builder_prompt: origin.state_dir.join("unused-builder.md"),
         proxy_url: None,
+        paid_proxy: false,
         extra_ro_roots: Vec::new(),
         toolchain_env: BTreeMap::new(),
         turn_timeout: Duration::from_secs(5),

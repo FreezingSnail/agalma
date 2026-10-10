@@ -11,6 +11,7 @@ pub mod cli;
 pub mod composition;
 pub mod config;
 pub mod digest;
+pub mod execution_process;
 pub mod harness_binding;
 pub mod harness_process;
 pub mod ledger_process;

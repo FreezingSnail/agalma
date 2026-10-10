@@ -86,7 +86,7 @@ pub struct StaleLease {
 
 /// Result of reclaiming a task: a new lease, prior-process reconciliation, and
 /// stale-intent settlement.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reclaim {
     /// The lease generation before reclaim (the prior claim).
     pub previous_lease: u32,

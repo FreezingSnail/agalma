@@ -12,6 +12,7 @@ dependencies = [
  "agalma-harness-opencode",
  "agalma-harness-reference",
  "agalma-ipc",
+ "agalma-kernel",
  "agalma-ledger",
  "agalma-sandbox",
  "agalma-taskqueue",
@@ -92,6 +93,7 @@ version = "0.1.0"
 dependencies = [
  "agalma-contracts",
  "agalma-execution",
+ "agalma-ipc",
  "agalma-ledger",
  "serde",
  "serde_json",

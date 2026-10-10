@@ -285,7 +285,9 @@ pub fn coarse_state(state: ExecState) -> agalma_contracts::ExecutionState {
 }
 
 /// One recorded operation within a reconstructed [`crate::state::KernelState`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` (B1.7): part of the `ExecutionApi` wire state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperationRecord {
     pub state: OperationState,
     /// Content hash of the operation's inputs (conflict anchor).
@@ -295,7 +297,9 @@ pub struct OperationRecord {
 }
 
 /// One recorded directive version.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` (B1.7): part of the `ExecutionApi` wire state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirectiveRecord {
     pub version: u64,
     pub content_hash: String,

@@ -11,13 +11,18 @@ use std::collections::BTreeMap;
 use agalma_contracts::{
     ArtifactRef, ExecutionId, ExecutionPhase, ExecutionRecord, OperationId, TaskId,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::exec_def::{
     coarse_state, DirectiveRecord, ExecState, OperationRecord, OperationState, EXEC_DEF_VERSION,
 };
 
 /// Canonical per-execution kernel state.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` (B1.7) let the reconstructed state cross the
+/// `ExecutionApi` process boundary as JSON without an implementation-crate edge
+/// into `agalma-ipc`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KernelState {
     pub execution_id: ExecutionId,
     pub task_id: TaskId,

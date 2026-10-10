@@ -13,7 +13,7 @@ use agalma_contracts::{
     LedgerApi, OperationId, OperationReceipt, SandboxApi, StopEvidence, TaskId, TimerRecord,
 };
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::crash::{
@@ -46,7 +46,7 @@ pub const META_KERNEL_VERSION: &str = "kernel_version";
 pub const EXPECTED_LEDGER_SCHEMA_VERSION: u32 = 3;
 
 /// Outcome of applying one command.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ApplyOutcome {
     /// The resulting reconstructed state.
     pub state: KernelState,
@@ -60,7 +60,7 @@ pub struct ApplyOutcome {
 }
 
 /// Outcome of firing one due timer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimerFire {
     pub timer_id: String,
     /// True when this call recorded the `TimerFired` event; false when it was
@@ -81,8 +81,10 @@ pub struct KernelEngine<L: LedgerApi> {
     schema_mismatch: Option<(u32, u32)>,
     /// Optional process-lifecycle seam (component contract). Injected like the
     /// activity registry; the kernel never calls it from the transition, only
-    /// from the engine's ownership/cancellation paths.
-    sandbox: Option<Box<dyn SandboxApi>>,
+    /// from the engine's ownership/cancellation paths. `+ Send` (B1.7) so a
+    /// `KernelEngine` can be hosted behind the `ExecutionApi` process boundary
+    /// (`register_execution` requires `Send`).
+    sandbox: Option<Box<dyn SandboxApi + Send>>,
 }
 
 impl<L: LedgerApi> KernelEngine<L> {
@@ -185,7 +187,7 @@ impl<L: LedgerApi> KernelEngine<L> {
     /// Consuming builder: `KernelEngine::open(ledger)?.with_sandbox(Box::new(sb))`.
     /// Without a sandbox the engine can still fence stale leases; it cannot
     /// confirm termination of a prior process and parks reclaim instead.
-    pub fn with_sandbox(mut self, sandbox: Box<dyn SandboxApi>) -> Self {
+    pub fn with_sandbox(mut self, sandbox: Box<dyn SandboxApi + Send>) -> Self {
         self.sandbox = Some(sandbox);
         self
     }
@@ -196,8 +198,8 @@ impl<L: LedgerApi> KernelEngine<L> {
     }
 
     /// Mutable access to the bound sandbox, if any.
-    pub fn sandbox_mut(&mut self) -> Option<&mut (dyn SandboxApi + 'static)> {
-        self.sandbox.as_deref_mut()
+    pub fn sandbox_mut(&mut self) -> Option<&mut (dyn SandboxApi + Send + 'static)> {
+        self.sandbox.as_mut().map(|sandbox| &mut **sandbox)
     }
 
     /// The resolved execution definition.

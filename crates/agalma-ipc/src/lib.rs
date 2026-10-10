@@ -20,6 +20,9 @@
 //!   reconcile-projection client and its method-registration helper (B1.5).
 //! - [`ledger_client`]/[`ledger_server`]: the typed durable-state `LedgerApi` +
 //!   snapshot file-transfer client and its method-registration helper (B1.6).
+//! - [`execution_client`]/[`execution_server`]: the kernel-candidate
+//!   `ExecutionApi` + kernel engine surface client and its method-registration
+//!   helper (B1.7).
 //!
 //! `agalma-ipc` is **infrastructure**, not an implementation crate: the
 //! architecture lint (`crates/agalma-conductor/tests/architecture.rs`) permits
@@ -30,6 +33,8 @@ pub mod client;
 pub mod command;
 pub mod envelope;
 pub mod error;
+pub mod execution_client;
+pub mod execution_server;
 pub mod frame;
 pub mod harness_client;
 pub mod harness_server;
@@ -47,6 +52,11 @@ pub use client::Client;
 pub use command::CommandSpec;
 pub use envelope::{Request, Response, ResponseError, PROTOCOL_VERSION};
 pub use error::{IpcError, CODE_PROTOCOL, CODE_UNAVAILABLE};
+pub use execution_client::{
+    DirectiveExecCall, ExecIdCall, ExecutionClient, ExecutionOps, KernelCall, LeaseExecCall,
+    NowCall, ReceiptCall, ReclaimCall, SnapshotPathCall, StartCall, TimerExecParams,
+};
+pub use execution_server::{register_execution, EXECUTION_METHODS};
 pub use frame::{FrameError, MAX_FRAME};
 pub use harness_client::{
     AttemptCall, HarnessClient, OperationCall, RunTurnCall, SessionCall,

@@ -25,6 +25,7 @@ agalma-harness-reference = { path = "../agalma-harness-reference" }
 agalma-ipc = { path = "../agalma-ipc" }
 agalma-taskqueue = { path = "../agalma-taskqueue" }
 agalma-decision = { path = "../agalma-decision" }
+agalma-kernel = { path = "../agalma-kernel" }
 clap = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

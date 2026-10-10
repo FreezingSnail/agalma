@@ -40,6 +40,7 @@ A Rust workspace implementing the factory core. The conductor drives a queue of 
 | `agalma-taskqueue` | `bd` backlog adapter |
 | `agalma-decision` | Decision contract, static policies, model routing |
 | `agalma-harness-opencode` | OpenCode v2 adapter (`opencode serve`, SSE normalization) |
+| `agalma-ipc` | Framed JSON transport: clients/server runtimes for extracted boundaries |
 | `agalma-harness-reference` | Deterministic reference adapter for parity tests |
 
 ### CLI
@@ -61,7 +62,7 @@ agalma models     Print the model routing table and active routes
 | M0 — skeleton | ✅ | `docs/m0-exit-evidence.md` (recovery matrix 6/6, kill switch, schema gate) |
 | M1 — working loop | ✅ | `docs/m1-exit-evidence.md` (seeded batch on a scratch clone, metrics, digest) |
 | B0 — durable execution kernel | ✅ | `docs/b0-exit-evidence.md` (protected recovery pack 10/10, upgrade/rollback, resource baseline) |
-| B1 — component extraction | ⏳ next | extract modules behind process/socket boundaries per contract tiers |
+| B1 — component extraction | ✅ | `docs/b1-exit-evidence.md` (Tier-1 seams behind process boundaries; parity/rebind/rollback per boundary) |
 | M2 — bench + promotion + nerve | planned | blocked on B1 |
 | M3 — always-on baseline | planned | MVP exit |
 | P1 — autonomy gate | planned | removes transitional human review |

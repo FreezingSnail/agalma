@@ -38,11 +38,13 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use std::collections::BTreeMap;
+
 use agalma_contracts::{
     BindingRecord, BindingState, CommitBatch, CommitReceipt, ContractError, DecisionOutcome,
     DecisionRequest, DigestRecord, DirectiveRow, DirectiveState, DispatchIntent, ExecutionEvent,
     ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState, LedgerApi, OperationId,
-    OperationReceipt, TaskId, TimerRecord, TimerState,
+    OperationReceipt, StateSnapshot, TaskId, TimerRecord, TimerState, SNAPSHOT_FORMAT,
 };
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -52,6 +54,11 @@ mod tests;
 
 /// Persisted physical schema version. Bump only with a migration.
 pub const SCHEMA_VERSION: u32 = 3;
+
+/// `kernel_meta` key holding the persisted execution-definition version.
+const META_EXEC_DEF_VERSION_KEY: &str = "exec_def_version";
+/// `kernel_meta` key holding the persisted kernel implementation version.
+const META_KERNEL_VERSION_KEY: &str = "kernel_version";
 
 /// Physical schema v1: S0c seed plus `component_bindings`.
 ///
@@ -1007,6 +1014,188 @@ impl LedgerApi for SqliteLedger {
             .map_err(db_err)?;
         Ok(())
     }
+
+    fn export_state(&self) -> Result<StateSnapshot, ContractError> {
+        let kernel_meta = all_kernel_meta(&self.conn)?;
+        let exec_def_version = kernel_meta
+            .get(META_EXEC_DEF_VERSION_KEY)
+            .cloned()
+            .unwrap_or_default();
+        let kernel_version = kernel_meta
+            .get(META_KERNEL_VERSION_KEY)
+            .cloned()
+            .unwrap_or_default();
+        Ok(StateSnapshot {
+            format: SNAPSHOT_FORMAT.to_string(),
+            schema_version: self.stored_schema_version()?.unwrap_or(0),
+            exec_def_version,
+            kernel_version,
+            kill_latch: self.kill_latch()?,
+            kernel_meta,
+            lease_generations: read_lease_generations(&self.conn)?,
+            executions: self.executions()?,
+            events: all_events(&self.conn)?,
+            receipts: all_receipts(&self.conn)?,
+            intents: all_intents(&self.conn)?,
+            timers: all_timers(&self.conn)?,
+            directives: all_directives(&self.conn)?,
+            bindings: self.bindings()?,
+        })
+    }
+
+    fn import_state(&mut self, snapshot: &StateSnapshot) -> Result<(), ContractError> {
+        self.ensure_compatible()?;
+        snapshot
+            .check_compatible(SCHEMA_VERSION)
+            .map_err(|reason| {
+                ContractError::Conflict(format!("refusing snapshot import: {reason}"))
+            })?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_err)?;
+
+        // Replace every state table, preserving schema_version (meta) and the
+        // kill_latch row.
+        tx.execute_batch(
+            "DELETE FROM executions; \
+             DELETE FROM operations; \
+             DELETE FROM execution_events; \
+             DELETE FROM dispatch_intents; \
+             DELETE FROM timers; \
+             DELETE FROM directives; \
+             DELETE FROM component_bindings; \
+             DELETE FROM kernel_meta; \
+             DELETE FROM meta WHERE key LIKE 'lease_generation:%'; \
+             UPDATE kill_latch SET active=0, updated_at=0 WHERE id=1;",
+        )
+        .map_err(db_err)?;
+
+        for record in &snapshot.executions {
+            write_state(&tx, record, record.revision)?;
+        }
+        for event in &snapshot.events {
+            tx.execute(
+                "INSERT INTO execution_events(execution_id,sequence,kind,payload,recorded_at) \
+                 VALUES(?1,?2,?3,?4,?5)",
+                params![
+                    event.execution_id.as_str(),
+                    sql_u64(event.sequence),
+                    event.kind,
+                    serde_json::to_string(&event.payload).map_err(json_err)?,
+                    sql_u64(event.recorded_at_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for receipt in &snapshot.receipts {
+            tx.execute(
+                "INSERT INTO operations(operation_id,execution_id,kind,inputs_hash,result_json,completed_at) \
+                 VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    receipt.operation_id.as_str(),
+                    receipt.execution_id.as_str(),
+                    receipt.kind,
+                    receipt.inputs_hash,
+                    serde_json::to_string(&receipt.result).map_err(json_err)?,
+                    sql_u64(receipt.completed_at_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for intent in &snapshot.intents {
+            tx.execute(
+                "INSERT INTO dispatch_intents(operation_id,execution_id,payload,enqueued_at,consumed) \
+                 VALUES(?1,?2,?3,?4,?5)",
+                params![
+                    intent.operation_id.as_str(),
+                    intent.execution_id.as_str(),
+                    serde_json::to_string(&intent.payload).map_err(json_err)?,
+                    sql_u64(intent.enqueued_at_unix_ms),
+                    i64::from(intent.consumed),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for timer in &snapshot.timers {
+            tx.execute(
+                "INSERT INTO timers(timer_id,execution_id,kind,fire_at,state,payload) \
+                 VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    timer.timer_id,
+                    timer.execution_id.as_str(),
+                    timer.kind,
+                    sql_u64(timer.fire_at_unix_ms),
+                    timer_state_str(timer.state),
+                    serde_json::to_string(&timer.payload).map_err(json_err)?,
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for directive in &snapshot.directives {
+            tx.execute(
+                "INSERT INTO directives(directive_id,version,source,state,payload,received_at) \
+                 VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    directive.directive_id,
+                    sql_u64(directive.version),
+                    directive.source,
+                    directive_state_str(directive.state),
+                    serde_json::to_string(&directive.payload).map_err(json_err)?,
+                    sql_u64(directive.received_at_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for binding in &snapshot.bindings {
+            tx.execute(
+                "INSERT INTO component_bindings( \
+                   binding_id,component_api,api_version,implementation,implementation_version, \
+                   capabilities,required_capabilities,optional_capabilities,config_hash,generation,state \
+                 ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                params![
+                    binding.binding_id.as_str(),
+                    binding.component_api,
+                    i64::from(binding.api_version),
+                    binding.implementation,
+                    binding.implementation_version,
+                    serde_json::to_string(&binding.capabilities).map_err(json_err)?,
+                    serde_json::to_string(&binding.required_capabilities).map_err(json_err)?,
+                    serde_json::to_string(&binding.optional_capabilities).map_err(json_err)?,
+                    binding.config_hash,
+                    sql_u64(binding.generation),
+                    binding_state_str(binding.state),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for (key, value) in &snapshot.kernel_meta {
+            tx.execute(
+                "INSERT INTO kernel_meta(key,value) VALUES(?1,?2)",
+                params![key, value],
+            )
+            .map_err(db_err)?;
+        }
+        for (task, generation) in &snapshot.lease_generations {
+            tx.execute(
+                "INSERT INTO meta(key,value) VALUES(?1,?2)",
+                params![
+                    lease_key(&TaskId::new(task.clone())),
+                    generation.to_string()
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        if snapshot.kill_latch {
+            tx.execute(
+                "UPDATE kill_latch SET active=1, updated_at=?1 WHERE id=1",
+                params![sql_u64(now_ms())],
+            )
+            .map_err(db_err)?;
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
 }
 
 fn execution_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExecutionRecord> {
@@ -1156,6 +1345,154 @@ fn read_directive(
     )
     .optional()
     .map_err(db_err)
+}
+
+fn collect_rows<T>(
+    rows: impl Iterator<Item = rusqlite::Result<T>>,
+) -> Result<Vec<T>, ContractError> {
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(db_err)?);
+    }
+    Ok(out)
+}
+
+fn all_events(conn: &Connection) -> Result<Vec<ExecutionEvent>, ContractError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT execution_id,sequence,kind,payload,recorded_at FROM execution_events \
+             ORDER BY execution_id, sequence",
+        )
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |row| {
+            let payload: String = row.get(3)?;
+            Ok(ExecutionEvent {
+                execution_id: ExecutionId::new(row.get::<_, String>(0)?),
+                sequence: row.get::<_, i64>(1)? as u64,
+                kind: row.get(2)?,
+                payload: serde_json::from_str(&payload).map_err(|e| conversion_err(3, e))?,
+                recorded_at_unix_ms: row.get::<_, i64>(4)? as u64,
+            })
+        })
+        .map_err(db_err)?;
+    collect_rows(rows)
+}
+
+fn all_receipts(conn: &Connection) -> Result<Vec<OperationReceipt>, ContractError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT operation_id,execution_id,kind,inputs_hash,result_json,completed_at \
+             FROM operations ORDER BY operation_id",
+        )
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |row| {
+            let result: String = row.get(4)?;
+            Ok(OperationReceipt {
+                operation_id: OperationId::new(row.get::<_, String>(0)?),
+                execution_id: ExecutionId::new(row.get::<_, String>(1)?),
+                kind: row.get(2)?,
+                inputs_hash: row.get(3)?,
+                result: serde_json::from_str(&result).map_err(|e| conversion_err(4, e))?,
+                completed_at_unix_ms: row.get::<_, i64>(5)? as u64,
+            })
+        })
+        .map_err(db_err)?;
+    collect_rows(rows)
+}
+
+fn all_intents(conn: &Connection) -> Result<Vec<DispatchIntent>, ContractError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT operation_id,execution_id,payload,enqueued_at,consumed \
+             FROM dispatch_intents ORDER BY operation_id",
+        )
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |row| {
+            let payload: String = row.get(2)?;
+            Ok(DispatchIntent {
+                operation_id: OperationId::new(row.get::<_, String>(0)?),
+                execution_id: ExecutionId::new(row.get::<_, String>(1)?),
+                payload: serde_json::from_str(&payload).map_err(|e| conversion_err(2, e))?,
+                enqueued_at_unix_ms: row.get::<_, i64>(3)? as u64,
+                consumed: row.get::<_, i64>(4)? != 0,
+            })
+        })
+        .map_err(db_err)?;
+    collect_rows(rows)
+}
+
+fn all_timers(conn: &Connection) -> Result<Vec<TimerRecord>, ContractError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT timer_id,execution_id,kind,fire_at,state,payload FROM timers \
+             ORDER BY timer_id",
+        )
+        .map_err(db_err)?;
+    let rows = stmt.query_map([], timer_from_row).map_err(db_err)?;
+    collect_rows(rows)
+}
+
+fn all_directives(conn: &Connection) -> Result<Vec<DirectiveRow>, ContractError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT directive_id,version,source,state,payload,received_at FROM directives \
+             ORDER BY directive_id",
+        )
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |row| {
+            let state: String = row.get(3)?;
+            let payload: String = row.get(4)?;
+            Ok(DirectiveRow {
+                directive_id: row.get(0)?,
+                version: row.get::<_, i64>(1)? as u64,
+                source: row.get(2)?,
+                state: directive_state_from(&state).ok_or_else(|| bad_column(3, "state"))?,
+                payload: serde_json::from_str(&payload).map_err(|e| conversion_err(4, e))?,
+                received_at_unix_ms: row.get::<_, i64>(5)? as u64,
+            })
+        })
+        .map_err(db_err)?;
+    collect_rows(rows)
+}
+
+fn all_kernel_meta(conn: &Connection) -> Result<BTreeMap<String, String>, ContractError> {
+    let mut stmt = conn
+        .prepare("SELECT key,value FROM kernel_meta ORDER BY key")
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(db_err)?;
+    let mut out = BTreeMap::new();
+    for row in rows {
+        let (key, value) = row.map_err(db_err)?;
+        out.insert(key, value);
+    }
+    Ok(out)
+}
+
+fn read_lease_generations(conn: &Connection) -> Result<BTreeMap<String, u32>, ContractError> {
+    let mut stmt = conn
+        .prepare("SELECT key,value FROM meta WHERE key LIKE 'lease_generation:%' ORDER BY key")
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(db_err)?;
+    let mut out = BTreeMap::new();
+    for row in rows {
+        let (key, value) = row.map_err(db_err)?;
+        if let Some(task) = key.strip_prefix("lease_generation:") {
+            out.insert(task.to_string(), value.parse().unwrap_or(0));
+        }
+    }
+    Ok(out)
 }
 
 fn timer_state_str(state: TimerState) -> &'static str {

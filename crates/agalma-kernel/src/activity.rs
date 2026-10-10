@@ -451,6 +451,58 @@ pub fn recover_pending<L: LedgerApi>(
     Ok(results)
 }
 
+/// Reconcile every pending activity operation of `execution_id`, ignoring the
+/// kill latch.
+///
+/// Used by the staged-activation procedure ([`crate::activation`]): the latch is
+/// set to stop **new** dispatch while the binding is swapped, but effects that
+/// are already in flight must still be reconciled. A parked execution still
+/// stops recovery; an absent effect is left pending (it resumes under its pinned
+/// binding after activation) and never re-executed here. Ambiguous effects
+/// return [`OperationResult::Parked`].
+pub fn settle_pending<L: LedgerApi>(
+    engine: &mut KernelEngine<L>,
+    registry: &mut ActivityRegistry,
+    execution_id: &ExecutionId,
+    now_unix_ms: u64,
+) -> Result<Vec<OperationResult>, ContractError> {
+    let mut results = Vec::new();
+    for intent in engine.pending_dispatch()? {
+        if &intent.execution_id != execution_id {
+            continue;
+        }
+        let state = engine.load(execution_id)?;
+        if state.state == ExecState::Parked {
+            break;
+        }
+        let Some(mut meta) = PendingMeta::from_intent(&intent) else {
+            continue;
+        };
+        meta.now_unix_ms = now_unix_ms;
+        if engine.receipt(&meta.operation_id)?.is_some() {
+            continue;
+        }
+        let ctx = meta.context(engine)?;
+        match call_reconcile(registry, &ctx)? {
+            EffectProbe::Present(outcome) => results.push(complete(engine, &meta, outcome, true)?),
+            // Absent: leave pending for the post-activation resume.
+            EffectProbe::Absent => {}
+            EffectProbe::Ambiguous => {
+                let apply = engine.apply(
+                    &meta.execution_id,
+                    &meta.command(),
+                    &meta.inputs(Probe::Unknown),
+                )?;
+                results.push(OperationResult::Parked {
+                    operation_id: meta.operation_id.clone(),
+                    reason: apply.state.parked_reason.unwrap_or_default(),
+                });
+            }
+        }
+    }
+    Ok(results)
+}
+
 fn pending_meta<L: LedgerApi>(
     engine: &KernelEngine<L>,
     operation_id: &OperationId,

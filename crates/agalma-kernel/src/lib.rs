@@ -75,6 +75,7 @@
 //! - **Kill latch.** Blocks recovered dispatch (`recover_pending`) as well as new
 //!   work, and survives restart.
 
+pub mod activation;
 pub mod activity;
 pub mod binding;
 pub mod crash;
@@ -85,15 +86,21 @@ mod hash;
 pub mod ownership;
 pub mod state;
 pub mod transition;
+pub mod upgrade;
 
+pub use activation::{
+    capability_gate, restore, rollback, staged_activate, ActivationReport, ActivationStep,
+    ReconcileOutcome, RestoreDomain, RestoreReconciler, RestoreReport, ACTIVATION_EVIDENCE_PREFIX,
+    RESTORE_EVIDENCE_PREFIX, ROLLBACK_EVIDENCE_PREFIX,
+};
 pub use activity::{
-    operation_input_hash, recover_pending, run_activity, ActivityContext, ActivityDef,
-    ActivityError, ActivityHandler, ActivityOutcome, ActivityRegistry, EffectProbe,
+    operation_input_hash, recover_pending, run_activity, settle_pending, ActivityContext,
+    ActivityDef, ActivityError, ActivityHandler, ActivityOutcome, ActivityRegistry, EffectProbe,
     OperationRequest, OperationResult,
 };
 pub use binding::{active_binding, pinned_binding, BindingPin};
 pub use decision::{decision_inputs_hash, run_decision, DecisionRun};
-pub use engine::{replay, ApplyOutcome, KernelEngine, TimerFire};
+pub use engine::{replay, ApplyOutcome, KernelEngine, TimerFire, EXPECTED_LEDGER_SCHEMA_VERSION};
 pub use exec_def::{
     Command, DirectivePlan, DirectiveStep, ExecDef, ExecState, Inputs, KernelEvent,
     OperationRecord, OperationState, Probe, EXEC_DEF_VERSION, KERNEL_VERSION,
@@ -104,6 +111,10 @@ pub use ownership::{
 };
 pub use state::KernelState;
 pub use transition::{detect_conflict, step, transition, Conflict, Effect, StepResult};
+pub use upgrade::{
+    check_candidate, CandidateReport, ExecutionCheck, Migration, MigrationRegistry,
+    VersionLabelMigration,
+};
 
 // Re-export the frozen contract crate the kernel implements against, so the
 // dependency is explicit.

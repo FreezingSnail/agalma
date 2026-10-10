@@ -36,6 +36,15 @@ pub const META_EXEC_DEF_VERSION: &str = "exec_def_version";
 /// Ledger key holding the persisted kernel implementation version.
 pub const META_KERNEL_VERSION: &str = "kernel_version";
 
+/// Physical ledger schema version this kernel build understands.
+///
+/// Mirrors `agalma_ledger::SCHEMA_VERSION` (the kernel deliberately depends only
+/// on the frozen contracts, so it carries its own copy and refuses a mismatch
+/// rather than importing an implementation crate). A stored schema that differs
+/// parks the kernel: it never auto-migrates and never writes under a schema it
+/// does not understand.
+pub const EXPECTED_LEDGER_SCHEMA_VERSION: u32 = 3;
+
 /// Outcome of applying one command.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ApplyOutcome {
@@ -66,6 +75,10 @@ pub struct KernelEngine<L: LedgerApi> {
     /// Set when the persisted `exec_def_version` is unknown: every load/apply
     /// parks rather than guessing.
     unknown_version: Option<String>,
+    /// Set when the ledger's physical schema version is not the one this kernel
+    /// understands: every load/apply parks rather than writing under an unknown
+    /// schema.
+    schema_mismatch: Option<(u32, u32)>,
     /// Optional process-lifecycle seam (component contract). Injected like the
     /// activity registry; the kernel never calls it from the transition, only
     /// from the engine's ownership/cancellation paths.
@@ -79,28 +92,92 @@ impl<L: LedgerApi> KernelEngine<L> {
     /// `kernel_meta`. A stored `exec_def_version` the kernel does not know opens
     /// successfully but parks all work (never a guess, never a silent upgrade).
     pub fn open(mut ledger: L) -> Result<Self, ContractError> {
+        let schema_version = ledger.schema_version()?;
+        let schema_mismatch = (schema_version != EXPECTED_LEDGER_SCHEMA_VERSION)
+            .then_some((schema_version, EXPECTED_LEDGER_SCHEMA_VERSION));
         let stored = ledger.kernel_meta_get(META_EXEC_DEF_VERSION)?;
-        match stored {
-            None => {
-                ledger.kernel_meta_set(META_EXEC_DEF_VERSION, EXEC_DEF_VERSION)?;
-                ledger.kernel_meta_set(META_KERNEL_VERSION, KERNEL_VERSION)?;
-                Ok(KernelEngine {
-                    ledger,
-                    exec_def: ExecDef::v1(),
-                    unknown_version: None,
-                    sandbox: None,
-                })
-            }
-            Some(version) => {
-                let unknown_version = ExecDef::for_version(&version).is_none().then_some(version);
-                Ok(KernelEngine {
-                    ledger,
-                    exec_def: ExecDef::v1(),
-                    unknown_version,
-                    sandbox: None,
-                })
+        let unknown_version = match (&stored, schema_mismatch) {
+            (Some(version), None) => ExecDef::for_version(version)
+                .is_none()
+                .then(|| version.clone()),
+            _ => None,
+        };
+        if stored.is_none() && schema_mismatch.is_none() {
+            ledger.kernel_meta_set(META_EXEC_DEF_VERSION, EXEC_DEF_VERSION)?;
+            ledger.kernel_meta_set(META_KERNEL_VERSION, KERNEL_VERSION)?;
+        }
+        Ok(KernelEngine {
+            ledger,
+            exec_def: ExecDef::v1(),
+            unknown_version,
+            schema_mismatch,
+            sandbox: None,
+        })
+    }
+
+    /// Open the kernel, applying an explicit migration for an unknown
+    /// `exec_def_version` when `migrations` resolves one to the current
+    /// definition.
+    ///
+    /// `docs/b0-kernel.md` §"Upgrade, activation, rollback": migrations are
+    /// explicit; incompatible state with no migration still parks. The
+    /// migration runs before any work is reconstructed, and only through the
+    /// [`agalma_contracts::LedgerApi`] (no external effects).
+    pub fn open_with_migrations(
+        mut ledger: L,
+        migrations: &crate::upgrade::MigrationRegistry,
+    ) -> Result<Self, ContractError> {
+        let schema_version = ledger.schema_version()?;
+        if schema_version != EXPECTED_LEDGER_SCHEMA_VERSION {
+            // A schema mismatch parks; never migrate history under it.
+            return KernelEngine::open(ledger);
+        }
+        if let Some(version) = ledger.kernel_meta_get(META_EXEC_DEF_VERSION)? {
+            if ExecDef::for_version(&version).is_none() {
+                if let Some(migration) = migrations.resolve(&version, EXEC_DEF_VERSION) {
+                    migration.migrate(&mut ledger)?;
+                }
             }
         }
+        KernelEngine::open(ledger)
+    }
+
+    /// Re-read the persisted contract versions and schema after an import.
+    fn refresh_incompat(&mut self) -> Result<(), ContractError> {
+        let schema_version = self.ledger.schema_version()?;
+        self.schema_mismatch = (schema_version != EXPECTED_LEDGER_SCHEMA_VERSION)
+            .then_some((schema_version, EXPECTED_LEDGER_SCHEMA_VERSION));
+        let stored = self.ledger.kernel_meta_get(META_EXEC_DEF_VERSION)?;
+        self.unknown_version = match (&stored, self.schema_mismatch) {
+            (Some(version), None) => ExecDef::for_version(version)
+                .is_none()
+                .then(|| version.clone()),
+            _ => None,
+        };
+        Ok(())
+    }
+
+    /// The ledger schema mismatch `(found, expected)`, if the kernel parked on
+    /// one.
+    pub fn schema_mismatch(&self) -> Option<(u32, u32)> {
+        self.schema_mismatch
+    }
+
+    /// Export the complete canonical state as a versioned snapshot
+    /// (history + projection + receipts + intents + timers + directives +
+    /// bindings + contract versions).
+    pub fn export_state(&self) -> Result<agalma_contracts::StateSnapshot, ContractError> {
+        self.ledger.export_state()
+    }
+
+    /// Replace all durable state with `snapshot` (a compatible replacement),
+    /// then re-evaluate compatibility. Refuses an incompatible snapshot.
+    pub fn import_state(
+        &mut self,
+        snapshot: &agalma_contracts::StateSnapshot,
+    ) -> Result<(), ContractError> {
+        self.ledger.import_state(snapshot)?;
+        self.refresh_incompat()
     }
 
     /// Inject the [`SandboxApi`] seam (process-tree termination + evidence).
@@ -149,6 +226,15 @@ impl<L: LedgerApi> KernelEngine<L> {
     /// agree with the stored projection. A mismatch (or unknown `exec_def`
     /// version) yields a parked state, never a guess.
     pub fn load(&self, execution_id: &ExecutionId) -> Result<KernelState, ContractError> {
+        if let Some((found, expected)) = self.schema_mismatch {
+            return Ok(KernelState::parked(
+                execution_id,
+                format!(
+                    "incompatible ledger schema version {found} (kernel expects {expected}); \
+                     parked (no guessing)"
+                ),
+            ));
+        }
         if let Some(version) = &self.unknown_version {
             return Ok(KernelState::parked(
                 execution_id,
@@ -693,7 +779,7 @@ impl<L: LedgerApi> KernelEngine<L> {
     ///
     /// Parks via the ambiguous-effect path (no probe evidence) so the durable
     /// projection and history stay in agreement; nothing dispatches.
-    fn park_blocked(
+    pub(crate) fn park_blocked(
         &mut self,
         execution_id: &ExecutionId,
         reason: &str,

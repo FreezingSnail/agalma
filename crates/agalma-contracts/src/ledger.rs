@@ -13,6 +13,7 @@ use crate::decision::{DecisionOutcome, DecisionRequest};
 use crate::error::ContractError;
 use crate::execution::{ExecutionPhase, ExecutionState};
 use crate::ids::{ArtifactRef, ExecutionId, OperationId, TaskId};
+use crate::snapshot::StateSnapshot;
 
 /// Durable row for one execution.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -298,4 +299,19 @@ pub trait LedgerApi {
     /// Used when the owning operation is cancelled: queued work must be
     /// released rather than left pending for recovery.
     fn consume_dispatch_intent(&mut self, operation_id: &OperationId) -> Result<(), ContractError>;
+
+    /// Export the complete canonical state as a versioned [`StateSnapshot`].
+    ///
+    /// `docs/b0-kernel.md` §"Ledger schema v3": history + projection + receipts
+    /// plus dispatch intents + timers + directives + bindings + kernel contract
+    /// versions, producing a canonical JSON document with a format header.
+    fn export_state(&self) -> Result<StateSnapshot, ContractError>;
+
+    /// Replace all durable state with `snapshot`, atomically.
+    ///
+    /// Refuses a snapshot whose format header or physical `schema_version` is
+    /// incompatible ([`StateSnapshot::check_compatible`]) rather than applying
+    /// it partially. Preserves canonical ids, receipts, and pending work
+    /// (including the consumed flag of each dispatch intent).
+    fn import_state(&mut self, snapshot: &StateSnapshot) -> Result<(), ContractError>;
 }

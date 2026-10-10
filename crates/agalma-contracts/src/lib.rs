@@ -19,6 +19,7 @@ pub mod harness;
 pub mod ids;
 pub mod ledger;
 pub mod sandbox;
+pub mod snapshot;
 pub mod taskqueue;
 pub mod workspace;
 
@@ -42,6 +43,7 @@ pub use ledger::{
     ExecutionEvent, ExecutionRecord, LedgerApi, OperationReceipt, TimerRecord, TimerState,
 };
 pub use sandbox::{LaunchSpec, SandboxApi, SandboxChild};
+pub use snapshot::{StateSnapshot, SNAPSHOT_FORMAT};
 pub use taskqueue::{
     ClaimEvidence, ReadyTasks, SkipReason, SkippedIssue, Task, TaskFamily, TaskPriority,
     TaskQueueApi,

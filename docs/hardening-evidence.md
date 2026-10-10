@@ -209,3 +209,133 @@ Run after the batch against the live tree at `3b63e1b`:
 - Digest `attempts`/`commands` accounting for stall-then-retry paths.
 - `postmortem.md` for stall-parks.
 - Integrate working-tree refresh (pre-existing, cross-bead).
+
+---
+
+# M1.6 — stall fix batch evidence (agalma-csw.3)
+
+Bead: `agalma-csw.3` (S1 fix). Epic: `agalma-csw` (M1.6). Base HEAD: `69001ab`
+(S1 root-cause, `agalma-csw.1`). Date: 2026-10-10. This section is **appended**;
+the H4 evidence above is unchanged.
+
+The S1 spike (`docs/spikes/stall-root-cause.md`) proved the free-route "stall" was
+an **adapter projection gap**: sessions progressed (tokens, tool steps) while the
+harness surfaced no events until terminal, so `progress_fingerprint` stayed
+constant and the idle watchdog false-classified live turns as idle. The batch's
+`SessionNotFoundError` was a second artifact: `close_session` (DELETE) ran before
+the stall arm's `cancel_operation` (interrupt).
+
+## What changed
+
+1. **Live progress surfacing (adapter).** `translate::events_from` now emits a
+   best-effort partial `UsageSnapshot` from the running session projection's live
+   token counters (populated on each completed step), and `read_events` also
+   translates the live `GET /api/session/{id}/message` page into a `ToolOutcome`
+   per terminal tool part (`completed`→ok, `error`→err). Terminal behavior is
+   unchanged (`Completed`/`Failed` still emit full usage + terminal event).
+2. **Fingerprint advances with those deltas.** `progress_fingerprint` already
+   sums token deltas and `steps = read_events().len()`, so the new partial
+   snapshot and per-tool events make it move mid-turn.
+3. **Cancel ordering.** `settle_after_poll` cancels (`cancel_operation`) **before**
+   `close_session` for `Stalled`/`TimedOut` in the build, reference, and verifier
+   paths; the adapter's `cancel_ack_from_response` treats a 404 as
+   "already gone" (Ok, unacknowledged), so our own close can never surface a
+   false `SessionNotFoundError`.
+4. **Watchdog semantics preserved.** With real progress signals, 120 s idle is a
+   genuine stall; no threshold changed.
+
+## Environment
+
+- Fresh scratch clone (`git clone --no-hardlinks` of the live tree at `69001ab`)
+  into `target/test-runs/hardening-batch/run-2/target`, isolated bd store
+  (`bd init`, prefix `agalma`). The conductor ran from the live working tree
+  (with the uncommitted `agalma-csw.3` changes); the scratch clone is only the
+  workspace/origin under test.
+- Same four seed tasks and exact wording as M1.8/H4 (bodies copied byte-for-byte
+  from the H4 `tasks/t{1..4}.md`). New ids:
+  `agalma-6me`=seed-task-1 (README, fix), `agalma-85l`=seed-task-3 (builder.md,
+  fix), `agalma-s08`=seed-task-2 (task-authoring.md, feature),
+  `agalma-tvz`=seed-task-4 (conventions.md, feature).
+- Command (no `--model`; routing v1 free default; `AGALMA_ALLOW_PAID` unset → free
+  route, paid credential present but gated off):
+
+  ```
+  cargo run --offline -p agalma-conductor -- work \
+    --repo <clone> --max-tasks 4 --state-dir <clone>/state
+  ```
+
+- Batch wall: `2026-10-10T13:49:12Z → 14:01:49Z` = **757 s (12.6 min)**
+  (`EXIT=0`), inside the 60-minute timebox.
+
+## Batch results
+
+| id | Exec | Family | Route | Attempts | Verdict | `wall_ms` | Stalls | Tokens in/out |
+|----|------|--------|-------|----------|---------|-----------|--------|---------------|
+| `agalma-6me` | `exec:agalma-6me:1` | fix | `builder:fix` | 1 | **done (green)** | 153 407 | 0 | 17 822 / 974 |
+| `agalma-85l` | `exec:agalma-85l:1` | fix | `builder:fix` | 1 | **done (green)** | 169 263 | 0 | 21 796 / 2 661 |
+| `agalma-s08` | `exec:agalma-s08:1` | feature | `builder:feature` | 1 | **done (green)** | 52 542 | 0 | 25 246 / 2 713 |
+| `agalma-tvz` | `exec:agalma-tvz:1` | feature | `builder:feature` | 2 (attempt 1 stalled, attempt 2 green) | **done (green)** | 359 385 | 1 | 0/0 (att 1) then 16 207 / 1 262 |
+
+Model for every execution: `opencode/big-pickle` (routing v1 free default).
+
+Terminal evidence in the clone:
+
+- All four `m1/exec-*` tags exist and `main` (`f6a39e3`) carries all four
+  candidate commits (linear). Only merged-on-green paths produce these tags.
+- Every task bd status `closed`, `close_reason: done: green` (no parks).
+- Merged content on `main` verified: README names `verifier` (1) and not `tester`
+  (0); `docs/task-authoring.md` and `docs/conventions.md` exist;
+  `prompts/builder.md` contains both `acceptance commands` and
+  `do not edit the tests`.
+- Every execution persisted a digest (`verdict: green`).
+
+## Metrics vs H4
+
+| Metric | H4 (`agalma-zxi.5`) | run-2 (this fix) | Change |
+|--------|---------------------|------------------|--------|
+| Success rate | 1/4 = **25%** | 4/4 = **100%** | **+75 pts** |
+| Merges | 1 | 4 | +3 |
+| Batch wall | 980 s (16.3 min) | 757 s (**12.6 min**) | **1.29× faster** |
+| Stalls (`provider_health`) | 7 | **1** | −6 |
+| Stalls with `tokens:0` | 7/7 | **0/1** | progress now visible |
+| Stall verdict latency | ~120.2 s idle (wall ≈120.4 s) | 120.1 s idle (wall **232.8 s**) | progress detected for ~112 s before a genuine idle window |
+| `SessionNotFoundError` / `interrupt -> 404` | 6 logged | **0 logged** | cancel-before-close fixed |
+| Parked tasks | 3 | 0 | — |
+| $/merge (cash) | $0.00 | $0.00 | = |
+
+## Findings
+
+- **The projection gap is fixed.** Tokens and tool deltas now reach the watchdog
+  mid-turn. The single stall (`agalma-tvz` attempt 1) recorded `tokens: 9 239`
+  on its `provider_health` event — versus `tokens: 0` for every H4 stall — and
+  its `wall_ms` (232.8 s) exceeds the idle bound (120.1 s), i.e. the watchdog saw
+  ~112 s of real progress before firing on a genuinely quiet window. Attempt 2
+  recovered to green.
+- **The 404 is gone.** The `close_session`-before-`cancel_operation` ordering
+  produced six `interrupt -> 404 SessionNotFoundError` lines in H4 and **zero**
+  here; `cancel_operation` now runs against a live session.
+- **Free-tier tasks complete.** Three of four tasks finished on the first attempt;
+  the fourth needed one retry after a real 120 s quiet window. The false-stall
+  cascade that parked 3/4 tasks in H4 did not recur.
+- **Known limitation (step granularity).** Liveness is emitted on step/tool
+  *completion* (projection tokens, message tool parts). A single tool step that
+  runs without completing for >120 s still reads as idle; `agalma-tvz` attempt 1
+  is consistent with that boundary. This is a genuine idle by the watchdog's
+  definition and recovered by retry, so no threshold change was made.
+
+## Deviations / open items
+
+1. **One genuine stall remains** (`agalma-tvz` attempt 1), recovered by the
+   existing retry path. It is not a false positive: no token/step delta for the
+   full 120 s idle window. Reported honestly rather than hidden by a threshold
+   bump.
+2. **Digest `attempts`/`commands` still under-report** the stall-then-retry path
+   (same pre-existing measurement gap noted in H4); token counts now appear in
+   `usage` events for the productive attempts.
+3. **`tools/t*.md` seed bodies** were reused from the H4 run directory; titles
+   `seed-task-1..4` and ids differ from H4, so triage order differs, but the
+   per-task wording is byte-identical.
+4. **No product-code commit/push and no bd writes** were performed (per bead
+   constraints); the scratch clone's commits/tags/bd writes are isolated under
+   `target/test-runs/hardening-batch/run-2/`.
+5. **Timebox met** (12.6 min batch < 60 min).

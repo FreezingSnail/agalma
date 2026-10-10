@@ -70,12 +70,35 @@ pub(crate) fn state_from_session(session: &Value) -> OperationState {
     }
 }
 
-/// Normalize a session projection plus an optional durable-log body. The log
-/// contributes `ToolOutcome` events (best-effort) before the terminal events.
-pub(crate) fn events_from(session: &Value, log: Option<&str>) -> Vec<Event> {
+/// Live usage from a running session projection, if it carries token counters.
+///
+/// The projection aggregates tokens per completed step even while `outcome` is
+/// absent, so this is a real progress signal for a running turn. `None` means
+/// the projection has no `tokens` object at all (nothing to report yet).
+fn running_usage(session: &Value) -> Option<Usage> {
+    session
+        .pointer("/data/tokens")
+        .is_some()
+        .then(|| usage_from_session(session, Completeness::Partial))
+}
+
+/// Normalize a session projection plus optional durable-log and message bodies.
+///
+/// The log and message list contribute `ToolOutcome` events (best-effort)
+/// before the terminal events. While the turn is running, the projection's live
+/// token counters are surfaced as a partial `UsageSnapshot` so a progress
+/// watcher can see the turn advancing instead of mis-reading it as idle.
+pub(crate) fn events_from(
+    session: &Value,
+    log: Option<&str>,
+    messages: Option<&str>,
+) -> Vec<Event> {
     let mut events = vec![Event::TurnStarted];
     if let Some(body) = log {
         events.extend(tool_events_from_log(body));
+    }
+    if let Some(body) = messages {
+        events.extend(tool_events_from_messages(body));
     }
     match state_from_session(session) {
         OperationState::Completed { result_ref, usage } => {
@@ -87,7 +110,13 @@ pub(crate) fn events_from(session: &Value, log: Option<&str>) -> Vec<Event> {
             events.push(Event::UsageSnapshot { usage });
             events.push(Event::TurnFailed { reason });
         }
-        _ => {}
+        _ => {
+            // Running: emit a partial snapshot when the projection has counters.
+            // Terminal behavior (above) is unchanged.
+            if let Some(usage) = running_usage(session) {
+                events.push(Event::UsageSnapshot { usage });
+            }
+        }
     }
     events
 }
@@ -150,6 +179,61 @@ pub(crate) fn tool_events_from_log(body: &str) -> Vec<Event> {
     out
 }
 
+/// Best-effort `ToolOutcome` extraction from `GET /api/session/{id}/message`.
+///
+/// The response is `{"data":[<message>, ...]}`; assistant messages carry a
+/// `content` array whose `tool` parts hold `state.status`. A `completed` tool is
+/// an `Ok` outcome and an `error` tool an `Error` outcome; `streaming`/`running`
+/// parts are not terminal and are skipped. This is the live step signal for a
+/// running turn. Any unexpected shape degrades to "no tool events", never a
+/// failure.
+pub(crate) fn tool_events_from_messages(body: &str) -> Vec<Event> {
+    let Ok(root) = serde_json::from_str::<Value>(body) else {
+        return Vec::new();
+    };
+    let messages: &[Value] = match root.get("data") {
+        Some(Value::Array(items)) => items,
+        None => match &root {
+            Value::Array(items) => items,
+            _ => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for message in messages {
+        let Some(content) = message.get("content").and_then(Value::as_array) else {
+            continue;
+        };
+        for part in content {
+            if part.get("type").and_then(Value::as_str) != Some("tool") {
+                continue;
+            }
+            let outcome = match part.pointer("/state/status").and_then(Value::as_str) {
+                Some("completed") => ToolResult::Ok,
+                Some("error") => ToolResult::Error,
+                _ => continue,
+            };
+            let tool = part
+                .get("name")
+                .or_else(|| part.get("tool"))
+                .and_then(Value::as_str)
+                .unwrap_or("tool")
+                .to_string();
+            let detail = part
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            out.push(Event::ToolOutcome {
+                tool,
+                outcome,
+                detail,
+            });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,15 +249,58 @@ mod tests {
     const NO_USAGE: &str = include_str!("../tests/fixtures/session_no_usage.json");
     /// A durable log fragment with tool terminal frames and the sync marker.
     const LOG_TOOLS: &str = include_str!("../tests/fixtures/log_tools.txt");
+    /// A live `GET /api/session/{id}/message` page: one assistant message with a
+    /// completed tool, a running tool, and an errored tool.
+    const MESSAGES_LIVE: &str = include_str!("../tests/fixtures/session_messages.json");
 
     fn parse(text: &str) -> Value {
         serde_json::from_str(text).expect("fixture is valid json")
     }
 
     #[test]
-    fn running_session_is_not_terminal_and_has_only_turn_started() {
-        let events = events_from(&parse(RUNNING), None);
+    fn running_session_surfaces_partial_usage_not_terminal() {
+        // The projection carries a `tokens` object, so a partial snapshot is
+        // surfaced for a running turn (the progress signal the watchdog reads).
+        // No terminal event is emitted.
+        let events = events_from(&parse(RUNNING), None, None);
+        assert_eq!(
+            events.iter().map(Event::kind).collect::<Vec<_>>(),
+            vec!["TurnStarted", "UsageSnapshot"]
+        );
+        assert!(matches!(
+            &events[1],
+            Event::UsageSnapshot { usage }
+                if usage.completeness == Completeness::Partial
+                    && usage.tokens_in == 0
+                    && usage.tokens_out == 0
+        ));
+    }
+
+    #[test]
+    fn running_session_without_tokens_emits_only_turn_started() {
+        // No `tokens` object at all: there is no usage to report yet.
+        let session = parse(r#"{"data":{"id":"ses_x"}}"#);
+        let events = events_from(&session, None, None);
         assert_eq!(events, vec![Event::TurnStarted]);
+    }
+
+    #[test]
+    fn running_progress_moves_the_event_delta() {
+        let early = events_from(
+            &parse(r#"{"data":{"tokens":{"input":10,"output":2}}}"#),
+            None,
+            None,
+        );
+        let later = events_from(
+            &parse(r#"{"data":{"tokens":{"input":6151,"output":61}}}"#),
+            None,
+            None,
+        );
+        assert_ne!(early, later, "token growth must change the event set");
+        assert!(matches!(
+            &later[1],
+            Event::UsageSnapshot { usage } if usage.tokens_in == 6151 && usage.tokens_out == 61
+        ));
     }
 
     #[test]
@@ -188,7 +315,7 @@ mod tests {
             }
             other => panic!("expected Completed, got {other:?}"),
         }
-        let events = events_from(&parse(SUCCEEDED), None);
+        let events = events_from(&parse(SUCCEEDED), None, None);
         assert_eq!(
             events.iter().map(Event::kind).collect::<Vec<_>>(),
             vec!["TurnStarted", "UsageSnapshot", "TurnCompleted"]
@@ -202,7 +329,7 @@ mod tests {
             OperationState::Failed { reason } => assert_eq!(reason, "interrupted"),
             other => panic!("expected Failed, got {other:?}"),
         }
-        let events = events_from(&parse(INTERRUPTED), None);
+        let events = events_from(&parse(INTERRUPTED), None, None);
         assert_eq!(
             events.iter().map(Event::kind).collect::<Vec<_>>(),
             vec!["TurnStarted", "UsageSnapshot", "TurnFailed"]
@@ -249,12 +376,43 @@ mod tests {
     }
 
     #[test]
+    fn tool_outcomes_translated_from_messages() {
+        let events = tool_events_from_messages(MESSAGES_LIVE);
+        assert_eq!(events.len(), 2, "only terminal tool parts: {events:?}");
+        assert_eq!(
+            events[0],
+            Event::ToolOutcome {
+                tool: "bash".to_string(),
+                outcome: ToolResult::Ok,
+                detail: "call_completed".to_string(),
+            }
+        );
+        assert_eq!(
+            events[1],
+            Event::ToolOutcome {
+                tool: "edit".to_string(),
+                outcome: ToolResult::Error,
+                detail: "call_error".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn malformed_message_body_yields_no_tool_events() {
+        assert!(tool_events_from_messages("not json").is_empty());
+        assert!(tool_events_from_messages("{}").is_empty());
+        assert!(tool_events_from_messages(r#"{"data":[]}"#).is_empty());
+    }
+
+    #[test]
     fn combined_events_place_tools_before_terminal() {
-        let events = events_from(&parse(SUCCEEDED), Some(LOG_TOOLS));
+        let events = events_from(&parse(SUCCEEDED), Some(LOG_TOOLS), Some(MESSAGES_LIVE));
         assert_eq!(
             events.iter().map(Event::kind).collect::<Vec<_>>(),
             vec![
                 "TurnStarted",
+                "ToolOutcome",
+                "ToolOutcome",
                 "ToolOutcome",
                 "ToolOutcome",
                 "UsageSnapshot",

@@ -500,6 +500,22 @@ impl OpenCodeHarness {
         Ok(body)
     }
 
+    /// `GET /api/session/{id}/message`: the live projected messages. Best-effort
+    /// progress input (a running turn's tool parts move through `state.status`).
+    fn session_messages(&self, native: &str) -> Result<String, ContractError> {
+        let path = format!("/api/session/{native}/message");
+        let (code, body) = self
+            .http()?
+            .request("GET", &path, None)
+            .map_err(ContractError::UnknownOutcome)?;
+        if code != 200 {
+            return Err(ContractError::UnknownOutcome(format!(
+                "GET {path} -> {code}"
+            )));
+        }
+        Ok(body)
+    }
+
     fn resolve_model(&self, requested: &str) -> String {
         if !requested.is_empty() && requested != "role-default" {
             requested.to_string()
@@ -656,7 +672,14 @@ impl HarnessApi for OpenCodeHarness {
         // is authoritative.
         let log = self.session_log(&native).ok();
         let synced = log.as_deref().filter(|body| translate::log_synced(body));
-        Ok(translate::events_from(&session, synced))
+        // The live message list carries a running turn's tool-part state; it is
+        // pure progress, never authoritative, so a failure just drops it.
+        let messages = self.session_messages(&native).ok();
+        Ok(translate::events_from(
+            &session,
+            synced,
+            messages.as_deref(),
+        ))
     }
 
     fn cancel_operation(&mut self, op: &OperationHandle) -> Result<CancelAck, ContractError> {
@@ -666,22 +689,7 @@ impl HarnessApi for OpenCodeHarness {
             .http()?
             .request("POST", &path, None)
             .map_err(ContractError::KnownFailure)?;
-        if code != 200 {
-            return Err(ContractError::KnownFailure(format!(
-                "interrupt -> {code}: {resp}"
-            )));
-        }
-        let acknowledged = serde_json::from_str::<Value>(&resp)
-            .ok()
-            .and_then(|v| v.get("interrupted").and_then(Value::as_bool))
-            .unwrap_or(false);
-        Ok(CancelAck {
-            acknowledged,
-            // Acknowledgment is not termination; termination evidence comes from
-            // StopAttempt once the process tree is confirmed gone.
-            terminated: false,
-            detail: "opencode: interrupt request".to_string(),
-        })
+        cancel_ack_from_response(code, &resp)
     }
 
     fn close_session(&mut self, session: &SessionHandle) -> Result<(), ContractError> {
@@ -750,6 +758,38 @@ fn write_provider_config(
         }
     }
     Ok(path)
+}
+
+/// Decide the outcome of a cancel from the `interrupt` response.
+///
+/// A `404` means the session is already gone: it either ended on its own or a
+/// sibling closed it. That is benign — the conductor cancels *before* closing
+/// the session, so a 404 here must never surface as a false
+/// `SessionNotFoundError`. A non-200/404 status is a real error.
+fn cancel_ack_from_response(code: u16, resp: &str) -> Result<CancelAck, ContractError> {
+    if code == 404 {
+        return Ok(CancelAck {
+            acknowledged: false,
+            terminated: false,
+            detail: "opencode: session already gone (404)".to_string(),
+        });
+    }
+    if code != 200 {
+        return Err(ContractError::KnownFailure(format!(
+            "interrupt -> {code}: {resp}"
+        )));
+    }
+    let acknowledged = serde_json::from_str::<Value>(resp)
+        .ok()
+        .and_then(|v| v.get("interrupted").and_then(Value::as_bool))
+        .unwrap_or(false);
+    Ok(CancelAck {
+        acknowledged,
+        // Acknowledgment is not termination; termination evidence comes from
+        // StopAttempt once the process tree is confirmed gone.
+        terminated: false,
+        detail: "opencode: interrupt request".to_string(),
+    })
 }
 
 /// Split `provider/model` into provider and model id.
@@ -836,6 +876,31 @@ fn detect_version(program: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancel_404_is_already_gone_not_an_error() {
+        // Our own close before a cancel, or a session that ended on its own,
+        // must never surface as a false SessionNotFoundError.
+        let ack = cancel_ack_from_response(404, "{\"_tag\":\"SessionNotFoundError\"}")
+            .expect("404 tolerates as already gone");
+        assert!(!ack.acknowledged);
+        assert!(!ack.terminated);
+        assert!(ack.detail.contains("already gone"), "{ack:?}");
+    }
+
+    #[test]
+    fn cancel_200_reports_acknowledgment() {
+        let ack = cancel_ack_from_response(200, "{\"interrupted\":true}").expect("200 ok");
+        assert!(ack.acknowledged);
+        assert!(!ack.terminated, "ack is not termination");
+        let ack = cancel_ack_from_response(200, "{\"interrupted\":false}").expect("200 ok");
+        assert!(!ack.acknowledged);
+    }
+
+    #[test]
+    fn cancel_other_status_is_an_error() {
+        assert!(cancel_ack_from_response(500, "boom").is_err());
+    }
 
     #[test]
     fn split_model_handles_provider_prefix() {

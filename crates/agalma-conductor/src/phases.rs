@@ -49,7 +49,7 @@ use std::time::{Duration, Instant};
 
 use agalma_contracts::harness::{
     AttemptHandle, Completeness, CreateSessionRequest, Event, HarnessApi, Limits, OperationHandle,
-    OperationState, RunTurnRequest, StartAttemptRequest, Usage,
+    OperationState, RunTurnRequest, SessionHandle, StartAttemptRequest, Usage,
 };
 use agalma_contracts::ids::{ArtifactRef, AttemptId};
 use agalma_contracts::sandbox::LaunchSpec;
@@ -707,7 +707,10 @@ impl BuildActivity {
             )
             .map_err(contract_err)?;
         let outcome = poll_terminal(harness, &op, self.deps.idle_timeout, self.deps.turn_timeout);
-        let _ = harness.close_session(&session);
+        // Cancel before close: the interrupt must reach a live session, and a
+        // 404 means it already ended (benign). A terminal outcome needs no
+        // cancel.
+        settle_after_poll(harness, &op, &session, &outcome, binding);
 
         let failure = ArtifactRef::derive(&format!("build@{}", ctx.attempt));
         match outcome {
@@ -737,12 +740,10 @@ impl BuildActivity {
                 })
             }
             PollOutcome::Stalled(stall) => {
-                // Progress watchdog / session-gone: cancel and treat as a failed
+                // Progress watchdog / session-gone: the turn was already
+                // cancelled before close (see above). Treat it as a failed
                 // verdict (`stalled`) for the retry decision (retry while
                 // attempts remain, park otherwise).
-                if let Err(err) = harness.cancel_operation(&op) {
-                    eprintln!("agalma: build cancel after stall: {err}");
-                }
                 self.note_provider_health(ctx, binding, &stall);
                 self.note_stalled_retry_decision(ctx);
                 eprintln!(
@@ -770,9 +771,6 @@ impl BuildActivity {
                 // candidate tree: a red verify drives the executor's bounded
                 // build retry, a green verify integrates. This avoids discarding
                 // a working edit just because the model never signed off.
-                if let Err(err) = harness.cancel_operation(&op) {
-                    eprintln!("agalma: build cancel after timeout: {err}");
-                }
                 self.note_provider_health(
                     ctx,
                     binding,
@@ -996,7 +994,10 @@ impl BuildActivity {
             )
             .map_err(contract_err)?;
         let outcome = poll_terminal(harness, &op, self.deps.idle_timeout, self.deps.turn_timeout);
-        let _ = harness.close_session(&session);
+        // Cancel before close: the interrupt must reach a live session, and a
+        // 404 means it already ended (benign). A terminal outcome needs no
+        // cancel.
+        settle_after_poll(harness, &op, &session, &outcome, binding);
 
         let failure = ArtifactRef::derive(&format!("build@{}", ctx.attempt));
         match outcome {
@@ -1023,7 +1024,6 @@ impl BuildActivity {
                 next: ActivityNext::Retry { failure },
             }),
             PollOutcome::Stalled(stall) => {
-                let _ = harness.cancel_operation(&op);
                 self.note_provider_health(ctx, binding, &stall);
                 self.note_stalled_retry_decision(ctx);
                 Ok(ActivityOutcome {
@@ -1037,13 +1037,10 @@ impl BuildActivity {
                     next: ActivityNext::Retry { failure },
                 })
             }
-            PollOutcome::TimedOut => {
-                let _ = harness.cancel_operation(&op);
-                Ok(ActivityOutcome {
-                    result: json!({ "status": "timeout", "attempt": ctx.attempt }),
-                    next: ActivityNext::Advance,
-                })
-            }
+            PollOutcome::TimedOut => Ok(ActivityOutcome {
+                result: json!({ "status": "timeout", "attempt": ctx.attempt }),
+                next: ActivityNext::Advance,
+            }),
         }
     }
 }
@@ -1525,7 +1522,13 @@ impl VerifyActivity {
             )
             .map_err(contract_err)?;
         let outcome = poll_terminal(harness, &op, self.deps.idle_timeout, self.deps.turn_timeout);
-        let _ = harness.close_session(&session);
+        settle_after_poll(
+            harness,
+            &op,
+            &session,
+            &outcome,
+            HarnessKind::OpenCode.as_str(),
+        );
         let usage = match outcome {
             PollOutcome::Terminal(OperationState::Completed { usage, .. }) => usage,
             PollOutcome::Terminal(OperationState::Failed { reason }) => {
@@ -1542,7 +1545,6 @@ impl VerifyActivity {
                 zero_usage()
             }
             PollOutcome::Stalled(stall) => {
-                let _ = harness.cancel_operation(&op);
                 record_provider_health(
                     &self.deps.state_dir,
                     &ctx.execution_id,
@@ -1561,7 +1563,6 @@ impl VerifyActivity {
                 zero_usage()
             }
             PollOutcome::TimedOut => {
-                let _ = harness.cancel_operation(&op);
                 record_provider_health(
                     &self.deps.state_dir,
                     &ctx.execution_id,
@@ -1579,10 +1580,7 @@ impl VerifyActivity {
                 .unwrap_or_else(|err| eprintln!("agalma: provider_health for verifier: {err}"));
                 zero_usage()
             }
-            PollOutcome::Terminal(_) => {
-                let _ = harness.cancel_operation(&op);
-                zero_usage()
-            }
+            PollOutcome::Terminal(_) => zero_usage(),
         };
         // The verifier is expected to write the diagnosis itself (the prompt
         // names the absolute output path). If it did not, record a fallback so
@@ -2584,6 +2582,42 @@ fn transport_error_is_terminal(err: &ContractError) -> bool {
         || text.contains("connection closed")
 }
 
+/// Cancel an operation, treating a "session gone" error as benign.
+///
+/// The conductor cancels *before* closing the session so the interrupt reaches
+/// a live session. If the session already ended on its own, the cancel 404s;
+/// that is "already gone", not an error, and must not be reported as a failure.
+fn cancel_tolerating_gone<H: HarnessApi>(harness: &mut H, op: &OperationHandle, context: &str) {
+    match harness.cancel_operation(op) {
+        Ok(_) => {}
+        Err(err) => {
+            if transport_error_is_terminal(&err) {
+                eprintln!("agalma: {context} cancel: session already gone");
+            } else {
+                eprintln!("agalma: {context} cancel: {err}");
+            }
+        }
+    }
+}
+
+/// Cancel (for non-terminal verdicts) then close the session, in that order.
+///
+/// The interrupt must reach a live session, so it runs before the DELETE; a
+/// terminal outcome needs no cancel. Centralized here so the ordering is
+/// provable in one place and identical across build/reference/verifier paths.
+fn settle_after_poll<H: HarnessApi>(
+    harness: &mut H,
+    op: &OperationHandle,
+    session: &SessionHandle,
+    outcome: &PollOutcome,
+    context: &str,
+) {
+    if matches!(outcome, PollOutcome::Stalled(_) | PollOutcome::TimedOut) {
+        cancel_tolerating_gone(harness, op, context);
+    }
+    let _ = harness.close_session(session);
+}
+
 /// Poll `inspect_operation` until terminal, a stall, or the hard wall bound.
 ///
 /// The progress watchdog cancels a session with no token/state delta for
@@ -2831,5 +2865,257 @@ mod tests {
         let text = render_builder_prompt("base", &deps, &dir, 2);
         assert!(text.contains("grep MAGIC"), "{text}");
         assert!(text.contains("the function returns 0"), "{text}");
+    }
+
+    // -----------------------------------------------------------------------
+    // S1 fix (agalma-csw.3): live progress keeps the watchdog honest, and the
+    // session is cancelled before it is closed.
+    // -----------------------------------------------------------------------
+
+    use agalma_contracts::harness::{CancelAck, Describe, StopEvidence, API_VERSION, HARNESS_API};
+    use agalma_contracts::ids::SessionId;
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum FakeMode {
+        /// A running turn whose token counters advance on every poll.
+        Progressing,
+        /// A running turn with a constant event set (a genuine hang).
+        Silent,
+    }
+
+    struct FakeTurn {
+        mode: FakeMode,
+        polls: u32,
+        terminal_after: u32,
+        /// Ordered record of `cancel`/`close` calls, to assert the fix's order.
+        calls: Vec<&'static str>,
+        /// When set, `cancel_operation` returns a session-gone 404.
+        cancel_gone: bool,
+    }
+
+    impl FakeTurn {
+        fn new(mode: FakeMode, terminal_after: u32) -> Self {
+            FakeTurn {
+                mode,
+                polls: 0,
+                terminal_after,
+                calls: Vec::new(),
+                cancel_gone: false,
+            }
+        }
+
+        fn op() -> OperationHandle {
+            OperationHandle {
+                id: OperationId::new("op:progress:turn/1"),
+            }
+        }
+
+        fn session() -> SessionHandle {
+            SessionHandle {
+                id: SessionId::derive(&AttemptId::derive(1), 1),
+            }
+        }
+    }
+
+    impl HarnessApi for FakeTurn {
+        fn describe(&self) -> Describe {
+            Describe {
+                api: HARNESS_API.to_string(),
+                api_version: API_VERSION,
+                impl_name: "fake".to_string(),
+                impl_version: "fake/v1".to_string(),
+                capabilities: Default::default(),
+            }
+        }
+
+        fn start_attempt(
+            &mut self,
+            _req: StartAttemptRequest,
+        ) -> Result<AttemptHandle, ContractError> {
+            Ok(AttemptHandle {
+                id: AttemptId::derive(1),
+            })
+        }
+
+        fn create_session(
+            &mut self,
+            _req: CreateSessionRequest,
+        ) -> Result<SessionHandle, ContractError> {
+            Ok(FakeTurn::session())
+        }
+
+        fn run_turn(
+            &mut self,
+            _session: &SessionHandle,
+            _req: RunTurnRequest,
+        ) -> Result<OperationHandle, ContractError> {
+            Ok(FakeTurn::op())
+        }
+
+        fn inspect_operation(
+            &mut self,
+            _op: &OperationHandle,
+        ) -> Result<OperationState, ContractError> {
+            self.polls += 1;
+            if self.polls >= self.terminal_after {
+                return Ok(OperationState::Completed {
+                    result_ref: ArtifactRef::derive("turn-result"),
+                    usage: Usage {
+                        tokens_in: self.polls as u64 * 1000,
+                        tokens_out: self.polls as u64,
+                        cost_usd: 0.0,
+                        completeness: Completeness::Complete,
+                    },
+                });
+            }
+            Ok(OperationState::Running)
+        }
+
+        fn read_events(&mut self, _op: &OperationHandle) -> Result<Vec<Event>, ContractError> {
+            let mut events = vec![Event::TurnStarted];
+            if self.mode == FakeMode::Progressing {
+                // A partial live snapshot that moves each poll.
+                events.push(Event::UsageSnapshot {
+                    usage: Usage {
+                        tokens_in: self.polls as u64 * 1000,
+                        tokens_out: self.polls as u64,
+                        cost_usd: 0.0,
+                        completeness: Completeness::Partial,
+                    },
+                });
+            }
+            Ok(events)
+        }
+
+        fn cancel_operation(&mut self, _op: &OperationHandle) -> Result<CancelAck, ContractError> {
+            self.calls.push("cancel");
+            if self.cancel_gone {
+                return Err(ContractError::UnknownOutcome(
+                    "GET /api/session/ses_x/interrupt -> 404".to_string(),
+                ));
+            }
+            Ok(CancelAck {
+                acknowledged: true,
+                terminated: false,
+                detail: "fake: interrupted".to_string(),
+            })
+        }
+
+        fn close_session(&mut self, _session: &SessionHandle) -> Result<(), ContractError> {
+            self.calls.push("close");
+            Ok(())
+        }
+
+        fn stop_attempt(
+            &mut self,
+            _attempt: &AttemptHandle,
+        ) -> Result<StopEvidence, ContractError> {
+            Ok(StopEvidence {
+                process_group_gone: true,
+                detail: "fake: stopped".to_string(),
+            })
+        }
+    }
+
+    #[test]
+    fn progressing_turn_never_false_stalls() {
+        // Terminal on the ~5th poll (~2 s) with a 1.2 s idle bound: a constant
+        // fingerprint would stall first; the moving partial snapshot keeps it
+        // alive to a real terminal state.
+        let mut harness = FakeTurn::new(FakeMode::Progressing, 5);
+        let op = FakeTurn::op();
+        let started = Instant::now();
+        let outcome = poll_terminal(
+            &mut harness,
+            &op,
+            Duration::from_millis(1200),
+            Duration::from_secs(30),
+        );
+        match outcome {
+            PollOutcome::Terminal(OperationState::Completed { usage, .. }) => {
+                assert_eq!(usage.tokens_in, 5000, "terminal usage preserved");
+            }
+            other => panic!(
+                "expected completion, got {other:?} after {:?}",
+                started.elapsed()
+            ),
+        }
+    }
+
+    #[test]
+    fn silent_turn_with_same_bound_still_stalls() {
+        // Control: without the progress signal the same turn is (correctly)
+        // classified idle — the watchdog semantics are preserved.
+        let mut harness = FakeTurn::new(FakeMode::Silent, 5);
+        let op = FakeTurn::op();
+        let outcome = poll_terminal(
+            &mut harness,
+            &op,
+            Duration::from_millis(1200),
+            Duration::from_secs(30),
+        );
+        match outcome {
+            PollOutcome::Stalled(stall) => {
+                assert_eq!(stall.reason, PollStallReason::Idle, "{stall:?}");
+            }
+            other => panic!("expected idle stall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_terminal_verdict_cancels_before_close() {
+        let mut harness = FakeTurn::new(FakeMode::Silent, 5);
+        let op = FakeTurn::op();
+        let session = FakeTurn::session();
+        let stall = PollOutcome::Stalled(PollStall {
+            reason: PollStallReason::Idle,
+            idle_ms: 120_000,
+            tokens: 0,
+            wall_ms: 120_000,
+            last_state: "Running".to_string(),
+        });
+        settle_after_poll(&mut harness, &op, &session, &stall, "test");
+        assert_eq!(
+            harness.calls,
+            vec!["cancel", "close"],
+            "interrupt must precede the DELETE"
+        );
+    }
+
+    #[test]
+    fn terminal_verdict_closes_without_cancelling() {
+        let mut harness = FakeTurn::new(FakeMode::Silent, 5);
+        let op = FakeTurn::op();
+        let session = FakeTurn::session();
+        let done = PollOutcome::Terminal(OperationState::Completed {
+            result_ref: ArtifactRef::derive("turn-result"),
+            usage: Usage {
+                tokens_in: 1,
+                tokens_out: 1,
+                cost_usd: 0.0,
+                completeness: Completeness::Complete,
+            },
+        });
+        settle_after_poll(&mut harness, &op, &session, &done, "test");
+        assert_eq!(harness.calls, vec!["close"]);
+    }
+
+    #[test]
+    fn cancel_404_is_benign_and_still_closes() {
+        // A session that ended on its own (or our own close) 404s the cancel;
+        // that is "already gone", not a failure, and the close still runs.
+        let mut harness = FakeTurn::new(FakeMode::Silent, 5);
+        harness.cancel_gone = true;
+        let op = FakeTurn::op();
+        let session = FakeTurn::session();
+        let stall = PollOutcome::Stalled(PollStall {
+            reason: PollStallReason::SessionGone,
+            idle_ms: 10,
+            tokens: 0,
+            wall_ms: 20,
+            last_state: "gone".to_string(),
+        });
+        settle_after_poll(&mut harness, &op, &session, &stall, "test");
+        assert_eq!(harness.calls, vec!["cancel", "close"]);
     }
 }

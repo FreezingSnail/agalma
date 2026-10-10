@@ -75,9 +75,11 @@ replacement procedure activates only when a replacement is actually scheduled.
 - Launch spec: each impl crate exports a `CommandSpec { program, args, env }`
   constructor for its server; the conductor registry maps binding
   `implementation` → spec. Registry data, not policy branching on vendor names.
-- Component servers are trusted code (`docs/component-contracts.md` §Authority)
-  but still launch through `SandboxApi` with a `component-server` profile.
-  Candidate/untrusted implementations keep the stricter confinement path.
+- Component servers are trusted code (`docs/component-contracts.md` §Authority):
+  the conductor launches them as supervised child processes (stdio/socket paths
+  under the run state dir). OS confinement (`SandboxApi`) is required for
+  candidate or untrusted implementations — API compatibility grants no new
+  authority (`component-contracts.md` §Authority and isolation).
 - A derived requirement: when a dependency boundary is extracted later, the
   already-extracted server switches to that dependency's client (e.g. the harness
   server uses the sandbox client after B1.3). Dependencies stay dependencies;

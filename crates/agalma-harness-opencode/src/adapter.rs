@@ -169,7 +169,7 @@ struct OcOp {
 
 /// OpenCode-backed [`HarnessApi`].
 pub struct OpenCodeHarness {
-    sandbox: Box<dyn SandboxApi>,
+    sandbox: Box<dyn SandboxApi + Send>,
     config: OpenCodeHarnessConfig,
     model: String,
     impl_version: String,
@@ -195,7 +195,7 @@ impl OpenCodeHarness {
     ///
     /// The sandbox implementation (the Seatbelt backend) is selected by the
     /// composition root, keeping this crate free of impl-to-impl edges.
-    pub fn new(sandbox: Box<dyn SandboxApi>, config: OpenCodeHarnessConfig) -> Self {
+    pub fn new(sandbox: Box<dyn SandboxApi + Send>, config: OpenCodeHarnessConfig) -> Self {
         let model = config
             .model
             .clone()

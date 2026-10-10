@@ -11,6 +11,7 @@ dependencies = [
  "agalma-execution",
  "agalma-harness-opencode",
  "agalma-harness-reference",
+ "agalma-ipc",
  "agalma-ledger",
  "agalma-sandbox",
  "agalma-taskqueue",
@@ -60,6 +61,7 @@ name = "agalma-harness-opencode"
 version = "0.1.0"
 dependencies = [
  "agalma-contracts",
+ "agalma-ipc",
  "agalma-sandbox",
  "serde_json",
  "tokio",
@@ -70,6 +72,7 @@ name = "agalma-harness-reference"
 version = "0.1.0"
 dependencies = [
  "agalma-contracts",
+ "agalma-ipc",
  "serde",
  "serde_json",
 ]

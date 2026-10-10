@@ -61,7 +61,7 @@ use agalma_decision::{StaticDecider, RETRY_ESCALATE_BASELINE};
 use agalma_execution::{
     Activity, ActivityError, ActivityNext, ActivityOutcome, EffectProbe, OperationContext,
 };
-use agalma_harness_opencode::{OpenCodeHarness, OpenCodeHarnessConfig};
+use agalma_harness_opencode::{build_config, OpenCodeConfigInit, OpenCodeHarness};
 use agalma_harness_reference::{ReferenceHarness, ReferenceHarnessConfig, ReferenceProfile};
 use agalma_ledger::SqliteLedger;
 use agalma_sandbox::{SandboxOutput, SeatbeltSandbox};
@@ -545,12 +545,6 @@ impl BuildActivity {
         // a verifier diagnosis artifact when M1.3 writes one).
         let prompt_path = write_builder_prompt(&self.deps, &root, ctx)?;
 
-        let mut config =
-            OpenCodeHarnessConfig::new(&self.deps.profile_path, &root, &protected, &sock);
-        config.model = Some(self.deps.model.clone());
-        config.proxy_url = self.deps.proxy_url.clone();
-        configure_provider_override(&mut config, &self.deps, &self.deps.model);
-        config.extra_ro_roots = self.deps.extra_ro_roots.clone();
         let mut env = self.deps.toolchain_env.clone();
         env.insert(
             "CARGO_HOME".to_string(),
@@ -562,7 +556,17 @@ impl BuildActivity {
             "CARGO_TARGET_DIR".to_string(),
             root.join("agent-target").to_string_lossy().into_owned(),
         );
-        config.extra_env = env;
+        let config = build_config(OpenCodeConfigInit {
+            profile_path: self.deps.profile_path.clone(),
+            attempt_dir: root.clone(),
+            protected_dir: protected.clone(),
+            sock_dir: sock.clone(),
+            model: self.deps.model.clone(),
+            proxy_url: self.deps.proxy_url.clone(),
+            paid_proxy: self.deps.paid_proxy,
+            extra_ro_roots: self.deps.extra_ro_roots.clone(),
+            extra_env: env,
+        });
 
         let mut harness = OpenCodeHarness::new(Box::new(SeatbeltSandbox::new()), config);
         let attempt = harness
@@ -1459,13 +1463,17 @@ impl VerifyActivity {
     ) -> Result<Usage, ActivityError> {
         let protected = canonical_dir(&root.join("protected"))?;
         let sock = canonical_dir(&root.join("sock"))?;
-        let mut config =
-            OpenCodeHarnessConfig::new(&self.deps.profile_path, root, &protected, &sock);
-        config.model = Some(self.deps.verifier_model.clone());
-        config.proxy_url = self.deps.proxy_url.clone();
-        configure_provider_override(&mut config, &self.deps, &self.deps.verifier_model);
-        config.extra_ro_roots = self.deps.extra_ro_roots.clone();
-        config.extra_env = self.deps.toolchain_env.clone();
+        let config = build_config(OpenCodeConfigInit {
+            profile_path: self.deps.profile_path.clone(),
+            attempt_dir: root.to_path_buf(),
+            protected_dir: protected.clone(),
+            sock_dir: sock.clone(),
+            model: self.deps.verifier_model.clone(),
+            proxy_url: self.deps.proxy_url.clone(),
+            paid_proxy: self.deps.paid_proxy,
+            extra_ro_roots: self.deps.extra_ro_roots.clone(),
+            extra_env: self.deps.toolchain_env.clone(),
+        });
 
         let mut harness = OpenCodeHarness::new(Box::new(SeatbeltSandbox::new()), config);
         let attempt = harness
@@ -1996,32 +2004,6 @@ fn apply_scripted_fix(checkout_path: &str) -> Result<(), ActivityError> {
         "//! Fixed by the scripted M0.8 build.\n\n/// Returns the answer the acceptance test expects.\npub fn answer() -> u32 {\n    42\n}\n",
     )
     .map_err(|e| ActivityError::KnownFailure(format!("apply scripted fix {}: {e}", src.display())))
-}
-
-/// Point the confined provider at the loopback paid proxy with a dummy key
-/// (`agalma-csw.2`). The real credential stays in the parent proxy; the sandbox
-/// only ever holds `agalma-proxy`.
-fn configure_provider_override(config: &mut OpenCodeHarnessConfig, deps: &PhaseDeps, model: &str) {
-    if !deps.paid_proxy {
-        return;
-    }
-    let Some(proxy_url) = deps.proxy_url.clone().filter(|url| !url.is_empty()) else {
-        return;
-    };
-    let provider = model
-        .split('/')
-        .next()
-        .filter(|p| !p.is_empty())
-        .unwrap_or("");
-    // Only the paid provider is pointed at the injecting proxy; a free
-    // `opencode/<model>` route keeps the transparent CONNECT tunnel (its base is
-    // the Zen endpoint, not the paid Go endpoint the proxy maps to).
-    if provider != crate::routing::PAID_PROVIDER {
-        return;
-    }
-    config.provider_base_url = Some(proxy_url);
-    config.provider_id = Some(provider.to_string());
-    config.provider_api_key = Some("agalma-proxy".to_string());
 }
 
 /// Write the per-attempt builder prompt under `<run>/prompts/` and return its

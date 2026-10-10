@@ -19,13 +19,21 @@
 //! edges. It depends only on `agalma-contracts`, `serde`, and `serde_json`.
 
 pub mod client;
+pub mod command;
 pub mod envelope;
 pub mod error;
 pub mod frame;
+pub mod harness_client;
+pub mod harness_server;
 pub mod server;
 
 pub use client::Client;
+pub use command::CommandSpec;
 pub use envelope::{Request, Response, ResponseError, PROTOCOL_VERSION};
 pub use error::{IpcError, CODE_PROTOCOL, CODE_UNAVAILABLE};
 pub use frame::{FrameError, MAX_FRAME};
-pub use server::{Handler, Server, ServerInfo};
+pub use harness_client::{
+    AttemptCall, HarnessClient, OperationCall, RunTurnCall, SessionCall,
+};
+pub use harness_server::{ensure_all_handlers, register_harness, server_info_from, HARNESS_METHODS};
+pub use server::{socket_from_args, Handler, Server, ServerInfo};

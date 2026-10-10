@@ -94,6 +94,11 @@ impl Server {
         self.handlers.insert(method.into(), Box::new(handler));
     }
 
+    /// Whether a handler is registered for `method`.
+    pub fn has_handler(&self, method: &str) -> bool {
+        self.handlers.contains_key(method)
+    }
+
     /// Bind the listener, remove any stale socket, and print the `READY` line.
     pub fn bind(&self, socket: &Path) -> std::io::Result<UnixListener> {
         // Remove a stale socket left by a previous run; ignore absence.

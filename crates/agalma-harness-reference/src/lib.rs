@@ -17,9 +17,14 @@
 
 mod adapter;
 mod scenario;
+mod server;
 
 pub use adapter::{ReferenceHarness, ReferenceHarnessConfig, ReferenceProfile};
 pub use scenario::{Mutation, ScriptedEvent, Turn, TurnScript};
+pub use server::{
+    build_server, profile_env_value, profile_from_env, run_from_args, scenario_dir_for,
+    server_command, server_env, serve, PROFILE_ENV, SCENARIO_DIR_ENV, SERVER_BIN,
+};
 
 use std::collections::BTreeSet;
 

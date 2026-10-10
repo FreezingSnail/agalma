@@ -12,6 +12,7 @@ pub mod composition;
 pub mod config;
 pub mod digest;
 pub mod harness_binding;
+pub mod harness_process;
 pub mod phases;
 pub mod provider_auth;
 pub mod provider_proxy;

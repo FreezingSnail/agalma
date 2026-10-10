@@ -32,6 +32,22 @@ pub const BUILDER_PROMPT: &str = include_str!("../prompts/builder.md");
 pub const DEFAULT_TURN_TIMEOUT: Duration = Duration::from_secs(600);
 /// Default bound on the sandboxed verify command.
 pub const DEFAULT_VERIFY_TIMEOUT: Duration = Duration::from_secs(900);
+/// Default idle bound for the progress watchdog (H1): a session with no
+/// token/state delta for this long is cancelled and classified `stalled`.
+pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Environment variable overriding [`DEFAULT_IDLE_TIMEOUT`] (whole seconds).
+pub const IDLE_TIMEOUT_ENV: &str = "AGALMA_IDLE_TIMEOUT_SECS";
+
+/// Resolve the idle watchdog bound from [`IDLE_TIMEOUT_ENV`] or the default.
+/// A non-numeric or zero value falls back to the default.
+pub fn resolve_idle_timeout() -> Duration {
+    std::env::var(IDLE_TIMEOUT_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_IDLE_TIMEOUT)
+}
 
 /// The wired service graph for one conductor process.
 pub struct Composition {
@@ -122,6 +138,7 @@ impl Composition {
             toolchain_env,
             turn_timeout: DEFAULT_TURN_TIMEOUT,
             verify_timeout: DEFAULT_VERIFY_TIMEOUT,
+            idle_timeout: resolve_idle_timeout(),
             repo: None,
             harness: harness_handle(HarnessChoice::OpenCode),
         };

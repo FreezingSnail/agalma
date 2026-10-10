@@ -98,6 +98,7 @@ fn build_harness(state_dir: &Path) -> Harness {
         toolchain_env: BTreeMap::new(),
         turn_timeout: Duration::from_secs(1),
         verify_timeout: Duration::from_secs(1),
+        idle_timeout: Duration::from_secs(1),
         repo: None,
         harness: agalma_conductor::harness_binding::harness_handle(
             agalma_conductor::harness_binding::HarnessChoice::OpenCode,

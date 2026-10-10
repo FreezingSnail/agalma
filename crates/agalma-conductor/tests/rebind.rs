@@ -149,6 +149,7 @@ fn build_harness(
         toolchain_env: BTreeMap::new(),
         turn_timeout: Duration::from_secs(5),
         verify_timeout: Duration::from_secs(5),
+        idle_timeout: Duration::from_secs(5),
         repo: Some(RepoMode {
             origin: origin.origin.clone(),
             base_ref: "main".to_string(),

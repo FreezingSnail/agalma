@@ -14,7 +14,8 @@
 //!    per-attempt prompt, verify runs the task's acceptance commands (each its own
 //!    launch), integrate CAS-merges the candidate into the origin and tags it.
 //! 3. **projection** — every phase transition appends a `bd comment`; a terminal
-//!    `done` closes the issue, `parked` adds the `parked` label and a reason.
+//!    `done` closes the issue, `parked` sets status `blocked` and adds the
+//!    `parked` label plus a reason.
 //!
 //! The loop keeps the M0 controls: the SIGTERM latch, the `STOP` sentinel, boot
 //! recovery ordering, and `--once` for tests. M1.6 adds **fenced leases** (a
@@ -340,6 +341,9 @@ fn finalize(
                 &task.task_id,
                 &format!("phase=parked execution={execution} lease={lease}"),
             )?;
+            // Parked is visible but unclaimed: status `blocked` (not
+            // `in_progress`) plus the `parked` label (H1 park projection).
+            queue.set_status(&task.task_id, "blocked")?;
             queue.add_label(&task.task_id, PARKED_LABEL)?;
             if let Some(summary) = &summary {
                 queue.comment(&task.task_id, summary)?;
@@ -566,6 +570,7 @@ fn phase_deps(
         toolchain_env,
         turn_timeout: DEFAULT_TURN_TIMEOUT,
         verify_timeout: DEFAULT_VERIFY_TIMEOUT,
+        idle_timeout: crate::composition::resolve_idle_timeout(),
         repo: Some(RepoMode {
             origin: repo.to_path_buf(),
             base_ref: task.base_ref.clone(),

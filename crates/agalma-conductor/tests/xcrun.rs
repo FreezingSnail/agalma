@@ -125,6 +125,7 @@ fn sandboxed_git_guard_runs_without_xcrun_noise() {
         toolchain_env: BTreeMap::new(),
         turn_timeout: Duration::from_secs(5),
         verify_timeout: Duration::from_secs(60),
+        idle_timeout: Duration::from_secs(5),
         repo: Some(RepoMode {
             origin,
             base_ref: "main".to_string(),

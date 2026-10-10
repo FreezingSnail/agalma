@@ -11,7 +11,8 @@
 //!
 //! - terminal `done` execution → issue `closed`, `parked` label removed, and a
 //!   `phase=done execution=… lease=…` comment present;
-//! - parked execution → `parked` label present and a `phase=parked …` comment;
+//! - parked execution → status `blocked`, `parked` label present, and a
+//!   `phase=parked …` comment;
 //! - active execution → status not `closed` and the current phase's comment.
 //!
 //! No writes are issued when the projection already matches, so a second
@@ -151,6 +152,11 @@ fn corrections_for(
             corrections.push(Correction::Comment(required));
         }
     } else if parked {
+        // Parked projections are visible but unclaimed: status `blocked` plus
+        // the `parked` label (H1). Repair drift back to `blocked` idempotently.
+        if projection.status != "blocked" {
+            corrections.push(Correction::Status("blocked".to_string()));
+        }
         if !projection.has_label(PARKED_LABEL) {
             corrections.push(Correction::AddLabel(PARKED_LABEL.to_string()));
         }

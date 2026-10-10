@@ -48,7 +48,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use agalma_contracts::harness::{
-    AttemptHandle, Completeness, CreateSessionRequest, HarnessApi, Limits, OperationHandle,
+    AttemptHandle, Completeness, CreateSessionRequest, Event, HarnessApi, Limits, OperationHandle,
     OperationState, RunTurnRequest, StartAttemptRequest, Usage,
 };
 use agalma_contracts::ids::{ArtifactRef, AttemptId};
@@ -153,6 +153,9 @@ pub struct PhaseDeps {
     pub turn_timeout: Duration,
     /// Bound on the verify command.
     pub verify_timeout: Duration,
+    /// Progress watchdog bound: a session with no token/state delta for this
+    /// long is cancelled and classified `stalled` (H1).
+    pub idle_timeout: Duration,
     /// Repo mode (M1): when set, checkout clones `origin` at `base_ref` and
     /// verify runs the task's acceptance commands instead of `cargo test`.
     pub repo: Option<RepoMode>,
@@ -579,7 +582,13 @@ impl BuildActivity {
         mark_started(&self.deps, &ctx.execution_id, "build", ctx.attempt)?;
 
         let started = Instant::now();
-        let outcome = self.drive(&mut harness, &attempt, ctx, &prompt_path);
+        let outcome = self.drive(
+            &mut harness,
+            &attempt,
+            ctx,
+            &prompt_path,
+            HarnessKind::OpenCode.as_str(),
+        );
         let wall_ms = started.elapsed().as_millis() as u64;
         let evidence = harness.stop_attempt(&attempt);
         if let Ok(evidence) = &evidence {
@@ -617,12 +626,52 @@ impl BuildActivity {
         outcome
     }
 
+    /// Record a `provider_health` event for a stalled/failed session (best
+    /// effort: observability must not fail the phase).
+    fn note_provider_health(&self, ctx: &OperationContext, binding: &str, stall: &PollStall) {
+        if let Err(err) = record_provider_health(
+            &self.deps.state_dir,
+            &ctx.execution_id,
+            &self.deps.model,
+            binding,
+            ctx.attempt,
+            stall,
+        ) {
+            eprintln!("agalma: provider_health for {}: {err}", ctx.execution_id);
+        }
+    }
+
+    /// Record the pinned static `retry.escalate` decision for a `stalled`
+    /// attempt (a failed verdict: retry while attempts remain, else park).
+    fn note_stalled_retry_decision(&self, ctx: &OperationContext) {
+        match execution_max_attempts(&self.deps.state_dir, &ctx.execution_id) {
+            Ok(max_attempts) => {
+                if let Err(err) = record_retry_decision(
+                    &self.deps.state_dir,
+                    &ctx.execution_id,
+                    ctx.attempt,
+                    max_attempts,
+                ) {
+                    eprintln!(
+                        "agalma: retry.escalate for stalled {}: {err}",
+                        ctx.execution_id
+                    );
+                }
+            }
+            Err(err) => eprintln!(
+                "agalma: max_attempts for stalled {}: {err}",
+                ctx.execution_id
+            ),
+        }
+    }
+
     fn drive(
         &self,
         harness: &mut OpenCodeHarness,
         _attempt: &AttemptHandle,
         ctx: &OperationContext,
         prompt_path: &Path,
+        binding: &str,
     ) -> Result<ActivityOutcome, ActivityError> {
         let session = harness
             .create_session(CreateSessionRequest {
@@ -643,12 +692,12 @@ impl BuildActivity {
                 },
             )
             .map_err(contract_err)?;
-        let state = poll_terminal(harness, &op, self.deps.turn_timeout);
+        let outcome = poll_terminal(harness, &op, self.deps.idle_timeout, self.deps.turn_timeout);
         let _ = harness.close_session(&session);
 
         let failure = ArtifactRef::derive(&format!("build@{}", ctx.attempt));
-        match state {
-            Some(OperationState::Completed { usage, .. }) => Ok(ActivityOutcome {
+        match outcome {
+            PollOutcome::Terminal(OperationState::Completed { usage, .. }) => Ok(ActivityOutcome {
                 result: json!({
                     "status": "completed",
                     "attempt": ctx.attempt,
@@ -659,19 +708,49 @@ impl BuildActivity {
                 }),
                 next: ActivityNext::Advance,
             }),
-            Some(OperationState::Failed { reason }) => {
+            PollOutcome::Terminal(OperationState::Failed { reason }) => {
+                self.note_provider_health(ctx, binding, &PollStall::failed(&reason, 0, 0));
                 eprintln!("agalma: build attempt {} failed: {reason}", ctx.attempt);
                 Ok(ActivityOutcome {
                     result: json!({ "status": "failed", "reason": reason, "attempt": ctx.attempt }),
                     next: ActivityNext::Retry { failure },
                 })
             }
-            Some(OperationState::Running) | Some(OperationState::Unknown) => Ok(ActivityOutcome {
-                result: json!({ "status": "unknown", "attempt": ctx.attempt }),
-                next: ActivityNext::Retry { failure },
-            }),
-            None => {
-                // The turn did not reach a terminal state within the bound
+            PollOutcome::Terminal(OperationState::Running | OperationState::Unknown) => {
+                Ok(ActivityOutcome {
+                    result: json!({ "status": "unknown", "attempt": ctx.attempt }),
+                    next: ActivityNext::Retry { failure },
+                })
+            }
+            PollOutcome::Stalled(stall) => {
+                // Progress watchdog / session-gone: cancel and treat as a failed
+                // verdict (`stalled`) for the retry decision (retry while
+                // attempts remain, park otherwise).
+                if let Err(err) = harness.cancel_operation(&op) {
+                    eprintln!("agalma: build cancel after stall: {err}");
+                }
+                self.note_provider_health(ctx, binding, &stall);
+                self.note_stalled_retry_decision(ctx);
+                eprintln!(
+                    "agalma: build attempt {} stalled ({}): idle_ms={} wall_ms={}",
+                    ctx.attempt,
+                    stall.reason.as_str(),
+                    stall.idle_ms,
+                    stall.wall_ms
+                );
+                Ok(ActivityOutcome {
+                    result: json!({
+                        "status": "stalled",
+                        "reason": stall.reason.as_str(),
+                        "idle_ms": stall.idle_ms,
+                        "wall_ms": stall.wall_ms,
+                        "attempt": ctx.attempt,
+                    }),
+                    next: ActivityNext::Retry { failure },
+                })
+            }
+            PollOutcome::TimedOut => {
+                // The turn did not reach a terminal state within the hard bound
                 // (free models can be chatty or slow). We cannot trust the turn
                 // status, so we stop it and let the *verify* phase arbitrate the
                 // candidate tree: a red verify drives the executor's bounded
@@ -680,6 +759,17 @@ impl BuildActivity {
                 if let Err(err) = harness.cancel_operation(&op) {
                     eprintln!("agalma: build cancel after timeout: {err}");
                 }
+                self.note_provider_health(
+                    ctx,
+                    binding,
+                    &PollStall {
+                        reason: PollStallReason::Idle,
+                        idle_ms: self.deps.turn_timeout.as_millis() as u64,
+                        tokens: 0,
+                        wall_ms: self.deps.turn_timeout.as_millis() as u64,
+                        last_state: "timed out".to_string(),
+                    },
+                );
                 eprintln!(
                     "agalma: build attempt {} did not report terminal within {:?}; \
                      proceeding to verify",
@@ -834,7 +924,7 @@ impl BuildActivity {
             .map_err(contract_err)?;
 
         let started = Instant::now();
-        let outcome = self.drive_reference(&mut harness, ctx, &prompt_path);
+        let outcome = self.drive_reference(&mut harness, ctx, &prompt_path, kind.as_str());
         let wall_ms = started.elapsed().as_millis() as u64;
         let _ = harness.stop_attempt(&attempt);
         if let Ok(outcome) = &outcome {
@@ -866,6 +956,7 @@ impl BuildActivity {
         harness: &mut ReferenceHarness,
         ctx: &OperationContext,
         prompt_path: &Path,
+        binding: &str,
     ) -> Result<ActivityOutcome, ActivityError> {
         let session = harness
             .create_session(CreateSessionRequest {
@@ -886,12 +977,12 @@ impl BuildActivity {
                 },
             )
             .map_err(contract_err)?;
-        let state = poll_terminal(harness, &op, self.deps.turn_timeout);
+        let outcome = poll_terminal(harness, &op, self.deps.idle_timeout, self.deps.turn_timeout);
         let _ = harness.close_session(&session);
 
         let failure = ArtifactRef::derive(&format!("build@{}", ctx.attempt));
-        match state {
-            Some(OperationState::Completed { usage, .. }) => Ok(ActivityOutcome {
+        match outcome {
+            PollOutcome::Terminal(OperationState::Completed { usage, .. }) => Ok(ActivityOutcome {
                 result: json!({
                     "status": "completed",
                     "attempt": ctx.attempt,
@@ -902,11 +993,33 @@ impl BuildActivity {
                 }),
                 next: ActivityNext::Advance,
             }),
-            Some(OperationState::Failed { reason }) => Ok(ActivityOutcome {
-                result: json!({ "status": "failed", "reason": reason, "attempt": ctx.attempt }),
+            PollOutcome::Terminal(OperationState::Failed { reason }) => {
+                self.note_provider_health(ctx, binding, &PollStall::failed(&reason, 0, 0));
+                Ok(ActivityOutcome {
+                    result: json!({ "status": "failed", "reason": reason, "attempt": ctx.attempt }),
+                    next: ActivityNext::Retry { failure },
+                })
+            }
+            PollOutcome::Terminal(_) => Ok(ActivityOutcome {
+                result: json!({ "status": "unknown", "attempt": ctx.attempt }),
                 next: ActivityNext::Retry { failure },
             }),
-            _ => {
+            PollOutcome::Stalled(stall) => {
+                let _ = harness.cancel_operation(&op);
+                self.note_provider_health(ctx, binding, &stall);
+                self.note_stalled_retry_decision(ctx);
+                Ok(ActivityOutcome {
+                    result: json!({
+                        "status": "stalled",
+                        "reason": stall.reason.as_str(),
+                        "idle_ms": stall.idle_ms,
+                        "wall_ms": stall.wall_ms,
+                        "attempt": ctx.attempt,
+                    }),
+                    next: ActivityNext::Retry { failure },
+                })
+            }
+            PollOutcome::TimedOut => {
                 let _ = harness.cancel_operation(&op);
                 Ok(ActivityOutcome {
                     result: json!({ "status": "timeout", "attempt": ctx.attempt }),
@@ -1386,15 +1499,62 @@ impl VerifyActivity {
                 },
             )
             .map_err(contract_err)?;
-        let state = poll_terminal(harness, &op, self.deps.turn_timeout);
+        let outcome = poll_terminal(harness, &op, self.deps.idle_timeout, self.deps.turn_timeout);
         let _ = harness.close_session(&session);
-        let usage = match state {
-            Some(OperationState::Completed { usage, .. }) => usage,
-            Some(OperationState::Failed { reason }) => {
+        let usage = match outcome {
+            PollOutcome::Terminal(OperationState::Completed { usage, .. }) => usage,
+            PollOutcome::Terminal(OperationState::Failed { reason }) => {
+                record_provider_health(
+                    &self.deps.state_dir,
+                    &ctx.execution_id,
+                    &self.deps.model,
+                    HarnessKind::OpenCode.as_str(),
+                    ctx.attempt,
+                    &PollStall::failed(&reason, 0, 0),
+                )
+                .unwrap_or_else(|err| eprintln!("agalma: provider_health for verifier: {err}"));
                 eprintln!("agalma: verifier session failed: {reason}");
                 zero_usage()
             }
-            _ => {
+            PollOutcome::Stalled(stall) => {
+                let _ = harness.cancel_operation(&op);
+                record_provider_health(
+                    &self.deps.state_dir,
+                    &ctx.execution_id,
+                    &self.deps.model,
+                    HarnessKind::OpenCode.as_str(),
+                    ctx.attempt,
+                    &stall,
+                )
+                .unwrap_or_else(|err| eprintln!("agalma: provider_health for verifier: {err}"));
+                eprintln!(
+                    "agalma: verifier session stalled ({}): idle_ms={} wall_ms={}",
+                    stall.reason.as_str(),
+                    stall.idle_ms,
+                    stall.wall_ms
+                );
+                zero_usage()
+            }
+            PollOutcome::TimedOut => {
+                let _ = harness.cancel_operation(&op);
+                record_provider_health(
+                    &self.deps.state_dir,
+                    &ctx.execution_id,
+                    &self.deps.model,
+                    HarnessKind::OpenCode.as_str(),
+                    ctx.attempt,
+                    &PollStall {
+                        reason: PollStallReason::Idle,
+                        idle_ms: self.deps.turn_timeout.as_millis() as u64,
+                        tokens: 0,
+                        wall_ms: self.deps.turn_timeout.as_millis() as u64,
+                        last_state: "timed out".to_string(),
+                    },
+                )
+                .unwrap_or_else(|err| eprintln!("agalma: provider_health for verifier: {err}"));
+                zero_usage()
+            }
+            PollOutcome::Terminal(_) => {
                 let _ = harness.cancel_operation(&op);
                 zero_usage()
             }
@@ -2025,6 +2185,45 @@ fn record_usage_event(
     Ok(())
 }
 
+/// Record a `provider_health` event for a stalled/failed session (H1). Events
+/// are additive and ignored by the phase fold; the digest derives a stall count
+/// from them.
+pub fn record_provider_health(
+    state_dir: &Path,
+    execution: &agalma_contracts::ExecutionId,
+    model: &str,
+    binding: &str,
+    attempt: u32,
+    stall: &PollStall,
+) -> Result<(), ActivityError> {
+    let mut ledger = SqliteLedger::open(state_dir.join("ledger.sqlite")).map_err(contract_err)?;
+    let event = agalma_contracts::ExecutionEvent {
+        execution_id: execution.clone(),
+        sequence: 0,
+        kind: "provider_health".to_string(),
+        payload: json!({
+            "model": model,
+            "binding": binding,
+            "attempt": attempt,
+            "reason": stall.reason.as_str(),
+            "idle_ms": stall.idle_ms,
+            "tokens": stall.tokens,
+            "wall_ms": stall.wall_ms,
+        }),
+        recorded_at_unix_ms: now_ms(),
+    };
+    ledger
+        .commit(agalma_contracts::CommitBatch {
+            expected_revision: None,
+            state: None,
+            events: vec![event],
+            receipts: vec![],
+            intents: vec![],
+        })
+        .map_err(contract_err)?;
+    Ok(())
+}
+
 /// `max_attempts` recorded in the `execution_created` event.
 fn execution_max_attempts(
     state_dir: &Path,
@@ -2197,23 +2396,183 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Poll `inspect_operation` until terminal or `timeout`; `None` on timeout.
-fn poll_terminal<H: HarnessApi>(
+/// Why a polled session stopped making progress (H1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PollStallReason {
+    /// No token/state delta for the idle bound.
+    Idle,
+    /// The remote session is gone (404 / connection refused).
+    SessionGone,
+    /// The session ended in a terminal failure (not a progress stall).
+    Error,
+}
+
+impl PollStallReason {
+    /// Stable label (`idle` | `session_gone` | `error`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PollStallReason::Idle => "idle",
+            PollStallReason::SessionGone => "session_gone",
+            PollStallReason::Error => "error",
+        }
+    }
+}
+
+/// Details of a stalled/failed session, used for the `provider_health` event
+/// and the `stalled` verdict.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PollStall {
+    pub reason: PollStallReason,
+    pub idle_ms: u64,
+    pub tokens: u64,
+    pub wall_ms: u64,
+    /// Last observed state (or the transport error) rendering.
+    pub last_state: String,
+}
+
+impl PollStall {
+    /// A terminal failure (not a progress stall), recorded for provider health.
+    pub fn failed(last_state: impl Into<String>, wall_ms: u64, tokens: u64) -> Self {
+        PollStall {
+            reason: PollStallReason::Error,
+            idle_ms: 0,
+            tokens,
+            wall_ms,
+            last_state: last_state.into(),
+        }
+    }
+}
+
+/// Outcome of driving one operation to a terminal state.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PollOutcome {
+    /// A terminal state was observed.
+    Terminal(OperationState),
+    /// The session stopped progressing (idle watchdog or transport loss).
+    Stalled(PollStall),
+    /// The hard wall-clock bound elapsed without a terminal state (existing
+    /// behavior: advance to verify / record zero usage).
+    TimedOut,
+}
+
+/// Progress fingerprint: the operation status plus usage/token deltas and
+/// event/step count observed through `inspect_operation` + `read_events`. Any
+/// change resets the idle clock.
+#[derive(Clone, PartialEq, Eq)]
+struct ProgressFingerprint {
+    state: String,
+    tokens_in: u64,
+    tokens_out: u64,
+    cost_micros: i64,
+    steps: usize,
+}
+
+impl ProgressFingerprint {
+    fn tokens(&self) -> u64 {
+        self.tokens_in + self.tokens_out
+    }
+}
+
+fn progress_fingerprint<H: HarnessApi>(
     harness: &mut H,
     op: &OperationHandle,
-    timeout: Duration,
-) -> Option<OperationState> {
-    let deadline = Instant::now() + timeout;
+    state: &OperationState,
+) -> ProgressFingerprint {
+    let mut fingerprint = ProgressFingerprint {
+        state: state.label(),
+        tokens_in: 0,
+        tokens_out: 0,
+        cost_micros: 0,
+        steps: 0,
+    };
+    match harness.read_events(op) {
+        Ok(events) => {
+            fingerprint.steps = events.len();
+            for event in events {
+                if let Event::UsageSnapshot { usage } = event {
+                    fingerprint.tokens_in += usage.tokens_in;
+                    fingerprint.tokens_out += usage.tokens_out;
+                    fingerprint.cost_micros += (usage.cost_usd * 1_000_000.0).round() as i64;
+                }
+            }
+        }
+        Err(err) => {
+            // A best-effort progress read: an unreadable log is not progress.
+            eprintln!("agalma: read_events: {err}");
+        }
+    }
+    fingerprint
+}
+
+/// Whether a poll error is a terminal transport failure (session gone): the
+/// remote session is unreachable, so waiting for the deadline is pointless.
+fn transport_error_is_terminal(err: &ContractError) -> bool {
+    let text = err.to_string().to_ascii_lowercase();
+    text.contains("-> 404")
+        || text.contains("not found")
+        || text.contains("unknown operation")
+        || text.contains("unknown session")
+        || text.contains("connection refused")
+        || text.contains("connection reset")
+        || text.contains("broken pipe")
+        || text.contains("connection closed")
+}
+
+/// Poll `inspect_operation` until terminal, a stall, or the hard wall bound.
+///
+/// The progress watchdog cancels a session with no token/state delta for
+/// `idle_timeout` (verdict `stalled`); a session-not-found/connection-refused
+/// transport error fast-fails immediately. Transient poll errors log and keep
+/// waiting. `wall_timeout` is the unchanged hard cap.
+pub fn poll_terminal<H: HarnessApi>(
+    harness: &mut H,
+    op: &OperationHandle,
+    idle_timeout: Duration,
+    wall_timeout: Duration,
+) -> PollOutcome {
+    let started = Instant::now();
+    let deadline = started + wall_timeout;
+    let mut last: Option<ProgressFingerprint> = None;
+    let mut last_change = started;
+    let mut tokens = 0u64;
     loop {
         match harness.inspect_operation(op) {
-            Ok(state) if state.is_terminal() => return Some(state),
-            Ok(_) => {}
+            Ok(state) if state.is_terminal() => return PollOutcome::Terminal(state),
+            Ok(state) => {
+                let fingerprint = progress_fingerprint(harness, op, &state);
+                tokens = fingerprint.tokens();
+                let changed = last.as_ref() != Some(&fingerprint);
+                if changed {
+                    last = Some(fingerprint);
+                    last_change = Instant::now();
+                }
+                let idle = last_change.elapsed();
+                if idle_timeout > Duration::ZERO && idle >= idle_timeout {
+                    return PollOutcome::Stalled(PollStall {
+                        reason: PollStallReason::Idle,
+                        idle_ms: idle.as_millis() as u64,
+                        tokens,
+                        wall_ms: started.elapsed().as_millis() as u64,
+                        last_state: state.label(),
+                    });
+                }
+            }
+            Err(err) if transport_error_is_terminal(&err) => {
+                return PollOutcome::Stalled(PollStall {
+                    reason: PollStallReason::SessionGone,
+                    idle_ms: last_change.elapsed().as_millis() as u64,
+                    tokens,
+                    wall_ms: started.elapsed().as_millis() as u64,
+                    last_state: err.to_string(),
+                });
+            }
             Err(err) => {
+                // Transient poll error: log and continue (existing behavior).
                 eprintln!("agalma: inspect_operation: {err}");
             }
         }
         if Instant::now() >= deadline {
-            return None;
+            return PollOutcome::TimedOut;
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -2266,6 +2625,7 @@ mod tests {
             toolchain_env: BTreeMap::new(),
             turn_timeout: Duration::from_secs(1),
             verify_timeout: Duration::from_secs(1),
+            idle_timeout: Duration::from_secs(1),
             repo,
             harness: crate::harness_binding::harness_handle(
                 crate::harness_binding::HarnessChoice::OpenCode,

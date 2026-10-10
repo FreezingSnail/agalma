@@ -74,9 +74,9 @@ locking makes multi-conductor claims safe for M1 (single conductor anyway).
 
 Projection: on every phase transition the adapter appends a
 `bd comment` (`phase=… execution=… lease=…`); terminal: `done` → `bd close`,
-`parked` → label `parked` + comment with reason. Ledger is source of truth
-for execution progress; reconcile compares projection vs ledger and rewrites
-the projection (never the ledger).
+`parked` → status `blocked` + label `parked` + comment with reason. Ledger is
+source of truth for execution progress; reconcile compares projection vs ledger
+and rewrites the projection (never the ledger).
 
 ## Decision contract
 

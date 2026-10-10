@@ -98,13 +98,17 @@ pub struct Digest {
     pub cost: CostSummary,
     pub wall_ms: u64,
     pub verdict: Verdict,
+    /// Count of `provider_health` stall events recorded for this execution
+    /// (H1 watchdog / session-gone fast-fail).
+    #[serde(default)]
+    pub stalls: u32,
 }
 
 impl Digest {
     /// One-line summary for the bd projection comment and the CLI.
     pub fn summary_line(&self) -> String {
         format!(
-            "digest execution={} task={} verdict={} attempts={} files={} tokens={}/{} usd={:.6} wall_ms={}",
+            "digest execution={} task={} verdict={} attempts={} files={} tokens={}/{} usd={:.6} wall_ms={} stalls={}",
             self.execution_id,
             self.task_id,
             self.verdict.as_str(),
@@ -114,6 +118,7 @@ impl Digest {
             self.cost.tokens_out,
             self.cost.usd,
             self.wall_ms,
+            self.stalls,
         )
     }
 }
@@ -195,7 +200,12 @@ fn build(
 
     let mut cost = CostSummary::default();
     let mut wall_ms = 0u64;
+    let mut stalls = 0u32;
     for event in &events {
+        if event.kind == "provider_health" {
+            stalls += 1;
+            continue;
+        }
         if event.kind != "usage" {
             continue;
         }
@@ -234,6 +244,7 @@ fn build(
         cost,
         wall_ms,
         verdict,
+        stalls,
     })
 }
 

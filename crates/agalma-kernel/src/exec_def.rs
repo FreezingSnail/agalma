@@ -104,6 +104,12 @@ pub struct Inputs {
     /// update; present when the update carries queued work to derive.
     #[serde(default)]
     pub directive: Option<DirectivePlan>,
+    /// Lease generation the caller held when issuing this command (ownership
+    /// fencing). `0` means "unfenced" (conductor-originated); a nonzero lease
+    /// older than the task's current lease is rejected by the engine fence and
+    /// must not advance the task.
+    #[serde(default)]
+    pub lease_generation: u32,
 }
 
 /// One queued step a directive wants active for an execution.

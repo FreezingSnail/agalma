@@ -433,8 +433,10 @@ pub fn recover_pending<L: LedgerApi>(
         if &intent.execution_id != execution_id {
             continue;
         }
-        // A park halts further recovery for this execution.
-        if engine.load(execution_id)?.state == ExecState::Parked {
+        // A park halts further recovery for this execution; the kill latch
+        // blocks recovered dispatch exactly as it blocks new work.
+        let state = engine.load(execution_id)?;
+        if state.state == ExecState::Parked || state.kill_latched {
             break;
         }
         let Some(mut meta) = PendingMeta::from_intent(&intent) else {
@@ -502,6 +504,14 @@ fn reconcile_pending<L: LedgerApi>(
     if !registry.contains(&meta.activity) {
         return Ok(OperationResult::UnknownActivity {
             activity: meta.activity.clone(),
+        });
+    }
+
+    // The kill latch blocks recovered dispatch (a recovering conductor must not
+    // re-run a pending effect while latched).
+    if engine.load(&meta.execution_id)?.kill_latched {
+        return Ok(OperationResult::Blocked {
+            operation_id: meta.operation_id.clone(),
         });
     }
 

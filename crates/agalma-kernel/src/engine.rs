@@ -10,8 +10,11 @@
 
 use agalma_contracts::{
     ContractError, DirectiveRow, DirectiveState, DispatchIntent, ExecutionEvent, ExecutionId,
-    LedgerApi, OperationId, OperationReceipt, TimerRecord,
+    LedgerApi, OperationId, OperationReceipt, SandboxApi, StopEvidence, TaskId, TimerRecord,
 };
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use serde_json::Value;
 
 use crate::crash::{
     crash_hook, AFTER_DIRECTIVE_COMMIT, AFTER_TIMER_COMMIT, AFTER_TRANSITION_COMMIT,
@@ -21,6 +24,10 @@ use crate::exec_def::{
     KERNEL_VERSION,
 };
 use crate::hash::content_hash;
+use crate::ownership::{
+    lease_fence_key, stop_evidence_key, workers_key, Reclaim, StaleLease, TerminationRecord,
+    WorkerRecord,
+};
 use crate::state::KernelState;
 use crate::transition::{step, Conflict, Effect};
 
@@ -38,6 +45,9 @@ pub struct ApplyOutcome {
     pub dispatches: Vec<DispatchIntent>,
     /// Set when the command was rejected as a conflict (no effects executed).
     pub conflict: Option<Conflict>,
+    /// Set when the command was fenced by a superseded lease: the execution did
+    /// not advance, no effect ran, and the rejection was recorded.
+    pub stale_lease: Option<StaleLease>,
 }
 
 /// Outcome of firing one due timer.
@@ -56,6 +66,10 @@ pub struct KernelEngine<L: LedgerApi> {
     /// Set when the persisted `exec_def_version` is unknown: every load/apply
     /// parks rather than guessing.
     unknown_version: Option<String>,
+    /// Optional process-lifecycle seam (component contract). Injected like the
+    /// activity registry; the kernel never calls it from the transition, only
+    /// from the engine's ownership/cancellation paths.
+    sandbox: Option<Box<dyn SandboxApi>>,
 }
 
 impl<L: LedgerApi> KernelEngine<L> {
@@ -74,6 +88,7 @@ impl<L: LedgerApi> KernelEngine<L> {
                     ledger,
                     exec_def: ExecDef::v1(),
                     unknown_version: None,
+                    sandbox: None,
                 })
             }
             Some(version) => {
@@ -82,9 +97,30 @@ impl<L: LedgerApi> KernelEngine<L> {
                     ledger,
                     exec_def: ExecDef::v1(),
                     unknown_version,
+                    sandbox: None,
                 })
             }
         }
+    }
+
+    /// Inject the [`SandboxApi`] seam (process-tree termination + evidence).
+    ///
+    /// Consuming builder: `KernelEngine::open(ledger)?.with_sandbox(Box::new(sb))`.
+    /// Without a sandbox the engine can still fence stale leases; it cannot
+    /// confirm termination of a prior process and parks reclaim instead.
+    pub fn with_sandbox(mut self, sandbox: Box<dyn SandboxApi>) -> Self {
+        self.sandbox = Some(sandbox);
+        self
+    }
+
+    /// Whether a sandbox seam is bound.
+    pub fn has_sandbox(&self) -> bool {
+        self.sandbox.is_some()
+    }
+
+    /// Mutable access to the bound sandbox, if any.
+    pub fn sandbox_mut(&mut self) -> Option<&mut (dyn SandboxApi + 'static)> {
+        self.sandbox.as_deref_mut()
     }
 
     /// The resolved execution definition.
@@ -154,11 +190,22 @@ impl<L: LedgerApi> KernelEngine<L> {
         inputs: &crate::exec_def::Inputs,
     ) -> Result<ApplyOutcome, ContractError> {
         let state = self.load(execution_id)?;
+        // Ownership fence: a command carrying a superseded lease cannot advance
+        // the task. The rejection is recorded and the effect is dropped.
+        if let Some(stale) = self.fence_check(&state, command, inputs)? {
+            return Ok(ApplyOutcome {
+                state,
+                dispatches: Vec::new(),
+                conflict: None,
+                stale_lease: Some(stale),
+            });
+        }
         if state.state == crate::exec_def::ExecState::Parked {
             return Ok(ApplyOutcome {
                 state,
                 dispatches: Vec::new(),
                 conflict: None,
+                stale_lease: None,
             });
         }
         let result = step(&state, command, inputs);
@@ -167,6 +214,7 @@ impl<L: LedgerApi> KernelEngine<L> {
                 state: result.state,
                 dispatches: Vec::new(),
                 conflict: result.conflict,
+                stale_lease: None,
             });
         }
         let mut dispatches = Vec::new();
@@ -190,8 +238,10 @@ impl<L: LedgerApi> KernelEngine<L> {
             self.ledger.cancel_timers_for_execution(execution_id)?;
         }
 
-        // Cancelled operations release their queued dispatch intents, so a
-        // replacement directive or cancel does not leave stale work behind.
+        // Cancelled operations release their queued dispatch intents and
+        // terminate any confined worker, recording cleanup evidence, so a
+        // replacement directive or cancel does not leave stale work (or a live
+        // process) behind.
         let mut cancelled = Vec::new();
         for (operation_id, record) in &result.state.operations {
             if record.state != OperationState::Cancelled {
@@ -205,12 +255,14 @@ impl<L: LedgerApi> KernelEngine<L> {
         }
         for operation_id in cancelled {
             self.ledger.consume_dispatch_intent(&operation_id)?;
+            self.terminate_worker_for(execution_id, &operation_id, inputs.now_unix_ms)?;
         }
 
         Ok(ApplyOutcome {
             state: result.state,
             dispatches,
             conflict: None,
+            stale_lease: None,
         })
     }
 
@@ -352,6 +404,7 @@ impl<L: LedgerApi> KernelEngine<L> {
                 state: self.load(execution_id)?,
                 dispatches: Vec::new(),
                 conflict: None,
+                stale_lease: None,
             });
         };
         let plan: DirectivePlan = serde_json::from_value(row.payload.clone()).map_err(json_err)?;
@@ -369,6 +422,353 @@ impl<L: LedgerApi> KernelEngine<L> {
                 ..crate::exec_def::Inputs::default()
             },
         )
+    }
+
+    // -----------------------------------------------------------------------
+    // Ownership: leases, workers, fencing, reclaim, cancellation
+    // -----------------------------------------------------------------------
+
+    /// Begin a new claim cycle for `task`: increment and persist its lease
+    /// generation (starts at `1`). Wraps [`LedgerApi::begin_lease`].
+    pub fn begin_lease(&mut self, task: &TaskId) -> Result<u32, ContractError> {
+        self.ledger.begin_lease(task)
+    }
+
+    /// The task's current lease generation (`0` when never claimed).
+    pub fn lease_generation(&self, task: &TaskId) -> Result<u32, ContractError> {
+        self.ledger.lease_generation(task)
+    }
+
+    /// Recorded workers for `execution_id`, in insertion order.
+    pub fn workers(&self, execution_id: &ExecutionId) -> Result<Vec<WorkerRecord>, ContractError> {
+        self.read_json_array(&workers_key(execution_id))
+    }
+
+    /// Record (upsert) a confined worker for an operation, durably. The record
+    /// carries the lease generation the worker launched under.
+    pub fn record_worker(&mut self, record: &WorkerRecord) -> Result<(), ContractError> {
+        let key = workers_key(&record.execution_id);
+        let mut workers: Vec<WorkerRecord> = self.read_json_array(&key)?;
+        workers.retain(|w| w.operation_id != record.operation_id);
+        workers.push(record.clone());
+        self.write_json_array(&key, &workers)
+    }
+
+    /// Forget every recorded worker for `execution_id` (after reconciliation).
+    pub fn clear_workers(&mut self, execution_id: &ExecutionId) -> Result<(), ContractError> {
+        self.write_json_array(&workers_key(execution_id), &Vec::<WorkerRecord>::new())
+    }
+
+    /// Recorded termination evidence for `execution_id`, in order.
+    pub fn termination_evidence(
+        &self,
+        execution_id: &ExecutionId,
+    ) -> Result<Vec<TerminationRecord>, ContractError> {
+        self.read_json_array(&stop_evidence_key(execution_id))
+    }
+
+    /// Fenced stale-lease rejections for `task`, in order (audit log).
+    pub fn lease_fence_log(&self, task: &TaskId) -> Result<Vec<StaleLease>, ContractError> {
+        self.read_json_array(&lease_fence_key(task))
+    }
+
+    /// Terminate `record`'s process tree through the sandbox and record the
+    /// returned [`StopEvidence`]. Errors when no sandbox is bound.
+    pub fn terminate_worker(
+        &mut self,
+        record: &WorkerRecord,
+        now_unix_ms: u64,
+    ) -> Result<TerminationRecord, ContractError> {
+        let sandbox = self.sandbox.as_mut().ok_or_else(|| {
+            ContractError::KnownFailure(
+                "cannot terminate worker: no sandbox seam bound".to_string(),
+            )
+        })?;
+        let child = record.child();
+        let alive = sandbox.alive(&child)?;
+        let evidence = if alive {
+            sandbox.terminate(&child)?
+        } else {
+            StopEvidence {
+                process_group_gone: true,
+                detail: "prior process already gone".to_string(),
+            }
+        };
+        let termination = TerminationRecord {
+            worker: record.clone(),
+            evidence,
+            recorded_at_unix_ms: now_unix_ms,
+        };
+        self.append_termination(&termination)?;
+        Ok(termination)
+    }
+
+    /// Reclaim `task`: reconcile every prior process of `execution_id`, then
+    /// begin a fresh lease and release stale-lease intents.
+    ///
+    /// Reconciliation runs **before** the new lease is usable: a live survivor
+    /// is terminated with recorded evidence; a survivor that cannot be confirmed
+    /// gone (no sandbox, or termination failed) parks the execution and returns
+    /// `blocked_reason` — fresh work is never dispatched over an unconfirmed
+    /// process.
+    pub fn reclaim(
+        &mut self,
+        task: &TaskId,
+        execution_id: &ExecutionId,
+        now_unix_ms: u64,
+    ) -> Result<Reclaim, ContractError> {
+        let previous_lease = self.ledger.lease_generation(task)?;
+        let workers = self.workers(execution_id)?;
+
+        // An unconfirmed survivor parks: reclaim requires evidence.
+        if !workers.is_empty() && self.sandbox.is_none() {
+            let reason = format!(
+                "reclaim blocked: cannot confirm termination of {} prior worker(s); \
+                 no sandbox seam bound",
+                workers.len()
+            );
+            self.park_blocked(execution_id, &reason, now_unix_ms)?;
+            return Ok(Reclaim {
+                previous_lease,
+                new_lease: previous_lease,
+                terminations: Vec::new(),
+                settled_intents: Vec::new(),
+                blocked_reason: Some(reason),
+            });
+        }
+
+        let mut terminations = Vec::new();
+        for worker in &workers {
+            let termination = self.terminate_worker(worker, now_unix_ms)?;
+            if !termination.evidence.process_group_gone {
+                let reason = format!(
+                    "reclaim blocked: termination of worker pid {} unconfirmed ({})",
+                    worker.pid, termination.evidence.detail
+                );
+                self.park_blocked(execution_id, &reason, now_unix_ms)?;
+                return Ok(Reclaim {
+                    previous_lease,
+                    new_lease: previous_lease,
+                    terminations,
+                    settled_intents: Vec::new(),
+                    blocked_reason: Some(reason),
+                });
+            }
+            terminations.push(termination);
+        }
+        self.clear_workers(execution_id)?;
+
+        // Only now is a fresh lease usable.
+        let new_lease = self.ledger.begin_lease(task)?;
+
+        // Release stale-lease intents so a superseded worker cannot redispatch.
+        let mut settled_intents = Vec::new();
+        for intent in self.ledger.pending_intents()? {
+            if &intent.execution_id != execution_id {
+                continue;
+            }
+            let lease = intent
+                .payload
+                .get("lease")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32;
+            if lease < new_lease {
+                self.ledger.consume_dispatch_intent(&intent.operation_id)?;
+                settled_intents.push(intent.operation_id);
+            }
+        }
+
+        Ok(Reclaim {
+            previous_lease,
+            new_lease,
+            terminations,
+            settled_intents,
+            blocked_reason: None,
+        })
+    }
+
+    /// Persist a cancellation request as a kernel command.
+    ///
+    /// Idempotent and terminal-aware: a second cancel, or a cancel of already
+    /// terminal work, is a harmless no-op ([`crate::transition`]).
+    pub fn cancel(
+        &mut self,
+        execution_id: &ExecutionId,
+        now_unix_ms: u64,
+    ) -> Result<ApplyOutcome, ContractError> {
+        self.apply(
+            execution_id,
+            &crate::exec_def::Command::Cancel,
+            &crate::exec_def::Inputs {
+                now_unix_ms,
+                ..crate::exec_def::Inputs::default()
+            },
+        )
+    }
+
+    /// Ownership fence: `Some(stale)` when `inputs` carries a lease older than
+    /// the task's current lease. Records the rejection durably.
+    fn fence_check(
+        &mut self,
+        state: &KernelState,
+        command: &crate::exec_def::Command,
+        inputs: &crate::exec_def::Inputs,
+    ) -> Result<Option<StaleLease>, ContractError> {
+        if inputs.lease_generation == 0 || state.task_id.as_str().is_empty() {
+            return Ok(None);
+        }
+        let current = self.ledger.lease_generation(&state.task_id)?;
+        if inputs.lease_generation >= current {
+            return Ok(None);
+        }
+        let stale = StaleLease {
+            id: stale_id(command),
+            lease: inputs.lease_generation,
+            current,
+            recorded_at_unix_ms: inputs.now_unix_ms,
+        };
+        let key = lease_fence_key(&state.task_id);
+        let mut log: Vec<StaleLease> = self.read_json_array(&key)?;
+        log.push(stale.clone());
+        self.write_json_array(&key, &log)?;
+        Ok(Some(stale))
+    }
+
+    /// Terminate the recorded worker (if any) for `operation_id`, recording
+    /// evidence. Without a sandbox the termination is recorded as unconfirmed.
+    fn terminate_worker_for(
+        &mut self,
+        execution_id: &ExecutionId,
+        operation_id: &OperationId,
+        now_unix_ms: u64,
+    ) -> Result<(), ContractError> {
+        let Some(worker) = self
+            .workers(execution_id)?
+            .into_iter()
+            .find(|w| &w.operation_id == operation_id)
+        else {
+            return Ok(());
+        };
+        if let Some(sandbox) = self.sandbox.as_mut() {
+            let child = worker.child();
+            let alive = sandbox.alive(&child)?;
+            let evidence = if alive {
+                sandbox.terminate(&child)?
+            } else {
+                StopEvidence {
+                    process_group_gone: true,
+                    detail: "worker already gone".to_string(),
+                }
+            };
+            self.append_termination(&TerminationRecord {
+                worker: worker.clone(),
+                evidence,
+                recorded_at_unix_ms: now_unix_ms,
+            })?;
+        } else {
+            self.append_termination(&TerminationRecord {
+                worker: worker.clone(),
+                evidence: StopEvidence {
+                    process_group_gone: false,
+                    detail: "no sandbox seam bound; termination unconfirmed".to_string(),
+                },
+                recorded_at_unix_ms: now_unix_ms,
+            })?;
+        }
+        // The worker's operation is cancelled: drop its record.
+        let key = workers_key(execution_id);
+        let mut workers: Vec<WorkerRecord> = self.read_json_array(&key)?;
+        workers.retain(|w| &w.operation_id != operation_id);
+        self.write_json_array(&key, &workers)
+    }
+
+    fn append_termination(&mut self, termination: &TerminationRecord) -> Result<(), ContractError> {
+        let key = stop_evidence_key(&termination.worker.execution_id);
+        let mut log: Vec<TerminationRecord> = self.read_json_array(&key)?;
+        log.push(termination.clone());
+        self.write_json_array(&key, &log)
+    }
+
+    /// Park an execution whose reclaim could not confirm termination, durably.
+    ///
+    /// Parks via the ambiguous-effect path (no probe evidence) so the durable
+    /// projection and history stay in agreement; nothing dispatches.
+    fn park_blocked(
+        &mut self,
+        execution_id: &ExecutionId,
+        reason: &str,
+        now_unix_ms: u64,
+    ) -> Result<(), ContractError> {
+        let state = self.load(execution_id)?;
+        if state.is_terminal() {
+            return Ok(());
+        }
+        // A pending/completed operation is the best anchor; otherwise park via
+        // the start-anchor: an unknown-probe delivery on the first operation.
+        let anchor = state
+            .operations
+            .iter()
+            .find(|(_, r)| r.state == OperationState::Dispatched)
+            .or_else(|| state.operations.iter().next())
+            .map(|(id, r)| (id.clone(), r.inputs_hash.clone()));
+        let Some((operation_id, inputs_hash)) = anchor else {
+            return Ok(());
+        };
+        let outcome = self.apply(
+            execution_id,
+            &crate::exec_def::Command::Deliver {
+                operation_id,
+                inputs_hash,
+            },
+            &crate::exec_def::Inputs {
+                probe: crate::exec_def::Probe::Unknown,
+                now_unix_ms,
+                ..crate::exec_def::Inputs::default()
+            },
+        )?;
+        if outcome.state.parked_reason.is_none() {
+            // Could not park via the transition; record the reason in kernel_meta
+            // so the block is not lost across restart.
+            self.ledger.kernel_meta_set(
+                &format!("reclaim_blocked:{}", execution_id.as_str()),
+                reason,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn read_json_array<T: DeserializeOwned>(&self, key: &str) -> Result<Vec<T>, ContractError> {
+        match self.ledger.kernel_meta_get(key)? {
+            Some(raw) => serde_json::from_str(&raw)
+                .map_err(|err| ContractError::KnownFailure(format!("kernel meta {key}: {err}"))),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    fn write_json_array<T: Serialize>(
+        &mut self,
+        key: &str,
+        items: &[T],
+    ) -> Result<(), ContractError> {
+        let raw = serde_json::to_string(items)
+            .map_err(|err| ContractError::KnownFailure(format!("kernel meta {key}: {err}")))?;
+        self.ledger.kernel_meta_set(key, &raw)
+    }
+}
+
+/// The signal id a command carries, for fence evidence.
+fn stale_id(command: &crate::exec_def::Command) -> String {
+    use crate::exec_def::Command as C;
+    match command {
+        C::Deliver { operation_id, .. } | C::Decision { operation_id, .. } => {
+            operation_id.to_string()
+        }
+        C::Retry { operation_id } => operation_id.to_string(),
+        C::TimerFired { timer_id, .. } => timer_id.clone(),
+        C::DirectiveUpdate { directive_id, .. } => directive_id.clone(),
+        C::Start { task_id, .. } => task_id.to_string(),
+        C::Cancel => "cancel".to_string(),
+        C::KillLatch { .. } => "kill_latch".to_string(),
     }
 }
 

@@ -57,6 +57,23 @@
 //!   runnable work ([`KernelEngine::has_runnable_work`]) releases its agent
 //!   sessions/workers and sleeps until [`KernelEngine::next_deadline`] (or
 //!   external input), then calls `fire_due_timers`.
+//!
+//! ## B0.5 surface (`agalma-9n4.6`) — cancellation and ownership
+//!
+//! - **Cancellation.** [`KernelEngine::cancel`] persists a `Cancel` command;
+//!   running/waiting work settles (pending intents released, timers cancelled,
+//!   confined workers terminated with recorded evidence). Cancelling terminal
+//!   work, and a duplicate cancel, are harmless no-ops.
+//! - **Ownership fencing.** Every dispatch intent records the lease generation
+//!   it was dispatched under (`Inputs::lease_generation`). A command carrying a
+//!   superseded lease is fenced by [`KernelEngine::apply`] — recorded
+//!   ([`KernelEngine::lease_fence_log`]) and dropped; it cannot advance the task.
+//! - **Reclaim.** [`KernelEngine::reclaim`] reconciles prior processes through
+//!   the [`agalma_contracts::SandboxApi`] seam (`with_sandbox`), records
+//!   termination evidence (`ownership::TerminationRecord`), releases stale-lease
+//!   intents, and only then issues a fresh lease. An unconfirmed survivor parks.
+//! - **Kill latch.** Blocks recovered dispatch (`recover_pending`) as well as new
+//!   work, and survives restart.
 
 pub mod activity;
 pub mod binding;
@@ -65,6 +82,7 @@ pub mod decision;
 pub mod engine;
 pub mod exec_def;
 mod hash;
+pub mod ownership;
 pub mod state;
 pub mod transition;
 
@@ -79,6 +97,10 @@ pub use engine::{replay, ApplyOutcome, KernelEngine, TimerFire};
 pub use exec_def::{
     Command, DirectivePlan, DirectiveStep, ExecDef, ExecState, Inputs, KernelEvent,
     OperationRecord, OperationState, Probe, EXEC_DEF_VERSION, KERNEL_VERSION,
+};
+pub use ownership::{
+    lease_fence_key, stop_evidence_key, workers_key, Reclaim, StaleLease, TerminationRecord,
+    WorkerRecord,
 };
 pub use state::KernelState;
 pub use transition::{detect_conflict, step, transition, Conflict, Effect, StepResult};

@@ -1,0 +1,16 @@
+{
+  "id": "restart-after-decision-commit",
+  "description": "Crash after a decider result or fallback outcome was committed but before dependent work was scheduled. Recovery must reuse the recorded decision without another inference call; re-checking eligibility must not overwrite an applied fallback.",
+  "crash_point": "after_decision_commit",
+  "expected_observable": "Recovery schedules dependent work from the recorded outcome with zero new decision/inference calls; a late or different inference result is ignored; the decision operation id stays pinned to its recorded inputs_hash and a changed input requires a new operation id.",
+  "fixture_refs": {
+    "exec_def": "exec_def/v1",
+    "decision": "static DecisionPin {policy: triage.pick-next/v1, genome: genome/v0, model: static}",
+    "activities": ["fake/triage-decide", "fake/build"],
+    "effect_journal": "effects/restart-after-decision-commit.ndjson",
+    "decision_record": "ledger decisions + decision_outcome rows (schema v2)",
+    "state": "target/test-runs/recovery-restart-after-decision-commit/",
+    "setup": "support/disposable-setup.md",
+    "recorder": "support/effect-recorder.md"
+  }
+}

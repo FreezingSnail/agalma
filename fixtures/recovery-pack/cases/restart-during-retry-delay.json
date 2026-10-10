@@ -1,0 +1,15 @@
+{
+  "id": "restart-during-retry-delay",
+  "description": "Restart while a retry is in its durable delay window. The retry deadline row must survive and fire exactly once after restart, with no duplicate phase advancement.",
+  "crash_point": "after_timer_commit",
+  "expected_observable": "After restart the persisted timer row is intact; on/after its deadline recovery fires a single recovered TimerFired command (idempotent by timer id) and the retry proceeds once; a second restart does not re-fire the same timer.",
+  "fixture_refs": {
+    "exec_def": "exec_def/v1",
+    "activities": ["fake/verify", "fake/build"],
+    "timer": "ledger timers row (timer_id, kind=Retry, fire_at, state)",
+    "effect_journal": "effects/restart-during-retry-delay.ndjson",
+    "state": "target/test-runs/recovery-restart-during-retry-delay/",
+    "setup": "support/disposable-setup.md",
+    "recorder": "support/effect-recorder.md"
+  }
+}

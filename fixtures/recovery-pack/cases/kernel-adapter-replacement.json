@@ -1,0 +1,15 @@
+{
+  "id": "kernel-adapter-replacement",
+  "description": "Replace a compatible kernel or activity adapter across a controlled restart. Canonical ids, receipts, and pending work survive; in-flight operations stay pinned to the binding they started under until completed or reconciled.",
+  "crash_point": "none (binding swap at a controlled restart)",
+  "expected_observable": "Operation ids and recorded receipts are unchanged across the swap; pending operations reconcile against their pinned component/API binding version rather than silently switching to the newly configured adapter; consumer code keeps using the same Agalma APIs; export_state/import_state round-trips with a version header and refuses incompatible versions.",
+  "fixture_refs": {
+    "exec_def": "exec_def/v1",
+    "bindings": "ledger binding records (BindingId, component_api, api_version, generation, state)",
+    "activities": ["fake/build", "fake/integrate"],
+    "effect_journal": "effects/kernel-adapter-replacement.ndjson",
+    "state": "target/test-runs/recovery-kernel-adapter-replacement/",
+    "setup": "support/disposable-setup.md",
+    "recorder": "support/effect-recorder.md"
+  }
+}

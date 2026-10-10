@@ -1,0 +1,15 @@
+[package]
+name = "agalma-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Agalma durable execution kernel. Owning wave: B0 — fixture pack, crash harness, then ExecutionApi."
+publish = false
+
+[dependencies]
+agalma-contracts = { path = "../agalma-contracts" }
+
+[dev-dependencies]
+agalma-ledger = { path = "../agalma-ledger" }
+agalma-execution = { path = "../agalma-execution" }
+serde_json = { workspace = true }

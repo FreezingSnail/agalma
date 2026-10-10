@@ -1,0 +1,15 @@
+{
+  "id": "merge-before-completion",
+  "description": "A Git merge (or equivalent integration effect) succeeds before its completion record is written, then the process crashes. Recovery must recognize the accepted commit and complete the ledger/bd updates without merging again.",
+  "crash_point": "after_merge_before_completion",
+  "expected_observable": "After restart the merge target ref already equals the candidate ref and the integrate receipt is reconciled from the on-disk effect; the merge is not repeated (candidate commit count unchanged) and the execution completes.",
+  "fixture_refs": {
+    "exec_def": "exec_def/v1",
+    "activities": ["fake/integrate"],
+    "merge_effect": "disposable git repo: refs/heads/main == refs/heads/candidate/<execution>",
+    "effect_journal": "effects/merge-before-completion.ndjson",
+    "state": "target/test-runs/recovery-merge-before-completion/",
+    "setup": "support/disposable-setup.md",
+    "recorder": "support/effect-recorder.md"
+  }
+}

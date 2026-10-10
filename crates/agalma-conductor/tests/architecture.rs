@@ -2,8 +2,8 @@
 //!
 //! Every crate under `crates/` that is an implementation (`agalma-ledger`,
 //! `agalma-execution`, `agalma-sandbox`, `agalma-workspace`,
-//! `agalma-harness-opencode`) may depend on `agalma-contracts` but never on
-//! another implementation crate. Dependency direction is
+//! `agalma-harness-opencode`, `agalma-kernel`) may depend on `agalma-contracts`
+//! but never on another implementation crate. Dependency direction is
 //! `conductor -> implementations -> contracts`.
 //!
 //! The scan reads Rust sources under each implementation crate's `src/`, strips
@@ -24,6 +24,7 @@ const IMPL_CRATES: &[&str] = &[
     "agalma-harness-reference",
     "agalma-decision",
     "agalma-taskqueue",
+    "agalma-kernel",
 ];
 
 fn workspace_root() -> PathBuf {

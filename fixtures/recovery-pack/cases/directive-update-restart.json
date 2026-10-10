@@ -1,0 +1,15 @@
+{
+  "id": "directive-update-restart",
+  "description": "Restart during delivery of a directive update. The directive version must survive and be applied once; a newer directive can cancel or replace queued work; duplicates are harmless. The kill latch and cancellation also survive restart.",
+  "crash_point": "after_directive_commit",
+  "expected_observable": "After restart the active directive_id+version is preserved; the update is applied exactly once (no duplicate application); a newer directive replaces queued work derived from the prior version; a duplicate directive_id is a no-op; a persisted cancel/kill-latch still blocks dispatch after recovery.",
+  "fixture_refs": {
+    "exec_def": "exec_def/v1",
+    "activities": ["fake/build"],
+    "directive": "ledger directives row (directive_id PK, version, source, state, payload)",
+    "effect_journal": "effects/directive-update-restart.ndjson",
+    "state": "target/test-runs/recovery-directive-update-restart/",
+    "setup": "support/disposable-setup.md",
+    "recorder": "support/effect-recorder.md"
+  }
+}

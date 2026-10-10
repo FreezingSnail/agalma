@@ -1,0 +1,14 @@
+{
+  "id": "duplicate-delivery-after-completion",
+  "description": "A completed operation is delivered again after its result was recorded. The kernel must return the stored receipt instead of repeating the external effect.",
+  "crash_point": "none (redelivery of an already-completed operation)",
+  "expected_observable": "The second delivery returns the recorded result; the effect journal has exactly one `execute` entry for the operation id and no new entry is appended by the duplicate.",
+  "fixture_refs": {
+    "exec_def": "exec_def/v1",
+    "activities": ["fake/build"],
+    "effect_journal": "effects/duplicate-delivery-after-completion.ndjson",
+    "state": "target/test-runs/recovery-duplicate-delivery-after-completion/",
+    "setup": "support/disposable-setup.md",
+    "recorder": "support/effect-recorder.md"
+  }
+}

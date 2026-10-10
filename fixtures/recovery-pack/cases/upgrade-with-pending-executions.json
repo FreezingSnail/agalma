@@ -1,0 +1,15 @@
+{
+  "id": "upgrade-with-pending-executions",
+  "description": "Swap the kernel to a candidate with pending executions in flight. Compatible persisted state resumes without external effects during reconstruction; incompatible state parks until an approved migration is available.",
+  "crash_point": "none (control-plane swap at a controlled restart)",
+  "expected_observable": "State reconstructs by reducer-only replay from history + projection with zero external effects; a compatible candidate resumes pending executions and agrees journal<->projection; an incompatible exec_def/schema version or kernel_meta parks the execution instead of guessing.",
+  "fixture_refs": {
+    "exec_def": "exec_def/v1",
+    "kernel_meta": "kernel_meta rows: exec_def_version, kernel_version, resource_baseline",
+    "activities": ["fake/intake", "fake/checkout", "fake/build"],
+    "effect_journal": "effects/upgrade-with-pending-executions.ndjson",
+    "state": "target/test-runs/recovery-upgrade-with-pending-executions/",
+    "setup": "support/disposable-setup.md",
+    "recorder": "support/effect-recorder.md"
+  }
+}

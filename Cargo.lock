@@ -75,6 +75,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "agalma-kernel"
+version = "0.1.0"
+dependencies = [
+ "agalma-contracts",
+ "agalma-execution",
+ "agalma-ledger",
+ "serde_json",
+]
+
+[[package]]
 name = "agalma-ledger"
 version = "0.1.0"
 dependencies = [

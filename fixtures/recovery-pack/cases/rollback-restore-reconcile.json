@@ -1,0 +1,15 @@
+{
+  "id": "rollback-restore-reconcile",
+  "description": "Roll back to the seed binding or restore from a backup. Before dispatch the runner checks database compatibility and reconciles actual Git/bd/process state, never dispatching on stale or ambiguous external state.",
+  "crash_point": "none (restore/rollback procedure)",
+  "expected_observable": "Database schema/version compatibility is checked first; restoring refuses incompatible state; Git/bd/process state is reconciled and evidence recorded before any dispatch; the seed binding and its recovery path remain available; ambiguous external effects park rather than dispatch.",
+  "fixture_refs": {
+    "exec_def": "exec_def/v1",
+    "bindings": "seed binding retained for rollback (S0d binding records)",
+    "activities": ["fake/build", "fake/integrate"],
+    "effect_journal": "effects/rollback-restore-reconcile.ndjson",
+    "state": "target/test-runs/recovery-rollback-restore-reconcile/",
+    "setup": "support/disposable-setup.md",
+    "recorder": "support/effect-recorder.md"
+  }
+}

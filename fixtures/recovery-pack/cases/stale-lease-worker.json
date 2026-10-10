@@ -1,0 +1,15 @@
+{
+  "id": "stale-lease-worker",
+  "description": "A worker survives a conductor failure and keeps reporting under a lease generation that has since been superseded. Reports from the stale lease must not advance the task.",
+  "crash_point": "after_dispatch",
+  "expected_observable": "Recovery confirms termination of the prior process (or parks) and records termination evidence; the stale lease generation cannot advance the execution or produce an effect; only after reconciliation does a fresh claim dispatch the work, exactly once.",
+  "fixture_refs": {
+    "exec_def": "exec_def/v1",
+    "activities": ["fake/build"],
+    "lease": "TaskId lease generation (LedgerApi::begin_lease); stale generation plants a live process-group leader record",
+    "effect_journal": "effects/stale-lease-worker.ndjson",
+    "state": "target/test-runs/recovery-stale-lease-worker/",
+    "setup": "support/disposable-setup.md",
+    "recorder": "support/effect-recorder.md"
+  }
+}

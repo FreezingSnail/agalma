@@ -1,0 +1,14 @@
+{
+  "id": "transition-commit-before-dispatch",
+  "description": "Crash after the atomic transition commit (state + event + dispatch intent) but before the effect is dispatched. The durable intent must survive; recovery redispatches pending work exactly once.",
+  "crash_point": "after_transition_commit",
+  "expected_observable": "After restart the execution is Running with one pending dispatch intent and zero recorded effects; the first step after recovery dispatches once and records exactly one effect, and a duplicate delivery of the completed operation returns the recorded receipt without a second effect.",
+  "fixture_refs": {
+    "exec_def": "exec_def/v1",
+    "activities": ["fake/intake", "fake/checkout", "fake/build", "fake/verify", "fake/integrate"],
+    "effect_journal": "effects/transition-commit-before-dispatch.ndjson",
+    "state": "target/test-runs/recovery-transition-commit-before-dispatch/",
+    "setup": "support/disposable-setup.md",
+    "recorder": "support/effect-recorder.md"
+  }
+}

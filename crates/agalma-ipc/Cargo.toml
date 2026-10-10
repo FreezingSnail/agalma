@@ -1,0 +1,12 @@
+[package]
+name = "agalma-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Agalma IPC foundation (B1.1): framed JSON transport, server runtime, client core. Infrastructure crate — not an implementation crate."
+publish = false
+
+[dependencies]
+agalma-contracts = { path = "../agalma-contracts" }
+serde = { workspace = true }
+serde_json = { workspace = true }

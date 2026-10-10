@@ -75,6 +75,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "agalma-ipc"
+version = "0.1.0"
+dependencies = [
+ "agalma-contracts",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "agalma-kernel"
 version = "0.1.0"
 dependencies = [

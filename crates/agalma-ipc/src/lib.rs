@@ -1,0 +1,31 @@
+//! `agalma-ipc` — framed JSON transport over a Unix socket (B1.1 foundation).
+//!
+//! This crate implements decision D1 of `docs/b1-extraction.md`: a length-
+//! prefixed JSON protocol used to move Tier-1 component implementations behind a
+//! process boundary. It provides:
+//!
+//! - [`frame`]: the wire codec (4-byte big-endian `u32` length + UTF-8 JSON,
+//!   16 MiB cap).
+//! - [`envelope`]: request/response envelopes and the protocol version.
+//! - [`error`]: [`IpcError`], the transport-level error taxonomy.
+//! - [`server`]: the server runtime (bind, `READY` handshake, serial dispatch,
+//!   receipt replay, version refusal).
+//! - [`client`]: the client core (connect, serial `call`, typed conversion,
+//!   connection-loss semantics).
+//!
+//! `agalma-ipc` is **infrastructure**, not an implementation crate: the
+//! architecture lint (`crates/agalma-conductor/tests/architecture.rs`) permits
+//! implementation crates to depend on it, while still forbidding impl→impl
+//! edges. It depends only on `agalma-contracts`, `serde`, and `serde_json`.
+
+pub mod client;
+pub mod envelope;
+pub mod error;
+pub mod frame;
+pub mod server;
+
+pub use client::Client;
+pub use envelope::{Request, Response, ResponseError, PROTOCOL_VERSION};
+pub use error::{IpcError, CODE_PROTOCOL, CODE_UNAVAILABLE};
+pub use frame::{FrameError, MAX_FRAME};
+pub use server::{Handler, Server, ServerInfo};

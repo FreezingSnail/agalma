@@ -10,6 +10,13 @@
 //! comments, and fails if another implementation crate's snake-case name appears
 //! as a token. This mirrors the design rule in `docs/m0-skeleton.md`: workspace
 //! membership plus a source scan that fails on cross-impl imports.
+//!
+//! Per `docs/b1-extraction.md` D6, the check is extended to the Cargo.toml edge:
+//! no implementation crate may declare another implementation crate as a normal
+//! dependency. Dev-/build-dependencies are out of scope (tests legitimately wire
+//! implementations together). `agalma-ipc` is infrastructure, not an
+//! implementation crate, so it is deliberately absent from `IMPL_CRATES` and may
+//! be depended on by implementations.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -148,6 +155,76 @@ fn strip_comments(src: &str) -> String {
     }
 
     out
+}
+
+/// Normal (`[dependencies]`) dependency names declared in a Cargo.toml.
+///
+/// Only the plain `[dependencies]` table is parsed; `[dev-dependencies]`,
+/// `[build-dependencies]`, and feature tables are ignored. Dependency keys are
+/// taken verbatim (renames via `package = "..."` are not expected in this
+/// workspace).
+fn normal_dependency_names(manifest: &str) -> Vec<String> {
+    let mut deps = Vec::new();
+    let mut in_deps = false;
+    for raw in manifest.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') {
+            in_deps = line == "[dependencies]";
+            continue;
+        }
+        if !in_deps || line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let key = line
+            .split('=')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_matches('"');
+        if !key.is_empty() {
+            deps.push(key.to_string());
+        }
+    }
+    deps
+}
+
+#[test]
+fn implementation_crates_do_not_depend_on_each_other_in_cargo_toml() {
+    let root = workspace_root();
+    let mut violations = Vec::new();
+
+    for crate_name in IMPL_CRATES {
+        let manifest = root.join("crates").join(crate_name).join("Cargo.toml");
+        let text = fs::read_to_string(&manifest).unwrap_or_default();
+        for dep in normal_dependency_names(&text) {
+            if IMPL_CRATES.contains(&dep.as_str()) {
+                violations.push(format!(
+                    "{crate_name} declares a normal dependency on implementation crate {dep}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "implementation crates must not depend on each other:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn cargo_toml_scan_ignores_dev_dependencies() {
+    let manifest = "\
+[dependencies]
+agalma-contracts = { path = \"../agalma-contracts\" }
+agalma-ipc = { path = \"../agalma-ipc\" }
+
+[dev-dependencies]
+agalma-ledger = { path = \"../agalma-ledger\" }
+";
+    let deps = normal_dependency_names(manifest);
+    assert_eq!(deps, vec!["agalma-contracts", "agalma-ipc"]);
+    assert!(!deps.contains(&"agalma-ledger".to_string()));
 }
 
 #[test]

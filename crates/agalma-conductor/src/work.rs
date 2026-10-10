@@ -44,7 +44,6 @@ use agalma_execution::{
 use agalma_ledger::SqliteLedger;
 use agalma_sandbox::PRODUCT_PROFILE;
 use agalma_taskqueue::{BdTaskQueue, PARKED_LABEL};
-use agalma_workspace::Workspace;
 use serde_json::json;
 
 use crate::cli::WorkArgs;
@@ -54,6 +53,7 @@ use crate::harness_binding::{harness_handle, resolve_selection, HarnessHandle};
 use crate::phases::{activities_with_mode, ActivityMode, PhaseDeps, RepoMode, RunState};
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
 use crate::routing::{self, RouteSelection};
+use crate::workspace_process::{WorkspaceHandle, WorkspaceTransport};
 use crate::LockGuard;
 
 /// Terminal outcome of driving one task's execution.
@@ -613,7 +613,10 @@ fn build_executor(
         repo,
         harness,
     )?;
-    let workspace = Rc::new(RefCell::new(Workspace::new(state_dir.to_path_buf())));
+    let workspace = Rc::new(RefCell::new(WorkspaceHandle::from_transport(
+        state_dir,
+        WorkspaceTransport::from_env(),
+    )?));
     let state = Rc::new(RefCell::new(RunState::default()));
     let acts = activities_with_mode(deps, workspace, state, ActivityMode::from_env());
     executor.add_activity(ExecutionPhase::Intake, acts.intake);

@@ -29,7 +29,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use agalma_contracts::ids::{OperationId, TaskId};
 use agalma_contracts::{ExecutionId, ExecutionPhase};
 use agalma_execution::{ActivityNext, OperationContext};
-use agalma_workspace::Workspace;
+use agalma_conductor::workspace_process::WorkspaceHandle;
 
 use agalma_conductor::harness_binding::{harness_handle, HarnessChoice};
 use agalma_conductor::phases::{
@@ -139,7 +139,7 @@ fn sandboxed_git_guard_runs_without_xcrun_noise() {
         harness: harness_handle(HarnessChoice::OpenCode),
     };
 
-    let workspace = Rc::new(RefCell::new(Workspace::new(state_dir.clone())));
+    let workspace = Rc::new(RefCell::new(WorkspaceHandle::in_process(&state_dir)));
     let state = Rc::new(RefCell::new(RunState::default()));
     let mut acts = activities_with_mode(
         deps,

@@ -23,9 +23,9 @@ use agalma_execution::{
     EXECUTION_DEFINITION_VERSION,
 };
 use agalma_ledger::SqliteLedger;
-use agalma_workspace::Workspace;
 
 use agalma_conductor::phases::{activities, PhaseDeps, RunState};
+use agalma_conductor::workspace_process::WorkspaceHandle;
 
 fn run_dir(test: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -84,7 +84,7 @@ fn checkout_activity_prepares_isolated_repo() {
 
     let deps = dummy_deps(&state_dir);
     let shared_state = Rc::new(RefCell::new(RunState::default()));
-    let workspace = Rc::new(RefCell::new(Workspace::new(state_dir.clone())));
+    let workspace = Rc::new(RefCell::new(WorkspaceHandle::in_process(&state_dir)));
     let acts = activities(deps, Rc::clone(&workspace), Rc::clone(&shared_state));
 
     let mut executor = Executor::new(

@@ -16,13 +16,13 @@ use agalma_contracts::{ContractError, ExecutionApi, ExecutionPhase};
 use agalma_execution::{Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
 use agalma_ledger::SqliteLedger;
 use agalma_sandbox::PRODUCT_PROFILE;
-use agalma_workspace::Workspace;
 
 use crate::config::Config;
 use crate::harness_binding::{harness_handle, HarnessChoice};
 use crate::phases::{activities, PhaseDeps, RunState};
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
 use crate::task::{self, TaskDescriptor};
+use crate::workspace_process::{WorkspaceHandle, WorkspaceTransport};
 
 /// Builder prompt shipped with the conductor and materialized into the state
 /// dir at boot.
@@ -97,7 +97,7 @@ impl Composition {
             },
         );
 
-        let workspace = Workspace::new(state_dir.clone());
+        let workspace = WorkspaceHandle::from_transport(&state_dir, WorkspaceTransport::from_env())?;
 
         // Provider egress for the confined harness (S0b profile denies
         // arbitrary network). The proxy binds a loopback port; its URL is handed

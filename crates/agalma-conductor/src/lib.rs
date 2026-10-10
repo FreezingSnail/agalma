@@ -22,6 +22,7 @@ pub mod sandbox_process;
 pub mod task;
 pub mod work;
 pub mod workers;
+pub mod workspace_process;
 
 use std::fs::OpenOptions;
 use std::io::Write;

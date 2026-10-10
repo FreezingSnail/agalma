@@ -14,6 +14,8 @@
 //!   connection-loss semantics).
 //! - [`sandbox_client`]/[`sandbox_server`]: the typed `SandboxApi` client and
 //!   its method-registration helper (the second extracted boundary, B1.3).
+//! - [`workspace_client`]/[`workspace_server`]: the typed `WorkspaceApi` +
+//!   repo-mode client and its method-registration helper (B1.4).
 //!
 //! `agalma-ipc` is **infrastructure**, not an implementation crate: the
 //! architecture lint (`crates/agalma-conductor/tests/architecture.rs`) permits
@@ -30,6 +32,8 @@ pub mod harness_server;
 pub mod sandbox_client;
 pub mod sandbox_server;
 pub mod server;
+pub mod workspace_client;
+pub mod workspace_server;
 
 pub use client::Client;
 pub use command::CommandSpec;
@@ -43,3 +47,9 @@ pub use harness_server::{ensure_all_handlers, register_harness, server_info_from
 pub use sandbox_client::SandboxClient;
 pub use sandbox_server::{register_sandbox, SANDBOX_METHODS};
 pub use server::{socket_from_args, Handler, Server, ServerInfo};
+pub use workspace_client::{
+    CheckoutCall, IntegrateOriginParams, IntegrateParams, OriginReceiptParams, PrepareParams,
+    PrepareRepoParams, PrepareVerifyParams, RevertOriginParams, RevertParams, TagParams,
+    WorkspaceClient, WorkspaceOps,
+};
+pub use workspace_server::{register_workspace, WORKSPACE_METHODS};

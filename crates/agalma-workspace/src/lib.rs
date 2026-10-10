@@ -10,11 +10,14 @@
 //! time); [`Workspace::tag`] and [`Workspace::revert`] address the most recently
 //! prepared repository.
 
+pub mod server;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use agalma_contracts::{Checkout, ContractError, ExecutionId, MergeReceipt, WorkspaceApi};
+use agalma_ipc::WorkspaceOps;
 
 /// Upper bound on the rendered working-tree diff (bytes); longer diffs are
 /// truncated to keep receipts bounded.
@@ -454,6 +457,74 @@ impl WorkspaceApi for Workspace {
             )));
         }
         Ok(())
+    }
+}
+
+/// Repo-mode operations hosted by the workspace server (B1.4).
+///
+/// Delegates to the inherent M1 methods on [`Workspace`]; the trait lives in
+/// `agalma-ipc` so one registration helper and one conductor handle cover both
+/// the in-process backend and the process-bound client.
+impl WorkspaceOps for Workspace {
+    fn prepare_repo(
+        &mut self,
+        origin_path: &Path,
+        base_ref: &str,
+        execution: &ExecutionId,
+        base_dir: &Path,
+    ) -> Result<Checkout, ContractError> {
+        Workspace::prepare_repo(self, origin_path, base_ref, execution, base_dir)
+    }
+
+    fn integrate_origin(
+        &self,
+        checkout: &Checkout,
+        origin_path: &Path,
+        expected_main_sha: &str,
+    ) -> Result<MergeReceipt, ContractError> {
+        Workspace::integrate_origin(self, checkout, origin_path, expected_main_sha)
+    }
+
+    fn candidate_sha(&self, checkout: &Checkout) -> Result<String, ContractError> {
+        Workspace::candidate_sha(self, checkout)
+    }
+
+    fn commit_candidate(&self, checkout: &Checkout) -> Result<String, ContractError> {
+        Workspace::commit_candidate(self, checkout)
+    }
+
+    fn prepare_verify_checkout(
+        &self,
+        checkout: &Checkout,
+        base_dir: &Path,
+        execution: &ExecutionId,
+        sha: &str,
+    ) -> Result<PathBuf, ContractError> {
+        Workspace::prepare_verify_checkout(self, checkout, base_dir, execution, sha)
+    }
+
+    fn origin_receipt(
+        &self,
+        checkout: &Checkout,
+        origin_path: &Path,
+    ) -> Result<Option<MergeReceipt>, ContractError> {
+        Workspace::origin_receipt(self, checkout, origin_path)
+    }
+
+    fn revert_origin(
+        &self,
+        origin_path: &Path,
+        to_sha: &str,
+        from_sha: &str,
+    ) -> Result<(), ContractError> {
+        Workspace::revert_origin(self, origin_path, to_sha, from_sha)
+    }
+
+    fn integrated_receipt(
+        &mut self,
+        checkout: &Checkout,
+    ) -> Result<Option<MergeReceipt>, ContractError> {
+        Workspace::integrated_receipt(self, checkout)
     }
 }
 

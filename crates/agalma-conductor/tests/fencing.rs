@@ -28,6 +28,8 @@ use agalma_execution::{DispatchOutcome, Executor, ExecutorConfig, EXECUTION_DEFI
 use agalma_ledger::SqliteLedger;
 use agalma_taskqueue::BdTaskQueue;
 use agalma_workspace::Workspace;
+
+use agalma_conductor::workspace_process::WorkspaceHandle;
 use serde_json::json;
 
 use agalma_conductor::phases::{activities_with_mode, ActivityMode, PhaseDeps, RepoMode, RunState};
@@ -133,7 +135,7 @@ impl Origin {
 /// In-process repo-mode harness (real checkout/integrate, scripted build/verify).
 struct Harness {
     executor: Executor<SqliteLedger>,
-    _workspace: Rc<RefCell<Workspace>>,
+    _workspace: Rc<RefCell<WorkspaceHandle>>,
 }
 
 fn build_harness(origin: &Origin, acceptance: &[&str]) -> Harness {
@@ -165,7 +167,7 @@ fn build_harness(origin: &Origin, acceptance: &[&str]) -> Harness {
             agalma_conductor::harness_binding::HarnessChoice::OpenCode,
         ),
     };
-    let workspace = Rc::new(RefCell::new(Workspace::new(origin.state_dir.clone())));
+    let workspace = Rc::new(RefCell::new(WorkspaceHandle::in_process(&origin.state_dir)));
     let state = Rc::new(RefCell::new(RunState::default()));
     let acts = activities_with_mode(
         deps,

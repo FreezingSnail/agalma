@@ -129,6 +129,7 @@ name = "agalma-workspace"
 version = "0.1.0"
 dependencies = [
  "agalma-contracts",
+ "agalma-ipc",
 ]
 
 [[package]]

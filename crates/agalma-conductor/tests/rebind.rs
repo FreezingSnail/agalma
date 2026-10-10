@@ -27,7 +27,7 @@ use agalma_contracts::{
 };
 use agalma_execution::{Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
 use agalma_ledger::SqliteLedger;
-use agalma_workspace::Workspace;
+use agalma_conductor::workspace_process::WorkspaceHandle;
 
 use agalma_conductor::harness_binding::{
     describe_for, harness_handle, persist_binding, plan_binding, plan_from_describe,
@@ -162,7 +162,7 @@ fn build_harness(
         }),
         harness: handle.clone(),
     };
-    let workspace = Rc::new(RefCell::new(Workspace::new(origin.state_dir.clone())));
+    let workspace = Rc::new(RefCell::new(WorkspaceHandle::in_process(&origin.state_dir)));
     let state = Rc::new(RefCell::new(RunState::default()));
     let acts = activities_with_mode(
         deps,

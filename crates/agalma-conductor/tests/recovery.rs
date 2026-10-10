@@ -27,7 +27,7 @@ use agalma_contracts::{
 };
 use agalma_execution::{DispatchOutcome, Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
 use agalma_ledger::SqliteLedger;
-use agalma_workspace::Workspace;
+use agalma_conductor::workspace_process::WorkspaceHandle;
 use serde_json::Value;
 
 use agalma_conductor::phases::{activities_with_mode, ActivityMode, PhaseDeps, RunState};
@@ -80,7 +80,7 @@ fn state_of(dir: &Path) -> PathBuf {
 
 struct Harness {
     executor: Executor<SqliteLedger>,
-    _workspace: Rc<RefCell<Workspace>>,
+    _workspace: Rc<RefCell<WorkspaceHandle>>,
     _state: Rc<RefCell<RunState>>,
 }
 
@@ -108,7 +108,7 @@ fn build_harness(state_dir: &Path) -> Harness {
             agalma_conductor::harness_binding::HarnessChoice::OpenCode,
         ),
     };
-    let workspace = Rc::new(RefCell::new(Workspace::new(state_dir.to_path_buf())));
+    let workspace = Rc::new(RefCell::new(WorkspaceHandle::in_process(state_dir)));
     let state = Rc::new(RefCell::new(RunState::default()));
     let acts = activities_with_mode(
         deps,

@@ -62,15 +62,16 @@ use agalma_execution::{
     Activity, ActivityError, ActivityNext, ActivityOutcome, EffectProbe, OperationContext,
 };
 use agalma_harness_opencode::{build_config, OpenCodeConfigInit};
+use agalma_ipc::WorkspaceOps;
 use agalma_ledger::SqliteLedger;
 use agalma_sandbox::{SandboxOutput, SeatbeltSandbox};
-use agalma_workspace::Workspace;
 use serde_json::json;
 
 use crate::harness_binding::{self, HarnessHandle, HarnessKind};
 use crate::harness_process::{self, HarnessTransport, LiveHarness, OpenCodeHarnessInit};
 use crate::sandbox_process::SandboxSource;
 use crate::workers::{self, Survivor};
+use crate::workspace_process::WorkspaceHandle;
 
 /// The verifier prompt shipped with the conductor. A fresh verifier session is
 /// created from this text on a red verify; the per-attempt prompt appends the
@@ -202,7 +203,7 @@ pub struct PhaseActivities {
 /// environment ([`ActivityMode::from_env`]).
 pub fn activities(
     deps: PhaseDeps,
-    workspace: Rc<RefCell<Workspace>>,
+    workspace: Rc<RefCell<WorkspaceHandle>>,
     state: Rc<RefCell<RunState>>,
 ) -> PhaseActivities {
     activities_with_mode(deps, workspace, state, ActivityMode::from_env())
@@ -211,7 +212,7 @@ pub fn activities(
 /// Build the five phase activities over shared state with an explicit mode.
 pub fn activities_with_mode(
     deps: PhaseDeps,
-    workspace: Rc<RefCell<Workspace>>,
+    workspace: Rc<RefCell<WorkspaceHandle>>,
     state: Rc<RefCell<RunState>>,
     mode: ActivityMode,
 ) -> PhaseActivities {
@@ -349,7 +350,7 @@ impl Activity for NoopActivity {
 /// `checkout`: prepare the isolated git checkout and record the base SHA.
 struct CheckoutActivity {
     deps: PhaseDeps,
-    workspace: Rc<RefCell<Workspace>>,
+    workspace: Rc<RefCell<WorkspaceHandle>>,
     state: Rc<RefCell<RunState>>,
 }
 
@@ -1106,7 +1107,7 @@ struct VerifyActivity {
     deps: PhaseDeps,
     /// Used to commit the candidate before verify and to clone the pristine
     /// verification checkout (repo mode).
-    workspace: Rc<RefCell<Workspace>>,
+    workspace: Rc<RefCell<WorkspaceHandle>>,
     state: Rc<RefCell<RunState>>,
     /// Run acceptance commands under Seatbelt (`Live`) or in-process
     /// (`Scripted`, deterministic tests).
@@ -1823,7 +1824,7 @@ impl Activity for ScriptedVerifyActivity {
 /// `integrate`: compare-and-update `main` to the candidate and tag `m0/<exec>`.
 struct IntegrateActivity {
     deps: PhaseDeps,
-    workspace: Rc<RefCell<Workspace>>,
+    workspace: Rc<RefCell<WorkspaceHandle>>,
     state: Rc<RefCell<RunState>>,
 }
 

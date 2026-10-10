@@ -8,3 +8,4 @@ publish = false
 
 [dependencies]
 agalma-contracts = { path = "../agalma-contracts" }
+agalma-ipc = { path = "../agalma-ipc" }

@@ -245,6 +245,26 @@ mod tests {
     }
 
     #[test]
+    fn bundled_profile_scopes_xcrun_cache_write() {
+        // H2 (`agalma-zxi.3`): the Apple git shim writes its libxcselect cache
+        // to the system per-user temp dir (ignoring `$TMPDIR`). The allowance
+        // must stay scoped to the `xcrun_db*` cache file — never a wholesale
+        // write grant to `/var/folders` or the per-user temp dir.
+        assert!(
+            PRODUCT_PROFILE.contains("#\"^/private/var/folders/[^/]+/[^/]+/T/xcrun_db\""),
+            "product profile must grant the narrow xcrun_db cache allowance"
+        );
+        for line in PRODUCT_PROFILE.lines() {
+            if line.contains("var/folders") {
+                assert!(
+                    !line.contains("subpath"),
+                    "xcrun allowance must not widen to a var/folders subpath: {line}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn empty_profile_is_rejected() {
         assert_eq!(validate(""), Err(ProfileError::Empty));
         assert_eq!(validate("   \n\t"), Err(ProfileError::Empty));

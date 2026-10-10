@@ -95,3 +95,16 @@
 
 ;; --- toolchain: Xcode command-line tools / SDK (read-only) ------------------
 (allow file-read* (subpath "/Applications/Xcode.app"))
+
+;; --- macOS developer-dir cache (Apple `/usr/bin/git` and other shims) -------
+;; `/usr/bin/git` is a shim over libxcselect: it resolves the active developer
+;; dir through `xcselect`, whose cache lives at
+;; `confstr(_CS_DARWIN_USER_TEMP_DIR)` -> `/var/folders/.../T/xcrun_db`
+;; (the *system* per-user temp dir, which ignores `$TMPDIR`). Under the
+;; deny-default profile that cache write failed with EPERM and the shim printed
+;; `couldn't create cache file ... (errno=Operation not permitted)` on every
+;; git launch. Allow ONLY the `xcrun_db*` cache file by resolved path; the
+;; surrounding per-user temp dir stays read-only-metadata, so this is not a
+;; wholesale `/var/folders` write grant (the OS per-user dir mode still applies).
+(allow file-read* file-write*
+    (regex #"^/private/var/folders/[^/]+/[^/]+/T/xcrun_db"))

@@ -14,11 +14,11 @@ use std::time::Duration;
 
 use agalma_contracts::{ContractError, ExecutionApi, ExecutionPhase};
 use agalma_execution::{Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
-use agalma_ledger::SqliteLedger;
 use agalma_sandbox::PRODUCT_PROFILE;
 
 use crate::config::Config;
 use crate::harness_binding::{harness_handle, HarnessChoice};
+use crate::ledger_process::{LedgerHandle, LedgerTransport};
 use crate::phases::{activities, PhaseDeps, RunState};
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
 use crate::task::{self, TaskDescriptor};
@@ -52,7 +52,7 @@ pub fn resolve_idle_timeout() -> Duration {
 /// The wired service graph for one conductor process.
 pub struct Composition {
     /// Serial executor with all five phase activities registered.
-    pub executor: Executor<SqliteLedger>,
+    pub executor: Executor<LedgerHandle>,
     /// Parent-owned provider proxy; held for the process lifetime.
     pub proxy: ProviderProxy,
     /// Parsed hardcoded-task descriptor.
@@ -84,7 +84,7 @@ impl Composition {
             std::fs::canonicalize(&config.fixture).unwrap_or_else(|_| config.fixture.clone());
 
         let ledger_path = state_dir.join("ledger.sqlite");
-        let ledger = SqliteLedger::open(&ledger_path)?;
+        let ledger = LedgerHandle::from_transport(&state_dir, LedgerTransport::from_env())?;
 
         let task = task::load_task_descriptor(&fixture)
             .map_err(|e| ContractError::KnownFailure(e.to_string()))?;

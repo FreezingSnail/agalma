@@ -18,6 +18,8 @@
 //!   repo-mode client and its method-registration helper (B1.4).
 //! - [`taskqueue_client`]/[`taskqueue_server`]: the typed `TaskQueueApi` +
 //!   reconcile-projection client and its method-registration helper (B1.5).
+//! - [`ledger_client`]/[`ledger_server`]: the typed durable-state `LedgerApi` +
+//!   snapshot file-transfer client and its method-registration helper (B1.6).
 //!
 //! `agalma-ipc` is **infrastructure**, not an implementation crate: the
 //! architecture lint (`crates/agalma-conductor/tests/architecture.rs`) permits
@@ -31,6 +33,8 @@ pub mod error;
 pub mod frame;
 pub mod harness_client;
 pub mod harness_server;
+pub mod ledger_client;
+pub mod ledger_server;
 pub mod sandbox_client;
 pub mod sandbox_server;
 pub mod server;
@@ -48,6 +52,13 @@ pub use harness_client::{
     AttemptCall, HarnessClient, OperationCall, RunTurnCall, SessionCall,
 };
 pub use harness_server::{ensure_all_handlers, register_harness, server_info_from, HARNESS_METHODS};
+pub use ledger_client::{
+    BindingParams, CommitParams, DecisionParams, DigestParams, DirectiveIdCall, DirectiveParams,
+    DueTimersParams, ExecutionCall, KeyCall, LatchParams, LeaseCall, LedgerClient, LedgerOps,
+    MetaParams, OperationIdCall, OutcomeParams, PathParams, TimerIdCall, TimerParams,
+    SNAPSHOT_EXPORT_FILE, SNAPSHOT_IMPORT_FILE,
+};
+pub use ledger_server::{register_ledger, LEDGER_METHODS};
 pub use sandbox_client::SandboxClient;
 pub use sandbox_server::{register_sandbox, SANDBOX_METHODS};
 pub use server::{socket_from_args, Handler, Server, ServerInfo};

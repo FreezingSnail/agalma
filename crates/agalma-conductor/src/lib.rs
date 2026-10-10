@@ -13,6 +13,7 @@ pub mod config;
 pub mod digest;
 pub mod harness_binding;
 pub mod harness_process;
+pub mod ledger_process;
 pub mod phases;
 pub mod provider_auth;
 pub mod provider_proxy;
@@ -35,6 +36,7 @@ use agalma_contracts::{
     StepOutcome, TaskId,
 };
 use agalma_execution::{Executor, LEDGER_SCHEMA_VERSION};
+use agalma_ipc::LedgerClient;
 use agalma_ledger::SqliteLedger;
 use clap::Parser;
 use tokio::signal::unix::{signal, SignalKind};
@@ -42,6 +44,7 @@ use tokio::signal::unix::{signal, SignalKind};
 use crate::cli::{Cli, Command, DigestArgs, ReconcileArgs, RunArgs, StateArgs};
 use crate::composition::Composition;
 use crate::config::{Config, PHASE_PLAN};
+use crate::ledger_process::{ledger_socket, LedgerHandle, LedgerTransport};
 use crate::taskqueue_process::{TaskQueueHandle, TaskQueueTransport};
 
 /// Parse the CLI and run the conductor.
@@ -110,7 +113,7 @@ async fn run_command(args: RunArgs) -> ExitCode {
         }
     }
 
-    install_signal_handler(composition.ledger_path().to_path_buf());
+    install_signal_handler(composition.state_dir.clone(), LedgerTransport::from_env());
 
     let task_id = TaskId::new(composition.task.id.clone());
     // Boot gates 2-4 (replay, projection agreement, survivor reconciliation) ran
@@ -147,7 +150,7 @@ async fn run_command(args: RunArgs) -> ExitCode {
 /// A completed, parked, or failed execution is terminal: a restart starts a new
 /// generation instead of resurrecting it.
 fn resume_or_start(
-    executor: &mut Executor<SqliteLedger>,
+    executor: &mut Executor<LedgerHandle>,
     task_id: &TaskId,
 ) -> Result<ExecutionId, agalma_contracts::ContractError> {
     let mut candidate: Option<(u32, ExecutionId)> = None;
@@ -178,7 +181,7 @@ fn resume_or_start(
 
 /// Drive one execution to a terminal state (or a stop signal).
 fn drive(
-    executor: &mut Executor<SqliteLedger>,
+    executor: &mut Executor<LedgerHandle>,
     execution: &ExecutionId,
     state_dir: &std::path::Path,
 ) -> Result<ExecutionStatus, agalma_contracts::ContractError> {
@@ -206,10 +209,11 @@ fn drive(
     executor.status(execution)
 }
 
-/// SIGTERM/SIGINT: persist the kill latch through a second ledger connection and
-/// exit cleanly. Task owner: M0.8. Survivor workers left behind are reconciled on
-/// the next boot.
-pub(crate) fn install_signal_handler(ledger_path: PathBuf) {
+/// SIGTERM/SIGINT: persist the kill latch through the bound ledger (a second
+/// connection for the in-process binding, a fresh client for the process
+/// binding) and exit cleanly. Task owner: M0.8. Survivor workers left behind are
+/// reconciled on the next boot.
+pub(crate) fn install_signal_handler(state_dir: PathBuf, transport: LedgerTransport) {
     tokio::spawn(async move {
         let mut sigint = match signal(SignalKind::interrupt()) {
             Ok(stream) => stream,
@@ -229,13 +233,17 @@ pub(crate) fn install_signal_handler(ledger_path: PathBuf) {
             _ = sigint.recv() => {}
             _ = sigterm.recv() => {}
         }
-        match SqliteLedger::open(&ledger_path) {
-            Ok(mut ledger) => {
-                if let Err(err) = ledger.set_kill_latch(true) {
-                    eprintln!("agalma: cannot persist kill latch: {err}");
-                }
+        let result = match transport {
+            LedgerTransport::InProcess => SqliteLedger::open(state_dir.join("ledger.sqlite"))
+                .and_then(|mut ledger| ledger.set_kill_latch(true)),
+            LedgerTransport::Process => {
+                LedgerClient::connect(&ledger_socket(&state_dir), &state_dir)
+                    .map_err(|e| agalma_contracts::ContractError::KnownFailure(e.to_string()))
+                    .and_then(|mut client| client.set_kill_latch(true))
             }
-            Err(err) => eprintln!("agalma: cannot open ledger for latch: {err}"),
+        };
+        if let Err(err) = result {
+            eprintln!("agalma: cannot persist kill latch: {err}");
         }
         eprintln!("agalma: signal received; kill latch persisted; exiting");
         std::process::exit(0);
@@ -339,7 +347,10 @@ fn reconcile_command(args: &ReconcileArgs) -> ExitCode {
 }
 
 /// One-line harness binding label for an execution (latest recorded pin).
-fn binding_label(ledger: &SqliteLedger, record: &agalma_contracts::ExecutionRecord) -> String {
+fn binding_label<L: LedgerApi + ?Sized>(
+    ledger: &L,
+    record: &agalma_contracts::ExecutionRecord,
+) -> String {
     match crate::harness_binding::latest_binding(ledger, &record.execution_id) {
         Ok(Some(binding)) => format!(
             "{}@{}",

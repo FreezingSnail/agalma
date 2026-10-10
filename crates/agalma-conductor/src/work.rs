@@ -41,7 +41,6 @@ use agalma_decision::{StaticDecider, TRIAGE_PICK_NEXT_BASELINE};
 use agalma_execution::{
     Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION, LEDGER_SCHEMA_VERSION,
 };
-use agalma_ledger::SqliteLedger;
 use agalma_sandbox::PRODUCT_PROFILE;
 use agalma_taskqueue::PARKED_LABEL;
 use serde_json::json;
@@ -52,6 +51,7 @@ use crate::cli::WorkArgs;
 use crate::composition::{toolchain, BUILDER_PROMPT, DEFAULT_TURN_TIMEOUT, DEFAULT_VERIFY_TIMEOUT};
 use crate::config::resolve_state_dir;
 use crate::harness_binding::{harness_handle, resolve_selection, HarnessHandle};
+use crate::ledger_process::{LedgerHandle, LedgerTransport};
 use crate::phases::{activities_with_mode, ActivityMode, PhaseDeps, RepoMode, RunState};
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
 use crate::routing::{self, RouteSelection};
@@ -102,8 +102,8 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
     let _lock = LockGuard::acquire(&state_dir).map_err(ContractError::KnownFailure)?;
 
     let ledger_path = state_dir.join("ledger.sqlite");
+    let ledger = LedgerHandle::from_transport(&state_dir, LedgerTransport::from_env())?;
     {
-        let ledger = SqliteLedger::open(&ledger_path)?;
         let version = ledger.schema_version()?;
         if version != LEDGER_SCHEMA_VERSION {
             return Err(ContractError::KnownFailure(format!(
@@ -113,7 +113,7 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
         }
     }
 
-    crate::install_signal_handler(ledger_path.clone());
+    crate::install_signal_handler(state_dir.clone(), LedgerTransport::from_env());
 
     let mode = ActivityMode::from_env();
     let proxy = if mode == ActivityMode::Live {
@@ -154,7 +154,7 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
 
     let mut queue =
         TaskQueueHandle::from_transport(&state_dir, &repo, TaskQueueTransport::from_env())?;
-    let mut decider = StaticDecider::new(SqliteLedger::open(&ledger_path)?);
+    let mut decider = StaticDecider::new(ledger.clone());
 
     // Harness binding selection (M1.7): `--harness` flag or `AGALMA_HARNESS`.
     // Resolved once per process; each operation pins its binding at start.
@@ -165,6 +165,7 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
     recover_inflight(
         &repo,
         &state_dir,
+        &ledger,
         override_model.as_deref(),
         paid_available,
         proxy_url.clone(),
@@ -175,12 +176,9 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
     // Boot projection reconcile: rewrite the bd projection to match the ledger
     // (ledger wins) before admitting new work. Best-effort: a reconcile failure
     // must not block the work loop.
-    match SqliteLedger::open(&ledger_path) {
-        Ok(ledger) => match crate::reconcile::reconcile_projection(&ledger, &mut queue) {
-            Ok(summary) => eprintln!("agalma: {}", summary.render()),
-            Err(err) => eprintln!("agalma: boot reconcile failed: {err}"),
-        },
-        Err(err) => eprintln!("agalma: boot reconcile skipped: {err}"),
+    match crate::reconcile::reconcile_projection(&ledger, &mut queue) {
+        Ok(summary) => eprintln!("agalma: {}", summary.render()),
+        Err(err) => eprintln!("agalma: boot reconcile failed: {err}"),
     }
 
     let mut processed: u32 = 0;
@@ -209,6 +207,7 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
         let terminal = run_task(
             &repo,
             &state_dir,
+            &ledger,
             override_model.as_deref(),
             paid_available,
             proxy_url.clone(),
@@ -239,7 +238,7 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
 /// reuses a recorded outcome.
 fn select_task(
     tasks: &[Task],
-    decider: &mut StaticDecider<SqliteLedger>,
+    decider: &mut StaticDecider<LedgerHandle>,
 ) -> Result<Task, ContractError> {
     let mut ids: Vec<String> = tasks
         .iter()
@@ -310,6 +309,7 @@ fn priority_weight(priority: TaskPriority) -> u8 {
 fn run_task(
     repo: &Path,
     state_dir: &Path,
+    ledger: &LedgerHandle,
     override_model: Option<&str>,
     paid_available: bool,
     proxy_url: Option<String>,
@@ -320,6 +320,7 @@ fn run_task(
 ) -> Result<Terminal, ContractError> {
     let (builder, verifier) = task_routes(state_dir, task, override_model, paid_available)?;
     let mut executor = build_executor(
+        ledger,
         state_dir,
         &builder,
         &verifier,
@@ -443,7 +444,7 @@ fn finalize(
 /// Drive one execution to a terminal state, projecting each phase transition to
 /// the backlog and honoring the `STOP` sentinel.
 fn drive_task(
-    executor: &mut Executor<SqliteLedger>,
+    executor: &mut Executor<LedgerHandle>,
     execution: &ExecutionId,
     state_dir: &Path,
     queue: &mut TaskQueueHandle,
@@ -490,7 +491,7 @@ fn drive_task(
 
 /// Record the claim and lease generation durably before dispatch.
 fn record_claim(
-    executor: &mut Executor<SqliteLedger>,
+    executor: &mut Executor<LedgerHandle>,
     execution: &ExecutionId,
     evidence: &ClaimEvidence,
     generation: u32,
@@ -526,16 +527,14 @@ fn record_claim(
 fn recover_inflight(
     repo: &Path,
     state_dir: &Path,
+    ledger: &LedgerHandle,
     override_model: Option<&str>,
     paid_available: bool,
     proxy_url: Option<String>,
     queue: &mut TaskQueueHandle,
     harness: HarnessHandle,
 ) -> Result<(), ContractError> {
-    let executions = {
-        let ledger = SqliteLedger::open(state_dir.join("ledger.sqlite"))?;
-        ledger.executions()?
-    };
+    let executions = ledger.executions()?;
     for record in executions {
         let terminal = matches!(
             record.state,
@@ -556,6 +555,7 @@ fn recover_inflight(
         };
         let (builder, verifier) = task_routes(state_dir, &task, override_model, paid_available)?;
         let mut executor = build_executor(
+            ledger,
             state_dir,
             &builder,
             &verifier,
@@ -590,6 +590,7 @@ fn recover_inflight(
 /// Build a per-task executor with repo-mode activities and the same ledger.
 #[allow(clippy::too_many_arguments)]
 fn build_executor(
+    ledger: &LedgerHandle,
     state_dir: &Path,
     builder: &RouteSelection,
     verifier: &RouteSelection,
@@ -598,10 +599,9 @@ fn build_executor(
     task: &Task,
     repo: &Path,
     harness: HarnessHandle,
-) -> Result<Executor<SqliteLedger>, ContractError> {
-    let ledger = SqliteLedger::open(state_dir.join("ledger.sqlite"))?;
+) -> Result<Executor<LedgerHandle>, ContractError> {
     let mut executor = Executor::new(
-        ledger,
+        ledger.clone(),
         ExecutorConfig {
             max_attempts: task.max_attempts,
             execution_definition_version: EXECUTION_DEFINITION_VERSION,
@@ -696,7 +696,7 @@ fn phase_deps(
 /// Lease generation pinned in an execution's `execution_created` event
 /// (fallback: its task generation).
 fn execution_lease(
-    executor: &Executor<SqliteLedger>,
+    executor: &Executor<LedgerHandle>,
     execution: &ExecutionId,
     fallback: u32,
 ) -> u32 {

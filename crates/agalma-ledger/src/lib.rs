@@ -49,8 +49,11 @@ use agalma_contracts::{
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
+use agalma_ipc::LedgerOps;
+
 #[cfg(test)]
 mod tests;
+pub mod server;
 
 /// Persisted physical schema version. Bump only with a migration.
 pub const SCHEMA_VERSION: u32 = 3;
@@ -1195,6 +1198,34 @@ impl LedgerApi for SqliteLedger {
         }
         tx.commit().map_err(db_err)?;
         Ok(())
+    }
+}
+
+/// Snapshot file transfer (D3): the server writes/reads the snapshot under the
+/// run state dir; only the path crosses the frame.
+impl LedgerOps for SqliteLedger {
+    fn export_snapshot_to(&self, path: &Path) -> Result<(), ContractError> {
+        let snapshot = self.export_state()?;
+        let text = snapshot.to_canonical_json()?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                ContractError::KnownFailure(format!(
+                    "create snapshot dir {}: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+        std::fs::write(path, text).map_err(|e| {
+            ContractError::KnownFailure(format!("write snapshot {}: {e}", path.display()))
+        })
+    }
+
+    fn import_snapshot_from(&mut self, path: &Path) -> Result<(), ContractError> {
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            ContractError::KnownFailure(format!("read snapshot {}: {e}", path.display()))
+        })?;
+        let snapshot = StateSnapshot::from_json(&text)?;
+        self.import_state(&snapshot)
     }
 }
 

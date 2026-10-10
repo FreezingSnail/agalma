@@ -102,6 +102,7 @@ name = "agalma-ledger"
 version = "0.1.0"
 dependencies = [
  "agalma-contracts",
+ "agalma-ipc",
  "rusqlite",
  "serde_json",
 ]

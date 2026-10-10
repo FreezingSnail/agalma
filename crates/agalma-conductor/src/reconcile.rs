@@ -22,7 +22,6 @@ use agalma_contracts::{
     ContractError, ExecutionPhase, ExecutionRecord, ExecutionState, LedgerApi, TaskQueueApi,
 };
 use agalma_ipc::{IssueProjection, TaskQueueOps};
-use agalma_ledger::SqliteLedger;
 use agalma_taskqueue::PARKED_LABEL;
 
 use crate::taskqueue_process::TaskQueueHandle;
@@ -59,8 +58,11 @@ enum Correction {
 }
 
 /// Reconcile every task that has a ledger execution against its bd projection.
-pub fn reconcile_projection(
-    ledger: &SqliteLedger,
+///
+/// Generic over the ledger so it accepts either the in-process `SqliteLedger`
+/// or the transport `LedgerHandle` (both are [`LedgerApi`]).
+pub fn reconcile_projection<L: LedgerApi + ?Sized>(
+    ledger: &L,
     queue: &mut TaskQueueHandle,
 ) -> Result<ReconcileSummary, ContractError> {
     let mut summary = ReconcileSummary::default();
@@ -98,7 +100,9 @@ pub fn reconcile_projection(
 }
 
 /// The latest (highest-generation) execution per task, ordered by task id.
-fn latest_per_task(ledger: &SqliteLedger) -> Result<Vec<ExecutionRecord>, ContractError> {
+fn latest_per_task<L: LedgerApi + ?Sized>(
+    ledger: &L,
+) -> Result<Vec<ExecutionRecord>, ContractError> {
     let mut latest: Vec<ExecutionRecord> = Vec::new();
     for record in ledger.executions()? {
         match latest.iter_mut().find(|r| r.task_id == record.task_id) {
@@ -116,7 +120,10 @@ fn latest_per_task(ledger: &SqliteLedger) -> Result<Vec<ExecutionRecord>, Contra
 
 /// The lease generation pinned in the execution's `execution_created` event
 /// (fallback: its task generation).
-fn lease_for(ledger: &SqliteLedger, record: &ExecutionRecord) -> Result<u32, ContractError> {
+fn lease_for<L: LedgerApi + ?Sized>(
+    ledger: &L,
+    record: &ExecutionRecord,
+) -> Result<u32, ContractError> {
     for event in ledger.events(&record.execution_id)? {
         if event.kind == "execution_created" {
             if let Some(lease) = event

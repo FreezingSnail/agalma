@@ -20,6 +20,7 @@ pub mod reconcile;
 pub mod routing;
 pub mod sandbox_process;
 pub mod task;
+pub mod taskqueue_process;
 pub mod work;
 pub mod workers;
 pub mod workspace_process;
@@ -35,13 +36,13 @@ use agalma_contracts::{
 };
 use agalma_execution::{Executor, LEDGER_SCHEMA_VERSION};
 use agalma_ledger::SqliteLedger;
-use agalma_taskqueue::BdTaskQueue;
 use clap::Parser;
 use tokio::signal::unix::{signal, SignalKind};
 
 use crate::cli::{Cli, Command, DigestArgs, ReconcileArgs, RunArgs, StateArgs};
 use crate::composition::Composition;
 use crate::config::{Config, PHASE_PLAN};
+use crate::taskqueue_process::{TaskQueueHandle, TaskQueueTransport};
 
 /// Parse the CLI and run the conductor.
 pub async fn run() -> ExitCode {
@@ -317,7 +318,14 @@ fn reconcile_command(args: &ReconcileArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut queue = BdTaskQueue::new(&repo);
+    let mut queue =
+        match TaskQueueHandle::from_transport(&state_dir, &repo, TaskQueueTransport::from_env()) {
+            Ok(queue) => queue,
+            Err(err) => {
+                eprintln!("agalma: cannot bind task queue: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
     match crate::reconcile::reconcile_projection(&ledger, &mut queue) {
         Ok(summary) => {
             println!("{}", summary.render());

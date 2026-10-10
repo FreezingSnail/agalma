@@ -120,6 +120,7 @@ name = "agalma-taskqueue"
 version = "0.1.0"
 dependencies = [
  "agalma-contracts",
+ "agalma-ipc",
  "serde",
  "serde_json",
 ]

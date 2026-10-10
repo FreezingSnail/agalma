@@ -3,7 +3,7 @@
 //! `agalma work --repo <path> [--once] [--max-tasks N] [--state-dir] [--model]`
 //! turns the M0 single-task conductor into a loop over the `bd` backlog:
 //!
-//! 1. **intake** — [`BdTaskQueue::ready_tasks`] lists eligible tasks; when more
+//! 1. **intake** — [`TaskQueueHandle::ready_tasks`] lists eligible tasks; when more
 //!    than one is eligible the pinned static `triage.pick-next` decision picks
 //!    one (a single eligible task needs no decision call). The task is claimed
 //!    atomically and its execution identity `exec:<task>:<generation>` is
@@ -43,8 +43,10 @@ use agalma_execution::{
 };
 use agalma_ledger::SqliteLedger;
 use agalma_sandbox::PRODUCT_PROFILE;
-use agalma_taskqueue::{BdTaskQueue, PARKED_LABEL};
+use agalma_taskqueue::PARKED_LABEL;
 use serde_json::json;
+
+use agalma_ipc::TaskQueueOps;
 
 use crate::cli::WorkArgs;
 use crate::composition::{toolchain, BUILDER_PROMPT, DEFAULT_TURN_TIMEOUT, DEFAULT_VERIFY_TIMEOUT};
@@ -53,6 +55,7 @@ use crate::harness_binding::{harness_handle, resolve_selection, HarnessHandle};
 use crate::phases::{activities_with_mode, ActivityMode, PhaseDeps, RepoMode, RunState};
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
 use crate::routing::{self, RouteSelection};
+use crate::taskqueue_process::{TaskQueueHandle, TaskQueueTransport};
 use crate::workspace_process::{WorkspaceHandle, WorkspaceTransport};
 use crate::LockGuard;
 
@@ -149,7 +152,8 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
         })
         .unwrap_or(false);
 
-    let mut queue = BdTaskQueue::new(&repo);
+    let mut queue =
+        TaskQueueHandle::from_transport(&state_dir, &repo, TaskQueueTransport::from_env())?;
     let mut decider = StaticDecider::new(SqliteLedger::open(&ledger_path)?);
 
     // Harness binding selection (M1.7): `--harness` flag or `AGALMA_HARNESS`.
@@ -311,7 +315,7 @@ fn run_task(
     proxy_url: Option<String>,
     task: &Task,
     evidence: &ClaimEvidence,
-    queue: &mut BdTaskQueue,
+    queue: &mut TaskQueueHandle,
     harness: HarnessHandle,
 ) -> Result<Terminal, ContractError> {
     let (builder, verifier) = task_routes(state_dir, task, override_model, paid_available)?;
@@ -389,7 +393,7 @@ fn task_routes(
 /// `Blocked` records nothing.
 fn finalize(
     state_dir: &Path,
-    queue: &mut BdTaskQueue,
+    queue: &mut TaskQueueHandle,
     execution: &ExecutionId,
     task: &Task,
     model: &str,
@@ -442,7 +446,7 @@ fn drive_task(
     executor: &mut Executor<SqliteLedger>,
     execution: &ExecutionId,
     state_dir: &Path,
-    queue: &mut BdTaskQueue,
+    queue: &mut TaskQueueHandle,
     task_id: &TaskId,
     lease: u32,
 ) -> Result<Terminal, ContractError> {
@@ -525,7 +529,7 @@ fn recover_inflight(
     override_model: Option<&str>,
     paid_available: bool,
     proxy_url: Option<String>,
-    queue: &mut BdTaskQueue,
+    queue: &mut TaskQueueHandle,
     harness: HarnessHandle,
 ) -> Result<(), ContractError> {
     let executions = {

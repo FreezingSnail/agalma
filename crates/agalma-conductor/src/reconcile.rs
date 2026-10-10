@@ -21,8 +21,11 @@
 use agalma_contracts::{
     ContractError, ExecutionPhase, ExecutionRecord, ExecutionState, LedgerApi, TaskQueueApi,
 };
+use agalma_ipc::{IssueProjection, TaskQueueOps};
 use agalma_ledger::SqliteLedger;
-use agalma_taskqueue::{BdTaskQueue, PARKED_LABEL};
+use agalma_taskqueue::PARKED_LABEL;
+
+use crate::taskqueue_process::TaskQueueHandle;
 
 /// Outcome counters for one reconcile pass.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -58,7 +61,7 @@ enum Correction {
 /// Reconcile every task that has a ledger execution against its bd projection.
 pub fn reconcile_projection(
     ledger: &SqliteLedger,
-    queue: &mut BdTaskQueue,
+    queue: &mut TaskQueueHandle,
 ) -> Result<ReconcileSummary, ContractError> {
     let mut summary = ReconcileSummary::default();
     for record in latest_per_task(ledger)? {
@@ -132,7 +135,7 @@ fn lease_for(ledger: &SqliteLedger, record: &ExecutionRecord) -> Result<u32, Con
 fn corrections_for(
     record: &ExecutionRecord,
     lease: u32,
-    projection: &agalma_taskqueue::IssueProjection,
+    projection: &IssueProjection,
 ) -> Vec<Correction> {
     let mut corrections = Vec::new();
     let done = matches!(record.state, ExecutionState::Completed)

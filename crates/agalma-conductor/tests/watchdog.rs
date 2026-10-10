@@ -29,6 +29,7 @@ use agalma_contracts::{
     CommitBatch, ContractError, ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord,
     ExecutionState, LedgerApi, Task, TaskFamily, TaskPriority,
 };
+use agalma_ipc::TaskQueueOps;
 use agalma_ledger::SqliteLedger;
 
 use agalma_conductor::digest::{self, Verdict};
@@ -640,7 +641,7 @@ fn parked_projection_reconcile_maps_and_is_idempotent() {
     bd(&["update", &id, "--status", "in_progress"]);
 
     let ledger = SqliteLedger::open(state_dir.join("ledger.sqlite")).expect("reopen ledger");
-    let mut queue = agalma_taskqueue::BdTaskQueue::new(&origin);
+    let mut queue = agalma_conductor::taskqueue_process::TaskQueueHandle::in_process(&origin);
 
     let first = agalma_conductor::reconcile::reconcile_projection(&ledger, &mut queue)
         .expect("first reconcile");

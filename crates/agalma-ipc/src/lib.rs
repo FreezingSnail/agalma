@@ -16,6 +16,8 @@
 //!   its method-registration helper (the second extracted boundary, B1.3).
 //! - [`workspace_client`]/[`workspace_server`]: the typed `WorkspaceApi` +
 //!   repo-mode client and its method-registration helper (B1.4).
+//! - [`taskqueue_client`]/[`taskqueue_server`]: the typed `TaskQueueApi` +
+//!   reconcile-projection client and its method-registration helper (B1.5).
 //!
 //! `agalma-ipc` is **infrastructure**, not an implementation crate: the
 //! architecture lint (`crates/agalma-conductor/tests/architecture.rs`) permits
@@ -32,6 +34,8 @@ pub mod harness_server;
 pub mod sandbox_client;
 pub mod sandbox_server;
 pub mod server;
+pub mod taskqueue_client;
+pub mod taskqueue_server;
 pub mod workspace_client;
 pub mod workspace_server;
 
@@ -47,6 +51,11 @@ pub use harness_server::{ensure_all_handlers, register_harness, server_info_from
 pub use sandbox_client::SandboxClient;
 pub use sandbox_server::{register_sandbox, SANDBOX_METHODS};
 pub use server::{socket_from_args, Handler, Server, ServerInfo};
+pub use taskqueue_client::{
+    CloseParams, CommentParams, IssueProjection, LabelParams, StatusParams, TaskCall,
+    TaskQueueClient, TaskQueueOps,
+};
+pub use taskqueue_server::{register_taskqueue, TASKQUEUE_METHODS};
 pub use workspace_client::{
     CheckoutCall, IntegrateOriginParams, IntegrateParams, OriginReceiptParams, PrepareParams,
     PrepareRepoParams, PrepareVerifyParams, RevertOriginParams, RevertParams, TagParams,

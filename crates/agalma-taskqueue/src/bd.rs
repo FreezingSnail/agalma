@@ -14,6 +14,7 @@ use std::process::Command;
 use agalma_contracts::{
     ClaimEvidence, ContractError, ReadyTasks, SkipReason, SkippedIssue, Task, TaskId, TaskQueueApi,
 };
+use agalma_ipc::IssueProjection;
 use serde::Deserialize;
 
 use crate::block::parse_task_block;
@@ -205,28 +206,6 @@ struct BdOutput {
 struct BdComment {
     #[serde(default)]
     text: Option<String>,
-}
-
-/// A task's current bd projection: the derived state the reconcile compares
-/// against the ledger.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IssueProjection {
-    pub status: String,
-    pub assignee: Option<String>,
-    pub labels: Vec<String>,
-    pub comments: Vec<String>,
-}
-
-impl IssueProjection {
-    /// Whether the projection carries `label`.
-    pub fn has_label(&self, label: &str) -> bool {
-        self.labels.iter().any(|l| l == label)
-    }
-
-    /// Whether any comment body contains `needle`.
-    pub fn has_comment(&self, needle: &str) -> bool {
-        self.comments.iter().any(|c| c.contains(needle))
-    }
 }
 
 /// Subset of the bd issue JSON the adapter consumes.

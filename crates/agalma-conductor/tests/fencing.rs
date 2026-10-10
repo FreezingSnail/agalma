@@ -25,8 +25,8 @@ use agalma_contracts::{
     ExecutionState, LedgerApi, StepOutcome,
 };
 use agalma_execution::{DispatchOutcome, Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
+use agalma_ipc::TaskQueueOps;
 use agalma_ledger::SqliteLedger;
-use agalma_taskqueue::BdTaskQueue;
 use agalma_workspace::Workspace;
 
 use agalma_conductor::workspace_process::WorkspaceHandle;
@@ -34,6 +34,7 @@ use serde_json::json;
 
 use agalma_conductor::phases::{activities_with_mode, ActivityMode, PhaseDeps, RepoMode, RunState};
 use agalma_conductor::reconcile::reconcile_projection;
+use agalma_conductor::taskqueue_process::TaskQueueHandle;
 
 const TASK: &str = "fence-task";
 
@@ -526,7 +527,7 @@ fn projection_reconcile_after_crash_is_idempotent() {
     assert!(summary.contains("fixed=1"), "fixed once: {summary}");
 
     let ledger = SqliteLedger::open(&ledger_path).expect("reopen ledger");
-    let mut queue = BdTaskQueue::new(&origin);
+    let mut queue = TaskQueueHandle::in_process(&origin);
     let projection = queue.projection(&task_id).expect("projection");
     assert_eq!(projection.status, "closed", "ledger wins: closed");
     assert!(!projection.has_label("parked"), "parked label removed");

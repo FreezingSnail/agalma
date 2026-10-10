@@ -182,4 +182,15 @@ pub trait LedgerApi {
         &self,
         execution_id: &ExecutionId,
     ) -> Result<Vec<DigestRecord>, ContractError>;
+
+    /// Read a kernel contract-version key (schema v3 `kernel_meta`), if set.
+    ///
+    /// Kernel-versioning keys are `exec_def_version` and `kernel_version`
+    /// (`docs/b0-kernel.md` §"Ledger schema v3"); the store is a small key/value
+    /// table separate from the physical-schema `meta`. Timers and directives get
+    /// their own methods in B0.4.
+    fn kernel_meta_get(&self, key: &str) -> Result<Option<String>, ContractError>;
+
+    /// Insert or replace a kernel contract-version key (schema v3 `kernel_meta`).
+    fn kernel_meta_set(&mut self, key: &str, value: &str) -> Result<(), ContractError>;
 }

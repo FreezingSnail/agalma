@@ -601,6 +601,133 @@ fn migration_v1_to_v2_refused_with_in_flight_execution() {
     );
 }
 
+#[test]
+fn migration_v2_to_v3_when_all_executions_terminal() {
+    let dir = run_dir("migrate-v2-terminal");
+    reset_dir(&dir);
+    let path = dir.join("ledger.sqlite");
+    let exec = fixture_exec();
+
+    {
+        let mut ledger = SqliteLedger::open(&path).unwrap();
+        ledger
+            .commit(CommitBatch {
+                expected_revision: None,
+                state: Some(record(
+                    &exec,
+                    ExecutionPhase::Done,
+                    ExecutionState::Completed,
+                )),
+                events: vec![],
+                receipts: vec![],
+                intents: vec![],
+            })
+            .unwrap();
+        ledger.downgrade_to_v2().unwrap();
+        assert_eq!(ledger.schema_version().unwrap(), 2);
+    }
+
+    let mut ledger = SqliteLedger::open(&path).unwrap();
+    assert_eq!(
+        ledger.schema_version().unwrap(),
+        SCHEMA_VERSION,
+        "terminal v2 database migrates to v3"
+    );
+    // v3 surface is live after migration.
+    assert_eq!(ledger.kernel_meta_get("exec_def_version").unwrap(), None);
+    ledger
+        .kernel_meta_set("exec_def_version", "exec_def/v1")
+        .unwrap();
+    assert_eq!(
+        ledger
+            .kernel_meta_get("exec_def_version")
+            .unwrap()
+            .as_deref(),
+        Some("exec_def/v1")
+    );
+}
+
+#[test]
+fn migration_v2_to_v3_refused_with_in_flight_execution() {
+    let dir = run_dir("migrate-v2-inflight");
+    reset_dir(&dir);
+    let path = dir.join("ledger.sqlite");
+    let exec = fixture_exec();
+
+    {
+        let mut ledger = SqliteLedger::open(&path).unwrap();
+        ledger
+            .commit(CommitBatch {
+                expected_revision: None,
+                state: Some(record(
+                    &exec,
+                    ExecutionPhase::Build,
+                    ExecutionState::Running,
+                )),
+                events: vec![],
+                receipts: vec![],
+                intents: vec![],
+            })
+            .unwrap();
+        ledger.downgrade_to_v2().unwrap();
+    }
+
+    let err = SqliteLedger::open(&path).map(|_| ()).unwrap_err();
+    assert!(matches!(err, ContractError::KnownFailure(_)), "err={err:?}");
+    assert!(
+        err.to_string().contains("in-flight"),
+        "reason must name in-flight executions: {err}"
+    );
+}
+
+#[test]
+fn kernel_meta_round_trips_and_overwrites() {
+    let dir = run_dir("kernel-meta");
+    reset_dir(&dir);
+    let path = dir.join("ledger.sqlite");
+    let exec = fixture_exec();
+    let transition = || CommitBatch {
+        expected_revision: None,
+        state: Some(record(
+            &exec,
+            ExecutionPhase::Done,
+            ExecutionState::Completed,
+        )),
+        events: vec![],
+        receipts: vec![],
+        intents: vec![],
+    };
+
+    {
+        let mut ledger = SqliteLedger::open(&path).unwrap();
+        assert_eq!(ledger.kernel_meta_get("kernel_version").unwrap(), None);
+        ledger.kernel_meta_set("kernel_version", "0.1.0").unwrap();
+        ledger
+            .kernel_meta_set("exec_def_version", "exec_def/v1")
+            .unwrap();
+        // Overwrite is an upsert, not an error.
+        ledger.kernel_meta_set("kernel_version", "0.1.1").unwrap();
+        assert_eq!(
+            ledger.kernel_meta_get("kernel_version").unwrap().as_deref(),
+            Some("0.1.1")
+        );
+        // kernel_meta writes are gated by schema compatibility, unlike reads.
+        ledger.force_schema_version(99).unwrap();
+        assert!(ledger
+            .kernel_meta_set("exec_def_version", "exec_def/v2")
+            .is_err());
+        ledger.force_schema_version(SCHEMA_VERSION).unwrap();
+        ledger.commit(transition()).unwrap();
+    }
+
+    let ledger = SqliteLedger::open(&path).unwrap();
+    assert_eq!(
+        ledger.kernel_meta_get("kernel_version").unwrap().as_deref(),
+        Some("0.1.1"),
+        "kernel_meta must survive reopen"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Lease generations (M1.6)
 // ---------------------------------------------------------------------------

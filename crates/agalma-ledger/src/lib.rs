@@ -18,6 +18,15 @@
 //! leaves the database untouched (no in-flight migration). A stored version
 //! that is neither 1 nor 2 is never migrated; use fails with a schema mismatch.
 //!
+//! ## Schema v3
+//!
+//! Schema v3 adds the additive `kernel_meta`, `timers`, and `directives` tables
+//! (kernel contract versions, durable timers, incoming directives). `open()`
+//! migrates v1/v2 → v3 under the same rule: only when every execution is
+//! terminal; otherwise it refuses with no in-flight migration. `kernel_meta`
+//! is read/written through [`LedgerApi::kernel_meta_get`] /
+//! [`LedgerApi::kernel_meta_set`]; timers and directives get methods in B0.4.
+//!
 //! ## Sequence assignment
 //!
 //! `execution_events.sequence` is owned by the ledger: any sequence supplied in
@@ -41,7 +50,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 mod tests;
 
 /// Persisted physical schema version. Bump only with a migration.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Physical schema v1: S0c seed plus `component_bindings`.
 ///
@@ -129,6 +138,35 @@ CREATE TABLE IF NOT EXISTS digests (
 );
 "#;
 
+/// Additive schema v3: kernel contract versions, durable timers, directives.
+///
+/// `kernel_meta` holds the kernel's persisted contract versions
+/// (`exec_def_version`, `kernel_version`); the kernel reads them on open and
+/// parks unknown versions rather than guessing. `timers` and `directives` are
+/// created empty here; B0.4 (`agalma-9n4.5`) owns their access methods.
+const SCHEMA_V3_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS kernel_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS timers (
+  timer_id TEXT PRIMARY KEY,
+  execution_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  fire_at INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS directives (
+  directive_id TEXT PRIMARY KEY,
+  version INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  state TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  received_at INTEGER NOT NULL
+);
+"#;
+
 /// SQLite-backed [`LedgerApi`].
 pub struct SqliteLedger {
     conn: Connection,
@@ -185,7 +223,7 @@ impl SqliteLedger {
         Ok(())
     }
 
-    /// Simulate a genuine v1 database: drop the additive v2 tables and record
+    /// Simulate a genuine v1 database: drop the additive v2/v3 tables and record
     /// schema version 1. Test-only; used to exercise the migration path.
     #[cfg(test)]
     fn downgrade_to_v1(&self) -> Result<(), ContractError> {
@@ -194,7 +232,25 @@ impl SqliteLedger {
                 "DROP TABLE IF EXISTS decisions; \
                  DROP TABLE IF EXISTS decision_outcomes; \
                  DROP TABLE IF EXISTS digests; \
+                 DROP TABLE IF EXISTS kernel_meta; \
+                 DROP TABLE IF EXISTS timers; \
+                 DROP TABLE IF EXISTS directives; \
                  UPDATE meta SET value='1' WHERE key='schema_version';",
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Simulate a genuine v2 database: drop the additive v3 tables and record
+    /// schema version 2. Test-only; used to exercise the v2 → v3 migration.
+    #[cfg(test)]
+    fn downgrade_to_v2(&self) -> Result<(), ContractError> {
+        self.conn
+            .execute_batch(
+                "DROP TABLE IF EXISTS kernel_meta; \
+                 DROP TABLE IF EXISTS timers; \
+                 DROP TABLE IF EXISTS directives; \
+                 UPDATE meta SET value='2' WHERE key='schema_version';",
             )
             .map_err(db_err)?;
         Ok(())
@@ -215,8 +271,9 @@ fn ensure_schema(conn: &Connection) -> Result<(), ContractError> {
     conn.execute_batch(SCHEMA_V1_SQL).map_err(db_err)?;
     match meta_value(conn, "schema_version")? {
         None => {
-            // Fresh database: create v2 and record the version.
+            // Fresh database: create v2 + v3 and record the version.
             conn.execute_batch(SCHEMA_V2_SQL).map_err(db_err)?;
+            conn.execute_batch(SCHEMA_V3_SQL).map_err(db_err)?;
             let now = now_ms();
             let stmts: [(&str, String); 3] = [
                 ("schema_version", SCHEMA_VERSION.to_string()),
@@ -233,24 +290,44 @@ fn ensure_schema(conn: &Connection) -> Result<(), ContractError> {
         }
         Some(raw) => {
             let version: u32 = raw.parse().unwrap_or(0);
-            if version == 1 {
-                // Auto-migrate v1 → v2 only when every execution is terminal.
-                if !all_executions_terminal(conn)? {
-                    return Err(ContractError::KnownFailure(
-                        "refusing v1 -> v2 migration: in-flight executions present \
-                         (no in-flight migration)"
-                            .to_string(),
-                    ));
+            match version {
+                1 => {
+                    // Auto-migrate v1 → v3 only when every execution is terminal.
+                    if !all_executions_terminal(conn)? {
+                        return Err(ContractError::KnownFailure(
+                            "refusing v1 -> v3 migration: in-flight executions present \
+                             (no in-flight migration)"
+                                .to_string(),
+                        ));
+                    }
+                    conn.execute_batch(SCHEMA_V2_SQL).map_err(db_err)?;
+                    conn.execute_batch(SCHEMA_V3_SQL).map_err(db_err)?;
+                    conn.execute(
+                        "UPDATE meta SET value=?1 WHERE key='schema_version'",
+                        params![SCHEMA_VERSION.to_string()],
+                    )
+                    .map_err(db_err)?;
                 }
-                conn.execute_batch(SCHEMA_V2_SQL).map_err(db_err)?;
-                conn.execute(
-                    "UPDATE meta SET value=?1 WHERE key='schema_version'",
-                    params![SCHEMA_VERSION.to_string()],
-                )
-                .map_err(db_err)?;
+                2 => {
+                    // Auto-migrate v2 → v3 only when every execution is terminal.
+                    if !all_executions_terminal(conn)? {
+                        return Err(ContractError::KnownFailure(
+                            "refusing v2 -> v3 migration: in-flight executions present \
+                             (no in-flight migration)"
+                                .to_string(),
+                        ));
+                    }
+                    conn.execute_batch(SCHEMA_V3_SQL).map_err(db_err)?;
+                    conn.execute(
+                        "UPDATE meta SET value=?1 WHERE key='schema_version'",
+                        params![SCHEMA_VERSION.to_string()],
+                    )
+                    .map_err(db_err)?;
+                }
+                // Version 3: tables already present. Any other version is a
+                // future or unknown schema: leave it untouched; use refuses.
+                _ => {}
             }
-            // Version 2: tables already present. Any other version is a future
-            // or unknown schema: leave it untouched; use refuses until corrected.
         }
     }
     Ok(())
@@ -748,6 +825,29 @@ impl LedgerApi for SqliteLedger {
             out.push(row.map_err(db_err)?);
         }
         Ok(out)
+    }
+
+    fn kernel_meta_get(&self, key: &str) -> Result<Option<String>, ContractError> {
+        self.conn
+            .query_row(
+                "SELECT value FROM kernel_meta WHERE key=?1",
+                params![key],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(db_err)
+    }
+
+    fn kernel_meta_set(&mut self, key: &str, value: &str) -> Result<(), ContractError> {
+        self.ensure_compatible()?;
+        self.conn
+            .execute(
+                "INSERT INTO kernel_meta(key,value) VALUES(?1,?2) \
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![key, value],
+            )
+            .map_err(db_err)?;
+        Ok(())
     }
 }
 

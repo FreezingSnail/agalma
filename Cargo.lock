@@ -81,6 +81,7 @@ dependencies = [
  "agalma-contracts",
  "agalma-execution",
  "agalma-ledger",
+ "serde",
  "serde_json",
 ]
 

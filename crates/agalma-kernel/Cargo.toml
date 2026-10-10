@@ -8,6 +8,8 @@ publish = false
 
 [dependencies]
 agalma-contracts = { path = "../agalma-contracts" }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 agalma-ledger = { path = "../agalma-ledger" }

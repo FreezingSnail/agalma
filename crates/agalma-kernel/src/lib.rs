@@ -27,7 +27,34 @@
 //! `ExecutionApi`; the conductor selects the binding (S0d binding records +
 //! staged rebind), so activation and rollback are config flips with pinned
 //! recovery.
+//!
+//! ## B0.2 surface (`agalma-9n4.3`)
+//!
+//! - [`exec_def`] — versioned `ExecDef` (`exec_def/v1`): named states, per-op
+//!   lifecycle, and the eight transition [`Command`]s.
+//! - [`transition`] — pure `transition(state, command, inputs) -> Vec<Effect>`
+//!   (`Effect::{Commit, Dispatch}`) plus [`step`]/[`detect_conflict`], with no
+//!   I/O, clock, model, or tool calls.
+//! - [`state`] — [`KernelState`] and its coarse projection; the reducer
+//!   reconstructs it from history alone.
+//! - [`engine`] — [`KernelEngine`] appends `execution_events` + updates the
+//!   `executions` projection in one atomic `LedgerApi` commit, replays history,
+//!   and parks unknown `exec_def` versions or projection mismatches.
+
+pub mod crash;
+pub mod engine;
+pub mod exec_def;
+pub mod state;
+pub mod transition;
+
+pub use engine::{replay, ApplyOutcome, KernelEngine};
+pub use exec_def::{
+    Command, ExecDef, ExecState, Inputs, KernelEvent, OperationRecord, OperationState, Probe,
+    EXEC_DEF_VERSION, KERNEL_VERSION,
+};
+pub use state::KernelState;
+pub use transition::{detect_conflict, step, transition, Conflict, Effect, StepResult};
 
 // Re-export the frozen contract crate the kernel implements against, so the
-// dependency is explicit while the implementation is still empty.
+// dependency is explicit.
 pub use agalma_contracts as contracts;

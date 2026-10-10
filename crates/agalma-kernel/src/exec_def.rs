@@ -100,6 +100,37 @@ pub struct Inputs {
     /// to the execution's current phase when absent.
     #[serde(default)]
     pub phase: Option<ExecutionPhase>,
+    /// Directive work plan recorded with a `DirectiveUpdate`. Absent for a bare
+    /// update; present when the update carries queued work to derive.
+    #[serde(default)]
+    pub directive: Option<DirectivePlan>,
+}
+
+/// One queued step a directive wants active for an execution.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DirectiveStep {
+    /// Operation-id step (`op:<execution>:<step>`).
+    pub step: String,
+    /// Activity definition that owns the queued operation.
+    pub activity: ActivityDef,
+    /// Phase whose effect the queued operation performs.
+    pub phase: ExecutionPhase,
+    /// Bounded, opaque operation inputs (hashed and recorded).
+    #[serde(default)]
+    pub inputs: Value,
+}
+
+/// A directive's work plan: the operation steps it wants queued.
+///
+/// A newer directive version replaces the queued work derived from the prior
+/// version: steps removed from the plan are cancelled, steps added are queued.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DirectivePlan {
+    /// Directive source/origin bound alongside the version.
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub steps: Vec<DirectiveStep>,
 }
 
 /// External-effect probe evidence.
@@ -262,6 +293,10 @@ pub struct OperationRecord {
 pub struct DirectiveRecord {
     pub version: u64,
     pub content_hash: String,
+    /// Directive source/origin bound alongside the version.
+    pub source: String,
+    /// Steps the directive's plan queued (for replacement derivation).
+    pub steps: Vec<String>,
 }
 
 /// Serialize a `Value` into the history payload (never inlines artifacts: the

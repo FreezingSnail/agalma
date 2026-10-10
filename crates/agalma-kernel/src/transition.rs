@@ -18,8 +18,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::exec_def::{
-    encode_event, Command, ExecState, Inputs, KernelEvent, Probe, EXEC_DEF_VERSION,
+    encode_event, Command, DirectiveRecord, DirectiveStep, ExecState, Inputs, KernelEvent,
+    OperationRecord, OperationState, Probe, EXEC_DEF_VERSION,
 };
+use crate::hash::content_hash as hash_content;
 use crate::state::KernelState;
 
 /// One output of a transition.
@@ -378,24 +380,96 @@ fn directive_update(
     command: &Command,
     inputs: &Inputs,
 ) -> StepResult {
-    if let Some(existing) = state.directives.get(directive_id) {
+    let existing = state.directives.get(directive_id);
+    if let Some(existing) = existing {
         if existing.version >= version {
             return noop(state); // duplicate or older: harmless
         }
     }
+    if state.is_terminal() {
+        return noop(state);
+    }
+
+    let plan = inputs.directive.as_ref();
+    let source = plan.map(|p| p.source.clone()).unwrap_or_default();
+    let new_steps: Vec<String> = plan
+        .map(|p| p.steps.iter().map(|s| s.step.clone()).collect())
+        .unwrap_or_default();
+
     let mut next = state.clone();
     next.directives.insert(
         directive_id.to_string(),
-        crate::exec_def::DirectiveRecord {
+        DirectiveRecord {
             version,
             content_hash: content_hash.to_string(),
+            source,
+            steps: new_steps.clone(),
         },
     );
+
+    // Replace queued work: cancel operations derived from the prior plan that
+    // the new version no longer wants and that are not already completed.
+    if let Some(prior) = existing {
+        for step in &prior.steps {
+            if new_steps.contains(step) {
+                continue;
+            }
+            let op = OperationId::derive(&state.execution_id, step);
+            if let Some(record) = next.operations.get_mut(&op) {
+                if record.state != OperationState::Completed {
+                    record.state = OperationState::Cancelled;
+                }
+            }
+        }
+    }
+
+    // Derive queued commands from the active directive: announce and dispatch
+    // the plan's steps. The kill latch blocks new/recovered dispatch.
+    let mut intents: Vec<DispatchIntent> = Vec::new();
+    if let Some(plan) = plan {
+        if !state.kill_latched {
+            for step in &plan.steps {
+                let op = OperationId::derive(&state.execution_id, &step.step);
+                match next.operations.get(&op).map(|r| r.state) {
+                    Some(OperationState::Completed) | Some(OperationState::Dispatched) => continue,
+                    _ => {}
+                }
+                let step_hash = hash_content(&serde_json::json!({
+                    "activity": step.activity,
+                    "inputs": step.inputs,
+                }));
+                next.operations.insert(
+                    op,
+                    OperationRecord {
+                        state: OperationState::Dispatched,
+                        inputs_hash: step_hash,
+                        outcome_ref: None,
+                    },
+                );
+                intents.push(plan_intent(state, step, inputs));
+            }
+        }
+    }
+
+    if !intents.is_empty() && next.state == ExecState::Ready {
+        next.state = ExecState::Running;
+    }
     next.bump_revision();
-    let commit = commit_effect(state, &next, command, inputs, Vec::new(), Vec::new());
+
+    let mut effects = vec![Effect::Commit(commit_effect(
+        state,
+        &next,
+        command,
+        inputs,
+        Vec::new(),
+        intents.clone(),
+    ))];
+    for intent in intents {
+        effects.push(Effect::Dispatch(intent));
+    }
     StepResult {
         state: next,
-        effects: vec![Effect::Commit(commit)],
+        effects,
         conflict: None,
     }
 }
@@ -517,6 +591,26 @@ fn operation_receipt(
         // Reference only: large artifacts never enter history.
         result: KernelState::outcome_result(outcome_ref),
         completed_at_unix_ms: inputs.now_unix_ms,
+    }
+}
+
+/// Build the dispatch intent for a directive-queued step.
+fn plan_intent(state: &KernelState, step: &DirectiveStep, inputs: &Inputs) -> DispatchIntent {
+    let operation_id = OperationId::derive(&state.execution_id, &step.step);
+    DispatchIntent {
+        operation_id: operation_id.clone(),
+        execution_id: state.execution_id.clone(),
+        payload: serde_json::json!({
+            "operation": operation_id.as_str(),
+            "phase": format!("{:?}", step.phase).to_lowercase(),
+            "attempt": state.attempt,
+            "activity": step.activity,
+            "inputs": step.inputs,
+            "binding": inputs.binding,
+            "operation_phase": step.phase,
+        }),
+        enqueued_at_unix_ms: inputs.now_unix_ms,
+        consumed: false,
     }
 }
 

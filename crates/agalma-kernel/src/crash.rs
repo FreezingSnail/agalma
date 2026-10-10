@@ -21,6 +21,10 @@ pub const AFTER_EFFECT_BEFORE_COMPLETION: &str = "after_effect_before_completion
 pub const AFTER_DECISION_COMMIT: &str = "after_decision_commit";
 /// After an integrate/merge effect landed, before its completion record (case 4).
 pub const AFTER_MERGE_BEFORE_COMPLETION: &str = "after_merge_before_completion";
+/// After a retry deadline row committed, before it fires (fixture case 6).
+pub const AFTER_TIMER_COMMIT: &str = "after_timer_commit";
+/// After a directive version row committed, before its transition (case 7).
+pub const AFTER_DIRECTIVE_COMMIT: &str = "after_directive_commit";
 
 /// Abort the process when `point` matches the armed [`CRASH_ENV`]. No-op when
 /// the env var is unset or names a different point.

@@ -14,9 +14,9 @@ use serde_json::{json, Value};
 
 use agalma_contracts::{
     ArtifactRef, BindingId, BindingRecord, BindingState, CommitBatch, ContractError, DecisionKind,
-    DecisionOutcome, DecisionPin, DecisionRequest, DigestRecord, DispatchIntent, ExecutionEvent,
-    ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState, LedgerApi, OperationId,
-    OperationReceipt, TaskId,
+    DecisionOutcome, DecisionPin, DecisionRequest, DigestRecord, DirectiveRow, DirectiveState,
+    DispatchIntent, ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState,
+    LedgerApi, OperationId, OperationReceipt, TaskId, TimerRecord, TimerState,
 };
 
 use crate::{SqliteLedger, SCHEMA_VERSION};
@@ -764,4 +764,146 @@ fn lease_generation_persists_across_reopen() {
     let mut ledger = SqliteLedger::open(&path).unwrap();
     assert_eq!(ledger.lease_generation(&task).unwrap(), 1);
     assert_eq!(ledger.begin_lease(&task).unwrap(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// Durable timers (schema v3, B0.4)
+// ---------------------------------------------------------------------------
+
+fn timer(id: &str, exec: &ExecutionId, fire_at: u64) -> TimerRecord {
+    TimerRecord {
+        timer_id: id.to_string(),
+        execution_id: exec.clone(),
+        kind: "retry".to_string(),
+        fire_at_unix_ms: fire_at,
+        state: TimerState::Pending,
+        payload: json!({ "operation": "build" }),
+    }
+}
+
+#[test]
+fn timers_due_ordering_and_idempotent_insert() {
+    let dir = run_dir("timers");
+    reset_dir(&dir);
+    let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
+    let exec = fixture_exec();
+
+    let later = timer("t-later", &exec, 2_000);
+    let sooner = timer("t-sooner", &exec, 1_000);
+    assert!(ledger.insert_timer(&later).unwrap(), "new row");
+    assert!(ledger.insert_timer(&sooner).unwrap(), "new row");
+    // Identical duplicate is a harmless no-op.
+    assert!(!ledger.insert_timer(&sooner).unwrap(), "duplicate no-op");
+    // Reusing the id with different contents conflicts.
+    let mut changed = sooner.clone();
+    changed.fire_at_unix_ms = 3_000;
+    assert!(matches!(
+        ledger.insert_timer(&changed),
+        Err(ContractError::Conflict(_))
+    ));
+
+    assert_eq!(ledger.next_deadline().unwrap(), Some(1_000));
+    let due = ledger.due_timers(1_500).unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].timer_id, "t-sooner");
+
+    // Firing marks the row fired exactly once and it stops being due.
+    ledger.mark_timer_fired("t-sooner").unwrap();
+    assert_eq!(
+        ledger.timer("t-sooner").unwrap().unwrap().state,
+        TimerState::Fired
+    );
+    assert!(ledger
+        .due_timers(5_000)
+        .unwrap()
+        .iter()
+        .all(|t| t.timer_id != "t-sooner"));
+    assert_eq!(ledger.next_deadline().unwrap(), Some(2_000));
+}
+
+#[test]
+fn cancelling_timers_for_execution_releases_pending() {
+    let dir = run_dir("timer-cancel");
+    reset_dir(&dir);
+    let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
+    let exec = fixture_exec();
+
+    ledger.insert_timer(&timer("t1", &exec, 1_000)).unwrap();
+    ledger.insert_timer(&timer("t2", &exec, 2_000)).unwrap();
+    let other = ExecutionId::derive(&TaskId::new("other"), 1);
+    ledger.insert_timer(&timer("t3", &other, 1_500)).unwrap();
+
+    assert_eq!(ledger.cancel_timers_for_execution(&exec).unwrap(), 2);
+    assert_eq!(
+        ledger.timer("t1").unwrap().unwrap().state,
+        TimerState::Cancelled
+    );
+    assert_eq!(ledger.next_deadline().unwrap(), Some(1_500), "other intact");
+    // Cancelled timers never fire.
+    assert_eq!(ledger.due_timers(10_000).unwrap().len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Directives (schema v3, B0.4)
+// ---------------------------------------------------------------------------
+
+fn directive(id: &str, version: u64, source: &str, marker: &str) -> DirectiveRow {
+    DirectiveRow {
+        directive_id: id.to_string(),
+        version,
+        source: source.to_string(),
+        state: DirectiveState::Active,
+        payload: json!({ "marker": marker }),
+        received_at_unix_ms: version,
+    }
+}
+
+#[test]
+fn directive_upsert_is_idempotent_and_newer_replaces() {
+    let dir = run_dir("directives");
+    reset_dir(&dir);
+    let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
+
+    assert!(ledger
+        .upsert_directive(&directive("d1", 1, "orch", "v1"))
+        .unwrap());
+    // Duplicate is a no-op.
+    assert!(!ledger
+        .upsert_directive(&directive("d1", 1, "orch", "v1"))
+        .unwrap());
+    // Same version, different contents: conflict.
+    assert!(matches!(
+        ledger.upsert_directive(&directive("d1", 1, "orch", "changed")),
+        Err(ContractError::Conflict(_))
+    ));
+    // Newer version replaces.
+    assert!(ledger
+        .upsert_directive(&directive("d1", 2, "orch", "v2"))
+        .unwrap());
+    let row = ledger.directive("d1").unwrap().unwrap();
+    assert_eq!(row.version, 2);
+    assert_eq!(row.payload, json!({ "marker": "v2" }));
+    // Older version never regresses the row.
+    assert!(!ledger
+        .upsert_directive(&directive("d1", 1, "orch", "v1"))
+        .unwrap());
+    assert_eq!(ledger.directive("d1").unwrap().unwrap().version, 2);
+}
+
+#[test]
+fn directive_survives_reopen() {
+    let dir = run_dir("directive-reopen");
+    reset_dir(&dir);
+    let path = dir.join("ledger.sqlite");
+    {
+        let mut ledger = SqliteLedger::open(&path).unwrap();
+        ledger
+            .upsert_directive(&directive("d1", 3, "orch", "v3"))
+            .unwrap();
+    }
+    let ledger = SqliteLedger::open(&path).unwrap();
+    let row = ledger.directive("d1").unwrap().unwrap();
+    assert_eq!(row.version, 3);
+    assert_eq!(row.source, "orch");
+    assert_eq!(row.state, DirectiveState::Active);
 }

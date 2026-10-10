@@ -40,6 +40,23 @@
 //! - [`engine`] — [`KernelEngine`] appends `execution_events` + updates the
 //!   `executions` projection in one atomic `LedgerApi` commit, replays history,
 //!   and parks unknown `exec_def` versions or projection mismatches.
+//!
+//! ## B0.4 surface (`agalma-9n4.5`) — durable waiting
+//!
+//! - **Timers.** [`KernelEngine::schedule_timer`] persists a retry schedule or
+//!   deadline as a `timers` row; [`KernelEngine::fire_due_timers`] applies a
+//!   recovered `Command::TimerFired` for every overdue row **exactly once**
+//!   (idempotent by timer id, no duplicated phase advancement) and marks it
+//!   fired. Completed/cancelled work cancels its pending timers.
+//! - **Directives.** [`KernelEngine::submit_directive`] persists a directive
+//!   row (unique `directive_id`, bound to source + version) then applies it;
+//!   [`KernelEngine::apply_directive`] is the crash-recovery path (applies once,
+//!   duplicate is a no-op). A newer version replaces queued work derived from
+//!   the prior version.
+//! - **Waiting caller contract.** The kernel never polls. A caller with no
+//!   runnable work ([`KernelEngine::has_runnable_work`]) releases its agent
+//!   sessions/workers and sleeps until [`KernelEngine::next_deadline`] (or
+//!   external input), then calls `fire_due_timers`.
 
 pub mod activity;
 pub mod binding;
@@ -58,10 +75,10 @@ pub use activity::{
 };
 pub use binding::{active_binding, pinned_binding, BindingPin};
 pub use decision::{decision_inputs_hash, run_decision, DecisionRun};
-pub use engine::{replay, ApplyOutcome, KernelEngine};
+pub use engine::{replay, ApplyOutcome, KernelEngine, TimerFire};
 pub use exec_def::{
-    Command, ExecDef, ExecState, Inputs, KernelEvent, OperationRecord, OperationState, Probe,
-    EXEC_DEF_VERSION, KERNEL_VERSION,
+    Command, DirectivePlan, DirectiveStep, ExecDef, ExecState, Inputs, KernelEvent,
+    OperationRecord, OperationState, Probe, EXEC_DEF_VERSION, KERNEL_VERSION,
 };
 pub use state::KernelState;
 pub use transition::{detect_conflict, step, transition, Conflict, Effect, StepResult};

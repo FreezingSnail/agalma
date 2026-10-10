@@ -40,8 +40,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use agalma_contracts::{
     BindingRecord, BindingState, CommitBatch, CommitReceipt, ContractError, DecisionOutcome,
-    DecisionRequest, DigestRecord, DispatchIntent, ExecutionEvent, ExecutionId, ExecutionPhase,
-    ExecutionRecord, ExecutionState, LedgerApi, OperationId, OperationReceipt, TaskId,
+    DecisionRequest, DigestRecord, DirectiveRow, DirectiveState, DispatchIntent, ExecutionEvent,
+    ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState, LedgerApi, OperationId,
+    OperationReceipt, TaskId, TimerRecord, TimerState,
 };
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -849,6 +850,163 @@ impl LedgerApi for SqliteLedger {
             .map_err(db_err)?;
         Ok(())
     }
+
+    fn insert_timer(&mut self, timer: &TimerRecord) -> Result<bool, ContractError> {
+        self.ensure_compatible()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_err)?;
+        if let Some(existing) = read_timer(&tx, &timer.timer_id)? {
+            // Idempotent by id: identical contents are a harmless no-op; any
+            // other difference is a conflict (the caller must use a new id).
+            if existing == *timer {
+                tx.commit().map_err(db_err)?;
+                return Ok(false);
+            }
+            return Err(ContractError::Conflict(format!(
+                "timer {} reused with different contents",
+                timer.timer_id
+            )));
+        }
+        tx.execute(
+            "INSERT INTO timers(timer_id,execution_id,kind,fire_at,state,payload) \
+             VALUES(?1,?2,?3,?4,?5,?6)",
+            params![
+                timer.timer_id,
+                timer.execution_id.as_str(),
+                timer.kind,
+                sql_u64(timer.fire_at_unix_ms),
+                timer_state_str(timer.state),
+                serde_json::to_string(&timer.payload).map_err(json_err)?,
+            ],
+        )
+        .map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+        Ok(true)
+    }
+
+    fn timer(&self, timer_id: &str) -> Result<Option<TimerRecord>, ContractError> {
+        read_timer(&self.conn, timer_id)
+    }
+
+    fn due_timers(&self, now_unix_ms: u64) -> Result<Vec<TimerRecord>, ContractError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT timer_id,execution_id,kind,fire_at,state,payload FROM timers \
+                 WHERE state='pending' AND fire_at<=?1 ORDER BY fire_at, timer_id",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params![sql_u64(now_unix_ms)], timer_from_row)
+            .map_err(db_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(db_err)?);
+        }
+        Ok(out)
+    }
+
+    fn mark_timer_fired(&mut self, timer_id: &str) -> Result<(), ContractError> {
+        self.ensure_compatible()?;
+        self.conn
+            .execute(
+                "UPDATE timers SET state='fired' WHERE timer_id=?1 AND state='pending'",
+                params![timer_id],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    fn cancel_timers_for_execution(
+        &mut self,
+        execution_id: &ExecutionId,
+    ) -> Result<u64, ContractError> {
+        self.ensure_compatible()?;
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE timers SET state='cancelled' \
+                 WHERE execution_id=?1 AND state='pending'",
+                params![execution_id.as_str()],
+            )
+            .map_err(db_err)?;
+        Ok(changed as u64)
+    }
+
+    fn next_deadline(&self) -> Result<Option<u64>, ContractError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT MIN(fire_at) FROM timers WHERE state='pending'",
+                [],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .map_err(db_err)?
+            .map(|v| v as u64))
+    }
+
+    fn upsert_directive(&mut self, directive: &DirectiveRow) -> Result<bool, ContractError> {
+        self.ensure_compatible()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_err)?;
+        if let Some(existing) = read_directive(&tx, &directive.directive_id)? {
+            if directive.version < existing.version {
+                // Older update: harmless no-op (never regress the row).
+                tx.commit().map_err(db_err)?;
+                return Ok(false);
+            }
+            if directive.version == existing.version {
+                if existing.source == directive.source
+                    && existing.state == directive.state
+                    && existing.payload == directive.payload
+                {
+                    tx.commit().map_err(db_err)?;
+                    return Ok(false);
+                }
+                return Err(ContractError::Conflict(format!(
+                    "directive {} reused at version {} with different contents",
+                    directive.directive_id, directive.version
+                )));
+            }
+        }
+        tx.execute(
+            "INSERT INTO directives(directive_id,version,source,state,payload,received_at) \
+             VALUES(?1,?2,?3,?4,?5,?6) \
+             ON CONFLICT(directive_id) DO UPDATE SET \
+               version=excluded.version, source=excluded.source, state=excluded.state, \
+               payload=excluded.payload, received_at=excluded.received_at",
+            params![
+                directive.directive_id,
+                sql_u64(directive.version),
+                directive.source,
+                directive_state_str(directive.state),
+                serde_json::to_string(&directive.payload).map_err(json_err)?,
+                sql_u64(directive.received_at_unix_ms),
+            ],
+        )
+        .map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+        Ok(true)
+    }
+
+    fn directive(&self, directive_id: &str) -> Result<Option<DirectiveRow>, ContractError> {
+        read_directive(&self.conn, directive_id)
+    }
+
+    fn consume_dispatch_intent(&mut self, operation_id: &OperationId) -> Result<(), ContractError> {
+        self.ensure_compatible()?;
+        self.conn
+            .execute(
+                "UPDATE dispatch_intents SET consumed=1 WHERE operation_id=?1",
+                params![operation_id.as_str()],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
 }
 
 fn execution_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExecutionRecord> {
@@ -950,6 +1108,88 @@ fn read_decision_hash(
     )
     .optional()
     .map_err(db_err)
+}
+
+fn timer_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TimerRecord> {
+    let state: String = row.get(4)?;
+    let payload: String = row.get(5)?;
+    Ok(TimerRecord {
+        timer_id: row.get(0)?,
+        execution_id: ExecutionId::new(row.get::<_, String>(1)?),
+        kind: row.get(2)?,
+        fire_at_unix_ms: row.get::<_, i64>(3)? as u64,
+        state: timer_state_from(&state).ok_or_else(|| bad_column(4, "state"))?,
+        payload: serde_json::from_str(&payload).map_err(|e| conversion_err(5, e))?,
+    })
+}
+
+fn read_timer(conn: &Connection, timer_id: &str) -> Result<Option<TimerRecord>, ContractError> {
+    conn.query_row(
+        "SELECT timer_id,execution_id,kind,fire_at,state,payload FROM timers WHERE timer_id=?1",
+        params![timer_id],
+        timer_from_row,
+    )
+    .optional()
+    .map_err(db_err)
+}
+
+fn read_directive(
+    conn: &Connection,
+    directive_id: &str,
+) -> Result<Option<DirectiveRow>, ContractError> {
+    conn.query_row(
+        "SELECT directive_id,version,source,state,payload,received_at FROM directives \
+         WHERE directive_id=?1",
+        params![directive_id],
+        |row| {
+            let state: String = row.get(3)?;
+            let payload: String = row.get(4)?;
+            Ok(DirectiveRow {
+                directive_id: row.get(0)?,
+                version: row.get::<_, i64>(1)? as u64,
+                source: row.get(2)?,
+                state: directive_state_from(&state).ok_or_else(|| bad_column(3, "state"))?,
+                payload: serde_json::from_str(&payload).map_err(|e| conversion_err(4, e))?,
+                received_at_unix_ms: row.get::<_, i64>(5)? as u64,
+            })
+        },
+    )
+    .optional()
+    .map_err(db_err)
+}
+
+fn timer_state_str(state: TimerState) -> &'static str {
+    match state {
+        TimerState::Pending => "pending",
+        TimerState::Fired => "fired",
+        TimerState::Cancelled => "cancelled",
+    }
+}
+
+fn timer_state_from(raw: &str) -> Option<TimerState> {
+    Some(match raw {
+        "pending" => TimerState::Pending,
+        "fired" => TimerState::Fired,
+        "cancelled" => TimerState::Cancelled,
+        _ => return None,
+    })
+}
+
+fn directive_state_str(state: DirectiveState) -> &'static str {
+    match state {
+        DirectiveState::Active => "active",
+        DirectiveState::Superseded => "superseded",
+        DirectiveState::Cancelled => "cancelled",
+    }
+}
+
+fn directive_state_from(raw: &str) -> Option<DirectiveState> {
+    Some(match raw {
+        "active" => DirectiveState::Active,
+        "superseded" => DirectiveState::Superseded,
+        "cancelled" => DirectiveState::Cancelled,
+        _ => return None,
+    })
 }
 
 /// Deterministic content hash pinning a decision request's inputs.

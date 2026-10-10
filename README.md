@@ -14,18 +14,89 @@ The loop never terminates. Each pass evaluates the current state of the target, 
 
 ## Roles
 
-- **orchestrator** — runs the loop, assigns work
+Canonical role definitions (`docs/architecture.md` §3.5):
+
+- **orchestrator** — the conductor: runs the loop, schedules work, enforces policy
 - **researcher** — external recon and scanning
 - **planner** — breaks the target into tasks
 - **builder** — implements
-- **evaluator** — reviews output against acceptance criteria
-- **tester** — runs verification
-- **guard** — safety, policy, and sandbox gate
-- **deployer** — ships releases
+- **verifier** — diagnoses failures and reviews output against acceptance criteria
+- **evaluator** — rubrics and paired bench assessments against immutable candidates
+- **postmortem** — distills run outcomes into durable notes and memory
 
-## Status
+## What exists today
 
-Early. Architecture next.
+A Rust workspace implementing the factory core. The conductor drives a queue of tasks from `bd`, executes them in confined sandboxed checkouts via OpenCode, verifies acceptance, merges on green, and records every step in a durable SQLite ledger.
+
+| Crate | Responsibility |
+|---|---|
+| `agalma-contracts` | Typed APIs, canonical schemas and IDs, no vendor types |
+| `agalma-conductor` | Composition root and CLI (`agalma`) |
+| `agalma-ledger` | SQLite ledger: atomic commits, receipts, export/import |
+| `agalma-execution` | Execution service: serial executor, receipts, reconciliation |
+| `agalma-kernel` | Durable execution kernel (B0): history, timers, cancellation, upgrade |
+| `agalma-sandbox` | macOS Seatbelt confinement, process-group kill |
+| `agalma-workspace` | Git checkout, merge, reconcile, revert |
+| `agalma-taskqueue` | `bd` backlog adapter |
+| `agalma-decision` | Decision contract, static policies, model routing |
+| `agalma-harness-opencode` | OpenCode v2 adapter (`opencode serve`, SSE normalization) |
+| `agalma-harness-reference` | Deterministic reference adapter for parity tests |
+
+### CLI
+
+```
+agalma run        Run (or resume) the conductor against a fixture task
+agalma work       Queue-driven work loop over a real repository
+agalma reconcile  Reconcile the bd projection against the ledger (ledger wins)
+agalma resume     Clear the kill latch and resume dispatch (human-only)
+agalma status     Report ledger and execution status
+agalma digest     Print the recorded digest for an execution
+agalma models     Print the model routing table and active routes
+```
+
+## Milestones
+
+| Milestone | State | Evidence |
+|---|---|---|
+| M0 — skeleton | ✅ | `docs/m0-exit-evidence.md` (recovery matrix 6/6, kill switch, schema gate) |
+| M1 — working loop | ✅ | `docs/m1-exit-evidence.md` (seeded batch on a scratch clone, metrics, digest) |
+| B0 — durable execution kernel | ✅ | `docs/b0-exit-evidence.md` (protected recovery pack 10/10, upgrade/rollback, resource baseline) |
+| B1 — component extraction | ⏳ next | extract modules behind process/socket boundaries per contract tiers |
+| M2 — bench + promotion + nerve | planned | blocked on B1 |
+| M3 — always-on baseline | planned | MVP exit |
+| P1 — autonomy gate | planned | removes transitional human review |
+
+Operational posture: the kernel passes its gates and the seed executor remains available
+until extraction completes. Execution is supervised, one task at a time, on a scratch
+clone — the factory does not yet run unattended.
+
+## Verified behavior
+
+- **Recovery:** crash mid-build terminates survivors before redispatch; crash after merge completes without re-merge; duplicate delivery returns the recorded receipt; kill latch survives restart; stale-lease workers cannot advance state.
+- **Durability:** restart during retry delay fires the timer once; directive updates survive restart; compatible upgrades resume pending work and preserve IDs/receipts.
+- **Confinement:** workers launch under Seatbelt; harness egress goes through a parent-owned loopback proxy; verification runs in a pristine sandboxed checkout.
+- **Replacement:** S0d bind gate refuses unmet capabilities; dual-binding rebind works between attempts; rollback reconciles before dispatch.
+- Fixtures in `fixtures/recovery-pack/` are immutable (`MANIFEST.sha256`, `pack_integrity.rs`).
+
+## Development
+
+```sh
+cargo test --offline              # workspace tests
+cargo run --offline -p agalma-conductor -- run \
+  --fixture fixtures/target-template --once \
+  --state-dir target/test-runs/e2e
+```
+
+All run artifacts live under `target/test-runs/` — never a system temp directory. Dependency versions are pinned exactly in `Cargo.toml`; no new crates without explicit approval (`docs/m0-dependencies.md`).
+
+## Docs
+
+- `docs/architecture.md` — full architecture, components, roadmap
+- `docs/component-contracts.md` — nano service contracts and tiers
+- `docs/m0-skeleton.md`, `docs/m1-workloop.md` — milestone designs
+- `docs/durable-execution-bootstrap.md` — B0 requirements; `docs/b0-kernel.md` — kernel design
+- `docs/reliability-hardening.md`, `docs/hardening-evidence.md` — watchdog, routing, xcrun/TMPDIR
+- `docs/research/`, `docs/spikes/` — recon and spike reports
 
 ## License
 

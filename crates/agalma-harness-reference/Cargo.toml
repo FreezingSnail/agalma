@@ -1,0 +1,11 @@
+[package]
+name = "agalma-harness-reference"
+version.workspace = true
+edition.workspace = true
+description = "Agalma deterministic reference HarnessApi adapters (M1.7). No vendor, no network."
+publish = false
+
+[dependencies]
+agalma-contracts = { path = "../agalma-contracts" }
+serde = { workspace = true }
+serde_json = { workspace = true }

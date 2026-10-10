@@ -21,6 +21,7 @@ const IMPL_CRATES: &[&str] = &[
     "agalma-sandbox",
     "agalma-workspace",
     "agalma-harness-opencode",
+    "agalma-harness-reference",
     "agalma-decision",
     "agalma-taskqueue",
 ];

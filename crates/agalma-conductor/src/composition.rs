@@ -19,6 +19,7 @@ use agalma_sandbox::PRODUCT_PROFILE;
 use agalma_workspace::Workspace;
 
 use crate::config::Config;
+use crate::harness_binding::{harness_handle, HarnessChoice};
 use crate::phases::{activities, PhaseDeps, RunState};
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
 use crate::task::{self, TaskDescriptor};
@@ -122,6 +123,7 @@ impl Composition {
             turn_timeout: DEFAULT_TURN_TIMEOUT,
             verify_timeout: DEFAULT_VERIFY_TIMEOUT,
             repo: None,
+            harness: harness_handle(HarnessChoice::OpenCode),
         };
 
         let shared_state = Rc::new(RefCell::new(RunState::default()));

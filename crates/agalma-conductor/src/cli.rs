@@ -47,6 +47,9 @@ pub struct WorkArgs {
     /// Override the model identifier.
     #[arg(long, value_name = "ID")]
     pub model: Option<String>,
+    /// Harness implementation to bind (`opencode|reference|reference-fail`).
+    #[arg(long, value_name = "ID")]
+    pub harness: Option<String>,
 }
 
 /// Arguments for `agalma reconcile`.

@@ -49,6 +49,7 @@ use serde_json::json;
 use crate::cli::WorkArgs;
 use crate::composition::{toolchain, BUILDER_PROMPT, DEFAULT_TURN_TIMEOUT, DEFAULT_VERIFY_TIMEOUT};
 use crate::config::{resolve_model, resolve_state_dir};
+use crate::harness_binding::{harness_handle, resolve_selection, HarnessHandle};
 use crate::phases::{activities_with_mode, ActivityMode, PhaseDeps, RepoMode, RunState};
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
 use crate::LockGuard;
@@ -120,9 +121,20 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
     let mut queue = BdTaskQueue::new(&repo);
     let mut decider = StaticDecider::new(SqliteLedger::open(&ledger_path)?);
 
+    // Harness binding selection (M1.7): `--harness` flag or `AGALMA_HARNESS`.
+    // Resolved once per process; each operation pins its binding at start.
+    let harness = harness_handle(resolve_selection(args.harness.as_deref())?);
+
     // Boot recovery: drive any non-terminal execution to a terminal state before
     // admitting new work (recovery ordering).
-    recover_inflight(&repo, &state_dir, &model, proxy_url.clone(), &mut queue)?;
+    recover_inflight(
+        &repo,
+        &state_dir,
+        &model,
+        proxy_url.clone(),
+        &mut queue,
+        harness.clone(),
+    )?;
 
     // Boot projection reconcile: rewrite the bd projection to match the ledger
     // (ledger wins) before admitting new work. Best-effort: a reconcile failure
@@ -166,6 +178,7 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
             &task,
             &evidence,
             &mut queue,
+            harness.clone(),
         )?;
         processed += 1;
         last = Some(terminal);
@@ -256,6 +269,7 @@ fn priority_weight(priority: TaskPriority) -> u8 {
 }
 
 /// Claim, execute, and project one task; returns its terminal outcome.
+#[allow(clippy::too_many_arguments)]
 fn run_task(
     repo: &Path,
     state_dir: &Path,
@@ -264,8 +278,9 @@ fn run_task(
     task: &Task,
     evidence: &ClaimEvidence,
     queue: &mut BdTaskQueue,
+    harness: HarnessHandle,
 ) -> Result<Terminal, ContractError> {
-    let mut executor = build_executor(state_dir, model, proxy_url, task, repo)?;
+    let mut executor = build_executor(state_dir, model, proxy_url, task, repo, harness)?;
     let execution = executor.start(&task.task_id)?;
     let generation = executor
         .ledger()
@@ -424,6 +439,7 @@ fn recover_inflight(
     model: &str,
     proxy_url: Option<String>,
     queue: &mut BdTaskQueue,
+    harness: HarnessHandle,
 ) -> Result<(), ContractError> {
     let executions = {
         let ledger = SqliteLedger::open(state_dir.join("ledger.sqlite"))?;
@@ -447,7 +463,14 @@ fn recover_inflight(
                 continue;
             }
         };
-        let mut executor = build_executor(state_dir, model, proxy_url.clone(), &task, repo)?;
+        let mut executor = build_executor(
+            state_dir,
+            model,
+            proxy_url.clone(),
+            &task,
+            repo,
+            harness.clone(),
+        )?;
         let lease = execution_lease(&executor, &record.execution_id, record.generation);
         let terminal = drive_task(
             &mut executor,
@@ -477,6 +500,7 @@ fn build_executor(
     proxy_url: Option<String>,
     task: &Task,
     repo: &Path,
+    harness: HarnessHandle,
 ) -> Result<Executor<SqliteLedger>, ContractError> {
     let ledger = SqliteLedger::open(state_dir.join("ledger.sqlite"))?;
     let mut executor = Executor::new(
@@ -486,7 +510,7 @@ fn build_executor(
             execution_definition_version: EXECUTION_DEFINITION_VERSION,
         },
     );
-    let deps = phase_deps(state_dir, model, proxy_url, task, repo)?;
+    let deps = phase_deps(state_dir, model, proxy_url, task, repo, harness)?;
     let workspace = Rc::new(RefCell::new(Workspace::new(state_dir.to_path_buf())));
     let state = Rc::new(RefCell::new(RunState::default()));
     let acts = activities_with_mode(deps, workspace, state, ActivityMode::from_env());
@@ -506,6 +530,7 @@ fn phase_deps(
     proxy_url: Option<String>,
     task: &Task,
     repo: &Path,
+    harness: HarnessHandle,
 ) -> Result<PhaseDeps, ContractError> {
     let profile_path = state_dir.join("worker.sb");
     std::fs::write(&profile_path, PRODUCT_PROFILE).map_err(|e| {
@@ -547,6 +572,7 @@ fn phase_deps(
             task_title: task.title.clone(),
             acceptance: task.acceptance.clone(),
         }),
+        harness,
     })
 }
 

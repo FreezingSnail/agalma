@@ -62,11 +62,13 @@ use agalma_execution::{
     Activity, ActivityError, ActivityNext, ActivityOutcome, EffectProbe, OperationContext,
 };
 use agalma_harness_opencode::{OpenCodeHarness, OpenCodeHarnessConfig};
+use agalma_harness_reference::{ReferenceHarness, ReferenceHarnessConfig, ReferenceProfile};
 use agalma_ledger::SqliteLedger;
 use agalma_sandbox::{SandboxOutput, SeatbeltSandbox};
 use agalma_workspace::Workspace;
 use serde_json::json;
 
+use crate::harness_binding::{self, HarnessHandle, HarnessKind};
 use crate::workers::{self, Survivor};
 
 /// The verifier prompt shipped with the conductor. A fresh verifier session is
@@ -154,6 +156,9 @@ pub struct PhaseDeps {
     /// Repo mode (M1): when set, checkout clones `origin` at `base_ref` and
     /// verify runs the task's acceptance commands instead of `cargo test`.
     pub repo: Option<RepoMode>,
+    /// Harness binding selection (M1.7). Activities resolve the pinned binding
+    /// for an operation, else the current selection, at attempt start.
+    pub harness: HarnessHandle,
 }
 
 /// Repo-mode parameters carried per execution (M1 queue-driven conductor).
@@ -195,16 +200,11 @@ pub fn activities_with_mode(
     state: Rc<RefCell<RunState>>,
     mode: ActivityMode,
 ) -> PhaseActivities {
-    let build: Box<dyn Activity> = match mode {
-        ActivityMode::Live => Box::new(BuildActivity {
-            deps: deps.clone(),
-            state: Rc::clone(&state),
-        }),
-        ActivityMode::Scripted => Box::new(ScriptedBuildActivity {
-            deps: deps.clone(),
-            state: Rc::clone(&state),
-        }),
-    };
+    let build: Box<dyn Activity> = Box::new(BuildActivity {
+        deps: deps.clone(),
+        state: Rc::clone(&state),
+        mode,
+    });
     // Repo mode always runs the real acceptance runner (`VerifyActivity`); only
     // the model call is replaced in scripted mode. The `sandboxed` flag selects
     // Seatbelt (`Live`) vs. an in-process launch (`Scripted`, tests).
@@ -410,6 +410,8 @@ impl Activity for CheckoutActivity {
 struct BuildActivity {
     deps: PhaseDeps,
     state: Rc<RefCell<RunState>>,
+    /// Live (Seatbelt/OpenCode) or scripted/deterministic implementation set.
+    mode: ActivityMode,
 }
 
 /// Probe a build attempt via the durable worker/done markers.
@@ -453,7 +455,68 @@ fn build_reconcile(
 }
 
 impl BuildActivity {
-    fn run_turn(&self, ctx: &OperationContext) -> Result<ActivityOutcome, ActivityError> {
+    /// Resolve the harness kind for this operation: a pinned binding wins;
+    /// otherwise the current selection is resolved (rebind is allowed only
+    /// between operations/attempts).
+    fn resolve_kind(&self, ctx: &OperationContext) -> Result<HarnessKind, ActivityError> {
+        let ledger =
+            SqliteLedger::open(self.deps.state_dir.join("ledger.sqlite")).map_err(contract_err)?;
+        if let Some(record) =
+            harness_binding::read_pinned_binding(&ledger, &ctx.execution_id, &ctx.operation_id)
+                .map_err(contract_err)?
+        {
+            return HarnessKind::from_implementation(&record.implementation).ok_or_else(|| {
+                ActivityError::KnownFailure(format!(
+                    "pinned harness {:?} is not a known implementation",
+                    record.implementation
+                ))
+            });
+        }
+        Ok(self.deps.harness.borrow().kind())
+    }
+
+    /// Persist the binding for this operation exactly once (no-op when already
+    /// pinned): the component-registry row plus the per-operation pin event.
+    fn persist_harness_binding(
+        &self,
+        ctx: &OperationContext,
+        kind: HarnessKind,
+    ) -> Result<(), ActivityError> {
+        let mut ledger =
+            SqliteLedger::open(self.deps.state_dir.join("ledger.sqlite")).map_err(contract_err)?;
+        if harness_binding::read_pinned_binding(&ledger, &ctx.execution_id, &ctx.operation_id)
+            .map_err(contract_err)?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let generation = ledger
+            .execution(&ctx.execution_id)
+            .map_err(contract_err)?
+            .map(|record| record.generation)
+            .unwrap_or(1);
+        let plan = harness_binding::plan_binding(kind, generation, &self.deps.model)
+            .map_err(contract_err)?;
+        if let Some(fallback) = plan.fallback_plan() {
+            eprintln!(
+                "agalma: harness {} missing optional capabilities [{}]; declared fallback {}",
+                kind.as_str(),
+                plan.fallback.join(","),
+                fallback
+            );
+        }
+        harness_binding::persist_binding(
+            &mut ledger,
+            &ctx.execution_id,
+            &ctx.operation_id,
+            ctx.attempt,
+            &plan,
+        )
+        .map_err(contract_err)
+    }
+
+    /// Live OpenCode build: one confined session whose model edits the checkout.
+    fn run_live(&self, ctx: &OperationContext) -> Result<ActivityOutcome, ActivityError> {
         let checkout = self
             .state
             .borrow_mut()
@@ -631,34 +694,13 @@ impl BuildActivity {
     }
 }
 
-impl Activity for BuildActivity {
-    fn execute(&mut self, ctx: &OperationContext) -> Result<ActivityOutcome, ActivityError> {
-        self.run_turn(ctx)
-    }
-
-    fn effect_present(&mut self, ctx: &OperationContext) -> EffectProbe {
-        build_probe(&self.deps, &ctx.execution_id, ctx.attempt)
-    }
-
-    fn reconcile(&mut self, ctx: &OperationContext) -> Result<ActivityOutcome, ActivityError> {
-        build_reconcile(&self.deps, &ctx.execution_id, ctx.attempt)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// build (scripted)
-// ---------------------------------------------------------------------------
-
-/// Deterministic build stand-in for the crash matrix: spawns a real `sleep`
-/// child as the recorded worker, applies the fixture fix, optionally sleeps (so
-/// a test can SIGKILL the conductor), then records completion.
-struct ScriptedBuildActivity {
-    deps: PhaseDeps,
-    state: Rc<RefCell<RunState>>,
-}
-
-impl Activity for ScriptedBuildActivity {
-    fn execute(&mut self, ctx: &OperationContext) -> Result<ActivityOutcome, ActivityError> {
+/// Deterministic scripted/reference builds and the dispatch that selects them.
+impl BuildActivity {
+    /// Deterministic scripted stand-in for the crash matrix (OpenCode choice,
+    /// scripted mode): spawns a real `sleep` child as the recorded worker,
+    /// applies the fixture fix, optionally sleeps (so a test can SIGKILL the
+    /// conductor), then records completion.
+    fn run_scripted(&self, ctx: &OperationContext) -> Result<ActivityOutcome, ActivityError> {
         let checkout = self
             .state
             .borrow_mut()
@@ -732,6 +774,160 @@ impl Activity for ScriptedBuildActivity {
         let _ = child.kill();
         let _ = child.wait();
         Ok(outcome)
+    }
+
+    /// Deterministic reference build: a scripted `HarnessApi` turn (scenario per
+    /// attempt, no vendor/network). The success profile applies the scripted
+    /// change; the red profile leaves the acceptance red.
+    fn run_reference(
+        &self,
+        ctx: &OperationContext,
+        kind: HarnessKind,
+    ) -> Result<ActivityOutcome, ActivityError> {
+        let checkout = self
+            .state
+            .borrow_mut()
+            .ensure_checkout(&self.deps.state_dir, &ctx.execution_id)?;
+        let root = run_root(&self.deps.state_dir, &ctx.execution_id);
+        std::fs::create_dir_all(&root)
+            .map_err(|e| ActivityError::KnownFailure(format!("create run root: {e}")))?;
+        workers::clear_markers(
+            &self.deps.state_dir,
+            &ctx.execution_id,
+            "build",
+            ctx.attempt,
+        );
+        let prompt_path = write_builder_prompt(&self.deps, &root, ctx)?;
+        mark_started(&self.deps, &ctx.execution_id, "build", ctx.attempt)?;
+        append_effect(
+            &self.deps.state_dir,
+            &ctx.execution_id,
+            "build",
+            ctx.attempt,
+        )?;
+
+        let profile = match kind {
+            HarnessKind::ReferenceFail => ReferenceProfile::Red,
+            _ => ReferenceProfile::Success,
+        };
+        let scenario_dir =
+            root.join("reference")
+                .join(format!("{}-attempt-{}", kind.as_str(), ctx.attempt));
+        let mut harness = ReferenceHarness::new(ReferenceHarnessConfig {
+            profile,
+            scenario_dir,
+            scenario: None,
+        });
+        let attempt = harness
+            .start_attempt(StartAttemptRequest {
+                workspace: checkout.path.clone(),
+                role: self.deps.role.clone(),
+                genome_ref: ArtifactRef::derive("genome").to_string(),
+                constraints_ref: ArtifactRef::derive("platform-constraints").to_string(),
+                limits: Limits {
+                    wall_ms: self.deps.turn_timeout.as_millis() as u64,
+                    tokens: 0,
+                    cost_micros: 0,
+                },
+                operation_id: ctx.operation_id.clone(),
+            })
+            .map_err(contract_err)?;
+
+        let started = Instant::now();
+        let outcome = self.drive_reference(&mut harness, ctx, &prompt_path);
+        let wall_ms = started.elapsed().as_millis() as u64;
+        let _ = harness.stop_attempt(&attempt);
+        if let Ok(outcome) = &outcome {
+            let usage = usage_from_result(&outcome.result);
+            record_usage_event(
+                &self.deps.state_dir,
+                &ctx.execution_id,
+                &ctx.operation_id,
+                "build",
+                &self.deps.role,
+                ctx.attempt,
+                usage,
+                wall_ms,
+            )?;
+            workers::write_done(
+                &self.deps.state_dir,
+                &ctx.execution_id,
+                "build",
+                ctx.attempt,
+                outcome,
+            )?;
+        }
+        outcome
+    }
+
+    /// One reference session/turn, polled to terminal.
+    fn drive_reference(
+        &self,
+        harness: &mut ReferenceHarness,
+        ctx: &OperationContext,
+        prompt_path: &Path,
+    ) -> Result<ActivityOutcome, ActivityError> {
+        let session = harness
+            .create_session(CreateSessionRequest {
+                role: self.deps.role.clone(),
+                model: self.deps.model.clone(),
+                prompts_ref: prompt_path.to_string_lossy().into_owned(),
+                handoff_refs: Vec::new(),
+                tool_policy_ref: ArtifactRef::derive("tool-policy").to_string(),
+            })
+            .map_err(contract_err)?;
+        let op = harness
+            .run_turn(
+                &session,
+                RunTurnRequest {
+                    input_ref: ArtifactRef::derive("builder-turn"),
+                    bounded_turns: 1,
+                    deadline_ms: self.deps.turn_timeout.as_millis() as u64,
+                },
+            )
+            .map_err(contract_err)?;
+        let state = poll_terminal(harness, &op, self.deps.turn_timeout);
+        let _ = harness.close_session(&session);
+
+        let failure = ArtifactRef::derive(&format!("build@{}", ctx.attempt));
+        match state {
+            Some(OperationState::Completed { usage, .. }) => Ok(ActivityOutcome {
+                result: json!({
+                    "status": "completed",
+                    "attempt": ctx.attempt,
+                    "tokens_in": usage.tokens_in,
+                    "tokens_out": usage.tokens_out,
+                    "cost_usd": usage.cost_usd,
+                    "completeness": usage.completeness.label(),
+                }),
+                next: ActivityNext::Advance,
+            }),
+            Some(OperationState::Failed { reason }) => Ok(ActivityOutcome {
+                result: json!({ "status": "failed", "reason": reason, "attempt": ctx.attempt }),
+                next: ActivityNext::Retry { failure },
+            }),
+            _ => {
+                let _ = harness.cancel_operation(&op);
+                Ok(ActivityOutcome {
+                    result: json!({ "status": "timeout", "attempt": ctx.attempt }),
+                    next: ActivityNext::Advance,
+                })
+            }
+        }
+    }
+}
+
+impl Activity for BuildActivity {
+    fn execute(&mut self, ctx: &OperationContext) -> Result<ActivityOutcome, ActivityError> {
+        let kind = self.resolve_kind(ctx)?;
+        self.persist_harness_binding(ctx, kind)?;
+        match (kind, self.mode) {
+            (HarnessKind::OpenCode, ActivityMode::Live) => self.run_live(ctx),
+            (HarnessKind::OpenCode, ActivityMode::Scripted) => self.run_scripted(ctx),
+            (HarnessKind::Reference | HarnessKind::ReferenceFail, _) => {
+                self.run_reference(ctx, kind)
+            }
+        }
     }
 
     fn effect_present(&mut self, ctx: &OperationContext) -> EffectProbe {
@@ -2002,8 +2198,8 @@ fn now_ms() -> u64 {
 }
 
 /// Poll `inspect_operation` until terminal or `timeout`; `None` on timeout.
-fn poll_terminal(
-    harness: &mut OpenCodeHarness,
+fn poll_terminal<H: HarnessApi>(
+    harness: &mut H,
     op: &OperationHandle,
     timeout: Duration,
 ) -> Option<OperationState> {
@@ -2071,6 +2267,9 @@ mod tests {
             turn_timeout: Duration::from_secs(1),
             verify_timeout: Duration::from_secs(1),
             repo,
+            harness: crate::harness_binding::harness_handle(
+                crate::harness_binding::HarnessChoice::OpenCode,
+            ),
         }
     }
 

@@ -10,6 +10,7 @@ dependencies = [
  "agalma-decision",
  "agalma-execution",
  "agalma-harness-opencode",
+ "agalma-harness-reference",
  "agalma-ledger",
  "agalma-sandbox",
  "agalma-taskqueue",
@@ -59,6 +60,15 @@ dependencies = [
  "agalma-sandbox",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "agalma-harness-reference"
+version = "0.1.0"
+dependencies = [
+ "agalma-contracts",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

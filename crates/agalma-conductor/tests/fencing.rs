@@ -156,6 +156,9 @@ fn build_harness(origin: &Origin, acceptance: &[&str]) -> Harness {
             task_title: "Fence the task".to_string(),
             acceptance: acceptance.iter().map(|s| s.to_string()).collect(),
         }),
+        harness: agalma_conductor::harness_binding::harness_handle(
+            agalma_conductor::harness_binding::HarnessChoice::OpenCode,
+        ),
     };
     let workspace = Rc::new(RefCell::new(Workspace::new(origin.state_dir.clone())));
     let state = Rc::new(RefCell::new(RunState::default()));

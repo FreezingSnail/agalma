@@ -11,6 +11,7 @@ pub mod cli;
 pub mod composition;
 pub mod config;
 pub mod digest;
+pub mod harness_binding;
 pub mod phases;
 pub mod provider_proxy;
 pub mod reconcile;
@@ -316,6 +317,17 @@ fn reconcile_command(args: &ReconcileArgs) -> ExitCode {
     }
 }
 
+/// One-line harness binding label for an execution (latest recorded pin).
+fn binding_label(ledger: &SqliteLedger, record: &agalma_contracts::ExecutionRecord) -> String {
+    match crate::harness_binding::latest_binding(ledger, &record.execution_id) {
+        Ok(Some(binding)) => format!(
+            "{}@{}",
+            binding.implementation, binding.implementation_version
+        ),
+        _ => "none".to_string(),
+    }
+}
+
 fn status_command(args: &StateArgs) -> ExitCode {
     let state_dir = match crate::config::resolve_state_dir(args.state_dir.as_deref()) {
         Ok(dir) => dir,
@@ -360,8 +372,13 @@ fn status_command(args: &StateArgs) -> ExitCode {
                 .map(str::to_string)
         });
         println!(
-            "{} phase={:?} state={:?} attempt={} parked_reason={:?}",
-            record.execution_id, record.phase, record.state, record.attempt, parked
+            "{} phase={:?} state={:?} attempt={} parked_reason={:?} harness={}",
+            record.execution_id,
+            record.phase,
+            record.state,
+            record.attempt,
+            parked,
+            binding_label(&ledger, record)
         );
     }
     match ledger.kill_latch() {

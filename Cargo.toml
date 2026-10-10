@@ -9,6 +9,7 @@ members = [
     "crates/agalma-taskqueue",
     "crates/agalma-decision",
     "crates/agalma-harness-opencode",
+    "crates/agalma-harness-reference",
     "crates/agalma-conductor",
 ]
 # Spike packages are standalone; they are not part of the product workspace.

@@ -41,12 +41,23 @@
 //!   `executions` projection in one atomic `LedgerApi` commit, replays history,
 //!   and parks unknown `exec_def` versions or projection mismatches.
 
+pub mod activity;
+pub mod binding;
 pub mod crash;
+pub mod decision;
 pub mod engine;
 pub mod exec_def;
+mod hash;
 pub mod state;
 pub mod transition;
 
+pub use activity::{
+    operation_input_hash, recover_pending, run_activity, ActivityContext, ActivityDef,
+    ActivityError, ActivityHandler, ActivityOutcome, ActivityRegistry, EffectProbe,
+    OperationRequest, OperationResult,
+};
+pub use binding::{active_binding, pinned_binding, BindingPin};
+pub use decision::{decision_inputs_hash, run_decision, DecisionRun};
 pub use engine::{replay, ApplyOutcome, KernelEngine};
 pub use exec_def::{
     Command, ExecDef, ExecState, Inputs, KernelEvent, OperationRecord, OperationState, Probe,

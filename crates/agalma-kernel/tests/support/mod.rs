@@ -12,4 +12,5 @@
 #![allow(dead_code)] // not every test binary consumes every helper
 
 pub mod harness;
+pub mod ops;
 pub mod pack;

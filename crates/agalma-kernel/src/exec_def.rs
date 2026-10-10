@@ -13,6 +13,9 @@ use agalma_contracts::{ExecutionPhase, OperationId, TaskId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::activity::ActivityDef;
+use crate::binding::BindingPin;
+
 /// Version string of the current execution definition.
 pub const EXEC_DEF_VERSION: &str = "exec_def/v1";
 
@@ -81,6 +84,22 @@ pub struct Inputs {
     /// `inputs` so replay of the same inputs is byte-for-byte deterministic.
     #[serde(default)]
     pub now_unix_ms: u64,
+    /// Component/API binding the operation is dispatched under (activity
+    /// protocol). Recorded in the dispatch intent so recovery reconciles against
+    /// the pinned binding, never the currently configured adapter.
+    #[serde(default)]
+    pub binding: Option<BindingPin>,
+    /// Activity definition that owns this operation (activity protocol). Read
+    /// back from the durable dispatch intent on recovery.
+    #[serde(default)]
+    pub activity: Option<ActivityDef>,
+    /// Bounded, opaque operation inputs recorded with the dispatch intent.
+    #[serde(default)]
+    pub operation_inputs: Option<Value>,
+    /// Phase the operation's effect belongs to (activity protocol). Falls back
+    /// to the execution's current phase when absent.
+    #[serde(default)]
+    pub phase: Option<ExecutionPhase>,
 }
 
 /// External-effect probe evidence.

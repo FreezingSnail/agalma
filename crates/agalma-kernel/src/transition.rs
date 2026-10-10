@@ -286,6 +286,14 @@ fn decision(
     if state.is_terminal() {
         return noop(state);
     }
+    // A completed decision is terminal: a late/duplicate result cannot
+    // supersede the recorded outcome (no new event, no revision bump).
+    if matches!(
+        state.operations.get(operation_id).map(|r| r.state),
+        Some(crate::exec_def::OperationState::Completed)
+    ) {
+        return noop(state);
+    }
     match &inputs.decision {
         Some(outcome) => {
             let mut next = state.clone();
@@ -524,6 +532,13 @@ fn dispatch_intent(
             "operation": operation_id.as_str(),
             "phase": format!("{:?}", state.phase).to_lowercase(),
             "attempt": state.attempt,
+            // Activity-protocol metadata: recovered from the durable intent so a
+            // restart can reconcile the pending operation against its pinned
+            // binding without the original caller.
+            "activity": inputs.activity,
+            "inputs": inputs.operation_inputs,
+            "binding": inputs.binding,
+            "operation_phase": inputs.phase,
         }),
         enqueued_at_unix_ms: inputs.now_unix_ms,
         consumed: false,

@@ -11,6 +11,16 @@ pub const CRASH_ENV: &str = "AGALMA_KERNEL_CRASH_AT";
 
 /// After the transition commit returned, before dispatch (fixture case 1).
 pub const AFTER_TRANSITION_COMMIT: &str = "after_transition_commit";
+/// Immediately before handing work to an activity handler.
+pub const BEFORE_DISPATCH: &str = "before_dispatch";
+/// After a handler returned, before the completion record.
+pub const AFTER_DISPATCH: &str = "after_dispatch";
+/// After the external effect landed, before completion (fixture cases 2/4).
+pub const AFTER_EFFECT_BEFORE_COMPLETION: &str = "after_effect_before_completion";
+/// After the decision/fallback outcome commit, before dependent work (case 3).
+pub const AFTER_DECISION_COMMIT: &str = "after_decision_commit";
+/// After an integrate/merge effect landed, before its completion record (case 4).
+pub const AFTER_MERGE_BEFORE_COMPLETION: &str = "after_merge_before_completion";
 
 /// Abort the process when `point` matches the armed [`CRASH_ENV`]. No-op when
 /// the env var is unset or names a different point.

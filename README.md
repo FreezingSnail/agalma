@@ -26,3 +26,7 @@ The loop never terminates. Each pass evaluates the current state of the target, 
 ## Status
 
 Early. Architecture next.
+
+## License
+
+AGPL-3.0-or-later — see [LICENSE](LICENSE).

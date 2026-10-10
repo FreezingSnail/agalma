@@ -2,6 +2,7 @@
 name = "agalma-sandbox"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Agalma sandbox service. Owning wave: M0.4 — Seatbelt launch/terminate; profile render."
 publish = false
 

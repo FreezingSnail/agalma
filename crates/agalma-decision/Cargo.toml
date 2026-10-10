@@ -2,6 +2,7 @@
 name = "agalma-decision"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Agalma decision service. Owning wave: M1.5 — static baselines and durable decision outcomes behind DecisionApi; no model inference in M1."
 publish = false
 

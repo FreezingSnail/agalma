@@ -2,6 +2,7 @@
 name = "agalma-conductor"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Agalma conductor: CLI (`agalma`), composition root, and daemon. Owning wave: M0.1 (skeleton) / M0.7 (smoke)."
 publish = false
 

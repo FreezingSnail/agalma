@@ -2,6 +2,7 @@
 name = "agalma-execution"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Agalma execution service. Owning wave: M0.3 — serial executor, receipts, reconciliation."
 publish = false
 

@@ -2,6 +2,7 @@
 name = "agalma-workspace"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Agalma workspace service. Owning wave: M0.5 — git checkout/merge/reconcile."
 publish = false
 

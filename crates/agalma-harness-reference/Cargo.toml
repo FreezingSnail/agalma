@@ -2,6 +2,7 @@
 name = "agalma-harness-reference"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Agalma deterministic reference HarnessApi adapters (M1.7). No vendor, no network."
 publish = false
 

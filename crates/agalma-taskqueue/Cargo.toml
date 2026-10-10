@@ -2,6 +2,7 @@
 name = "agalma-taskqueue"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Agalma bd task-queue adapter (M1.1): fenced-block intake, atomic claims, status projection."
 publish = false
 

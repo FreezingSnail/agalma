@@ -18,6 +18,7 @@ exclude = ["spikes"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+license = "AGPL-3.0-or-later"
 
 # Pinned per docs/m0-dependencies.md. Exact `=` versions; `cargo update` is a
 # reviewed change. No crate beyond this shortlist may be fetched without

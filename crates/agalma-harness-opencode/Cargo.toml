@@ -2,6 +2,7 @@
 name = "agalma-harness-opencode"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Agalma OpenCode harness adapter. Owning wave: M0.6 — vendor details confined here."
 publish = false
 

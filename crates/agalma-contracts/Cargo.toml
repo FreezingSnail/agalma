@@ -2,6 +2,7 @@
 name = "agalma-contracts"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Agalma canonical contracts: IDs, normalized events, errors, and component traits. No I/O, no vendor types, no implementation dependencies."
 publish = false
 

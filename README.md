@@ -26,7 +26,7 @@ Canonical role definitions (`docs/architecture.md` §3.5):
 
 ## What exists today
 
-A Rust workspace implementing the factory core. The conductor drives a queue of tasks from `bd`, executes them in confined sandboxed checkouts via OpenCode, verifies acceptance, merges on green, and records every step in a durable SQLite ledger.
+A Rust workspace implementing the factory core. The conductor drives a queue of tasks from `bd`, executes them in confined sandboxed checkouts via OpenCode, verifies acceptance, merges on green, and records every step in a durable SQLite ledger. Every Tier-1 component (harness, sandbox, workspace, task queue, ledger, execution) implements a versioned Agalma contract and can run behind a process boundary over framed JSON (`agalma-ipc`).
 
 | Crate | Responsibility |
 |---|---|
@@ -63,13 +63,17 @@ agalma models     Print the model routing table and active routes
 | M1 — working loop | ✅ | `docs/m1-exit-evidence.md` (seeded batch on a scratch clone, metrics, digest) |
 | B0 — durable execution kernel | ✅ | `docs/b0-exit-evidence.md` (protected recovery pack 10/10, upgrade/rollback, resource baseline) |
 | B1 — component extraction | ✅ | `docs/b1-exit-evidence.md` (Tier-1 seams behind process boundaries; parity/rebind/rollback per boundary) |
-| M2 — bench + promotion + nerve | planned | blocked on B1 |
+| M2 — bench + promotion + nerve | next | unblocked by B1 |
 | M3 — always-on baseline | planned | MVP exit |
 | P1 — autonomy gate | planned | removes transitional human review |
 
-Operational posture: the kernel passes its gates and the seed executor remains available
-until extraction completes. Execution is supervised, one task at a time, on a scratch
-clone — the factory does not yet run unattended.
+Operational posture: extraction is complete — components are replaceable through their
+declared APIs with dual-binding parity, staged rebind, and rollback evidence. Production
+transports default to in-process (process transport is selectable via `AGALMA_*_TRANSPORT`
+env vars). Execution is supervised, one task at a time, on a scratch clone — the factory
+does not yet run unattended. Open follow-ups: the kernel candidate's `step`/`recover`
+adapter gap (`agalma-5de`), auxiliary ledger connections (`agalma-1o3`), and the live
+process-transport smoke + default flip (`agalma-rvj`).
 
 ## Verified behavior
 
@@ -77,6 +81,7 @@ clone — the factory does not yet run unattended.
 - **Durability:** restart during retry delay fires the timer once; directive updates survive restart; compatible upgrades resume pending work and preserve IDs/receipts.
 - **Confinement:** workers launch under Seatbelt; harness egress goes through a parent-owned loopback proxy; verification runs in a pristine sandboxed checkout.
 - **Replacement:** S0d bind gate refuses unmet capabilities; dual-binding rebind works between attempts; rollback reconciles before dispatch.
+- **Extraction (B1):** all Tier-1 seams process-hosted behind framed JSON contracts; per-boundary shadow parity, staged rebind, and rollback evidence (`docs/b1-exit-evidence.md`); architecture test forbids impl→impl dependencies.
 - Fixtures in `fixtures/recovery-pack/` are immutable (`MANIFEST.sha256`, `pack_integrity.rs`).
 
 ## Development
@@ -96,6 +101,7 @@ All run artifacts live under `target/test-runs/` — never a system temp directo
 - `docs/component-contracts.md` — nano service contracts and tiers
 - `docs/m0-skeleton.md`, `docs/m1-workloop.md` — milestone designs
 - `docs/durable-execution-bootstrap.md` — B0 requirements; `docs/b0-kernel.md` — kernel design
+- `docs/b1-extraction.md` — B1 design (transport, shadow parity, serial order); `docs/b1-exit-evidence.md` — per-boundary extraction evidence
 - `docs/reliability-hardening.md`, `docs/hardening-evidence.md` — watchdog, routing, xcrun/TMPDIR
 - `docs/research/`, `docs/spikes/` — recon and spike reports
 

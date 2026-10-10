@@ -27,6 +27,8 @@ pub enum Command {
     Status(StateArgs),
     /// Print the recorded digest for an execution (JSON + one-line summary).
     Digest(DigestArgs),
+    /// Print the model routing table and the active routes (H3).
+    Models,
 }
 
 /// Arguments for `agalma work`.

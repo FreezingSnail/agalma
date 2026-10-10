@@ -15,6 +15,7 @@ pub mod harness_binding;
 pub mod phases;
 pub mod provider_proxy;
 pub mod reconcile;
+pub mod routing;
 pub mod task;
 pub mod work;
 pub mod workers;
@@ -48,7 +49,15 @@ pub async fn run() -> ExitCode {
         Command::Resume(args) => resume_command(&args),
         Command::Status(args) => status_command(&args),
         Command::Digest(args) => digest_command(&args),
+        Command::Models => models_command(),
     }
+}
+
+/// `agalma models`: print the H3 model table, active routes, and allow-paid
+/// state (no state dir needed; the policy is static).
+fn models_command() -> ExitCode {
+    print!("{}", crate::routing::render_models());
+    ExitCode::SUCCESS
 }
 
 async fn run_command(args: RunArgs) -> ExitCode {

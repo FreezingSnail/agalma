@@ -49,10 +49,11 @@ use serde_json::json;
 
 use crate::cli::WorkArgs;
 use crate::composition::{toolchain, BUILDER_PROMPT, DEFAULT_TURN_TIMEOUT, DEFAULT_VERIFY_TIMEOUT};
-use crate::config::{resolve_model, resolve_state_dir};
+use crate::config::resolve_state_dir;
 use crate::harness_binding::{harness_handle, resolve_selection, HarnessHandle};
 use crate::phases::{activities_with_mode, ActivityMode, PhaseDeps, RepoMode, RunState};
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
+use crate::routing::{self, RouteSelection};
 use crate::LockGuard;
 
 /// Terminal outcome of driving one task's execution.
@@ -80,7 +81,10 @@ pub fn run_work(args: WorkArgs) -> ExitCode {
 fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
     let state_dir = resolve_state_dir(args.state_dir.as_deref())
         .map_err(|e| ContractError::KnownFailure(e.to_string()))?;
-    let model = resolve_model(args.model.as_deref());
+    // H3 routing: `--model`/`AGALMA_MODEL` override every class; otherwise the
+    // static cheapest-adequate route is selected (free-only unless
+    // `AGALMA_ALLOW_PAID=1`).
+    let override_model = routing::explicit_model(args.model.as_deref());
     std::fs::create_dir_all(&state_dir).map_err(|e| {
         ContractError::KnownFailure(format!(
             "cannot create state dir {}: {e}",
@@ -131,7 +135,7 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
     recover_inflight(
         &repo,
         &state_dir,
-        &model,
+        override_model.as_deref(),
         proxy_url.clone(),
         &mut queue,
         harness.clone(),
@@ -174,7 +178,7 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
         let terminal = run_task(
             &repo,
             &state_dir,
-            &model,
+            override_model.as_deref(),
             proxy_url.clone(),
             &task,
             &evidence,
@@ -274,14 +278,17 @@ fn priority_weight(priority: TaskPriority) -> u8 {
 fn run_task(
     repo: &Path,
     state_dir: &Path,
-    model: &str,
+    override_model: Option<&str>,
     proxy_url: Option<String>,
     task: &Task,
     evidence: &ClaimEvidence,
     queue: &mut BdTaskQueue,
     harness: HarnessHandle,
 ) -> Result<Terminal, ContractError> {
-    let mut executor = build_executor(state_dir, model, proxy_url, task, repo, harness)?;
+    let (builder, verifier) = task_routes(state_dir, task, override_model)?;
+    let mut executor = build_executor(
+        state_dir, &builder, &verifier, proxy_url, task, repo, harness,
+    )?;
     let execution = executor.start(&task.task_id)?;
     let generation = executor
         .ledger()
@@ -299,8 +306,43 @@ fn run_task(
         &task.task_id,
         lease,
     )?;
-    finalize(state_dir, queue, &execution, task, model, lease, &terminal)?;
+    finalize(
+        state_dir,
+        queue,
+        &execution,
+        task,
+        &builder.model,
+        lease,
+        &terminal,
+    )?;
     Ok(terminal)
+}
+
+/// Resolve the (builder, verifier) static routes for `task` (H3). Both are
+/// recorded as `route.model` decisions; recovery reuses the recorded outcome.
+fn task_routes(
+    state_dir: &Path,
+    task: &Task,
+    override_model: Option<&str>,
+) -> Result<(RouteSelection, RouteSelection), ContractError> {
+    let allow_paid = routing::allow_paid_from_env();
+    let builder = routing::resolve_route(
+        state_dir,
+        task.task_id.as_str(),
+        "builder",
+        task.family,
+        allow_paid,
+        override_model,
+    )?;
+    let verifier = routing::resolve_route(
+        state_dir,
+        task.task_id.as_str(),
+        "verifier",
+        task.family,
+        allow_paid,
+        override_model,
+    )?;
+    Ok((builder, verifier))
 }
 
 /// Project a terminal outcome to the backlog and record the execution digest
@@ -440,7 +482,7 @@ fn record_claim(
 fn recover_inflight(
     repo: &Path,
     state_dir: &Path,
-    model: &str,
+    override_model: Option<&str>,
     proxy_url: Option<String>,
     queue: &mut BdTaskQueue,
     harness: HarnessHandle,
@@ -467,9 +509,11 @@ fn recover_inflight(
                 continue;
             }
         };
+        let (builder, verifier) = task_routes(state_dir, &task, override_model)?;
         let mut executor = build_executor(
             state_dir,
-            model,
+            &builder,
+            &verifier,
             proxy_url.clone(),
             &task,
             repo,
@@ -489,7 +533,7 @@ fn recover_inflight(
             queue,
             &record.execution_id,
             &task,
-            model,
+            &builder.model,
             lease,
             &terminal,
         )?;
@@ -500,7 +544,8 @@ fn recover_inflight(
 /// Build a per-task executor with repo-mode activities and the same ledger.
 fn build_executor(
     state_dir: &Path,
-    model: &str,
+    builder: &RouteSelection,
+    verifier: &RouteSelection,
     proxy_url: Option<String>,
     task: &Task,
     repo: &Path,
@@ -514,7 +559,7 @@ fn build_executor(
             execution_definition_version: EXECUTION_DEFINITION_VERSION,
         },
     );
-    let deps = phase_deps(state_dir, model, proxy_url, task, repo, harness)?;
+    let deps = phase_deps(state_dir, builder, verifier, proxy_url, task, repo, harness)?;
     let workspace = Rc::new(RefCell::new(Workspace::new(state_dir.to_path_buf())));
     let state = Rc::new(RefCell::new(RunState::default()));
     let acts = activities_with_mode(deps, workspace, state, ActivityMode::from_env());
@@ -530,7 +575,8 @@ fn build_executor(
 /// base builder prompt under the state dir.
 fn phase_deps(
     state_dir: &Path,
-    model: &str,
+    builder: &RouteSelection,
+    verifier: &RouteSelection,
     proxy_url: Option<String>,
     task: &Task,
     repo: &Path,
@@ -561,7 +607,10 @@ fn phase_deps(
     Ok(PhaseDeps {
         state_dir: state_dir.to_path_buf(),
         fixture: repo.to_path_buf(),
-        model: model.to_string(),
+        model: builder.model.clone(),
+        verifier_model: verifier.model.clone(),
+        route: builder.label(),
+        verifier_route: verifier.label(),
         role: "builder".to_string(),
         profile_path,
         builder_prompt,

@@ -13,6 +13,8 @@ use agalma_contracts::{
 pub const TRIAGE_PICK_NEXT_BASELINE: &str = "triage.pick-next/v1";
 /// Versioned baseline name for `retry.escalate`.
 pub const RETRY_ESCALATE_BASELINE: &str = "retry.escalate/v1";
+/// Versioned baseline name for `route.model` (H3 static routing policy).
+pub const ROUTE_MODEL_BASELINE: &str = "route.model/v1";
 
 /// A baseline result: either a concrete choice among the offered options, or a
 /// reasoned no-action (wait/park).
@@ -32,6 +34,7 @@ pub const fn baseline_name(kind: DecisionKind) -> &'static str {
     match kind {
         DecisionKind::TriagePickNext => TRIAGE_PICK_NEXT_BASELINE,
         DecisionKind::RetryEscalate => RETRY_ESCALATE_BASELINE,
+        DecisionKind::RouteModel => ROUTE_MODEL_BASELINE,
     }
 }
 
@@ -40,6 +43,7 @@ pub fn baseline_outcome(request: &DecisionRequest) -> BaselineOutcome {
     match request.kind {
         DecisionKind::TriagePickNext => triage_pick_next(request),
         DecisionKind::RetryEscalate => retry_escalate(request),
+        DecisionKind::RouteModel => route_model(request),
     }
 }
 
@@ -137,6 +141,22 @@ fn find_action(request: &DecisionRequest, action: &str) -> Option<String> {
             o.option_id == action || attr_str(&o.attributes, "action").as_deref() == Some(action)
         })
         .map(|o| o.option_id.clone())
+}
+
+/// `route.model`: pick the first eligible candidate for the class (H3 static
+/// cheapest-adequate policy). Rust offers the candidates in preference order
+/// (free-first, or paid-first for the strict-schema tier once paid is allowed);
+/// the baseline cannot admit an option Rust did not offer. An empty set parks.
+pub fn route_model(request: &DecisionRequest) -> BaselineOutcome {
+    match request.options.first() {
+        Some(option) => BaselineOutcome::Action {
+            chosen: Some(option.option_id.clone()),
+            scores: vec![],
+        },
+        None => BaselineOutcome::NoAction {
+            reason: "no eligible route candidates".to_string(),
+        },
+    }
 }
 
 /// A baseline [`BaselineOutcome`] as a recorded decision outcome.
@@ -360,6 +380,34 @@ mod tests {
                 scores: vec![]
             }
         );
+    }
+
+    #[test]
+    fn route_model_picks_first_offered_candidate() {
+        let req = request(
+            DecisionKind::RouteModel,
+            json!({ "class": "builder", "family": "fix" }),
+            vec![
+                option("opencode/big-pickle", json!({ "rank": 0 })),
+                option("opencode-go/deepseek-v4.1-flash", json!({ "rank": 2 })),
+            ],
+        );
+        assert_eq!(
+            route_model(&req),
+            BaselineOutcome::Action {
+                chosen: Some("opencode/big-pickle".to_string()),
+                scores: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn route_model_without_candidates_parks() {
+        let req = request(DecisionKind::RouteModel, json!({}), vec![]);
+        assert!(matches!(
+            route_model(&req),
+            BaselineOutcome::NoAction { .. }
+        ));
     }
 
     #[test]

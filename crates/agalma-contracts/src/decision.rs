@@ -29,6 +29,8 @@ pub enum DecisionKind {
     TriagePickNext,
     /// `retry.escalate`: mechanical retry / escalation / park choice.
     RetryEscalate,
+    /// `route.model`: static model-route selection for a role/family (H3).
+    RouteModel,
 }
 
 impl DecisionKind {
@@ -37,6 +39,7 @@ impl DecisionKind {
         match self {
             DecisionKind::TriagePickNext => "triage.pick-next",
             DecisionKind::RetryEscalate => "retry.escalate",
+            DecisionKind::RouteModel => "route.model",
         }
     }
 }
@@ -60,6 +63,7 @@ impl FromStr for DecisionKind {
         match raw {
             "triage.pick-next" => Ok(DecisionKind::TriagePickNext),
             "retry.escalate" => Ok(DecisionKind::RetryEscalate),
+            "route.model" => Ok(DecisionKind::RouteModel),
             _ => Err(UnknownDecisionKind),
         }
     }

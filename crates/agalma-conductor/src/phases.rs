@@ -135,7 +135,14 @@ impl RunState {
 pub struct PhaseDeps {
     pub state_dir: PathBuf,
     pub fixture: PathBuf,
+    /// Resolved builder model (H3 route), pinned for builder attempts.
     pub model: String,
+    /// Resolved verifier/diagnosis model (H3 route), pinned for verifier turns.
+    pub verifier_model: String,
+    /// Route label for the builder model (`<class>:<family>`, H3).
+    pub route: String,
+    /// Route label for the verifier model (H3).
+    pub verifier_route: String,
     pub role: String,
     /// Rendered, fail-closed sandbox profile.
     pub profile_path: PathBuf,
@@ -605,6 +612,8 @@ impl BuildActivity {
                 &ctx.operation_id,
                 "build",
                 &self.deps.role,
+                &self.deps.model,
+                &self.deps.route,
                 ctx.attempt,
                 usage,
                 wall_ms,
@@ -844,6 +853,8 @@ impl BuildActivity {
             &ctx.operation_id,
             "build",
             &self.deps.role,
+            &self.deps.model,
+            &self.deps.route,
             ctx.attempt,
             zero_usage(),
             started.elapsed().as_millis() as u64,
@@ -935,6 +946,8 @@ impl BuildActivity {
                 &ctx.operation_id,
                 "build",
                 &self.deps.role,
+                &self.deps.model,
+                &self.deps.route,
                 ctx.attempt,
                 usage,
                 wall_ms,
@@ -1267,6 +1280,8 @@ impl VerifyActivity {
                 &ctx.operation_id,
                 "verify",
                 "acceptance",
+                "",
+                "",
                 ctx.attempt,
                 zero_usage(),
                 started.elapsed().as_millis() as u64,
@@ -1322,6 +1337,8 @@ impl VerifyActivity {
             &ctx.operation_id,
             "verify",
             "acceptance",
+            "",
+            "",
             ctx.attempt,
             zero_usage(),
             wall_ms,
@@ -1418,6 +1435,8 @@ impl VerifyActivity {
             &ctx.operation_id,
             "verify",
             "verifier",
+            &self.deps.verifier_model,
+            &self.deps.verifier_route,
             ctx.attempt,
             usage,
             started.elapsed().as_millis() as u64,
@@ -1440,7 +1459,7 @@ impl VerifyActivity {
         let sock = canonical_dir(&root.join("sock"))?;
         let mut config =
             OpenCodeHarnessConfig::new(&self.deps.profile_path, root, &protected, &sock);
-        config.model = Some(self.deps.model.clone());
+        config.model = Some(self.deps.verifier_model.clone());
         config.proxy_url = self.deps.proxy_url.clone();
         config.extra_ro_roots = self.deps.extra_ro_roots.clone();
         config.extra_env = self.deps.toolchain_env.clone();
@@ -1480,7 +1499,7 @@ impl VerifyActivity {
         let session = harness
             .create_session(CreateSessionRequest {
                 role: "verifier".to_string(),
-                model: self.deps.model.clone(),
+                model: self.deps.verifier_model.clone(),
                 prompts_ref: prompt_path.to_string_lossy().into_owned(),
                 handoff_refs: vec![
                     ArtifactRef::derive(&format!("diff@{}", ctx.attempt)),
@@ -1507,7 +1526,7 @@ impl VerifyActivity {
                 record_provider_health(
                     &self.deps.state_dir,
                     &ctx.execution_id,
-                    &self.deps.model,
+                    &self.deps.verifier_model,
                     HarnessKind::OpenCode.as_str(),
                     ctx.attempt,
                     &PollStall::failed(&reason, 0, 0),
@@ -1521,7 +1540,7 @@ impl VerifyActivity {
                 record_provider_health(
                     &self.deps.state_dir,
                     &ctx.execution_id,
-                    &self.deps.model,
+                    &self.deps.verifier_model,
                     HarnessKind::OpenCode.as_str(),
                     ctx.attempt,
                     &stall,
@@ -1540,7 +1559,7 @@ impl VerifyActivity {
                 record_provider_health(
                     &self.deps.state_dir,
                     &ctx.execution_id,
-                    &self.deps.model,
+                    &self.deps.verifier_model,
                     HarnessKind::OpenCode.as_str(),
                     ctx.attempt,
                     &PollStall {
@@ -2151,10 +2170,16 @@ fn record_usage_event(
     operation_id: &OperationId,
     phase: &str,
     role: &str,
+    model: &str,
+    route: &str,
     attempt: u32,
     usage: Usage,
     wall_ms: u64,
 ) -> Result<(), ActivityError> {
+    // H3: attribute cash vs subscription quota separately. Free models are
+    // (0, 0); Go subscription models are cash 0 / notional quota.
+    let (cash_usd, quota_usd) =
+        crate::routing::cash_quota(model, usage.tokens_in, usage.tokens_out);
     let mut ledger = SqliteLedger::open(state_dir.join("ledger.sqlite")).map_err(contract_err)?;
     let event = agalma_contracts::ExecutionEvent {
         execution_id: execution.clone(),
@@ -2164,10 +2189,14 @@ fn record_usage_event(
             "operation_id": operation_id,
             "phase": phase,
             "role": role,
+            "model": model,
+            "route": route,
             "attempt": attempt,
             "tokens_in": usage.tokens_in,
             "tokens_out": usage.tokens_out,
             "cost_usd": usage.cost_usd,
+            "cash_usd": cash_usd,
+            "quota_usd": quota_usd,
             "completeness": usage.completeness.label(),
             "wall_ms": wall_ms,
         }),
@@ -2617,6 +2646,9 @@ mod tests {
             state_dir: PathBuf::from("state"),
             fixture: PathBuf::from("fixture"),
             model: "test/offline".to_string(),
+            verifier_model: "test/offline".to_string(),
+            route: "builder:fix".to_string(),
+            verifier_route: "verifier:fix".to_string(),
             role: "builder".to_string(),
             profile_path: PathBuf::from("worker.sb"),
             builder_prompt: PathBuf::from("builder.md"),

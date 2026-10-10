@@ -89,6 +89,9 @@ pub struct Digest {
     pub execution_id: String,
     pub task_id: String,
     pub model: String,
+    /// H3 route label for the resolved model (`<class>:<family>`).
+    #[serde(default)]
+    pub route: String,
     pub base_sha: Option<String>,
     pub candidate_sha: Option<String>,
     pub result_sha: Option<String>,
@@ -96,6 +99,12 @@ pub struct Digest {
     pub commands: Vec<CommandOutcome>,
     pub repairs: RepairSummary,
     pub cost: CostSummary,
+    /// H3 cash cost in USD (pay-per-token routes; `$0` for free/subscription).
+    #[serde(default)]
+    pub cash_usd: f64,
+    /// H3 notional subscription-quota cost in USD (Go allowance; `$0` free).
+    #[serde(default)]
+    pub quota_usd: f64,
     pub wall_ms: u64,
     pub verdict: Verdict,
     /// Count of `provider_health` stall events recorded for this execution
@@ -108,7 +117,7 @@ impl Digest {
     /// One-line summary for the bd projection comment and the CLI.
     pub fn summary_line(&self) -> String {
         format!(
-            "digest execution={} task={} verdict={} attempts={} files={} tokens={}/{} usd={:.6} wall_ms={} stalls={}",
+            "digest execution={} task={} verdict={} attempts={} files={} tokens={}/{} usd={:.6} cash={:.6} quota={:.6} model={} route={} wall_ms={} stalls={}",
             self.execution_id,
             self.task_id,
             self.verdict.as_str(),
@@ -117,6 +126,10 @@ impl Digest {
             self.cost.tokens_in,
             self.cost.tokens_out,
             self.cost.usd,
+            self.cash_usd,
+            self.quota_usd,
+            self.model,
+            self.route,
             self.wall_ms,
             self.stalls,
         )
@@ -201,6 +214,9 @@ fn build(
     let mut cost = CostSummary::default();
     let mut wall_ms = 0u64;
     let mut stalls = 0u32;
+    let mut route = String::new();
+    let mut cash_usd = 0.0f64;
+    let mut quota_usd = 0.0f64;
     for event in &events {
         if event.kind == "provider_health" {
             stalls += 1;
@@ -224,6 +240,25 @@ fn build(
             .get("cost_usd")
             .and_then(Value::as_f64)
             .unwrap_or(0.0);
+        cash_usd += event
+            .payload
+            .get("cash_usd")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        quota_usd += event
+            .payload
+            .get("quota_usd")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        // Route label: first non-empty usage event (builder usage precedes
+        // verify/acceptance events).
+        if route.is_empty() {
+            if let Some(label) = event.payload.get("route").and_then(Value::as_str) {
+                if !label.is_empty() {
+                    route = label.to_string();
+                }
+            }
+        }
         wall_ms += event
             .payload
             .get("wall_ms")
@@ -235,6 +270,7 @@ fn build(
         execution_id: execution.as_str().to_string(),
         task_id: task.task_id.as_str().to_string(),
         model: model.to_string(),
+        route,
         base_sha,
         candidate_sha,
         result_sha,
@@ -242,6 +278,8 @@ fn build(
         commands,
         repairs,
         cost,
+        cash_usd,
+        quota_usd,
         wall_ms,
         verdict,
         stalls,

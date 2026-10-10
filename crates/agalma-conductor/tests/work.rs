@@ -339,6 +339,55 @@ fn triage_picks_higher_priority_and_max_tasks_bounds() {
 }
 
 #[test]
+fn routing_pins_model_and_records_route_decision_and_digest() {
+    let (scratch, id) = Scratch::new("routing", "  - sh -c 'grep -q 42 src/lib.rs'", 2);
+    let out = scratch.work(true);
+    assert!(out.status.success(), "green run: {}", stderr_of(&out));
+
+    // The resolved free route is recorded as a `route.model` decision and the
+    // builder attempt pins that model in the usage event.
+    let execution = format!("exec:{id}:1");
+    let conn =
+        rusqlite::Connection::open(scratch.state_dir.join("ledger.sqlite")).expect("open ledger");
+    let route_decisions: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM decisions WHERE kind='route.model'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count route decisions");
+    assert!(route_decisions >= 1, "route.model decision recorded");
+
+    let builder_model: String = conn
+        .query_row(
+            "SELECT json_extract(payload,'$.model') FROM execution_events \
+             WHERE execution_id=?1 AND kind='usage' AND json_extract(payload,'$.role')='builder' \
+             LIMIT 1",
+            [&execution],
+            |row| row.get(0),
+        )
+        .expect("builder usage model");
+    assert_eq!(
+        builder_model, "opencode/big-pickle",
+        "attempt pinned the route"
+    );
+
+    // Digest records the model and the route label.
+    let digest_path = scratch
+        .state_dir
+        .join("runs")
+        .join(format!("exec-{id}-1"))
+        .join("artifacts")
+        .join("digest.json");
+    let digest: Value =
+        serde_json::from_str(&fs::read_to_string(&digest_path).expect("read digest"))
+            .expect("digest json");
+    assert_eq!(digest["model"], "opencode/big-pickle");
+    assert_eq!(digest["route"], "builder:fix");
+    assert!(digest["cost"]["usd"].as_f64().unwrap() == 0.0);
+}
+
+#[test]
 fn generation_increments_on_rerun() {
     let (scratch, id) = Scratch::new("generation", "  - sh -c 'grep -q 42 src/lib.rs'", 2);
 

@@ -15,7 +15,7 @@ pub mod baseline;
 pub mod decider;
 
 pub use baseline::{
-    as_outcome, baseline_name, baseline_outcome, retry_escalate, triage_pick_next, BaselineOutcome,
-    RETRY_ESCALATE_BASELINE, TRIAGE_PICK_NEXT_BASELINE,
+    as_outcome, baseline_name, baseline_outcome, retry_escalate, route_model, triage_pick_next,
+    BaselineOutcome, RETRY_ESCALATE_BASELINE, ROUTE_MODEL_BASELINE, TRIAGE_PICK_NEXT_BASELINE,
 };
 pub use decider::StaticDecider;

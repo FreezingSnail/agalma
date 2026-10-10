@@ -18,6 +18,7 @@ pub mod provider_auth;
 pub mod provider_proxy;
 pub mod reconcile;
 pub mod routing;
+pub mod sandbox_process;
 pub mod task;
 pub mod work;
 pub mod workers;

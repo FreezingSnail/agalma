@@ -24,8 +24,9 @@ use agalma_contracts::harness::{
     OperationState, RunTurnRequest, SessionHandle, StartAttemptRequest, StopEvidence,
 };
 use agalma_contracts::{BindingRecord, ContractError};
+use agalma_harness_opencode::{self as opencode, OpenCodeHarness, OpenCodeHarnessConfig};
 use agalma_harness_reference::{self as reference, ReferenceProfile};
-use agalma_ipc::{CommandSpec, HarnessClient, ServerInfo};
+use agalma_ipc::{CommandSpec, HarnessClient, SandboxClient, ServerInfo};
 
 use crate::harness_binding::{self, HarnessKind};
 
@@ -130,36 +131,7 @@ impl ProcessBinding {
         model: &str,
         timeout: Duration,
     ) -> Result<ProcessBinding, String> {
-        if let Some(parent) = socket.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("create socket dir {}: {e}", parent.display()))?;
-        }
-        let _ = std::fs::remove_file(&socket);
-
-        let mut command = Command::new(&program);
-        command
-            .args(&spec.args)
-            .envs(&spec.env)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        // The server is a process-group leader so `stop()` can signal the whole
-        // tree (the confined `opencode serve` child for the OpenCode server).
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-        let mut child = command
-            .spawn()
-            .map_err(|e| format!("spawn {}: {e}", program.display()))?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "server stdout not captured".to_string())?;
-        let reader = BufReader::new(stdout);
-        let info = read_ready(reader, timeout)?;
+        let (child, info) = spawn_supervised(&spec, &program, &socket, timeout)?;
 
         let describe = describe_from_info(&info);
         let plan = harness_binding::plan_from_describe(
@@ -227,42 +199,9 @@ impl ProcessBinding {
                 detail: "server already stopped".to_string(),
             };
         }
-        let pid = self.child.id();
-        let mut actions = Vec::new();
-        // Signal the process group (pgid == pid, set at spawn) so descendants
-        // are torn down with the leader.
-        signal_group(pid, "TERM");
-        actions.push(format!("SIGTERM -> pgid {pid}"));
-
-        let deadline = std::time::Instant::now() + TERM_GRACE;
-        let mut exited = false;
-        loop {
-            match self.child.try_wait() {
-                Ok(Some(_)) => {
-                    exited = true;
-                    break;
-                }
-                Ok(None) => {}
-                Err(_) => break,
-            }
-            if std::time::Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        if !exited {
-            signal_group(pid, "KILL");
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-            actions.push("escalated to SIGKILL".to_string());
-        }
+        let evidence = stop_supervised(&mut self.child);
         self.stopped = true;
-        let gone = !pid_alive(pid);
-        actions.push(format!("pid {pid} gone={gone}"));
-        StopEvidence {
-            process_group_gone: gone,
-            detail: actions.join("; "),
-        }
+        evidence
     }
 
     /// Restart the server in place, keeping the same binding id/generation.
@@ -390,6 +329,174 @@ pub fn reference_profile(kind: HarnessKind) -> ReferenceProfile {
     }
 }
 
+/// Inputs for [`open_opencode_harness`]: the attempt-scoped OpenCode config plus
+/// the transport and boundary socket paths.
+pub struct OpenCodeHarnessInit {
+    /// Transport selected by `AGALMA_HARNESS_TRANSPORT` (default in-process).
+    pub transport: HarnessTransport,
+    /// Attempt-scoped OpenCode harness config (in-process branch).
+    pub config: OpenCodeHarnessConfig,
+    /// Attempt root handed to the OpenCode component server (`ROOT_ENV`).
+    pub root: PathBuf,
+    /// Resolved model (binding + server env).
+    pub model: String,
+    /// Binding generation for the process bind gate.
+    pub generation: u32,
+    /// Sandbox component server socket (client target or server env).
+    pub sandbox_socket: PathBuf,
+    /// Socket the OpenCode component server should bind (process branch).
+    pub harness_socket: PathBuf,
+}
+
+/// A live build/verify harness bound either in-process or across the process
+/// boundary. The phase path stays unchanged because both variants expose the
+/// same `HarnessApi` surface plus [`LiveHarness::attempt_pid`].
+pub enum LiveHarness {
+    /// Direct in-process trait calls (default; unchanged phase logic).
+    InProcess(OpenCodeHarness),
+    /// Supervised OpenCode component server over the framed transport.
+    Process(ProcessBinding),
+}
+
+impl LiveHarness {
+    /// The confined server pid, once an attempt is active (evidence for orphan
+    /// checks). For the process variant this is the harness-server pid.
+    pub fn attempt_pid(&self) -> Option<u32> {
+        match self {
+            LiveHarness::InProcess(harness) => harness.attempt_pid(),
+            LiveHarness::Process(binding) => Some(binding.pid()),
+        }
+    }
+}
+
+impl HarnessApi for LiveHarness {
+    fn describe(&self) -> Describe {
+        match self {
+            LiveHarness::InProcess(harness) => harness.describe(),
+            LiveHarness::Process(binding) => binding.describe().clone(),
+        }
+    }
+
+    fn start_attempt(&mut self, req: StartAttemptRequest) -> Result<AttemptHandle, ContractError> {
+        match self {
+            LiveHarness::InProcess(harness) => harness.start_attempt(req),
+            LiveHarness::Process(binding) => binding.start_attempt(req),
+        }
+    }
+
+    fn create_session(
+        &mut self,
+        req: CreateSessionRequest,
+    ) -> Result<SessionHandle, ContractError> {
+        match self {
+            LiveHarness::InProcess(harness) => harness.create_session(req),
+            LiveHarness::Process(binding) => binding.create_session(req),
+        }
+    }
+
+    fn run_turn(
+        &mut self,
+        session: &SessionHandle,
+        req: RunTurnRequest,
+    ) -> Result<OperationHandle, ContractError> {
+        match self {
+            LiveHarness::InProcess(harness) => harness.run_turn(session, req),
+            LiveHarness::Process(binding) => binding.run_turn(session, req),
+        }
+    }
+
+    fn inspect_operation(&mut self, op: &OperationHandle) -> Result<OperationState, ContractError> {
+        match self {
+            LiveHarness::InProcess(harness) => harness.inspect_operation(op),
+            LiveHarness::Process(binding) => binding.inspect_operation(op),
+        }
+    }
+
+    fn read_events(&mut self, op: &OperationHandle) -> Result<Vec<Event>, ContractError> {
+        match self {
+            LiveHarness::InProcess(harness) => harness.read_events(op),
+            LiveHarness::Process(binding) => binding.read_events(op),
+        }
+    }
+
+    fn cancel_operation(&mut self, op: &OperationHandle) -> Result<CancelAck, ContractError> {
+        match self {
+            LiveHarness::InProcess(harness) => harness.cancel_operation(op),
+            LiveHarness::Process(binding) => binding.cancel_operation(op),
+        }
+    }
+
+    fn close_session(&mut self, session: &SessionHandle) -> Result<(), ContractError> {
+        match self {
+            LiveHarness::InProcess(harness) => harness.close_session(session),
+            LiveHarness::Process(binding) => binding.close_session(session),
+        }
+    }
+
+    fn stop_attempt(&mut self, attempt: &AttemptHandle) -> Result<StopEvidence, ContractError> {
+        match self {
+            LiveHarness::InProcess(harness) => harness.stop_attempt(attempt),
+            LiveHarness::Process(binding) => binding.stop_attempt(attempt),
+        }
+    }
+}
+
+/// Build the live OpenCode harness under `transport`.
+///
+/// `InProcess` constructs an [`OpenCodeHarness`] whose confined launch goes
+/// through a [`SandboxClient`] connected to `sandbox_socket`. `Process` spawns
+/// the `agalma-harness-opencode-server` component server (which itself uses the
+/// sandbox client via `AGALMA_SANDBOX_SOCKET`) and returns the supervised
+/// [`ProcessBinding`]. The process branch is not exercised against a live
+/// OpenCode install offline; the reference transport is proven by the boundary
+/// tests.
+pub fn open_opencode_harness(init: OpenCodeHarnessInit) -> Result<LiveHarness, String> {
+    match init.transport {
+        HarnessTransport::InProcess => {
+            let sandbox =
+                SandboxClient::connect(&init.sandbox_socket).map_err(|e| e.to_string())?;
+            Ok(LiveHarness::InProcess(OpenCodeHarness::new(
+                Box::new(sandbox),
+                init.config,
+            )))
+        }
+        HarnessTransport::Process => {
+            let mut spec = opencode::server_command()
+                .arg("--socket")
+                .arg(init.harness_socket.to_string_lossy().into_owned())
+                .env(
+                    opencode::ROOT_ENV,
+                    init.root.to_string_lossy().into_owned(),
+                )
+                .env(
+                    opencode::PROFILE_PATH_ENV,
+                    init.config.profile_path.to_string_lossy().into_owned(),
+                )
+                .env(
+                    opencode::SANDBOX_SOCKET_ENV,
+                    init.sandbox_socket.to_string_lossy().into_owned(),
+                )
+                .env("AGALMA_MODEL", init.model.clone());
+            if let Some(url) = &init.config.proxy_url {
+                spec = spec.env(opencode::PROXY_URL_ENV, url.clone());
+            }
+            if init.config.provider_base_url.is_some() {
+                spec = spec.env(opencode::PAID_ENV, "1");
+            }
+            let program = resolve_server_binary(&spec.program)?;
+            let binding = ProcessBinding::spawn(
+                spec,
+                program,
+                init.harness_socket,
+                init.generation,
+                &init.model,
+                READY_TIMEOUT,
+            )?;
+            Ok(LiveHarness::Process(binding))
+        }
+    }
+}
+
 fn describe_from_info(info: &ServerInfo) -> Describe {
     Describe {
         api: info.api.clone(),
@@ -459,6 +566,88 @@ fn pid_alive(pid: u32) -> bool {
         .output()
         .map(|out| out.status.success())
         .unwrap_or(false)
+}
+
+/// Spawn a supervised component-server child (shared by every boundary).
+///
+/// Creates the socket's parent directory, drops any stale socket, spawns
+/// `program` from `spec` as a process-group leader (so `stop_supervised` can
+/// signal the whole tree), and waits for the `READY {json}` handshake.
+pub(crate) fn spawn_supervised(
+    spec: &CommandSpec,
+    program: &Path,
+    socket: &Path,
+    timeout: Duration,
+) -> Result<(Child, ServerInfo), String> {
+    if let Some(parent) = socket.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create socket dir {}: {e}", parent.display()))?;
+    }
+    let _ = std::fs::remove_file(socket);
+
+    let mut command = Command::new(program);
+    command
+        .args(&spec.args)
+        .envs(&spec.env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("spawn {}: {e}", program.display()))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "server stdout not captured".to_string())?;
+    let reader = BufReader::new(stdout);
+    let info = read_ready(reader, timeout)?;
+    Ok((child, info))
+}
+
+/// Stop a supervised child: `SIGTERM` the process group, wait, escalate to
+/// `SIGKILL`, and report pid-gone evidence (shared by every boundary).
+pub(crate) fn stop_supervised(child: &mut Child) -> StopEvidence {
+    let pid = child.id();
+    let mut actions = Vec::new();
+    // Signal the process group (pgid == pid, set at spawn) so descendants are
+    // torn down with the leader.
+    signal_group(pid, "TERM");
+    actions.push(format!("SIGTERM -> pgid {pid}"));
+
+    let deadline = std::time::Instant::now() + TERM_GRACE;
+    let mut exited = false;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                exited = true;
+                break;
+            }
+            Ok(None) => {}
+            Err(_) => break,
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    if !exited {
+        signal_group(pid, "KILL");
+        let _ = child.kill();
+        let _ = child.wait();
+        actions.push("escalated to SIGKILL".to_string());
+    }
+    let gone = !pid_alive(pid);
+    actions.push(format!("pid {pid} gone={gone}"));
+    StopEvidence {
+        process_group_gone: gone,
+        detail: actions.join("; "),
+    }
 }
 
 #[cfg(test)]

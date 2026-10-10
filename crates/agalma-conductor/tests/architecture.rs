@@ -18,11 +18,11 @@
 //! implementation crate, so it is deliberately absent from `IMPL_CRATES` and may
 //! be depended on by implementations.
 //!
-//! B1.2 correction: an extracted component server hosts a not-yet-extracted
-//! dependency **in-process** until that dependency's own boundary is extracted
-//! (`docs/b1-extraction.md` D2 derived requirement). The only sanctioned such
-//! edge today is the harness server embedding `agalma-sandbox`; it is removed in
-//! B1.3 when the harness server switches to the sandbox client.
+//! B1.2 added one sanctioned carve-out (`agalma-harness-opencode ->
+//! agalma-sandbox`) while the harness server embedded the not-yet-extracted
+//! sandbox in-process. B1.3 extracted `SandboxApi` and switched the harness
+//! server to the sandbox client, so the carve-out is removed and both checks are
+//! strict again.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -39,16 +39,6 @@ const IMPL_CRATES: &[&str] = &[
     "agalma-taskqueue",
     "agalma-kernel",
 ];
-
-/// Sanctioned impl→impl edges: a component server hosting a dependency in-process
-/// until that dependency is itself extracted (D2 derived requirement). Removed
-/// when the server switches to the dependency's client (B1.3 for the harness).
-const SERVER_HOST_EDGES: &[(&str, &str)] = &[("agalma-harness-opencode", "agalma-sandbox")];
-
-/// Whether `(crate_name -> other)` is a sanctioned server-host edge.
-fn is_server_host_edge(crate_name: &str, other: &str) -> bool {
-    SERVER_HOST_EDGES.contains(&(crate_name, other))
-}
 
 fn workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR = <root>/crates/agalma-conductor
@@ -213,7 +203,7 @@ fn implementation_crates_do_not_depend_on_each_other_in_cargo_toml() {
         let manifest = root.join("crates").join(crate_name).join("Cargo.toml");
         let text = fs::read_to_string(&manifest).unwrap_or_default();
         for dep in normal_dependency_names(&text) {
-            if IMPL_CRATES.contains(&dep.as_str()) && !is_server_host_edge(crate_name, &dep) {
+            if IMPL_CRATES.contains(&dep.as_str()) {
                 violations.push(format!(
                     "{crate_name} declares a normal dependency on implementation crate {dep}"
                 ));
@@ -259,10 +249,7 @@ fn implementation_crates_do_not_reference_each_other() {
                     continue;
                 }
                 let other_ident = other.replace('-', "_");
-                if other_ident != self_ident
-                    && contains_ident(&code, &other_ident)
-                    && !is_server_host_edge(crate_name, other)
-                {
+                if other_ident != self_ident && contains_ident(&code, &other_ident) {
                     violations.push(format!(
                         "{} references {} ({})",
                         file.display(),

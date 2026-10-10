@@ -13,6 +13,11 @@
 
 pub mod profile;
 pub mod seatbelt;
+pub mod server;
 
 pub use profile::{PRODUCT_PROFILE, SUPPLIED_PARAMS};
 pub use seatbelt::{SandboxOutput, SeatbeltSandbox};
+pub use server::{
+    build_server, default_socket_for, run_from_args, server_command, serve, API_NAME, API_VERSION,
+    IMPL_NAME, IMPL_VERSION, SERVER_BIN,
+};

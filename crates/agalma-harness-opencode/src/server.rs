@@ -1,9 +1,10 @@
-//! OpenCode `HarnessApi` component server (B1.2).
+//! OpenCode `HarnessApi` component server (B1.2; sandbox client B1.3).
 //!
 //! Hosts the real [`OpenCodeHarness`] behind the framed transport. The server is
-//! trusted code and embeds the in-process sandbox until B1.3 extracts
-//! `SandboxApi` (D2 derived requirement): the confined `opencode serve` child is
-//! launched through the local Seatbelt backend, exactly as the conductor does.
+//! trusted code: the confined `opencode serve` child is launched through the
+//! extracted `SandboxApi` boundary — a [`SandboxClient`] connected to the
+//! sandbox component server named by `AGALMA_SANDBOX_SOCKET` — instead of
+//! embedding `agalma-sandbox` in-process (B1.3).
 //!
 //! Configuration arrives from the environment (the conductor's `server_command()`
 //! / `ProcessBinding` supplies it): `AGALMA_HARNESS_ROOT` names the attempt root;
@@ -16,8 +17,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use agalma_contracts::harness::HarnessApi;
-use agalma_ipc::{register_harness, server_info_from, CommandSpec, Server};
-use agalma_sandbox::SeatbeltSandbox;
+use agalma_contracts::sandbox::SandboxApi;
+use agalma_ipc::{register_harness, server_info_from, CommandSpec, SandboxClient, Server};
 
 use crate::adapter::{OpenCodeHarness, OpenCodeHarnessConfig};
 use crate::config::{build_config, OpenCodeConfigInit};
@@ -32,6 +33,11 @@ pub const PROFILE_PATH_ENV: &str = "AGALMA_HARNESS_PROFILE_PATH";
 pub const PROXY_URL_ENV: &str = "AGALMA_HARNESS_PROXY_URL";
 /// Environment variable enabling the paid provider override (`1`/`true`).
 pub const PAID_ENV: &str = "AGALMA_HARNESS_PAID_PROXY";
+/// Environment variable naming the sandbox component server's Unix socket.
+///
+/// B1.3: the harness server no longer embeds `agalma-sandbox`; it connects a
+/// [`SandboxClient`] to this socket for confined `opencode serve` launches.
+pub const SANDBOX_SOCKET_ENV: &str = "AGALMA_SANDBOX_SOCKET";
 
 /// Launch spec for the OpenCode server.
 pub fn server_command() -> CommandSpec {
@@ -74,10 +80,7 @@ pub fn config_from_env(root: PathBuf) -> OpenCodeHarnessConfig {
 }
 
 /// Build the OpenCode server around an injected sandbox backend.
-pub fn build_server(
-    sandbox: Box<dyn agalma_contracts::sandbox::SandboxApi + Send>,
-    config: OpenCodeHarnessConfig,
-) -> Server {
+pub fn build_server(sandbox: Box<dyn SandboxApi + Send>, config: OpenCodeHarnessConfig) -> Server {
     let harness = OpenCodeHarness::new(sandbox, config);
     let describe = harness.describe();
     let mut server = Server::new(server_info_from(&describe));
@@ -107,7 +110,19 @@ where
     std::fs::create_dir_all(&root)
         .map_err(|e| format!("create harness root {}: {e}", root.display()))?;
     let config = config_from_env(root);
-    let mut server = build_server(Box::new(SeatbeltSandbox::new()), config);
+    let sandbox_socket = std::env::var_os(SANDBOX_SOCKET_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            socket
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("sandbox.sock")
+        });
+    let sandbox =
+        SandboxClient::connect(&sandbox_socket).map_err(|e| {
+            format!("connect sandbox server at {}: {e}", sandbox_socket.display())
+        })?;
+    let mut server = build_server(Box::new(sandbox), config);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

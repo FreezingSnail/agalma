@@ -61,14 +61,15 @@ use agalma_decision::{StaticDecider, RETRY_ESCALATE_BASELINE};
 use agalma_execution::{
     Activity, ActivityError, ActivityNext, ActivityOutcome, EffectProbe, OperationContext,
 };
-use agalma_harness_opencode::{build_config, OpenCodeConfigInit, OpenCodeHarness};
-use agalma_harness_reference::{ReferenceHarness, ReferenceHarnessConfig, ReferenceProfile};
+use agalma_harness_opencode::{build_config, OpenCodeConfigInit};
 use agalma_ledger::SqliteLedger;
 use agalma_sandbox::{SandboxOutput, SeatbeltSandbox};
 use agalma_workspace::Workspace;
 use serde_json::json;
 
 use crate::harness_binding::{self, HarnessHandle, HarnessKind};
+use crate::harness_process::{self, HarnessTransport, LiveHarness, OpenCodeHarnessInit};
+use crate::sandbox_process::SandboxSource;
 use crate::workers::{self, Survivor};
 
 /// The verifier prompt shipped with the conductor. A fresh verifier session is
@@ -214,10 +215,12 @@ pub fn activities_with_mode(
     state: Rc<RefCell<RunState>>,
     mode: ActivityMode,
 ) -> PhaseActivities {
+    let sandbox = SandboxSource::new(deps.state_dir.clone());
     let build: Box<dyn Activity> = Box::new(BuildActivity {
         deps: deps.clone(),
         state: Rc::clone(&state),
         mode,
+        sandbox: sandbox.clone(),
     });
     // Repo mode always runs the real acceptance runner (`VerifyActivity`); only
     // the model call is replaced in scripted mode. The `sandboxed` flag selects
@@ -229,6 +232,7 @@ pub fn activities_with_mode(
             state: Rc::clone(&state),
             sandboxed: mode == ActivityMode::Live,
             scripted: mode == ActivityMode::Scripted,
+            sandbox: sandbox.clone(),
         })
     } else {
         match mode {
@@ -238,6 +242,7 @@ pub fn activities_with_mode(
                 state: Rc::clone(&state),
                 sandboxed: true,
                 scripted: false,
+                sandbox: sandbox.clone(),
             }),
             ActivityMode::Scripted => Box::new(ScriptedVerifyActivity {
                 deps: deps.clone(),
@@ -426,6 +431,8 @@ struct BuildActivity {
     state: Rc<RefCell<RunState>>,
     /// Live (Seatbelt/OpenCode) or scripted/deterministic implementation set.
     mode: ActivityMode,
+    /// Lazily-started sandbox supervisor backing confined OpenCode launches.
+    sandbox: SandboxSource,
 }
 
 /// Probe a build attempt via the durable worker/done markers.
@@ -568,7 +575,21 @@ impl BuildActivity {
             extra_env: env,
         });
 
-        let mut harness = OpenCodeHarness::new(Box::new(SeatbeltSandbox::new()), config);
+        let sandbox_socket = self.sandbox.ensure().map_err(contract_err)?;
+        let harness_socket = self
+            .deps
+            .state_dir
+            .join(format!("harness-build-{}.sock", ctx.attempt));
+        let mut harness = harness_process::open_opencode_harness(OpenCodeHarnessInit {
+            transport: HarnessTransport::from_env(),
+            config,
+            root: root.clone(),
+            model: self.deps.model.clone(),
+            generation: 1,
+            sandbox_socket,
+            harness_socket,
+        })
+        .map_err(ActivityError::KnownFailure)?;
         let attempt = harness
             .start_attempt(StartAttemptRequest {
                 workspace: checkout.path.clone(),
@@ -685,7 +706,7 @@ impl BuildActivity {
 
     fn drive(
         &self,
-        harness: &mut OpenCodeHarness,
+        harness: &mut LiveHarness,
         _attempt: &AttemptHandle,
         ctx: &OperationContext,
         prompt_path: &Path,
@@ -914,18 +935,22 @@ impl BuildActivity {
             ctx.attempt,
         )?;
 
-        let profile = match kind {
-            HarnessKind::ReferenceFail => ReferenceProfile::Red,
-            _ => ReferenceProfile::Success,
-        };
         let scenario_dir =
             root.join("reference")
                 .join(format!("{}-attempt-{}", kind.as_str(), ctx.attempt));
-        let mut harness = ReferenceHarness::new(ReferenceHarnessConfig {
-            profile,
+        let socket = self
+            .deps
+            .state_dir
+            .join(format!("harness-ref-{}.sock", ctx.attempt));
+        let mut harness = harness_process::open_reference_harness(
+            kind,
+            HarnessTransport::from_env(),
             scenario_dir,
-            scenario: None,
-        });
+            socket,
+            1,
+            &self.deps.model,
+        )
+        .map_err(ActivityError::KnownFailure)?;
         let attempt = harness
             .start_attempt(StartAttemptRequest {
                 workspace: checkout.path.clone(),
@@ -942,7 +967,7 @@ impl BuildActivity {
             .map_err(contract_err)?;
 
         let started = Instant::now();
-        let outcome = self.drive_reference(&mut harness, ctx, &prompt_path, kind.as_str());
+        let outcome = self.drive_reference(&mut *harness, ctx, &prompt_path, kind.as_str());
         let wall_ms = started.elapsed().as_millis() as u64;
         let _ = harness.stop_attempt(&attempt);
         if let Ok(outcome) = &outcome {
@@ -973,7 +998,7 @@ impl BuildActivity {
     /// One reference session/turn, polled to terminal.
     fn drive_reference(
         &self,
-        harness: &mut ReferenceHarness,
+        harness: &mut dyn HarnessApi,
         ctx: &OperationContext,
         prompt_path: &Path,
         binding: &str,
@@ -1089,6 +1114,8 @@ struct VerifyActivity {
     /// Scripted mode replaces the fresh verifier diagnosis session with a
     /// deterministic, file-backed stand-in (no model call).
     scripted: bool,
+    /// Lazily-started sandbox supervisor backing the live verifier session.
+    sandbox: SandboxSource,
 }
 
 /// Probe a verify attempt via its durable markers.
@@ -1475,7 +1502,21 @@ impl VerifyActivity {
             extra_env: self.deps.toolchain_env.clone(),
         });
 
-        let mut harness = OpenCodeHarness::new(Box::new(SeatbeltSandbox::new()), config);
+        let sandbox_socket = self.sandbox.ensure().map_err(contract_err)?;
+        let harness_socket = self
+            .deps
+            .state_dir
+            .join(format!("harness-verify-{}.sock", ctx.attempt));
+        let mut harness = harness_process::open_opencode_harness(OpenCodeHarnessInit {
+            transport: HarnessTransport::from_env(),
+            config,
+            root: root.to_path_buf(),
+            model: self.deps.verifier_model.clone(),
+            generation: 1,
+            sandbox_socket,
+            harness_socket,
+        })
+        .map_err(ActivityError::KnownFailure)?;
         let attempt = harness
             .start_attempt(StartAttemptRequest {
                 workspace: checkout.path.clone(),
@@ -1498,7 +1539,7 @@ impl VerifyActivity {
 
     fn run_verifier_turn(
         &self,
-        harness: &mut OpenCodeHarness,
+        harness: &mut LiveHarness,
         ctx: &OperationContext,
         prompt_path: &Path,
         failure_path: &Path,
@@ -2519,7 +2560,7 @@ impl ProgressFingerprint {
     }
 }
 
-fn progress_fingerprint<H: HarnessApi>(
+fn progress_fingerprint<H: HarnessApi + ?Sized>(
     harness: &mut H,
     op: &OperationHandle,
     state: &OperationState,
@@ -2569,7 +2610,7 @@ fn transport_error_is_terminal(err: &ContractError) -> bool {
 /// The conductor cancels *before* closing the session so the interrupt reaches
 /// a live session. If the session already ended on its own, the cancel 404s;
 /// that is "already gone", not an error, and must not be reported as a failure.
-fn cancel_tolerating_gone<H: HarnessApi>(harness: &mut H, op: &OperationHandle, context: &str) {
+fn cancel_tolerating_gone<H: HarnessApi + ?Sized>(harness: &mut H, op: &OperationHandle, context: &str) {
     match harness.cancel_operation(op) {
         Ok(_) => {}
         Err(err) => {
@@ -2587,7 +2628,7 @@ fn cancel_tolerating_gone<H: HarnessApi>(harness: &mut H, op: &OperationHandle, 
 /// The interrupt must reach a live session, so it runs before the DELETE; a
 /// terminal outcome needs no cancel. Centralized here so the ordering is
 /// provable in one place and identical across build/reference/verifier paths.
-fn settle_after_poll<H: HarnessApi>(
+fn settle_after_poll<H: HarnessApi + ?Sized>(
     harness: &mut H,
     op: &OperationHandle,
     session: &SessionHandle,
@@ -2606,7 +2647,7 @@ fn settle_after_poll<H: HarnessApi>(
 /// `idle_timeout` (verdict `stalled`); a session-not-found/connection-refused
 /// transport error fast-fails immediately. Transient poll errors log and keep
 /// waiting. `wall_timeout` is the unchanged hard cap.
-pub fn poll_terminal<H: HarnessApi>(
+pub fn poll_terminal<H: HarnessApi + ?Sized>(
     harness: &mut H,
     op: &OperationHandle,
     idle_timeout: Duration,

@@ -12,6 +12,8 @@
 //!   receipt replay, version refusal).
 //! - [`client`]: the client core (connect, serial `call`, typed conversion,
 //!   connection-loss semantics).
+//! - [`sandbox_client`]/[`sandbox_server`]: the typed `SandboxApi` client and
+//!   its method-registration helper (the second extracted boundary, B1.3).
 //!
 //! `agalma-ipc` is **infrastructure**, not an implementation crate: the
 //! architecture lint (`crates/agalma-conductor/tests/architecture.rs`) permits
@@ -25,6 +27,8 @@ pub mod error;
 pub mod frame;
 pub mod harness_client;
 pub mod harness_server;
+pub mod sandbox_client;
+pub mod sandbox_server;
 pub mod server;
 
 pub use client::Client;
@@ -36,4 +40,6 @@ pub use harness_client::{
     AttemptCall, HarnessClient, OperationCall, RunTurnCall, SessionCall,
 };
 pub use harness_server::{ensure_all_handlers, register_harness, server_info_from, HARNESS_METHODS};
+pub use sandbox_client::SandboxClient;
+pub use sandbox_server::{register_sandbox, SANDBOX_METHODS};
 pub use server::{socket_from_args, Handler, Server, ServerInfo};

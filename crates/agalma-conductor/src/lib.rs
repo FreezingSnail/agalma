@@ -54,7 +54,7 @@ use agalma_ledger::SqliteLedger;
 use clap::Parser;
 use tokio::signal::unix::{signal, SignalKind};
 
-use crate::cli::{Cli, Command, DigestArgs, ReconcileArgs, RunArgs, StateArgs, StatusArgs};
+use crate::cli::{Cli, Command, DigestArgs, GcArgs, ReconcileArgs, RunArgs, StateArgs, StatusArgs};
 use crate::composition::Composition;
 use crate::config::{Config, PHASE_PLAN};
 use crate::ledger_process::{ledger_socket, LedgerHandle, LedgerTransport};
@@ -73,6 +73,7 @@ pub async fn run() -> ExitCode {
         Command::Models => models_command(),
         Command::PlanCheck(args) => crate::plan_check::run_plan_check(&args),
         Command::Concierge(args) => crate::concierge::run_concierge_command(&args),
+        Command::Gc(args) => gc_command(&args),
     }
 }
 
@@ -371,6 +372,70 @@ fn reconcile_command(args: &ReconcileArgs) -> ExitCode {
     }
 }
 
+/// `agalma gc`: reap the heavy scratch of every terminal execution.
+///
+/// The manual counterpart to the boot sweep `agalma work` runs on every start:
+/// needed for older or hand-managed state dirs. Resolves the state dir, refuses
+/// while a conductor holds the state-dir lock, opens the ledger through the same
+/// transport and schema gate as `work`, then deletes each terminal execution's
+/// heavyweight temp trees ([`crate::reap::reap_terminal`]) while keeping the
+/// small forensic evidence. Prints one reap line per execution (the module) plus
+/// a total; `nothing to reap` when no execution had scratch left. Exit 0.
+pub fn gc_command(args: &GcArgs) -> ExitCode {
+    let state_dir = match crate::config::resolve_state_dir(args.state_dir.as_deref()) {
+        Ok(dir) => dir,
+        Err(err) => {
+            eprintln!("agalma: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Canonicalize when the dir already exists; `LockGuard` creates it otherwise.
+    let state_dir = std::fs::canonicalize(&state_dir).unwrap_or(state_dir);
+
+    let _lock = match LockGuard::acquire(&state_dir) {
+        Ok(lock) => lock,
+        Err(err) => {
+            eprintln!("agalma: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let ledger = match LedgerHandle::from_transport(&state_dir, LedgerTransport::from_env()) {
+        Ok(ledger) => ledger,
+        Err(err) => {
+            eprintln!("agalma: cannot open ledger: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Same schema gate as `work`: refuse under an incompatible physical schema.
+    match ledger.schema_version() {
+        Ok(version) if version == LEDGER_SCHEMA_VERSION => {}
+        Ok(version) => {
+            eprintln!(
+                "agalma: incompatible ledger schema {version} (expected {LEDGER_SCHEMA_VERSION}) \
+                 at {}; refusing to run",
+                state_dir.join("ledger.sqlite").display()
+            );
+            return ExitCode::FAILURE;
+        }
+        Err(err) => {
+            eprintln!("agalma: cannot read ledger schema: {err}");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    let reports = crate::reap::reap_terminal(&state_dir, &ledger);
+    let reaped = reports.iter().filter(|r| !r.removed.is_empty()).count();
+    if reaped == 0 {
+        println!("agalma gc: nothing to reap");
+    } else {
+        let bytes: u64 = reports.iter().map(|r| r.bytes).sum();
+        let mb = bytes as f64 / (1024.0 * 1024.0);
+        println!("agalma gc: reaped {reaped} executions, {mb:.2} MB");
+    }
+    ExitCode::SUCCESS
+}
+
 /// One-line harness binding label for an execution (latest recorded pin).
 fn binding_label<L: LedgerApi + ?Sized>(
     ledger: &L,
@@ -564,13 +629,14 @@ fn digest_command(args: &DigestArgs) -> ExitCode {
 /// Best-effort exclusive lock file in the state dir.
 ///
 /// A live pid holding the lock refuses a second conductor; a stale lock (dead
-/// pid) is reclaimed. Removed on drop.
-pub(crate) struct LockGuard {
+/// pid) is reclaimed. Removed on drop. Public so integration tests can hold the
+/// lock to exercise the refusal path (`agalma gc`, `agalma work`).
+pub struct LockGuard {
     path: PathBuf,
 }
 
 impl LockGuard {
-    pub(crate) fn acquire(state_dir: &std::path::Path) -> Result<Self, String> {
+    pub fn acquire(state_dir: &std::path::Path) -> Result<Self, String> {
         std::fs::create_dir_all(state_dir)
             .map_err(|e| format!("cannot create state dir {}: {e}", state_dir.display()))?;
         let path = state_dir.join("conductor.lock");

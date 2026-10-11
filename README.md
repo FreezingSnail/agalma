@@ -53,6 +53,7 @@ agalma resume     Clear the kill latch and resume dispatch (human-only)
 agalma status     Report ledger and execution status
 agalma digest     Print the recorded digest for an execution
 agalma models     Print the model routing table and active routes
+agalma gc         Reap terminal executions' heavy scratch from a state dir
 ```
 
 ## Milestones

@@ -33,6 +33,8 @@ pub enum Command {
     PlanCheck(PlanCheckArgs),
     /// One-shot intake (CP.4): turn a goal into an epic + design via a planner session.
     Concierge(ConciergeArgs),
+    /// Reap terminal executions' heavy scratch (manual/older state dirs).
+    Gc(GcArgs),
 }
 
 /// Arguments for `agalma work`.
@@ -150,4 +152,13 @@ pub struct ConciergeArgs {
     /// Override the model identifier.
     #[arg(long, value_name = "ID")]
     pub model: Option<String>,
+}
+
+/// Arguments for `agalma gc`.
+#[derive(Debug, Args)]
+pub struct GcArgs {
+    /// Override the state directory (defaults to `AGALMA_STATE_DIR` or the
+    /// platform application-support directory).
+    #[arg(long, value_name = "DIR")]
+    pub state_dir: Option<PathBuf>,
 }

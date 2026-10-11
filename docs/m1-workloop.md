@@ -127,6 +127,50 @@ new columns; digests store derived summary rows plus artifact paths.
 Keep: SIGTERM latch, STOP sentinel, boot recovery ordering, survivor
 termination, `--once` for tests.
 
+## State directory and reap policy
+
+Run state lives under the resolved state dir (`--state-dir`, `AGALMA_STATE_DIR`,
+or the platform application-support dir):
+
+```
+<state>/
+  ledger.sqlite             durable SQLite ledger
+  conductor.lock            exclusive-state lock (a live pid refuses a second conductor)
+  STOP                      halt sentinel
+  runs/exec-<task>-<gen>/   one run root per execution
+    artifacts/              digests, acceptance captures, diagnosis   (kept)
+    stop/                   survivor-termination evidence             (kept)
+    opencode-log-*/         harness server logs                       (kept)
+    effects.log             scripted-mode effect ledger               (kept)
+    <phase>/                intake/build/verify markers               (kept)
+    checkout/ agent-target/ verify/ cargo-home/ xdg-*/ tmp/ ...       (heavy temp)
+```
+
+An execution's run root accumulates heavyweight scratch over its lifetime — the
+checkout clone, the confined `target/`, the verify sandbox homes/tmp, the
+isolated cargo home, and the OpenCode XDG runtime dirs (together gigabytes).
+Once the execution is terminal (`Completed`/`Parked`/`Failed` state, or
+`Done`/`Parked` phase) nothing reads that scratch again, so the conductor
+deletes exactly those subdirectories — best-effort and symlink-safe — while
+keeping the small forensic evidence listed above. Reaping is skipped while a
+live `*.worker.json` record remains in a phase dir (its worker may still be
+writing scratch).
+
+When the sweep runs:
+
+- **On terminal** — `agalma work` reaps the execution's scratch as it finishes
+  (done or parked).
+- **On boot** — every `agalma work` start sweeps all terminal executions still
+  on disk (crash leftovers and pre-fix state dirs).
+- **Manual** — `agalma gc [--state-dir DIR]` runs the same sweep on demand for
+  older or hand-managed state dirs. It refuses while a conductor holds the
+  state-dir lock, applies the same ledger-schema gate as `work`, prints one line
+  per reaped execution plus a total (`agalma gc: reaped N executions, X MB`), or
+  `agalma gc: nothing to reap` when nothing was left, and exits 0.
+
+The sweep is idempotent: a second run over an already-reaped state dir is a
+no-op.
+
 ## Fencing and recovery (cannot merge twice)
 
 - Claim → ledger records lease_generation; dispatch intents carry it.

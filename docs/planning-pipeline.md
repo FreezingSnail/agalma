@@ -42,8 +42,17 @@ with LLM sessions supplying content and Rust code deciding consequences.
 - Labels: `staged` + exactly one `difficulty:*`; after the gate,
   `decomp-approved` or `decomp-rejected`; rework task label `decomp-fix`;
   review-gate label `drift-fix`; human escalation label `human`.
-- Ready contract: `bd ready` must exclude epics, `human`, and (defensively)
-  `staged` children. Approval = `bd undefer <child>`.
+- Approval state (two independent bits, `bd-undefer` never auto-run):
+  - **validator approval** — `decomp-approved` (never alongside
+    `decomp-rejected`), applied by the sweep gate on a clean decomposition;
+  - **human execution authorization** — `bd undefer <child>`, which restores
+    `status=open` and clears the defer date. It preserves labels, so `staged`
+    marks provenance, not authorization.
+- Ready contract: the adapter admits a `staged` child only when it is
+  `decomp-approved` and carries no defer date (i.e. a human ran `bd undefer`);
+  it always excludes epics, `human`, `parked`, `decomp-fix`, and any issue with a
+  set defer date. Ordinary open work needs neither label, and an accidental
+  `bd update --status open` (defer date intact) never releases staged work.
 
 ## Difficulty tier (derived, never judged)
 
@@ -95,11 +104,13 @@ After recovery, before claiming ordinary work:
 2. Spawn one designer session (planner route) with the epic design; concurrency
    cap 1 in the serial MVP.
 3. On completion: run the validator.
-   - Pass → label children `decomp-approved` (children stay deferred).
+   - Pass → label children `decomp-approved` (children stay deferred/staged;
+     validator approval alone releases nothing).
    - Fail → label `decomp-rejected` + create one P1 `decomp-fix` task (parent
      epic) carrying the violation list; retry up to 3; then `bd human <epic>` +
      comment and stop looping.
-4. Approved children enter `bd ready` only via human `bd undefer`.
+4. Approved children enter `bd ready` only via human `bd undefer` (which clears
+   the defer date); rejected and never-validated children never do.
 
 ## Review gate (post-merge, per epic)
 
@@ -136,6 +147,8 @@ and consumed by the factory.
   the safety net, and `decomp-fix` keeps rework bounded.
 - Per-task factory intake still requires `directive/v0`; the designer must author
   it per child — validator rule `intake-block` enforces parseability.
-- maduin's `--defer` is date-based; agalma uses the same bd semantics. The sweep
-  must not confuse human-deferred work with staged children (`staged` label is
-  the discriminator).
+- maduin's `--defer` is date-based; agalma uses the same bd semantics. The ready
+  predicate keys on two bits — `decomp-approved` and a cleared defer date — so it
+  never confuses human-deferred work, still-deferred staged children, or
+  rejected work with an authorized child; the `staged` label alone authorizes
+  nothing.

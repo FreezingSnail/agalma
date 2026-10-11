@@ -165,6 +165,49 @@ impl Scratch {
             .expect("spawn bd dep add");
         assert!(out.status.success(), "bd dep add: {}", stderr_of(&out));
     }
+
+    /// Create a task with an explicit label list and a defer date; return its id.
+    fn create_deferred(&self, title: &str, labels: &str, defer: &str) -> String {
+        let out = Command::new("bd")
+            .arg("--db")
+            .arg(self.beads_dir())
+            .args([
+                "create",
+                title,
+                "-t",
+                "task",
+                "-p",
+                "2",
+                "--description",
+                VALID,
+                "--labels",
+                labels,
+                "--defer",
+                defer,
+                "--json",
+            ])
+            .current_dir(&self.dir)
+            .env("BD_NON_INTERACTIVE", "1")
+            .output()
+            .expect("spawn bd create");
+        assert!(out.status.success(), "bd create: {}", stderr_of(&out));
+        let value: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("bd create --json");
+        value["id"].as_str().expect("created id").to_string()
+    }
+
+    /// Run a bd subcommand that must succeed.
+    fn bd_ok(&self, args: &[&str]) {
+        let out = Command::new("bd")
+            .arg("--db")
+            .arg(self.beads_dir())
+            .args(args)
+            .current_dir(&self.dir)
+            .env("BD_NON_INTERACTIVE", "1")
+            .output()
+            .expect("spawn bd");
+        assert!(out.status.success(), "bd {args:?}: {}", stderr_of(&out));
+    }
 }
 
 // ===========================================================================
@@ -416,6 +459,59 @@ fn process_binding_withholds_blocked_children() {
 
     drop(client);
     let _ = server.stop();
+}
+
+/// Approval release parity across a process restart: a staged, approved child
+/// stays hidden until `bd undefer`, then the release survives a server restart
+/// (durable `.beads` state, fresh adapter rebuild) and matches the in-process
+/// binding (process transport inherits the server behavior).
+#[test]
+fn undefer_release_survives_restart_and_matches_process_binding() {
+    let dir = fresh();
+    let scratch = Scratch::new(dir.clone());
+    let approved = scratch.create_deferred(
+        "Approved",
+        "staged,difficulty:low,decomp-approved",
+        "2099-01-01",
+    );
+    let unvalidated = scratch.create_deferred("Unvalidated", "staged,difficulty:low", "2099-01-01");
+
+    // Generation 1: no human authorization yet, so nothing is released.
+    let socket_a = dir.join("ap-a.sock");
+    let mut server_a = spawn_server(&socket_a, scratch.repo());
+    let a = server_a.client().expect("client a");
+    assert!(sorted_ready_ids(&a).is_empty(), "no pre-approval release");
+
+    // Human authorizes the approved child, then the server is restarted.
+    scratch.bd_ok(&["undefer", &approved]);
+    drop(a);
+    let _ = server_a.stop();
+
+    // Generation 2: a fresh process with a rebuilt adapter sees the release.
+    let socket_b = dir.join("ap-b.sock");
+    let mut server_b = spawn_server(&socket_b, scratch.repo());
+    let b = server_b.client().expect("client b");
+    let process_ids = sorted_ready_ids(&b);
+    assert_eq!(
+        process_ids,
+        vec![approved.clone()],
+        "the approved child is ready after restart"
+    );
+    assert!(
+        !process_ids.contains(&unvalidated),
+        "the unvalidated child stays hidden: {process_ids:?}"
+    );
+
+    // The in-process binding agrees (process transport inherits server behavior).
+    let inproc = TaskQueueHandle::in_process(scratch.repo());
+    assert_eq!(
+        process_ids,
+        sorted_ready_ids(&inproc),
+        "in-process vs process readiness parity after restart"
+    );
+
+    drop(b);
+    let _ = server_b.stop();
 }
 
 // ===========================================================================

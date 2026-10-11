@@ -11,7 +11,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use agalma_contracts::{TaskFamily, TaskId, TaskPriority, TaskQueueApi};
-use agalma_taskqueue::{parse_task_block, BdTaskQueue, PARKED_LABEL};
+use agalma_taskqueue::{
+    parse_task_block, BdTaskQueue, DECOMP_APPROVED_LABEL, DECOMP_REJECTED_LABEL, PARKED_LABEL,
+    STAGED_LABEL,
+};
 
 // ---------------------------------------------------------------------------
 // Fixtures and harness
@@ -169,6 +172,50 @@ impl Scratch {
             .output()
             .expect("spawn bd dep add");
         assert!(out.status.success(), "bd dep add: {}", stderr_of(&out));
+    }
+
+    /// Create a task with an explicit label list and a defer date.
+    fn create_labeled(&self, title: &str, labels: &str, defer: &str) -> String {
+        let out = Command::new("bd")
+            .arg("--db")
+            .arg(self.beads_dir())
+            .args([
+                "create",
+                title,
+                "-t",
+                "task",
+                "-p",
+                "2",
+                "--description",
+                VALID,
+                "--labels",
+                labels,
+                "--defer",
+                defer,
+                "--json",
+            ])
+            .current_dir(&self.dir)
+            .env("BD_NON_INTERACTIVE", "1")
+            .output()
+            .expect("spawn bd create");
+        assert!(out.status.success(), "bd create: {}", stderr_of(&out));
+        let value: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("bd create --json");
+        value["id"].as_str().expect("created id").to_string()
+    }
+
+    /// Run a bd subcommand that must succeed; return stdout.
+    fn bd_ok(&self, args: &[&str]) -> String {
+        let out = Command::new("bd")
+            .arg("--db")
+            .arg(self.beads_dir())
+            .args(args)
+            .current_dir(&self.dir)
+            .env("BD_NON_INTERACTIVE", "1")
+            .output()
+            .expect("spawn bd");
+        assert!(out.status.success(), "bd {args:?}: {}", stderr_of(&out));
+        String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
     /// `bd show <id> --json --include-comments`, unwrapped to the single issue.
@@ -576,4 +623,135 @@ fn malformed_block_reports_issue_id_and_line() {
     let message = err.to_string();
     assert!(message.contains(&id), "id missing from {message}");
     assert!(message.contains("line 12"), "line missing from {message}");
+}
+
+// ---------------------------------------------------------------------------
+// Decomposition approval lifecycle (agalma-4el)
+// ---------------------------------------------------------------------------
+
+/// `bd undefer` is the human execution authorization; the `decomp-approved`
+/// label is validator approval. A staged child is ready only with both, and a
+/// defer date keeps it hidden otherwise.
+#[test]
+fn staged_children_release_only_after_validator_approval_and_human_undefer() {
+    let scratch = Scratch::new("approval-lifecycle");
+    let queue = scratch.queue();
+
+    let ready = scratch.create("Ready", VALID);
+    let approved = scratch.create_labeled(
+        "Approved",
+        &format!("{STAGED_LABEL},difficulty:low,{DECOMP_APPROVED_LABEL}"),
+        "2099-01-01",
+    );
+    let rejected = scratch.create_labeled(
+        "Rejected",
+        &format!("{STAGED_LABEL},difficulty:low,{DECOMP_REJECTED_LABEL}"),
+        "2099-01-01",
+    );
+    let unvalidated = scratch.create_labeled(
+        "Unvalidated",
+        &format!("{STAGED_LABEL},difficulty:low"),
+        "2099-01-01",
+    );
+
+    // Before any human authorization every staged child stays invisible.
+    assert_eq!(
+        ready_ids(&queue),
+        vec![ready.clone()],
+        "deferred staged children are hidden"
+    );
+
+    // Human undefer of the approved child releases exactly it.
+    scratch.bd_ok(&["undefer", &approved]);
+    let mut expected = vec![ready.clone(), approved.clone()];
+    expected.sort();
+    assert_eq!(
+        ready_ids(&queue),
+        expected,
+        "approved child is ready after `bd undefer`"
+    );
+
+    // Undefer of the rejected child does not release it.
+    scratch.bd_ok(&["undefer", &rejected]);
+    assert_eq!(
+        ready_ids(&queue),
+        expected,
+        "a rejected child stays hidden even after `bd undefer`"
+    );
+
+    // Undefer of a never-validated staged child does not release it.
+    scratch.bd_ok(&["undefer", &unvalidated]);
+    assert_eq!(
+        ready_ids(&queue),
+        expected,
+        "a never-validated child stays hidden even after `bd undefer`"
+    );
+
+    // A rebuilt adapter (fresh `BdTaskQueue`, new process view) sees the same
+    // durable state — approval is persisted in `.beads`, not the adapter.
+    let rebuilt = scratch.queue();
+    assert_eq!(
+        ready_ids(&rebuilt),
+        expected,
+        "approval survives an adapter rebuild"
+    );
+}
+
+/// An accidental `bd update --status open` cannot release unapproved work: the
+/// defer date survives the status flip, and bd's own past-defer "appears
+/// immediately" semantics still do not authorize a staged child.
+#[test]
+fn accidental_status_change_cannot_release_unapproved_staged_children() {
+    let scratch = Scratch::new("accidental-status");
+    let queue = scratch.queue();
+
+    let ready = scratch.create("Ready", VALID);
+    // Never validated, deferred far in the future.
+    let unvalidated = scratch.create_labeled(
+        "Unvalidated",
+        &format!("{STAGED_LABEL},difficulty:low"),
+        "2099-01-01",
+    );
+    // Never validated with a PAST defer date: bd surfaces it as ready (open
+    // status, elapsed defer), so only the defensive predicate keeps it hidden.
+    let unvalidated_past = scratch.create_labeled(
+        "UnvalidatedPast",
+        &format!("{STAGED_LABEL},difficulty:low"),
+        "2020-01-01",
+    );
+    // Approved but never human-undeferred, past defer date: still needs undefer.
+    let approved_past = scratch.create_labeled(
+        "ApprovedPast",
+        &format!("{STAGED_LABEL},{DECOMP_APPROVED_LABEL}"),
+        "2020-01-01",
+    );
+
+    // Accidental status flip of the future-deferred, unvalidated child.
+    scratch.bd_ok(&["update", &unvalidated, "--status", "open"]);
+
+    assert_eq!(
+        ready_ids(&queue),
+        vec![ready],
+        "only ordinary work is ready; status flips and elapsed defers authorize nothing"
+    );
+
+    // bd's own ready query surfaces the elapsed-defer children (they are
+    // `open`), proving the adapter predicate — not bd — keeps them out.
+    let raw: serde_json::Value =
+        serde_json::from_str(&scratch.bd_ok(&["list", "--ready", "--json", "--limit", "0"]))
+            .expect("bd ready json");
+    let raw_ids: Vec<&str> = raw
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|i| i["id"].as_str())
+        .collect();
+    assert!(
+        raw_ids.contains(&unvalidated_past.as_str()),
+        "bd ready surfaces an elapsed-defer, never-validated child: {raw_ids:?}"
+    );
+    assert!(
+        raw_ids.contains(&approved_past.as_str()),
+        "bd ready surfaces an elapsed-defer, approved-but-not-undeferred child: {raw_ids:?}"
+    );
 }

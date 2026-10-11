@@ -478,3 +478,111 @@ fn planner_unavailable_skips_without_sessions() {
     assert!(designer.called().is_empty(), "no designer session ran");
     assert!(scratch.children(&epic).is_empty(), "no children created");
 }
+
+// ---------------------------------------------------------------------------
+// Human approval release (agalma-4el)
+// ---------------------------------------------------------------------------
+
+/// Sorted task ids the adapter's `ready_tasks` admits.
+fn ready_ids(repo: &Path) -> Vec<String> {
+    let mut ids: Vec<String> = BdTaskQueue::new(repo)
+        .ready_tasks()
+        .expect("ready")
+        .tasks
+        .iter()
+        .map(|t| t.task_id.as_str().to_string())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// End-to-end: a clean decomposition passes the gate; children stay invisible;
+/// a single human `bd undefer` releases one approved child when it is unblocked,
+/// while every other deferred child stays hidden.
+#[test]
+fn approved_children_release_only_after_human_undefer_and_unblock() {
+    let scratch = Scratch::new("undefer-release");
+    let epic = scratch.create_epic("Valid epic");
+    let designer = ScriptedDesigner::new(Mode::Valid);
+    let report = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
+        .expect("sweep");
+    assert_eq!(report.approved, vec![epic.clone()], "{report:?}");
+
+    let ids: Vec<String> = scratch
+        .children(&epic)
+        .iter()
+        .filter_map(|c| c["id"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(ids.len(), 8, "eight approved children");
+
+    // Validator-approved but not human-authorized: nothing is ready.
+    assert!(
+        ready_ids(&scratch.repo).is_empty(),
+        "approved children stay deferred until `bd undefer`"
+    );
+
+    // Serialize child 1 behind child 0, then authorize both with `bd undefer`.
+    scratch.bd_ok(&["dep", "add", &ids[1], &ids[0]]);
+    scratch.bd_ok(&["undefer", &ids[0]]);
+    scratch.bd_ok(&["undefer", &ids[1]]);
+
+    // Only the unblocked child is ready; the blocked one is withheld.
+    assert_eq!(
+        ready_ids(&scratch.repo),
+        vec![ids[0].clone()],
+        "undeferred approved child ready; blocked one withheld"
+    );
+
+    // Closing the blocker releases the blocked approved child.
+    scratch.bd_ok(&["close", &ids[0], "--reason", "done in test"]);
+    assert_eq!(
+        ready_ids(&scratch.repo),
+        vec![ids[1].clone()],
+        "blocked approved child releases once its prerequisite closes"
+    );
+
+    // The remaining six children were never undeferred and stay invisible.
+    let ready = ready_ids(&scratch.repo);
+    for never_undeferred in &ids[2..] {
+        assert!(
+            !ready.contains(never_undeferred),
+            "deferred child {never_undeferred} leaked: {ready:?}"
+        );
+    }
+}
+
+/// Rejected and never-validated staged children never become executable — not
+/// by `bd undefer`, and not by an accidental status change.
+#[test]
+fn rejected_and_unvalidated_children_stay_hidden() {
+    let scratch = Scratch::new("rejected-hidden");
+    let epic = scratch.create_epic("Invalid epic");
+    let designer = ScriptedDesigner::new(Mode::Invalid);
+    let report = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
+        .expect("sweep");
+    assert_eq!(report.rejected, vec![epic.clone()], "{report:?}");
+
+    let rejected: Vec<String> = scratch
+        .children(&epic)
+        .iter()
+        .filter(|c| Scratch::labels(c).contains(&"decomp-rejected".to_string()))
+        .filter_map(|c| c["id"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(rejected.len(), 2, "both staged children rejected");
+
+    // Human `undefer` of a rejected child does not release it.
+    scratch.bd_ok(&["undefer", &rejected[0]]);
+    assert!(
+        ready_ids(&scratch.repo).is_empty(),
+        "a rejected child stays hidden after `bd undefer`"
+    );
+
+    // A never-validated staged child cannot be released by an accidental status
+    // change either.
+    let unvalidated = scratch.create_child(&epic, "U", &low_desc("u"), "staged,difficulty:low");
+    scratch.bd_ok(&["update", &unvalidated, "--status", "open"]);
+    assert!(
+        ready_ids(&scratch.repo).is_empty(),
+        "a never-validated staged child stays hidden after a status change"
+    );
+}

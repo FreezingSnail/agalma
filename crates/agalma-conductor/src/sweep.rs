@@ -42,9 +42,12 @@ use crate::routing;
 use crate::session::{sanitize, LiveSession, SessionSpec};
 
 /// Label applied to children a passing decomposition gate accepted.
-pub const DECOMP_APPROVED: &str = "decomp-approved";
+///
+/// Single-sourced from the task-queue adapter so the gate and the ready
+/// predicate can never disagree on the approval bit.
+pub const DECOMP_APPROVED: &str = agalma_taskqueue::DECOMP_APPROVED_LABEL;
 /// Label applied to children a failing decomposition gate rejected.
-pub const DECOMP_REJECTED: &str = "decomp-rejected";
+pub const DECOMP_REJECTED: &str = agalma_taskqueue::DECOMP_REJECTED_LABEL;
 /// Priority of the single rework task created on a failed gate (P1).
 pub const DECOMP_FIX_PRIORITY: u8 = 1;
 /// Defer date for the rework task: it is a designer/human artifact, never

@@ -23,7 +23,17 @@ use crate::block::parse_task_block;
 pub const PARKED_LABEL: &str = "parked";
 /// Label marking a staged decomposition child (CP.3): hidden from `bd ready`
 /// until a human `bd undefer`s it.
+///
+/// `staged` marks *provenance* (a designer-authored decomposition child), never
+/// authorization: it survives both validator approval and human `bd undefer`.
 pub const STAGED_LABEL: &str = "staged";
+/// Label a passing decomposition gate applies to every staged child (CP.3):
+/// the validator-approval bit. Not sufficient on its own — see
+/// [`BdIssue::is_ready_candidate`].
+pub const DECOMP_APPROVED_LABEL: &str = "decomp-approved";
+/// Label a failing decomposition gate applies to every staged child (CP.3): a
+/// rejected child never becomes ready, whatever its status or defer state.
+pub const DECOMP_REJECTED_LABEL: &str = "decomp-rejected";
 /// Label marking an epic escalated to a human (CP.3): excluded from `bd ready`.
 pub const HUMAN_LABEL: &str = "human";
 /// Label marking a decomposition rework task (CP.3): excluded from `bd ready`.
@@ -216,13 +226,18 @@ impl BdTaskQueue {
 
 impl TaskQueueApi for BdTaskQueue {
     fn ready_tasks(&self) -> Result<ReadyTasks, ContractError> {
-        // Ready contract (CP.3): never hand epics or staged/`human`/`decomp-fix`
-        // issues to the claim path, and never admit a task whose blocking
-        // dependency is still open. `--ready` applies bd's blocker-aware
-        // ready-work semantics (the `bd ready` query) so an unfinished
-        // prerequisite keeps its children out; bd filters below, and the loop
-        // re-checks defensively so the projection never depends on the CLI's
-        // flag semantics.
+        // Ready contract (CP.3): never hand epics or `human`/`decomp-fix`/
+        // `parked` issues to the claim path, and never admit a task whose
+        // blocking dependency is still open. `--ready` applies bd's
+        // blocker-aware ready-work semantics (the `bd ready` query) so an
+        // unfinished prerequisite keeps its children out; bd filters below, and
+        // [`BdIssue::is_ready_candidate`] re-checks defensively so the
+        // projection never depends on the CLI's flag semantics.
+        //
+        // `staged` is deliberately NOT excluded here: a staged child that has
+        // passed the validator gate AND been human-authorized (`bd undefer`,
+        // which clears the defer date) must surface. The predicate below keeps
+        // still-deferred, rejected, and never-validated children out.
         let stdout = self.bd_ok(&[
             "list",
             "--json",
@@ -232,7 +247,7 @@ impl TaskQueueApi for BdTaskQueue {
             "--exclude-type",
             "epic",
             "--exclude-label",
-            "parked,staged,human,decomp-fix",
+            "parked,human,decomp-fix,decomp-rejected",
             "--limit",
             "0",
         ])?;
@@ -241,18 +256,10 @@ impl TaskQueueApi for BdTaskQueue {
         let mut tasks = Vec::new();
         let mut skipped = Vec::new();
         for issue in issues {
-            // Defensive re-check: bd filters above, but the projection must not
-            // depend on the CLI's flag semantics.
-            if issue.status != "open"
-                || issue.issue_type.as_deref() == Some("epic")
-                || issue.has_label(PARKED_LABEL)
-                || issue.has_label(STAGED_LABEL)
-                || issue.has_label(HUMAN_LABEL)
-                || issue.has_label(DECOMP_FIX_LABEL)
-            {
+            let id = issue.id.clone();
+            if !issue.is_ready_candidate() {
                 continue;
             }
-            let id = issue.id.clone();
             match parse_task_block(&issue.description) {
                 Ok(Some(block)) => tasks.push(issue.into_task(block)),
                 Ok(None) => skipped.push(SkippedIssue {
@@ -351,6 +358,12 @@ struct BdIssue {
     assignee: Option<String>,
     #[serde(default)]
     started_at: Option<String>,
+    /// bd defer marker: present while the issue is snoozed (created with
+    /// `--defer`, or after an accidental status flip). Human `bd undefer`
+    /// clears it. Used to distinguish real human authorization from a mere
+    /// status change.
+    #[serde(default)]
+    defer_until: Option<String>,
     #[serde(default)]
     labels: Option<Vec<String>>,
     #[serde(default)]
@@ -364,6 +377,49 @@ impl BdIssue {
         self.labels
             .as_deref()
             .is_some_and(|labels| labels.iter().any(|l| l == label))
+    }
+
+    /// Whether this issue may be handed to the claim path.
+    ///
+    /// Approval is two independent bits (design: `docs/planning-pipeline.md`,
+    /// "Ready contract"):
+    ///
+    /// - **validator approval** — the [`DECOMP_APPROVED_LABEL`] the sweep gate
+    ///   adds on a clean decomposition (never with [`DECOMP_REJECTED_LABEL`]);
+    /// - **human execution authorization** — `bd undefer <child>`, which
+    ///   restores `status=open` and clears the defer date while preserving
+    ///   labels (including `staged`).
+    ///
+    /// Consequently a `staged` child is consumable only when it is approved and
+    /// no longer deferred. `staged` alone (never validated), `staged` +
+    /// `decomp-rejected`, and any issue still carrying a defer date stay hidden
+    /// — so an accidental `bd update --status open` (which leaves the defer
+    /// date in place) cannot release unapproved work. Ordinary non-staged open
+    /// work needs neither label.
+    fn is_ready_candidate(&self) -> bool {
+        if self.status != "open" || self.issue_type.as_deref() == Some("epic") {
+            return false;
+        }
+        // A set defer date means no human has run `bd undefer` yet; bd's native
+        // ready semantics also honor it. `undefer` clears the field.
+        if self.defer_until.is_some() {
+            return false;
+        }
+        if self.has_label(PARKED_LABEL)
+            || self.has_label(HUMAN_LABEL)
+            || self.has_label(DECOMP_FIX_LABEL)
+        {
+            return false;
+        }
+        // A rejected child never executes, staged or not.
+        if self.has_label(DECOMP_REJECTED_LABEL) {
+            return false;
+        }
+        // A staged child additionally needs validator approval.
+        if self.has_label(STAGED_LABEL) && !self.has_label(DECOMP_APPROVED_LABEL) {
+            return false;
+        }
+        true
     }
 
     fn into_projection(self) -> IssueProjection {
@@ -430,3 +486,94 @@ fn parse_issues(stdout: &str) -> Result<Vec<BdIssue>, ContractError> {
         .map_err(|e| ContractError::KnownFailure(format!("cannot parse bd JSON: {e}")))?;
     Ok(vec![one])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An open, unlabelled, undeferred issue: the permissive baseline the
+    /// predicate narrows from.
+    fn issue() -> BdIssue {
+        BdIssue {
+            id: "x".to_string(),
+            title: "x".to_string(),
+            description: String::new(),
+            design: None,
+            issue_type: Some("task".to_string()),
+            status: "open".to_string(),
+            assignee: None,
+            started_at: None,
+            defer_until: None,
+            labels: None,
+            dependencies: None,
+            comments: None,
+        }
+    }
+
+    fn with_labels(labels: &[&str]) -> BdIssue {
+        BdIssue {
+            labels: Some(labels.iter().map(|l| l.to_string()).collect()),
+            ..issue()
+        }
+    }
+
+    #[test]
+    fn ordinary_open_undeferred_work_is_ready() {
+        assert!(issue().is_ready_candidate());
+        assert!(with_labels(&["difficulty:low"]).is_ready_candidate());
+    }
+
+    #[test]
+    fn deferred_rejected_and_special_labels_stay_hidden() {
+        let mut deferred = issue();
+        deferred.defer_until = Some("2099-01-01T00:00:00Z".to_string());
+        assert!(
+            !deferred.is_ready_candidate(),
+            "a set defer date means no human `bd undefer` yet"
+        );
+
+        let mut epic = issue();
+        epic.issue_type = Some("epic".to_string());
+        assert!(!epic.is_ready_candidate());
+
+        for label in [PARKED_LABEL, HUMAN_LABEL, DECOMP_FIX_LABEL, DECOMP_REJECTED_LABEL] {
+            assert!(
+                !with_labels(&[label]).is_ready_candidate(),
+                "{label} must stay hidden"
+            );
+        }
+    }
+
+    #[test]
+    fn staged_children_require_both_approval_and_authorization() {
+        // Never validated: hidden.
+        assert!(!with_labels(&[STAGED_LABEL]).is_ready_candidate());
+        // Validator-approved but still deferred: hidden (no human undefer).
+        let mut approved_deferred = with_labels(&[STAGED_LABEL, DECOMP_APPROVED_LABEL]);
+        approved_deferred.defer_until = Some("2099-01-01T00:00:00Z".to_string());
+        assert!(!approved_deferred.is_ready_candidate());
+        // Validator-approved + human-undeferred: ready.
+        assert!(with_labels(&[STAGED_LABEL, DECOMP_APPROVED_LABEL]).is_ready_candidate());
+        // Rejected alongside approval: still hidden.
+        assert!(
+            !with_labels(&[STAGED_LABEL, DECOMP_APPROVED_LABEL, DECOMP_REJECTED_LABEL])
+                .is_ready_candidate()
+        );
+    }
+
+    #[test]
+    fn accidental_status_change_with_defer_intact_stays_hidden() {
+        // `bd update --status open` flips the status but leaves the defer date,
+        // so never-validated and rejected children stay invisible.
+        let mut never_validated = with_labels(&[STAGED_LABEL]);
+        never_validated.status = "open".to_string();
+        never_validated.defer_until = Some("2099-01-01T00:00:00Z".to_string());
+        assert!(!never_validated.is_ready_candidate());
+
+        let mut rejected = with_labels(&[STAGED_LABEL, DECOMP_REJECTED_LABEL]);
+        rejected.status = "open".to_string();
+        rejected.defer_until = Some("2099-01-01T00:00:00Z".to_string());
+        assert!(!rejected.is_ready_candidate());
+    }
+}
+

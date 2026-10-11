@@ -217,12 +217,16 @@ impl BdTaskQueue {
 impl TaskQueueApi for BdTaskQueue {
     fn ready_tasks(&self) -> Result<ReadyTasks, ContractError> {
         // Ready contract (CP.3): never hand epics or staged/`human`/`decomp-fix`
-        // issues to the claim path. bd filters below; the loop re-checks
-        // defensively so the projection never depends on the CLI's flag
-        // semantics.
+        // issues to the claim path, and never admit a task whose blocking
+        // dependency is still open. `--ready` applies bd's blocker-aware
+        // ready-work semantics (the `bd ready` query) so an unfinished
+        // prerequisite keeps its children out; bd filters below, and the loop
+        // re-checks defensively so the projection never depends on the CLI's
+        // flag semantics.
         let stdout = self.bd_ok(&[
             "list",
             "--json",
+            "--ready",
             "--status",
             "open",
             "--exclude-type",

@@ -151,6 +151,20 @@ impl Scratch {
             serde_json::from_slice(&out.stdout).expect("bd create --json");
         value["id"].as_str().expect("created id").to_string()
     }
+
+    /// `bd dep add <blocked> <blocker>`: `blocker` must close before `blocked`
+    /// becomes ready.
+    fn dep_add(&self, blocked: &str, blocker: &str) {
+        let out = Command::new("bd")
+            .arg("--db")
+            .arg(self.beads_dir())
+            .args(["dep", "add", blocked, blocker])
+            .current_dir(&self.dir)
+            .env("BD_NON_INTERACTIVE", "1")
+            .output()
+            .expect("spawn bd dep add");
+        assert!(out.status.success(), "bd dep add: {}", stderr_of(&out));
+    }
 }
 
 // ===========================================================================
@@ -206,6 +220,19 @@ fn pid_alive(pid: u32) -> bool {
         .output()
         .map(|out| out.status.success())
         .unwrap_or(false)
+}
+
+/// Sorted task ids admitted by a binding's `ready_tasks`.
+fn sorted_ready_ids(queue: &dyn TaskQueueApi) -> Vec<String> {
+    let mut ids: Vec<String> = queue
+        .ready_tasks()
+        .expect("ready_tasks")
+        .tasks
+        .iter()
+        .map(|t| t.task_id.as_str().to_string())
+        .collect();
+    ids.sort();
+    ids
 }
 
 // ===========================================================================
@@ -339,6 +366,56 @@ fn shadow_parity_in_process_vs_process() {
     drop(client);
     let evidence = process.stop();
     assert!(evidence.process_group_gone, "server stop evidence: {evidence:?}");
+}
+
+/// Readiness parity across the process boundary with a blocking dependency: a
+/// blocked child is withheld until its prerequisite closes, and the in-process
+/// and process bindings agree.
+#[test]
+fn process_binding_withholds_blocked_children() {
+    let dir = fresh();
+    let scratch = Scratch::new(dir.clone());
+    let prereq = scratch.create("Prerequisite", VALID);
+    let child = scratch.create("Blocked child", VALID);
+    let independent = scratch.create("Independent", VALID);
+    scratch.dep_add(&child, &prereq);
+
+    let socket = dir.join("np4.sock");
+    let mut server = spawn_server(&socket, scratch.repo());
+    let mut client = server.client().expect("connect taskqueue client");
+
+    let process_ids = sorted_ready_ids(&client);
+    assert!(process_ids.contains(&prereq), "prerequisite ready: {process_ids:?}");
+    assert!(
+        process_ids.contains(&independent),
+        "independent work ready: {process_ids:?}"
+    );
+    assert!(
+        !process_ids.contains(&child),
+        "process binding admitted a blocked child: {process_ids:?}"
+    );
+
+    // In-process binding agrees (parity across the boundary).
+    let inproc = TaskQueueHandle::in_process(scratch.repo());
+    assert_eq!(
+        process_ids,
+        sorted_ready_ids(&inproc),
+        "in-process vs process readiness parity"
+    );
+
+    // Closing the prerequisite releases the child through the boundary too.
+    client
+        .close_task(&TaskId::new(prereq.as_str()), "done in test")
+        .expect("close prerequisite");
+    let process_ids = sorted_ready_ids(&client);
+    assert!(
+        process_ids.contains(&child),
+        "child ready after prerequisite closes: {process_ids:?}"
+    );
+    assert!(!process_ids.contains(&prereq), "closed prerequisite gone: {process_ids:?}");
+
+    drop(client);
+    let _ = server.stop();
 }
 
 // ===========================================================================

@@ -131,6 +131,46 @@ impl Scratch {
         value["id"].as_str().expect("created id").to_string()
     }
 
+    /// Create an issue of an explicit type (e.g. `epic`); return its id.
+    fn create_typed(&self, title: &str, issue_type: &str, description: &str) -> String {
+        let out = Command::new("bd")
+            .arg("--db")
+            .arg(self.beads_dir())
+            .args([
+                "create",
+                title,
+                "-t",
+                issue_type,
+                "-p",
+                "2",
+                "--description",
+                description,
+                "--json",
+            ])
+            .current_dir(&self.dir)
+            .env("BD_NON_INTERACTIVE", "1")
+            .output()
+            .expect("spawn bd create");
+        assert!(out.status.success(), "bd create: {}", stderr_of(&out));
+        let value: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("bd create --json");
+        value["id"].as_str().expect("created id").to_string()
+    }
+
+    /// `bd dep add <blocked> <blocker>`: `blocker` must close before `blocked`
+    /// becomes ready (bd `blocks` edges).
+    fn dep_add(&self, blocked: &str, blocker: &str) {
+        let out = Command::new("bd")
+            .arg("--db")
+            .arg(self.beads_dir())
+            .args(["dep", "add", blocked, blocker])
+            .current_dir(&self.dir)
+            .env("BD_NON_INTERACTIVE", "1")
+            .output()
+            .expect("spawn bd dep add");
+        assert!(out.status.success(), "bd dep add: {}", stderr_of(&out));
+    }
+
     /// `bd show <id> --json --include-comments`, unwrapped to the single issue.
     fn show_json(&self, id: &str) -> serde_json::Value {
         let out = Command::new("bd")
@@ -349,6 +389,112 @@ fn ready_tasks_excludes_claimed_closed_parked_and_reports_nontasks() {
         intake.skipped[0].reason,
         agalma_contracts::SkipReason::MissingBlock
     );
+}
+
+/// Sorted task ids admitted by `ready_tasks`.
+fn ready_ids(queue: &BdTaskQueue) -> Vec<String> {
+    let mut ids: Vec<String> = queue
+        .ready_tasks()
+        .unwrap()
+        .tasks
+        .iter()
+        .map(|t| t.task_id.as_str().to_string())
+        .collect();
+    ids.sort();
+    ids
+}
+
+#[test]
+fn ready_tasks_withholds_blocked_child_until_prerequisite_closes() {
+    let scratch = Scratch::new("deps-blocked");
+    let mut queue = scratch.queue();
+
+    let prereq = scratch.create("Prerequisite", VALID);
+    let child = scratch.create("Blocked child", VALID);
+    let independent = scratch.create("Independent", VALID);
+    scratch.dep_add(&child, &prereq);
+
+    // The blocked child is absent; the prerequisite and independent work are
+    // still ready.
+    let ids = ready_ids(&queue);
+    assert!(ids.contains(&prereq), "prerequisite ready: {ids:?}");
+    assert!(
+        ids.contains(&independent),
+        "independent work ready: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&child),
+        "blocked child must not be admitted before its prerequisite closes: {ids:?}"
+    );
+
+    // Closing the prerequisite releases the child.
+    queue
+        .close_task(&TaskId::new(prereq.as_str()), "done in test")
+        .unwrap();
+    let ids = ready_ids(&queue);
+    assert!(ids.contains(&child), "child ready after prerequisite closes: {ids:?}");
+    assert!(!ids.contains(&prereq), "closed prerequisite is gone: {ids:?}");
+}
+
+#[test]
+fn ready_tasks_respects_transitive_dependency_chain() {
+    let scratch = Scratch::new("deps-chain");
+    let mut queue = scratch.queue();
+
+    // c depends on b depends on a: only `a` is initially ready.
+    let a = scratch.create("A", VALID);
+    let b = scratch.create("B", VALID);
+    let c = scratch.create("C", VALID);
+    scratch.dep_add(&b, &a);
+    scratch.dep_add(&c, &b);
+
+    let ids = ready_ids(&queue);
+    assert_eq!(ids, vec![a.clone()], "only the chain head is ready: {ids:?}");
+
+    queue
+        .close_task(&TaskId::new(a.as_str()), "done in test")
+        .unwrap();
+    let ids = ready_ids(&queue);
+    assert_eq!(ids, vec![b.clone()], "b ready after a closes: {ids:?}");
+
+    queue
+        .close_task(&TaskId::new(b.as_str()), "done in test")
+        .unwrap();
+    let ids = ready_ids(&queue);
+    assert_eq!(ids, vec![c.clone()], "c ready after b closes: {ids:?}");
+}
+
+#[test]
+fn ready_tasks_keeps_epic_human_staged_decomp_fix_exclusions() {
+    let scratch = Scratch::new("deps-exclusions");
+    let mut queue = scratch.queue();
+
+    let ready = scratch.create("Ready", VALID);
+    let epic = scratch.create_typed("Epic", "epic", VALID);
+    let human = scratch.create("Human", VALID);
+    let staged = scratch.create("Staged", VALID);
+    let decomp = scratch.create("DecompFix", VALID);
+    queue
+        .add_label(&TaskId::new(human.as_str()), agalma_taskqueue::HUMAN_LABEL)
+        .unwrap();
+    queue
+        .add_label(&TaskId::new(staged.as_str()), agalma_taskqueue::STAGED_LABEL)
+        .unwrap();
+    queue
+        .add_label(
+            &TaskId::new(decomp.as_str()),
+            agalma_taskqueue::DECOMP_FIX_LABEL,
+        )
+        .unwrap();
+
+    let ids = ready_ids(&queue);
+    assert_eq!(ids, vec![ready.clone()], "only ordinary work is ready: {ids:?}");
+    for excluded in [&epic, &human, &staged, &decomp] {
+        assert!(
+            !ids.contains(excluded),
+            "excluded issue {excluded} was admitted: {ids:?}"
+        );
+    }
 }
 
 #[test]

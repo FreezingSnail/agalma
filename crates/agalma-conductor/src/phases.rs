@@ -556,7 +556,7 @@ impl BuildActivity {
         let mut env = self.deps.toolchain_env.clone();
         env.insert(
             "CARGO_HOME".to_string(),
-            root.join("cargo-home").to_string_lossy().into_owned(),
+            ensure_cargo_home(&root)?.to_string_lossy().into_owned(),
         );
         // Keep build artifacts out of the checkout so the candidate commit is
         // the source change, not a multi-megabyte `target/` tree.
@@ -1208,6 +1208,12 @@ impl VerifyActivity {
         let mut env = self.deps.toolchain_env.clone();
         env.insert("HOME".to_string(), home.to_string_lossy().into_owned());
         env.insert("TMPDIR".to_string(), tmp.to_string_lossy().into_owned());
+        // Seed the run-local CARGO_HOME with a read-only registry link so cargo
+        // resolves dependencies offline despite the empty confined HOME.
+        env.insert(
+            "CARGO_HOME".to_string(),
+            ensure_cargo_home(&root)?.to_string_lossy().into_owned(),
+        );
         let mut path = env
             .get("PATH")
             .cloned()
@@ -1681,7 +1687,7 @@ impl Activity for VerifyActivity {
         env.insert("TMPDIR".to_string(), tmp.to_string_lossy().into_owned());
         env.insert(
             "CARGO_HOME".to_string(),
-            root.join("cargo-home").to_string_lossy().into_owned(),
+            ensure_cargo_home(&root)?.to_string_lossy().into_owned(),
         );
         env.insert(
             "CARGO_TARGET_DIR".to_string(),
@@ -2700,6 +2706,92 @@ pub fn poll_terminal<H: HarnessApi + ?Sized>(
         }
         std::thread::sleep(Duration::from_millis(500));
     }
+}
+
+/// Ensure the run-local `CARGO_HOME` (`<run>/cargo-home`) exposes the real cargo
+/// registry read-only so `cargo --offline` resolution works inside the sandbox.
+///
+/// Confined phases run with `HOME` pointed at an empty run-local directory, so
+/// cargo defaults to an empty `CARGO_HOME` and offline resolution fails with
+/// `no matching package named ... found ... offline mode`. The populated
+/// registry lives at `$CARGO_HOME/registry` (or `$HOME/.cargo/registry`) and is
+/// already exposed read-only via `extra_ro_roots`; this seeds a
+/// `<run>/cargo-home/registry` symlink at it, keeping writes (the package
+/// cache/lock) inside the run dir.
+///
+/// Idempotent: a correct link is left alone; a wrong or self-referential link is
+/// replaced. When no real registry exists the helper skips without failing (cargo
+/// then reports its own offline miss).
+pub fn ensure_cargo_home(run_root: &Path) -> Result<PathBuf, ActivityError> {
+    let cargo_home = run_root.join("cargo-home");
+    std::fs::create_dir_all(&cargo_home)
+        .map_err(|e| ActivityError::KnownFailure(format!("mkdir {}: {e}", cargo_home.display())))?;
+
+    // Resolve the real cargo home: `$CARGO_HOME` when set and non-empty, else
+    // `$HOME/.cargo` (mirrors `composition::toolchain`).
+    let real_cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")));
+    let Some(real_cargo_home) = real_cargo_home else {
+        return Ok(cargo_home);
+    };
+    let real_registry = real_cargo_home.join("registry");
+    if !real_registry.is_dir() {
+        // Fresh toolchain or vendored setup with no registry cache: nothing to
+        // link. Do not fail; the offline miss is cargo's to report.
+        return Ok(cargo_home);
+    }
+
+    let link = cargo_home.join("registry");
+    match std::fs::symlink_metadata(&link) {
+        Ok(meta) => {
+            let already_correct = meta.file_type().is_symlink()
+                && std::fs::canonicalize(&link)
+                    .ok()
+                    .zip(std::fs::canonicalize(&real_registry).ok())
+                    .map(|(a, b)| a == b)
+                    .unwrap_or(false);
+            if already_correct {
+                return Ok(cargo_home);
+            }
+            // Remove only the stale entry itself: a symlink/file is unlinked, and
+            // a real directory is removed only when empty so live registry data
+            // is never destroyed.
+            let removed = if meta.file_type().is_symlink() || meta.is_file() {
+                std::fs::remove_file(&link)
+            } else {
+                std::fs::remove_dir(&link)
+            };
+            removed.map_err(|e| {
+                ActivityError::KnownFailure(format!(
+                    "replace stale cargo registry entry {}: {e}",
+                    link.display()
+                ))
+            })?;
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(ActivityError::KnownFailure(format!(
+                "inspect {}: {err}",
+                link.display()
+            )));
+        }
+    }
+
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&real_registry, &link).map_err(|e| {
+        ActivityError::KnownFailure(format!(
+            "link cargo registry {} -> {}: {e}",
+            link.display(),
+            real_registry.display()
+        ))
+    })?;
+    #[cfg(not(unix))]
+    {
+        let _ = (&real_registry, &link);
+    }
+    Ok(cargo_home)
 }
 
 /// Resolve the `cargo` binary: `$CARGO`/`CARGO` env, then `$CARGO_HOME/bin/cargo`,

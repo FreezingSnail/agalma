@@ -183,6 +183,7 @@ fn holder_alive(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agalma_testkit::ScratchDir;
 
     #[test]
     fn command_names_the_ledger_server_bin() {
@@ -191,22 +192,12 @@ mod tests {
 
     #[test]
     fn server_announces_the_ledger_identity_for_each_method() {
-        let target = std::env::var_os("CARGO_TARGET_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target")
-            });
-        let dir = target
-            .join("test-runs")
-            .join(format!("ledger-server-handlers-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = ScratchDir::new("ledger-server-handlers");
         let ledger = SqliteLedger::open(dir.join(DB_NAME)).expect("open ledger");
         let server = build_server(ledger);
         assert_eq!(server.info().impl_name, IMPL_NAME);
         agalma_ipc::ledger_server::ensure_all_handlers(&server)
             .expect("all handlers registered");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -233,17 +224,7 @@ mod tests {
     #[test]
     fn state_lock_refuses_a_live_holder_and_reclaims_a_stale_one() {
         // Run dir under `target/test-runs/` (never a system temp directory).
-        let target = std::env::var_os("CARGO_TARGET_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target")
-            });
-        let dir = target
-            .join("test-runs")
-            .join(format!("ledger-server-lock-{}", std::process::id()));
-        // WARNING: deletes files, but only under `target/test-runs/` (disposable).
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = ScratchDir::new("ledger-server-lock");
 
         let held = StateLock::acquire(&dir).expect("first acquire");
         // A second acquire while the same (live) pid holds it is refused.
@@ -255,7 +236,5 @@ mod tests {
         std::fs::write(dir.join(LOCK_NAME), "999999999").unwrap();
         let reclaimed = StateLock::acquire(&dir).expect("stale lock reclaimed");
         drop(reclaimed);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

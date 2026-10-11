@@ -20,11 +20,14 @@ use agalma_execution::{
     ScriptedActivity, EXECUTION_DEFINITION_VERSION,
 };
 use agalma_ledger::SqliteLedger;
+use agalma_testkit::ScratchDir;
 use serde_json::json;
 
 type SharedActivity = Rc<RefCell<ScriptedActivity>>;
 
 const TASK: &str = "fix-answer";
+/// Environment variable passing the parent's run directory to the crash child.
+const DIR_ENV: &str = "EXEC_CHILD_DIR";
 const PHASES: [ExecutionPhase; 5] = [
     ExecutionPhase::Intake,
     ExecutionPhase::Checkout,
@@ -37,23 +40,8 @@ fn task() -> TaskId {
     TaskId::new(TASK)
 }
 
-fn run_dir(case: &str) -> PathBuf {
-    let target = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"));
-    target.join("test-runs").join(format!("execution-{case}"))
-}
-
-/// Reset a test run directory.
-///
-/// WARNING: This deletes files. The target is confined to `target/test-runs/`,
-/// which holds only disposable test output; it never escapes the workspace
-/// target directory and never touches a system temp directory.
-fn reset_dir(dir: &Path) {
-    if dir.exists() {
-        std::fs::remove_dir_all(dir).expect("reset run dir");
-    }
-    std::fs::create_dir_all(dir).expect("create run dir");
+fn run_dir(case: &str) -> ScratchDir {
+    ScratchDir::new(&format!("execution-{case}"))
 }
 
 fn effects_path(dir: &Path) -> PathBuf {
@@ -112,15 +100,21 @@ fn step_dispatched(outcome: &StepOutcome) -> bool {
     matches!(outcome, StepOutcome::Dispatched { .. })
 }
 
-fn spawn_child(test_name: &str, case: &str) -> ExitStatus {
+fn spawn_child(test_name: &str, case: &str, dir: &Path) -> ExitStatus {
     let exe = std::env::current_exe().expect("current_exe");
     Command::new(exe)
         .args([test_name, "--exact", "--test-threads=1", "--nocapture"])
         .env("EXEC_CHILD", case)
+        .env(DIR_ENV, dir)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
         .expect("spawn crash child")
+}
+
+/// The parent-provided run directory for a re-exec'd crash child.
+fn child_dir() -> PathBuf {
+    std::env::var(DIR_ENV).expect("child run dir").into()
 }
 
 fn assert_sigabrt(status: &ExitStatus) {
@@ -148,8 +142,7 @@ fn crash_after_transition_commit_before_dispatch() {
     }
 
     let dir = run_dir("case1");
-    reset_dir(&dir);
-    let status = spawn_child("crash_after_transition_commit_before_dispatch", "case1");
+    let status = spawn_child("crash_after_transition_commit_before_dispatch", "case1", &dir);
     assert_sigabrt(&status);
 
     let (mut executor, scripted) = setup(&dir, 2, EXECUTION_DEFINITION_VERSION);
@@ -184,7 +177,7 @@ fn crash_after_transition_commit_before_dispatch() {
 }
 
 fn child_case1() -> ! {
-    let dir = run_dir("case1");
+    let dir = child_dir();
     let (mut executor, _scripted) = setup(&dir, 2, EXECUTION_DEFINITION_VERSION);
     // Arm before the very first transition (start) so the crash lands between
     // the atomic commit and dispatch.
@@ -200,7 +193,6 @@ fn child_case1() -> ! {
 #[test]
 fn duplicate_delivery_returns_recorded_receipt() {
     let dir = run_dir("duplicate");
-    reset_dir(&dir);
     let (mut executor, scripted) = setup(&dir, 2, EXECUTION_DEFINITION_VERSION);
     let exec = executor.start(&task()).unwrap();
     let op = OperationId::derive(&exec, "intake");
@@ -231,8 +223,7 @@ fn restart_reconstruction_matches_projection() {
     }
 
     let dir = run_dir("case3");
-    reset_dir(&dir);
-    let status = spawn_child("restart_reconstruction_matches_projection", "case3");
+    let status = spawn_child("restart_reconstruction_matches_projection", "case3", &dir);
     assert_sigabrt(&status);
 
     let (mut executor, scripted) = setup(&dir, 2, EXECUTION_DEFINITION_VERSION);
@@ -272,7 +263,7 @@ fn restart_reconstruction_matches_projection() {
 }
 
 fn child_case3() -> ! {
-    let dir = run_dir("case3");
+    let dir = child_dir();
     let (mut executor, _scripted) = setup(&dir, 2, EXECUTION_DEFINITION_VERSION);
     let exec = executor.start(&task()).unwrap();
     executor.step(&exec).unwrap(); // intake -> checkout
@@ -293,8 +284,7 @@ fn effect_before_completion_reconciled() {
     }
 
     let dir = run_dir("case4");
-    reset_dir(&dir);
-    let status = spawn_child("effect_before_completion_reconciled", "case4");
+    let status = spawn_child("effect_before_completion_reconciled", "case4", &dir);
     assert_sigabrt(&status);
 
     let (mut executor, scripted) = setup(&dir, 2, EXECUTION_DEFINITION_VERSION);
@@ -317,7 +307,7 @@ fn effect_before_completion_reconciled() {
 }
 
 fn child_case4() -> ! {
-    let dir = run_dir("case4");
+    let dir = child_dir();
     let (mut executor, _scripted) = setup(&dir, 2, EXECUTION_DEFINITION_VERSION);
     let exec = executor.start(&task()).unwrap();
     arm("after_effect_before_completion");
@@ -336,8 +326,7 @@ fn kill_latch_survives_restart() {
     }
 
     let dir = run_dir("case5");
-    reset_dir(&dir);
-    let status = spawn_child("kill_latch_survives_restart", "case5");
+    let status = spawn_child("kill_latch_survives_restart", "case5", &dir);
     assert_sigabrt(&status);
 
     let (mut executor, scripted) = setup(&dir, 2, EXECUTION_DEFINITION_VERSION);
@@ -359,7 +348,7 @@ fn kill_latch_survives_restart() {
 }
 
 fn child_case5() -> ! {
-    let dir = run_dir("case5");
+    let dir = child_dir();
     let (mut executor, _scripted) = setup(&dir, 2, EXECUTION_DEFINITION_VERSION);
     let _exec = executor.start(&task()).unwrap();
     executor.set_kill_latch(true).unwrap();
@@ -373,7 +362,6 @@ fn child_case5() -> ! {
 #[test]
 fn incompatible_execution_version_parks() {
     let dir = run_dir("version");
-    reset_dir(&dir);
 
     // Write state under version 1, completing intake and leaving checkout pending.
     {
@@ -407,7 +395,6 @@ fn incompatible_execution_version_parks() {
 #[test]
 fn incompatible_schema_version_parks() {
     let dir = run_dir("schema");
-    reset_dir(&dir);
     let db = dir.join("ledger.sqlite");
 
     {
@@ -450,7 +437,6 @@ fn incompatible_schema_version_parks() {
 #[test]
 fn verify_red_bounded_retry_then_done() {
     let dir = run_dir("retry");
-    reset_dir(&dir);
     let (mut executor, scripted) = setup(&dir, 2, EXECUTION_DEFINITION_VERSION);
     scripted.borrow_mut().script(
         ExecutionPhase::Verify,
@@ -490,7 +476,6 @@ fn verify_red_bounded_retry_then_done() {
 #[test]
 fn verify_red_exhausts_attempts_parks() {
     let dir = run_dir("retry-park");
-    reset_dir(&dir);
     let (mut executor, scripted) = setup(&dir, 1, EXECUTION_DEFINITION_VERSION);
     scripted.borrow_mut().script(
         ExecutionPhase::Verify,
@@ -519,7 +504,6 @@ fn verify_red_exhausts_attempts_parks() {
 #[test]
 fn ambiguous_effect_parks() {
     let dir = run_dir("ambiguous");
-    reset_dir(&dir);
     let (mut executor, scripted) = setup(&dir, 2, EXECUTION_DEFINITION_VERSION);
     scripted
         .borrow_mut()
@@ -545,7 +529,6 @@ fn ambiguous_effect_parks() {
 #[test]
 fn status_reports_pending_operations() {
     let dir = run_dir("status");
-    reset_dir(&dir);
     let (mut executor, _scripted) = setup(&dir, 2, EXECUTION_DEFINITION_VERSION);
     let exec = executor.start(&task()).unwrap();
     let status = executor.status(&exec).unwrap();

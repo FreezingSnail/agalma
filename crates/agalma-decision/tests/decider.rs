@@ -5,8 +5,6 @@
 //! ledger so persistence and recovery reuse are covered, not just the pure
 //! baselines.
 
-use std::path::{Path, PathBuf};
-
 use agalma_contracts::{
     ContractError, DecisionApi, DecisionAttempt, DecisionKind, DecisionOption, DecisionOutcome,
     DecisionPin, DecisionRequest, DecisionResponse, DecisionScore, FallbackReason, LedgerApi,
@@ -14,19 +12,10 @@ use agalma_contracts::{
 };
 use agalma_decision::StaticDecider;
 use agalma_ledger::SqliteLedger;
+use agalma_testkit::ScratchDir;
 
-fn run_dir(name: &str) -> PathBuf {
-    let target = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"));
-    target.join("test-runs").join(format!("decision-{name}"))
-}
-
-fn reset_dir(dir: &Path) {
-    if dir.exists() {
-        std::fs::remove_dir_all(dir).expect("reset run dir");
-    }
-    std::fs::create_dir_all(dir).expect("create run dir");
+fn run_dir(name: &str) -> ScratchDir {
+    ScratchDir::new(&format!("decision-{name}"))
 }
 
 fn option(id: &str, priority: i64, age_ms: u64) -> DecisionOption {
@@ -67,7 +56,6 @@ fn applied(chosen: &str) -> DecisionOutcome {
 #[test]
 fn baseline_applied_directly_and_reused_on_reopen() {
     let dir = run_dir("baseline");
-    reset_dir(&dir);
     let path = dir.join("ledger.sqlite");
     let request = triage_request("op:exec:t1:1:triage");
 
@@ -134,7 +122,6 @@ fn fallback_on_timeout_unavailable_malformed_abstention() {
 
     for (index, (attempt, expected)) in cases.into_iter().enumerate() {
         let dir = run_dir(&format!("fallback-{index}"));
-        reset_dir(&dir);
         let ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
         let mut decider = StaticDecider::new(ledger);
         let request = triage_request(&format!("op:exec:t1:{index}:triage"));
@@ -159,7 +146,6 @@ fn fallback_on_timeout_unavailable_malformed_abstention() {
 #[test]
 fn valid_candidate_is_applied() {
     let dir = run_dir("candidate");
-    reset_dir(&dir);
     let ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
     let mut decider = StaticDecider::new(ledger);
     let request = triage_request("op:exec:t1:candidate");
@@ -191,7 +177,6 @@ fn valid_candidate_is_applied() {
 #[test]
 fn late_result_cannot_supersede_applied_outcome() {
     let dir = run_dir("late");
-    reset_dir(&dir);
     let ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
     let mut decider = StaticDecider::new(ledger);
     let request = triage_request("op:exec:t1:late");
@@ -222,7 +207,6 @@ fn late_result_cannot_supersede_applied_outcome() {
 #[test]
 fn baseline_cannot_act_parks() {
     let dir = run_dir("park");
-    reset_dir(&dir);
     let ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
     let mut decider = StaticDecider::new(ledger);
     let mut request = triage_request("op:exec:t1:park");
@@ -238,7 +222,6 @@ fn baseline_cannot_act_parks() {
 #[test]
 fn changed_inputs_require_new_operation_id() {
     let dir = run_dir("changed");
-    reset_dir(&dir);
     let ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
     let mut decider = StaticDecider::new(ledger);
     let request = triage_request("op:exec:t1:changed");
@@ -255,7 +238,6 @@ fn changed_inputs_require_new_operation_id() {
 #[test]
 fn retry_escalate_flows_through_decider() {
     let dir = run_dir("retry");
-    reset_dir(&dir);
     let ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
     let mut decider = StaticDecider::new(ledger);
 

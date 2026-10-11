@@ -30,8 +30,8 @@ pub struct FakeSandbox {
 
 impl FakeSandbox {
     /// Create a fake sandbox under `root` (the isolated run dir).
-    pub fn new(root: impl Into<PathBuf>) -> Self {
-        let root = root.into();
+    pub fn new(root: impl AsRef<Path>) -> Self {
+        let root = root.as_ref().to_path_buf();
         let _ = fs::create_dir_all(root.join("sandbox"));
         FakeSandbox { root }
     }

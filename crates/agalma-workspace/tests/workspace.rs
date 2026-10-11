@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use agalma_contracts::{ContractError, ExecutionId, WorkspaceApi};
+use agalma_testkit::ScratchDir;
 use agalma_workspace::Workspace;
 
 fn workspace_root() -> PathBuf {
@@ -25,12 +26,9 @@ fn template_dir() -> PathBuf {
     workspace_root().join("fixtures").join("target-template")
 }
 
-/// Fresh run directory; removed and recreated so repeated runs are clean.
-fn run_dir(name: &str) -> PathBuf {
-    let dir = workspace_root().join("target").join("test-runs").join(name);
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create run dir");
-    dir
+/// Fresh run directory; self-cleaning on success (kept on panic).
+fn run_dir(name: &str) -> ScratchDir {
+    ScratchDir::new(name)
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -94,7 +92,7 @@ fn fix_template(checkout: &str) {
 #[test]
 fn prepare_creates_baseline_and_candidate() {
     let base = run_dir("workspace-prepare");
-    let mut ws = Workspace::new(&base);
+    let mut ws = Workspace::new(base.path());
     let exec = ExecutionId::new("exec:fix-answer:1");
 
     let checkout = ws.prepare(template_dir().to_str().unwrap(), &exec).unwrap();
@@ -122,7 +120,7 @@ fn prepare_creates_baseline_and_candidate() {
 #[test]
 fn happy_path_integrate_receipt_tag_and_diff() {
     let base = run_dir("workspace-happy");
-    let mut ws = Workspace::new(&base);
+    let mut ws = Workspace::new(base.path());
     let exec = ExecutionId::new("exec:fix-answer:1");
 
     let checkout = ws.prepare(template_dir().to_str().unwrap(), &exec).unwrap();
@@ -153,7 +151,7 @@ fn happy_path_integrate_receipt_tag_and_diff() {
 #[test]
 fn integrate_expected_sha_mismatch_is_conflict_and_leaves_main() {
     let base = run_dir("workspace-conflict");
-    let mut ws = Workspace::new(&base);
+    let mut ws = Workspace::new(base.path());
     let exec = ExecutionId::new("exec:fix-answer:1");
 
     let checkout = ws.prepare(template_dir().to_str().unwrap(), &exec).unwrap();
@@ -190,7 +188,7 @@ fn integrate_expected_sha_mismatch_is_conflict_and_leaves_main() {
 #[test]
 fn reconcile_after_integrate_reports_merged_without_duplicate() {
     let base = run_dir("workspace-reconcile");
-    let mut ws = Workspace::new(&base);
+    let mut ws = Workspace::new(base.path());
     let exec = ExecutionId::new("exec:fix-answer:1");
 
     let checkout = ws.prepare(template_dir().to_str().unwrap(), &exec).unwrap();
@@ -215,7 +213,7 @@ fn reconcile_after_integrate_reports_merged_without_duplicate() {
 #[test]
 fn revert_restores_previous_main() {
     let base = run_dir("workspace-revert");
-    let mut ws = Workspace::new(&base);
+    let mut ws = Workspace::new(base.path());
     let exec = ExecutionId::new("exec:fix-answer:1");
 
     let checkout = ws.prepare(template_dir().to_str().unwrap(), &exec).unwrap();
@@ -246,7 +244,7 @@ fn prepare_rejects_template_with_git_and_preserves_template() {
     )
     .unwrap();
 
-    let mut ws = Workspace::new(&base);
+    let mut ws = Workspace::new(base.path());
     let exec = ExecutionId::new("exec:fix-answer:1");
     let err = ws.prepare(template.to_str().unwrap(), &exec).unwrap_err();
     assert!(
@@ -258,7 +256,7 @@ fn prepare_rejects_template_with_git_and_preserves_template() {
 #[test]
 fn prepare_leaves_template_untouched() {
     let base = run_dir("workspace-untouched");
-    let mut ws = Workspace::new(&base);
+    let mut ws = Workspace::new(base.path());
     let exec = ExecutionId::new("exec:fix-answer:1");
 
     let before = dir_checksum(&template_dir());
@@ -270,9 +268,10 @@ fn prepare_leaves_template_untouched() {
 // Repo mode (M1): clone an origin, CAS-integrate into the origin.
 // ---------------------------------------------------------------------------
 
-/// Create an origin repo with a seed commit and return `(dir, seed_sha)`.
-fn seed_origin(name: &str) -> (PathBuf, String) {
-    let dir = run_dir(name).join("origin");
+/// Create an origin repo with a seed commit and return `(guard, origin, seed)`.
+fn seed_origin(name: &str) -> (ScratchDir, PathBuf, String) {
+    let scratch = run_dir(name);
+    let dir = scratch.join("origin");
     fs::create_dir_all(dir.join("src")).unwrap();
     fs::write(
         dir.join("src").join("lib.rs"),
@@ -285,7 +284,7 @@ fn seed_origin(name: &str) -> (PathBuf, String) {
     git(&dir, &["add", "-A"]);
     git(&dir, &["commit", "-qm", "seed"]);
     let seed = git(&dir, &["rev-parse", "refs/heads/main"]);
-    (dir, seed)
+    (scratch, dir, seed)
 }
 
 fn write_fix(checkout: &str) {
@@ -298,7 +297,7 @@ fn write_fix(checkout: &str) {
 
 #[test]
 fn prepare_repo_clones_candidate_from_origin() {
-    let (origin, seed) = seed_origin("repo-prepare");
+    let (_dir, origin, seed) = seed_origin("repo-prepare");
     let base_dir = origin.parent().unwrap().to_path_buf();
     let mut ws = Workspace::new(&base_dir);
     let exec = ExecutionId::new("exec:fix-answer:1");
@@ -320,7 +319,7 @@ fn prepare_repo_clones_candidate_from_origin() {
 
 #[test]
 fn integrate_origin_cas_and_tag_merge_candidate() {
-    let (origin, seed) = seed_origin("repo-integrate");
+    let (_dir, origin, seed) = seed_origin("repo-integrate");
     let base_dir = origin.parent().unwrap().to_path_buf();
     let mut ws = Workspace::new(&base_dir);
     let exec = ExecutionId::new("exec:fix-answer:1");
@@ -348,7 +347,7 @@ fn integrate_origin_cas_and_tag_merge_candidate() {
 
 #[test]
 fn integrate_origin_wrong_expected_is_conflict_and_leaves_main() {
-    let (origin, seed) = seed_origin("repo-conflict");
+    let (_dir, origin, seed) = seed_origin("repo-conflict");
     let base_dir = origin.parent().unwrap().to_path_buf();
     let mut ws = Workspace::new(&base_dir);
     let exec = ExecutionId::new("exec:fix-answer:1");
@@ -386,7 +385,7 @@ fn integrate_origin_wrong_expected_is_conflict_and_leaves_main() {
 
 #[test]
 fn origin_receipt_detects_landed_merge_without_reintegrating() {
-    let (origin, seed) = seed_origin("repo-reconcile");
+    let (_dir, origin, seed) = seed_origin("repo-reconcile");
     let base_dir = origin.parent().unwrap().to_path_buf();
     let mut ws = Workspace::new(&base_dir);
     let exec = ExecutionId::new("exec:fix-answer:1");

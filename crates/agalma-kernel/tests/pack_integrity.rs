@@ -12,8 +12,9 @@ mod support;
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use agalma_testkit::ScratchDir;
 use serde_json::Value;
 
 /// Acceptance cases the pack must contain (ids = file stems in `cases/`).
@@ -32,21 +33,10 @@ const EXPECTED_CASES: [&str; 10] = [
 
 /// Scratch directory under `target/test-runs/`; returns a fresh empty dir.
 ///
-/// WARNING: deletes files, but only the freshly-minted unique directory. The
-/// base is confined to the workspace `target/` tree; it never touches a system
-/// temp directory.
-fn scratch_dir(name: &str) -> PathBuf {
-    let target = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"));
-    let dir = target
-        .join("test-runs")
-        .join(format!("pack-integrity-{name}-{}", std::process::id()));
-    if dir.exists() {
-        fs::remove_dir_all(&dir).expect("reset scratch dir");
-    }
-    fs::create_dir_all(&dir).expect("create scratch dir");
-    dir
+/// Self-cleaning: removed when the returned guard drops on success, kept on
+/// panic. It never touches a system temp directory.
+fn scratch_dir(name: &str) -> ScratchDir {
+    ScratchDir::new(&format!("pack-integrity-{name}"))
 }
 
 fn copy_dir(src: &Path, dst: &Path) {
@@ -137,7 +127,8 @@ fn tamper_detection_self_test() {
         support::pack::verify_pack(&original).is_ok(),
         "pristine pack must verify"
     );
-    let copy = scratch_dir("tamper").join("recovery-pack");
+    let dir = scratch_dir("tamper");
+    let copy = dir.join("recovery-pack");
     copy_dir(&original, &copy);
     assert!(
         support::pack::verify_pack(&copy).is_ok(),

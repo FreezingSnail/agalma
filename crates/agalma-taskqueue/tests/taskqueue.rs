@@ -6,7 +6,6 @@
 //! repository's own `.beads` store is never read or written. No `/tmp`, no
 //! network.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -15,6 +14,7 @@ use agalma_taskqueue::{
     parse_task_block, BdTaskQueue, DECOMP_APPROVED_LABEL, DECOMP_REJECTED_LABEL, PARKED_LABEL,
     STAGED_LABEL,
 };
+use agalma_testkit::ScratchDir;
 
 // ---------------------------------------------------------------------------
 // Fixtures and harness
@@ -25,14 +25,6 @@ use agalma_taskqueue::{
 /// 7 acceptance · 8..9 items · 10 budget_usd · 11 priority · 12 family ·
 /// 13 max_attempts · 14 close fence.
 const VALID: &str = "Intro.\n\n```yaml\ndirective: directive/v0\ntarget: agalma\nref: main\nacceptance:\n  - sh -c 'true'\n  - cargo test\nbudget_usd: 2.00\npriority: normal\nfamily: fix\nmax_attempts: 2\n```\n";
-
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under <root>/crates/")
-        .to_path_buf()
-}
 
 fn stderr_of(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).trim().to_string()
@@ -63,18 +55,13 @@ fn require_bd() {
 
 /// An isolated bd workspace under `target/test-runs/`.
 struct Scratch {
-    dir: PathBuf,
+    dir: ScratchDir,
 }
 
 impl Scratch {
     fn new(name: &str) -> Self {
         require_bd();
-        let dir = root()
-            .join("target")
-            .join("test-runs")
-            .join(format!("taskqueue-{name}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("create run dir");
+        let dir = ScratchDir::new(&format!("taskqueue-{name}"));
 
         run_ok("git", &dir, &["init", "-q"]);
         run_ok("git", &dir, &["config", "user.email", "agalma@localhost"]);
@@ -101,7 +88,7 @@ impl Scratch {
     }
 
     fn queue(&self) -> BdTaskQueue {
-        BdTaskQueue::new(&self.dir)
+        BdTaskQueue::new(self.dir.path())
     }
 
     fn beads_dir(&self) -> PathBuf {

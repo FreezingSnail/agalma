@@ -15,15 +15,17 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use agalma_contracts::error::ContractError;
 use agalma_contracts::ids::AttemptId;
 use agalma_contracts::sandbox::{LaunchSpec, SandboxApi};
 use agalma_sandbox::{SeatbeltSandbox, PRODUCT_PROFILE};
+use agalma_testkit::ScratchDir;
 
 /// Per-test scratch tree under `target/test-runs/`.
 struct Run {
+    _dir: ScratchDir,
     root: PathBuf,
     attempt: PathBuf,
     protected: PathBuf,
@@ -33,20 +35,11 @@ struct Run {
 }
 
 fn new_run(test: &str) -> Run {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let base = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("target")
-        .join("test-runs");
-    let root = base.join(format!("sandbox-{test}-{}-{nanos}", std::process::id()));
-    for dir in ["attempt", "protected", "sock", "extra", "extra-rw"] {
-        fs::create_dir_all(root.join(dir)).expect("create run dir");
+    let dir = ScratchDir::new(&format!("sandbox-{test}"));
+    for sub in ["attempt", "protected", "sock", "extra", "extra-rw"] {
+        fs::create_dir_all(dir.join(sub)).expect("create run dir");
     }
-    let root = fs::canonicalize(&root).expect("canonicalize run dir");
+    let root = fs::canonicalize(dir.path()).expect("canonicalize run dir");
     Run {
         attempt: root.join("attempt"),
         protected: root.join("protected"),
@@ -54,6 +47,7 @@ fn new_run(test: &str) -> Run {
         extra_ro: root.join("extra"),
         extra_rw: root.join("extra-rw"),
         root,
+        _dir: dir,
     }
 }
 

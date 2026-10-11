@@ -12,3 +12,4 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 agalma-ledger = { path = "../agalma-ledger" }
+agalma-testkit = { path = "../agalma-testkit" }

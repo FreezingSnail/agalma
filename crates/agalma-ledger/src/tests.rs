@@ -6,11 +6,13 @@
 //! aborts the child (`SIGABRT`) between the atomic commit and dispatch.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
+
+use agalma_testkit::ScratchDir;
 
 use agalma_contracts::{
     ArtifactRef, BindingId, BindingRecord, BindingState, CommitBatch, ContractError, DecisionKind,
@@ -28,23 +30,9 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn run_dir(name: &str) -> PathBuf {
-    let target = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"));
-    target.join("test-runs").join(format!("ledger-{name}"))
-}
-
-/// Delete and recreate a test run directory.
-///
-/// WARNING: This deletes files. The target is confined to `target/test-runs/`,
-/// which holds only disposable test output; it never escapes the workspace
-/// target directory and never touches a system temp directory.
-fn reset_dir(dir: &Path) {
-    if dir.exists() {
-        std::fs::remove_dir_all(dir).expect("reset run dir");
-    }
-    std::fs::create_dir_all(dir).expect("create run dir");
+/// A fresh, self-cleaning run directory under `target/test-runs/ledger-*`.
+fn run_dir(name: &str) -> ScratchDir {
+    ScratchDir::new(&format!("ledger-{name}"))
 }
 
 fn fixture_exec() -> ExecutionId {
@@ -86,7 +74,6 @@ fn intent(exec: &ExecutionId, op: &OperationId) -> DispatchIntent {
 #[test]
 fn duplicate_delivery_returns_recorded_receipt() {
     let dir = run_dir("duplicate");
-    reset_dir(&dir);
     let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
 
     let exec = fixture_exec();
@@ -182,11 +169,11 @@ fn dispatch_intent_recovered_after_crash() {
     }
 
     let dir = run_dir("crash");
-    reset_dir(&dir);
     let exe = std::env::current_exe().expect("current_exe");
     let status = Command::new(exe)
         .args(["dispatch_intent_recovered_after_crash", "--test-threads=1"])
         .env("LEDGER_CRASH_CHILD", "1")
+        .env("LEDGER_CRASH_DIR", dir.path())
         .status()
         .expect("spawn crash child");
     assert!(!status.success(), "child should abort, got {status:?}");
@@ -211,8 +198,8 @@ fn dispatch_intent_recovered_after_crash() {
 
 /// Child role: commit the transition, then abort before dispatch.
 fn crash_child_after_transition() -> ! {
-    let dir = run_dir("crash");
-    let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
+    let dir = std::env::var("LEDGER_CRASH_DIR").expect("child run dir");
+    let mut ledger = SqliteLedger::open(Path::new(&dir).join("ledger.sqlite")).unwrap();
     let exec = fixture_exec();
     let op = OperationId::derive(&exec, "build");
     ledger
@@ -235,7 +222,6 @@ fn crash_child_after_transition() -> ! {
 #[test]
 fn event_reconstruction_matches_projection() {
     let dir = run_dir("reconstruct");
-    reset_dir(&dir);
     let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
     let exec = fixture_exec();
 
@@ -280,7 +266,6 @@ fn event_reconstruction_matches_projection() {
 #[test]
 fn kill_latch_survives_reopen() {
     let dir = run_dir("latch");
-    reset_dir(&dir);
     let path = dir.join("ledger.sqlite");
 
     {
@@ -306,7 +291,6 @@ fn kill_latch_survives_reopen() {
 #[test]
 fn schema_mismatch_parks() {
     let dir = run_dir("schema");
-    reset_dir(&dir);
     let path = dir.join("ledger.sqlite");
     let exec = fixture_exec();
     let transition = || CommitBatch {
@@ -348,7 +332,6 @@ fn schema_mismatch_parks() {
 #[test]
 fn wal_mode_active_and_sqlite_version_recorded() {
     let dir = run_dir("wal");
-    reset_dir(&dir);
     let ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
 
     assert_eq!(ledger.journal_mode().unwrap().to_lowercase(), "wal");
@@ -367,7 +350,6 @@ fn wal_mode_active_and_sqlite_version_recorded() {
 #[test]
 fn component_bindings_round_trip() {
     let dir = run_dir("bindings");
-    reset_dir(&dir);
     let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
 
     let mut capabilities = BTreeSet::new();
@@ -423,7 +405,6 @@ fn decision_request(exec: &ExecutionId) -> DecisionRequest {
 #[test]
 fn decision_request_recorded_and_pinned_to_inputs() {
     let dir = run_dir("decisions");
-    reset_dir(&dir);
     let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
     let exec = fixture_exec();
     let request = decision_request(&exec);
@@ -447,7 +428,6 @@ fn decision_request_recorded_and_pinned_to_inputs() {
 #[test]
 fn decision_outcome_is_terminal_and_recovers() {
     let dir = run_dir("decision-outcome");
-    reset_dir(&dir);
     let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
     let exec = fixture_exec();
     let request = decision_request(&exec);
@@ -492,7 +472,6 @@ fn decision_outcome_is_terminal_and_recovers() {
 #[test]
 fn digest_rows_round_trip_ordered_by_version() {
     let dir = run_dir("digests");
-    reset_dir(&dir);
     let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
     let exec = fixture_exec();
 
@@ -534,7 +513,6 @@ fn digest_rows_round_trip_ordered_by_version() {
 #[test]
 fn migration_v1_to_v2_when_all_executions_terminal() {
     let dir = run_dir("migrate-terminal");
-    reset_dir(&dir);
     let path = dir.join("ledger.sqlite");
     let exec = fixture_exec();
 
@@ -571,7 +549,6 @@ fn migration_v1_to_v2_when_all_executions_terminal() {
 #[test]
 fn migration_v1_to_v2_refused_with_in_flight_execution() {
     let dir = run_dir("migrate-inflight");
-    reset_dir(&dir);
     let path = dir.join("ledger.sqlite");
     let exec = fixture_exec();
 
@@ -604,7 +581,6 @@ fn migration_v1_to_v2_refused_with_in_flight_execution() {
 #[test]
 fn migration_v2_to_v3_when_all_executions_terminal() {
     let dir = run_dir("migrate-v2-terminal");
-    reset_dir(&dir);
     let path = dir.join("ledger.sqlite");
     let exec = fixture_exec();
 
@@ -650,7 +626,6 @@ fn migration_v2_to_v3_when_all_executions_terminal() {
 #[test]
 fn migration_v2_to_v3_refused_with_in_flight_execution() {
     let dir = run_dir("migrate-v2-inflight");
-    reset_dir(&dir);
     let path = dir.join("ledger.sqlite");
     let exec = fixture_exec();
 
@@ -683,7 +658,6 @@ fn migration_v2_to_v3_refused_with_in_flight_execution() {
 #[test]
 fn kernel_meta_round_trips_and_overwrites() {
     let dir = run_dir("kernel-meta");
-    reset_dir(&dir);
     let path = dir.join("ledger.sqlite");
     let exec = fixture_exec();
     let transition = || CommitBatch {
@@ -735,7 +709,6 @@ fn kernel_meta_round_trips_and_overwrites() {
 #[test]
 fn lease_generation_starts_at_zero_and_increments_per_claim() {
     let dir = run_dir("lease-counter");
-    reset_dir(&dir);
     let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
     let task = TaskId::new("fix-answer");
 
@@ -754,7 +727,6 @@ fn lease_generation_starts_at_zero_and_increments_per_claim() {
 #[test]
 fn lease_generation_persists_across_reopen() {
     let dir = run_dir("lease-persist");
-    reset_dir(&dir);
     let path = dir.join("ledger.sqlite");
     let task = TaskId::new("fix-answer");
     {
@@ -784,7 +756,6 @@ fn timer(id: &str, exec: &ExecutionId, fire_at: u64) -> TimerRecord {
 #[test]
 fn timers_due_ordering_and_idempotent_insert() {
     let dir = run_dir("timers");
-    reset_dir(&dir);
     let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
     let exec = fixture_exec();
 
@@ -824,7 +795,6 @@ fn timers_due_ordering_and_idempotent_insert() {
 #[test]
 fn cancelling_timers_for_execution_releases_pending() {
     let dir = run_dir("timer-cancel");
-    reset_dir(&dir);
     let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
     let exec = fixture_exec();
 
@@ -861,7 +831,6 @@ fn directive(id: &str, version: u64, source: &str, marker: &str) -> DirectiveRow
 #[test]
 fn directive_upsert_is_idempotent_and_newer_replaces() {
     let dir = run_dir("directives");
-    reset_dir(&dir);
     let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
 
     assert!(ledger
@@ -893,7 +862,6 @@ fn directive_upsert_is_idempotent_and_newer_replaces() {
 #[test]
 fn directive_survives_reopen() {
     let dir = run_dir("directive-reopen");
-    reset_dir(&dir);
     let path = dir.join("ledger.sqlite");
     {
         let mut ledger = SqliteLedger::open(&path).unwrap();

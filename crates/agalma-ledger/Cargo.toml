@@ -11,3 +11,6 @@ agalma-contracts = { path = "../agalma-contracts" }
 agalma-ipc = { path = "../agalma-ipc" }
 rusqlite = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+agalma-testkit = { path = "../agalma-testkit" }

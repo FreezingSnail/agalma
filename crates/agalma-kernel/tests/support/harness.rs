@@ -35,6 +35,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use agalma_contracts::OperationId;
 use agalma_execution::EffectProbe;
 use agalma_ledger::SqliteLedger;
+use agalma_testkit::ScratchDir;
 
 // ---------------------------------------------------------------------------
 // Crash-injection hooks
@@ -90,43 +91,21 @@ pub fn disarm() {
 // Isolated state (run dirs under target/test-runs/, never /tmp)
 // ---------------------------------------------------------------------------
 
-fn unix_nanos() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock before epoch")
-        .as_nanos()
-}
-
-fn target_dir() -> PathBuf {
-    std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"))
-}
-
 /// A fresh, unique run directory under `target/test-runs/recovery-<case>-*`.
 ///
-/// WARNING: deletes only the freshly-minted unique directory if it somehow
-/// exists. The base is confined to the workspace `target/` tree; it never
+/// Self-cleaning: removed when the returned guard drops on success, kept on
+/// panic. The base is confined to the workspace `target/` tree; it never
 /// touches a system temp directory.
-pub fn recovery_dir(case: &str) -> PathBuf {
-    let dir = target_dir().join("test-runs").join(format!(
-        "recovery-{case}-{}-{}",
-        std::process::id(),
-        unix_nanos()
-    ));
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).expect("reset run dir");
-    }
-    std::fs::create_dir_all(&dir).expect("create run dir");
-    dir
+pub fn recovery_dir(case: &str) -> ScratchDir {
+    ScratchDir::new(&format!("recovery-{case}"))
 }
 
 /// Open an isolated SQLite ledger under `target/test-runs/recovery-<case>-*`.
 ///
-/// Returns the run directory (holding `ledger.sqlite` and any effect journal)
-/// alongside the ledger, so a parent can reopen the same state after a crash
-/// child aborts.
-pub fn open_isolated_ledger(case: &str) -> (PathBuf, SqliteLedger) {
+/// Returns the run directory guard (holding `ledger.sqlite` and any effect
+/// journal) alongside the ledger, so a parent can reopen the same state after a
+/// crash child aborts.
+pub fn open_isolated_ledger(case: &str) -> (ScratchDir, SqliteLedger) {
     let dir = recovery_dir(case);
     let ledger = SqliteLedger::open(dir.join("ledger.sqlite")).expect("open isolated ledger");
     (dir, ledger)

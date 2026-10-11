@@ -13,3 +13,4 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+agalma-testkit = { path = "../agalma-testkit" }

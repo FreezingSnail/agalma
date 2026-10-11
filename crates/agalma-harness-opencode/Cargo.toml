@@ -18,3 +18,4 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 agalma-sandbox = { path = "../agalma-sandbox" }
+agalma-testkit = { path = "../agalma-testkit" }

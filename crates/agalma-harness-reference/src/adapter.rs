@@ -288,6 +288,7 @@ impl HarnessApi for ReferenceHarness {
 mod tests {
     use super::*;
     use agalma_contracts::harness::Limits;
+    use agalma_testkit::ScratchDir;
 
     fn config(dir: &std::path::Path, profile: ReferenceProfile) -> ReferenceHarnessConfig {
         ReferenceHarnessConfig {
@@ -297,19 +298,8 @@ mod tests {
         }
     }
 
-    fn scratch(name: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("target")
-            .join("test-runs")
-            .join(format!("reference-{name}-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("scratch");
-        dir
+    fn scratch(name: &str) -> ScratchDir {
+        ScratchDir::new(&format!("reference-{name}"))
     }
 
     fn start(harness: &mut ReferenceHarness, workspace: &std::path::Path) {

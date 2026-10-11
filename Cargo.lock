@@ -43,6 +43,7 @@ version = "0.1.0"
 dependencies = [
  "agalma-contracts",
  "agalma-ledger",
+ "agalma-testkit",
  "serde_json",
 ]
 
@@ -52,6 +53,7 @@ version = "0.1.0"
 dependencies = [
  "agalma-contracts",
  "agalma-ledger",
+ "agalma-testkit",
  "rusqlite",
  "serde",
  "serde_json",
@@ -65,6 +67,7 @@ dependencies = [
  "agalma-contracts",
  "agalma-ipc",
  "agalma-sandbox",
+ "agalma-testkit",
  "serde_json",
  "tokio",
 ]
@@ -75,6 +78,7 @@ version = "0.1.0"
 dependencies = [
  "agalma-contracts",
  "agalma-ipc",
+ "agalma-testkit",
  "serde",
  "serde_json",
 ]
@@ -84,6 +88,7 @@ name = "agalma-ipc"
 version = "0.1.0"
 dependencies = [
  "agalma-contracts",
+ "agalma-testkit",
  "serde",
  "serde_json",
 ]
@@ -96,6 +101,7 @@ dependencies = [
  "agalma-execution",
  "agalma-ipc",
  "agalma-ledger",
+ "agalma-testkit",
  "serde",
  "serde_json",
 ]
@@ -106,6 +112,7 @@ version = "0.1.0"
 dependencies = [
  "agalma-contracts",
  "agalma-ipc",
+ "agalma-testkit",
  "rusqlite",
  "serde_json",
 ]
@@ -116,6 +123,7 @@ version = "0.1.0"
 dependencies = [
  "agalma-contracts",
  "agalma-ipc",
+ "agalma-testkit",
  "tokio",
 ]
 
@@ -125,6 +133,7 @@ version = "0.1.0"
 dependencies = [
  "agalma-contracts",
  "agalma-ipc",
+ "agalma-testkit",
  "serde",
  "serde_json",
 ]
@@ -139,6 +148,7 @@ version = "0.1.0"
 dependencies = [
  "agalma-contracts",
  "agalma-ipc",
+ "agalma-testkit",
 ]
 
 [[package]]

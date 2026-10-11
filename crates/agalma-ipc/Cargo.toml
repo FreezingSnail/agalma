@@ -10,3 +10,6 @@ publish = false
 agalma-contracts = { path = "../agalma-contracts" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+agalma-testkit = { path = "../agalma-testkit" }

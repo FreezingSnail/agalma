@@ -15,4 +15,5 @@ serde_json = { workspace = true }
 [dev-dependencies]
 agalma-ledger = { path = "../agalma-ledger" }
 agalma-execution = { path = "../agalma-execution" }
+agalma-testkit = { path = "../agalma-testkit" }
 serde_json = { workspace = true }

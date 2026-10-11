@@ -227,12 +227,10 @@ fn exclude_locally(workspace: &Path, names: &[&str]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agalma_testkit::ScratchDir;
 
-    fn workspace(name: &str) -> PathBuf {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/test-runs")
-            .join(format!("provider-lease-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+    fn workspace(name: &str) -> ScratchDir {
+        let dir = ScratchDir::new(&format!("provider-lease-{name}"));
         fs::create_dir_all(dir.join(".git").join("info")).expect("workspace");
         dir
     }

@@ -9,3 +9,6 @@ publish = false
 [dependencies]
 agalma-contracts = { path = "../agalma-contracts" }
 agalma-ipc = { path = "../agalma-ipc" }
+
+[dev-dependencies]
+agalma-testkit = { path = "../agalma-testkit" }

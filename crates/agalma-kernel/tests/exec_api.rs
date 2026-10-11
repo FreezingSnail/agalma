@@ -13,14 +13,10 @@ use agalma_ipc::{register_execution, Server};
 use agalma_kernel::server::{server_info, IMPL_NAME};
 use agalma_kernel::{ExecState, KernelEngine};
 use agalma_ledger::SqliteLedger;
+use agalma_testkit::ScratchDir;
 
-fn run_dir(case: &str) -> std::path::PathBuf {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/test-runs")
-        .join(format!("exec-api-{case}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn run_dir(case: &str) -> ScratchDir {
+    ScratchDir::new(&format!("exec-api-{case}"))
 }
 
 /// The adapter must satisfy the server-hosting seam `ExecutionApi + Send`.

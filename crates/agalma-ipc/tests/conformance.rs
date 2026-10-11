@@ -9,11 +9,10 @@
 use std::collections::BTreeSet;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use agalma_contracts::ContractError;
 use agalma_ipc::client::Client;
@@ -21,30 +20,19 @@ use agalma_ipc::error::IpcError;
 use agalma_ipc::frame;
 use agalma_ipc::server::{Server, ServerInfo};
 use agalma_ipc::{Response, MAX_FRAME};
+use agalma_testkit::ScratchDir;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-fn workspace_root() -> PathBuf {
-    // CARGO_MANIFEST_DIR = <root>/crates/agalma-ipc
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate must live under <root>/crates/")
-        .to_path_buf()
-}
-
-/// A unique socket path under `target/test-runs/b1ipc` (never `/tmp`).
-fn socket_path(tag: &str) -> PathBuf {
-    let dir = workspace_root()
-        .join("target")
-        .join("test-runs")
-        .join("b1ipc");
-    std::fs::create_dir_all(&dir).expect("create test-runs dir");
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    dir.join(format!("{tag}-{}-{nanos}.sock", std::process::id()))
+/// A unique socket path under `target/test-runs/b1ipc-*` (never `/tmp`).
+///
+/// Returns the scratch guard (kept alive for the whole test) alongside the
+/// socket path. The guard name is kept short so the socket path stays within
+/// the platform `SUN_LEN` limit.
+fn socket_path(tag: &str) -> (ScratchDir, PathBuf) {
+    let dir = ScratchDir::new("b1ipc");
+    let socket = dir.join(format!("{tag}.sock"));
+    (dir, socket)
 }
 
 fn info() -> ServerInfo {
@@ -102,7 +90,7 @@ fn spawn_server(server: Server, socket: PathBuf) -> thread::JoinHandle<()> {
 
 #[test]
 fn echo_round_trip() {
-    let socket = socket_path("echo");
+    let (_dir, socket) = socket_path("echo");
     let _server = spawn_server(test_server(Arc::new(AtomicU64::new(0))), socket.clone());
 
     let mut client = Client::connect(&socket).expect("connect");
@@ -129,7 +117,7 @@ fn typed_call_round_trip() {
         Ok(json!({ "sum": a + b }))
     });
 
-    let socket = socket_path("typed");
+    let (_dir, socket) = socket_path("typed");
     let _server = spawn_server(server, socket.clone());
 
     let mut client = Client::connect(&socket).expect("connect");
@@ -142,7 +130,7 @@ fn typed_call_round_trip() {
 #[test]
 fn duplicate_id_returns_recorded_result() {
     let counter = Arc::new(AtomicU64::new(0));
-    let socket = socket_path("dup");
+    let (_dir, socket) = socket_path("dup");
     let _server = spawn_server(test_server(counter.clone()), socket.clone());
 
     let mut client = Client::connect(&socket).expect("connect");
@@ -170,7 +158,7 @@ fn duplicate_id_returns_recorded_result() {
 #[test]
 fn replay_survives_reconnect() {
     let counter = Arc::new(AtomicU64::new(0));
-    let socket = socket_path("reconnect");
+    let (_dir, socket) = socket_path("reconnect");
     let _server = spawn_server(test_server(counter.clone()), socket.clone());
 
     {
@@ -203,7 +191,7 @@ fn fresh_connection_auto_ids_do_not_replay_prior_connection() {
         Ok(json!(true))
     });
 
-    let socket = socket_path("autoid");
+    let (_dir, socket) = socket_path("autoid");
     let _server = spawn_server(server, socket.clone());
 
     // The server serves one connection at a time, so record on A, close it, then
@@ -239,7 +227,7 @@ fn fresh_connection_auto_ids_do_not_replay_prior_connection() {
 #[test]
 fn sequential_connects_have_distinct_seeds() {
     // The core invariant: auto-allocated ids are connection-unique.
-    let socket = socket_path("seeds");
+    let (_dir, socket) = socket_path("seeds");
     let _server = spawn_server(test_server(Arc::new(AtomicU64::new(0))), socket.clone());
 
     let a = Client::connect(&socket).expect("connect A");
@@ -253,7 +241,7 @@ fn sequential_connects_have_distinct_seeds() {
 
 #[test]
 fn connect_failure_is_unavailable() {
-    let missing = socket_path("missing");
+    let (_dir, missing) = socket_path("missing");
     // Path was never bound.
     let err = Client::connect(&missing)
         .err()
@@ -263,7 +251,7 @@ fn connect_failure_is_unavailable() {
 
 #[test]
 fn connection_loss_mid_call_is_unknown_outcome() {
-    let socket = socket_path("loss");
+    let (_dir, socket) = socket_path("loss");
     let listener = UnixListener::bind(&socket).expect("bind");
 
     // Server reads one request frame, then drops the connection unresponsive.
@@ -287,7 +275,7 @@ fn connection_loss_mid_call_is_unknown_outcome() {
 
 #[test]
 fn method_not_found_is_unsupported_capability() {
-    let socket = socket_path("nomethod");
+    let (_dir, socket) = socket_path("nomethod");
     let _server = spawn_server(test_server(Arc::new(AtomicU64::new(0))), socket.clone());
 
     let mut client = Client::connect(&socket).expect("connect");
@@ -302,7 +290,7 @@ fn method_not_found_is_unsupported_capability() {
 
 #[test]
 fn contract_error_propagates() {
-    let socket = socket_path("failknown");
+    let (_dir, socket) = socket_path("failknown");
     let _server = spawn_server(test_server(Arc::new(AtomicU64::new(0))), socket.clone());
 
     let mut client = Client::connect(&socket).expect("connect");
@@ -312,7 +300,7 @@ fn contract_error_propagates() {
 
 #[test]
 fn client_rejects_oversized_request() {
-    let socket = socket_path("bigreq");
+    let (_dir, socket) = socket_path("bigreq");
     let _server = spawn_server(test_server(Arc::new(AtomicU64::new(0))), socket.clone());
 
     let mut client = Client::connect(&socket).expect("connect");
@@ -325,7 +313,7 @@ fn client_rejects_oversized_request() {
 
 #[test]
 fn server_rejects_oversized_frame() {
-    let socket = socket_path("bigframe");
+    let (_dir, socket) = socket_path("bigframe");
     let _server = spawn_server(test_server(Arc::new(AtomicU64::new(0))), socket.clone());
 
     let mut raw = UnixStream::connect(&socket).expect("connect");
@@ -343,7 +331,7 @@ fn server_rejects_oversized_frame() {
 
 #[test]
 fn version_mismatch_is_refused() {
-    let socket = socket_path("version");
+    let (_dir, socket) = socket_path("version");
     let _server = spawn_server(test_server(Arc::new(AtomicU64::new(0))), socket.clone());
 
     let mut raw = UnixStream::connect(&socket).expect("connect");
@@ -372,7 +360,7 @@ fn version_mismatch_is_refused() {
 
 #[test]
 fn id_mismatch_is_rejected() {
-    let socket = socket_path("idmismatch");
+    let (_dir, socket) = socket_path("idmismatch");
     let listener = UnixListener::bind(&socket).expect("bind");
 
     // Malicious/broken server replies with the wrong id.

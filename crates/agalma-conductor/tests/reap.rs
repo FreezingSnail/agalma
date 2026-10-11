@@ -17,21 +17,10 @@ use std::process::{Command, Output};
 use agalma_conductor::phases::run_root;
 use agalma_conductor::reap::{reap_execution, REAP_SUBDIRS};
 use agalma_contracts::ExecutionId;
+use agalma_testkit::ScratchDir;
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under <root>/crates/")
-        .to_path_buf()
-}
-
-fn fresh(name: &str) -> PathBuf {
-    let dir = root().join("target").join("test-runs").join(name);
-    // WARNING: deletes files, but only under `target/test-runs/` (disposable).
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create run dir");
-    dir
+fn fresh(name: &str) -> ScratchDir {
+    ScratchDir::new(name)
 }
 
 fn stderr_of(out: &Output) -> String {
@@ -211,6 +200,7 @@ fn require_bd() {
 /// A scratch origin repo (git + isolated bd store) with one task issue,
 /// mirroring `tests/work.rs`'s `Scratch`.
 struct Scratch {
+    _dir: ScratchDir,
     origin: PathBuf,
     state_dir: PathBuf,
 }
@@ -254,9 +244,11 @@ impl Scratch {
         assert!(out.status.success(), "bd init: {}", stderr_of(&out));
 
         let description = "Task body.\n\n```yaml\ndirective: directive/v0\ntarget: agalma\nref: main\nacceptance:\n  - sh -c 'grep -q 42 src/lib.rs'\npriority: normal\nfamily: fix\nmax_attempts: 2\n```\n";
+        let state_dir = dir.join("state");
         let scratch = Scratch {
+            _dir: dir,
             origin,
-            state_dir: dir.join("state"),
+            state_dir,
         };
         let id = scratch.create("Reap task", description);
         (scratch, id)

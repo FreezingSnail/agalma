@@ -269,23 +269,27 @@ pub fn attempt_root(state_dir: &Path, dir_key: &str) -> PathBuf {
 
 /// Directory containing the `bd` binary (resolved from the conductor's PATH).
 fn bd_bin_dir() -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path).find(|dir| dir.join("bd").is_file())
-    })
+    std::env::var_os("PATH")
+        .and_then(|path| std::env::split_paths(&path).find(|dir| dir.join("bd").is_file()))
 }
 
 /// Filesystem-safe name for a per-session directory or socket.
 pub(crate) fn sanitize(key: &str) -> String {
     key.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
 /// Create `path` (recursively) and return its canonical form.
 fn canonical_dir(path: &Path) -> Result<PathBuf, ContractError> {
-    std::fs::create_dir_all(path).map_err(|e| {
-        ContractError::KnownFailure(format!("mkdir {}: {e}", path.display()))
-    })?;
+    std::fs::create_dir_all(path)
+        .map_err(|e| ContractError::KnownFailure(format!("mkdir {}: {e}", path.display())))?;
     std::fs::canonicalize(path)
         .map_err(|e| ContractError::KnownFailure(format!("resolve {}: {e}", path.display())))
 }
@@ -293,20 +297,10 @@ fn canonical_dir(path: &Path) -> Result<PathBuf, ContractError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agalma_testkit::ScratchDir;
 
-    fn scratch_dir(name: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("target")
-            .join("test-runs")
-            .join(format!("session-{name}-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-        dir
+    fn scratch_dir(name: &str) -> ScratchDir {
+        ScratchDir::new(&format!("session-{name}"))
     }
 
     fn spec() -> SessionSpec {

@@ -15,20 +15,21 @@
 //! server child is re-exec'd from this test binary (or the real
 //! `agalma-ledger-server` binary when built) so a package-scoped
 //! `cargo test -p agalma-conductor` run still exercises the real process
-//! boundary.
+//! boundary. Scratch dirs auto-remove on success (kept on failure).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use agalma_contracts::{
-    BindingId, BindingRecord, BindingState, CommitBatch, CommitReceipt, ContractError, DispatchIntent,
-    ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState, LedgerApi,
-    OperationId, OperationReceipt, StateSnapshot, TaskId, TimerRecord, TimerState,
+    BindingId, BindingRecord, BindingState, CommitBatch, CommitReceipt, ContractError,
+    DispatchIntent, ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState,
+    LedgerApi, OperationId, OperationReceipt, StateSnapshot, TaskId, TimerRecord, TimerState,
 };
 use agalma_ipc::{Client, CommandSpec, CommitParams, IpcError, LedgerClient, LedgerOps};
 use agalma_ledger::server::SERVER_BIN;
 use agalma_ledger::SqliteLedger;
+use agalma_testkit::ScratchDir;
 
 use agalma_conductor::harness_process::resolve_server_binary;
 use agalma_conductor::ledger_process::{LedgerProcess, LedgerTransport};
@@ -42,28 +43,10 @@ const READY_TIMEOUT: Duration = Duration::from_secs(20);
 // Fixtures + helpers
 // ===========================================================================
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under <root>/crates/")
-        .to_path_buf()
-}
-
 /// Short, unique run directory. Unix socket paths must fit `SUN_LEN` (~104
 /// bytes), so sockets live directly under a short `lp-<pid>-<n>` directory.
-static RUN_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-fn fresh() -> PathBuf {
-    let n = RUN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = root()
-        .join("target")
-        .join("test-runs")
-        .join(format!("lp-{}-{n}", std::process::id()));
-    // WARNING: deletes files, but only under `target/test-runs/` (disposable).
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create run dir");
-    dir
+fn fresh() -> ScratchDir {
+    ScratchDir::new("lp")
 }
 
 fn pid_alive(pid: u32) -> bool {
@@ -353,13 +336,19 @@ fn shadow_parity_in_process_vs_process() {
     assert_eq!(in_process.pending_before, 1);
     assert_eq!(in_process.pending_after, 0, "receipt consumed the intent");
     assert_eq!(in_process.receipt_kind, "build");
-    assert_eq!(in_process.event_kinds, vec!["execution_created", "build_started"]);
+    assert_eq!(
+        in_process.event_kinds,
+        vec!["execution_created", "build_started"]
+    );
     assert_eq!(in_process.due_timers, 1);
     assert_eq!(in_process.schema_version, agalma_ledger::SCHEMA_VERSION);
 
     drop(client);
     let evidence = server.stop();
-    assert!(evidence.process_group_gone, "server stop evidence: {evidence:?}");
+    assert!(
+        evidence.process_group_gone,
+        "server stop evidence: {evidence:?}"
+    );
 }
 
 // ===========================================================================
@@ -396,7 +385,8 @@ fn quiesced_rebind_preserves_pinned_operation() {
     assert_eq!(a.pending_intents().expect("pending a").len(), 1);
 
     // Drain + export: the canonical snapshot is written to a file (D3).
-    a.export_snapshot_to(&snapshot_path).expect("export snapshot");
+    a.export_snapshot_to(&snapshot_path)
+        .expect("export snapshot");
     assert!(snapshot_path.is_file(), "snapshot file written");
     drop(a);
     let stopped = server_a.stop();
@@ -408,7 +398,8 @@ fn quiesced_rebind_preserves_pinned_operation() {
     let socket_b = run.join("b.sock");
     let mut server_b = spawn_server(&socket_b, &b_dir);
     let mut b = server_b.client().expect("client b");
-    b.import_snapshot_from(&snapshot_path).expect("import snapshot");
+    b.import_snapshot_from(&snapshot_path)
+        .expect("import snapshot");
 
     // The pinned operation's ids/pending work survive on the new binding.
     assert_eq!(b.lease_generation(&task()).expect("lease on b"), lease);
@@ -454,7 +445,10 @@ fn rollback_keeps_prior_state_and_server() {
     a.commit(CommitBatch {
         expected_revision: None,
         state: Some(exec_record()),
-        events: vec![event("execution_created", serde_json::json!({ "lease_generation": 1 }))],
+        events: vec![event(
+            "execution_created",
+            serde_json::json!({ "lease_generation": 1 }),
+        )],
         receipts: vec![],
         intents: vec![intent(&op("build"), serde_json::json!({ "kind": "build" }))],
     })
@@ -470,7 +464,10 @@ fn rollback_keeps_prior_state_and_server() {
     assert!(!pid_alive(b_pid), "candidate server is gone after rollback");
 
     // No state lost: the prior server's DB is intact and it serves the next op.
-    assert!(pid_alive(server_a.pid()), "prior server survives the rollback");
+    assert!(
+        pid_alive(server_a.pid()),
+        "prior server survives the rollback"
+    );
     assert_eq!(a.executions().expect("executions").len(), 1);
     assert_eq!(a.pending_intents().expect("pending").len(), 1);
     a.commit(CommitBatch {
@@ -548,8 +545,17 @@ fn ledger_client_duplicate_id_replay_and_connection_loss() {
     let socket2 = dir.join("d2.sock");
     let mut server2 = spawn_server(&socket2, &dir);
     let mut reconciled = LedgerClient::connect(&socket2, &dir).expect("reconnect");
-    assert_eq!(reconciled.executions().expect("reconciled executions").len(), 1);
-    assert_eq!(reconciled.events(&exec()).expect("reconciled events").len(), 1);
+    assert_eq!(
+        reconciled
+            .executions()
+            .expect("reconciled executions")
+            .len(),
+        1
+    );
+    assert_eq!(
+        reconciled.events(&exec()).expect("reconciled events").len(),
+        1
+    );
 
     // An incompatible snapshot import is refused (format + schema gates).
     let good = reconciled.export_state().expect("export");

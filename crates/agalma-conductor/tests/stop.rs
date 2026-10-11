@@ -6,7 +6,7 @@
 //! scratch `git` + isolated `bd` workspace under `target/test-runs/stop-*`
 //! (never `/tmp`). The designer session is a scripted [`DesignerSession`] seam
 //! (no harness, no network, no paid call); the gate and all backlog projections
-//! are real.
+//! are real. Scratch dirs auto-remove on success (kept on failure for forensics).
 
 use std::cell::RefCell;
 use std::fs;
@@ -15,28 +15,11 @@ use std::process::Command;
 
 use agalma_conductor::sweep::{sweep_epics, DesignerRequest, DesignerSession, PlannerGate};
 use agalma_contracts::{ContractError, LedgerApi};
+use agalma_testkit::ScratchDir;
 use serde_json::Value;
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under <root>/crates/")
-        .to_path_buf()
-}
-
-static RUN_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-fn fresh(name: &str) -> PathBuf {
-    let n = RUN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = root()
-        .join("target")
-        .join("test-runs")
-        .join(format!("stop-{name}-{}-{n}", std::process::id()));
-    // WARNING: deletes files, but only under `target/test-runs/` (disposable).
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create run dir");
-    dir
+fn fresh(name: &str) -> ScratchDir {
+    ScratchDir::new(&format!("stop-{name}"))
 }
 
 fn stderr_of(out: &std::process::Output) -> String {
@@ -50,7 +33,11 @@ fn run_ok(program: &str, dir: &Path, args: &[&str]) {
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .unwrap_or_else(|e| panic!("spawn {program} {args:?}: {e}"));
-    assert!(out.status.success(), "{program} {args:?}: {}", stderr_of(&out));
+    assert!(
+        out.status.success(),
+        "{program} {args:?}: {}",
+        stderr_of(&out)
+    );
 }
 
 fn require_bd() {
@@ -66,6 +53,7 @@ fn require_bd() {
 struct Scratch {
     repo: PathBuf,
     state_dir: PathBuf,
+    _dir: ScratchDir,
 }
 
 impl Scratch {
@@ -95,7 +83,11 @@ impl Scratch {
 
         let state_dir = dir.join("state");
         fs::create_dir_all(&state_dir).expect("state dir");
-        Scratch { repo, state_dir }
+        Scratch {
+            repo,
+            state_dir,
+            _dir: dir,
+        }
     }
 
     fn bd(&self, args: &[&str]) -> std::process::Output {
@@ -281,7 +273,10 @@ fn preexisting_stop_blocks_sweep_without_mutations() {
     let report = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(), &designer).expect("sweep");
 
     assert!(report.stopped, "sweep reports stopped: {report:?}");
-    assert!(designer.called().is_empty(), "zero designer calls: {designer:?}");
+    assert!(
+        designer.called().is_empty(),
+        "zero designer calls: {designer:?}"
+    );
     assert!(report.epics_seen.is_empty(), "no epic examined: {report:?}");
     assert!(
         scratch.children(&epic).is_empty(),
@@ -317,7 +312,10 @@ fn persisted_kill_latch_alone_blocks_sweep_without_mutations() {
     assert!(report.stopped, "kill latch blocks the sweep: {report:?}");
     assert!(designer.called().is_empty(), "zero designer calls");
     assert!(scratch.children(&epic).is_empty(), "no ticket mutations");
-    assert!(scratch.kill_latch(), "latch retained (never implicitly cleared)");
+    assert!(
+        scratch.kill_latch(),
+        "latch retained (never implicitly cleared)"
+    );
 
     // Restart still blocked.
     let again = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(), &designer).expect("sweep");
@@ -343,8 +341,16 @@ fn stop_during_session_halts_before_next_epic_and_preserves_state() {
     let called = designer.called();
     assert_eq!(called.len(), 1, "exactly one session ran: {called:?}");
     let interrupted = called[0].clone();
-    let other = if interrupted == epic1 { epic2.clone() } else { epic1.clone() };
-    assert_eq!(report.epics_seen, vec![interrupted.clone()], "no next epic examined");
+    let other = if interrupted == epic1 {
+        epic2.clone()
+    } else {
+        epic1.clone()
+    };
+    assert_eq!(
+        report.epics_seen,
+        vec![interrupted.clone()],
+        "no next epic examined"
+    );
     assert_eq!(report.epics_swept, vec![interrupted.clone()], "{report:?}");
 
     // The interrupted planning state is preserved for reconciliation: the
@@ -375,7 +381,10 @@ fn stop_during_session_halts_before_next_epic_and_preserves_state() {
     let restart = ScriptedDesigner::inert();
     let again = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(), &restart).expect("sweep");
     assert!(again.stopped, "restart retains stop state: {again:?}");
-    assert!(restart.called().is_empty(), "no dispatch after restart while stopped");
+    assert!(
+        restart.called().is_empty(),
+        "no dispatch after restart while stopped"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +400,8 @@ fn human_resume_is_the_only_clear_and_permits_dispatch() {
     scratch.write_stop();
 
     let designer = ScriptedDesigner::inert();
-    let blocked = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(), &designer).expect("sweep");
+    let blocked =
+        sweep_epics(&scratch.repo, &scratch.state_dir, &gate(), &designer).expect("sweep");
     assert!(blocked.stopped, "{blocked:?}");
     assert!(designer.called().is_empty());
     // Nothing cleared the stop implicitly.
@@ -436,7 +446,11 @@ fn interrupted_decomposition_is_reconciled_after_resume() {
     let called = designer.called();
     assert_eq!(called.len(), 1, "one session ran: {called:?}");
     let interrupted = called[0].clone();
-    let later = if interrupted == epic1 { epic2.clone() } else { epic1.clone() };
+    let later = if interrupted == epic1 {
+        epic2.clone()
+    } else {
+        epic1.clone()
+    };
 
     // Human resume clears the stop.
     let resume = Command::new(env!("CARGO_BIN_EXE_agalma"))
@@ -460,7 +474,11 @@ fn interrupted_decomposition_is_reconciled_after_resume() {
         restart.called()
     );
     assert_eq!(
-        restart.called().iter().filter(|e| **e == interrupted).count(),
+        restart
+            .called()
+            .iter()
+            .filter(|e| **e == interrupted)
+            .count(),
         0,
         "no second session for the recovered epic"
     );

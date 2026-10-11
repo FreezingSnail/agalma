@@ -36,3 +36,4 @@ webpki-roots = { workspace = true }
 
 [dev-dependencies]
 rusqlite = { workspace = true }
+agalma-testkit = { path = "../agalma-testkit" }

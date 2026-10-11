@@ -5,32 +5,22 @@
 //! file and a real isolated `bd` store. Model calls are replaced by the
 //! conductor's scripted activity mode (`AGALMA_ACTIVITY_MODE=scripted`); the
 //! acceptance command list still runs, deterministically, via the in-process
-//! runner. No `/tmp`, no network.
+//! runner. No `/tmp`, no network. Scratch dirs auto-remove on success (kept on
+//! failure for forensics).
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use agalma_testkit::ScratchDir;
 use serde_json::Value;
-
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under <root>/crates/")
-        .to_path_buf()
-}
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_agalma")
 }
 
-fn fresh(name: &str) -> PathBuf {
-    let dir = root().join("target").join("test-runs").join(name);
-    // WARNING: deletes files, but only under `target/test-runs/` (disposable).
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create run dir");
-    dir
+fn fresh(name: &str) -> ScratchDir {
+    ScratchDir::new(name)
 }
 
 fn stderr_of(out: &Output) -> String {
@@ -64,6 +54,7 @@ fn require_bd() {
 struct Scratch {
     origin: PathBuf,
     state_dir: PathBuf,
+    _dir: ScratchDir,
 }
 
 impl Scratch {
@@ -109,9 +100,11 @@ impl Scratch {
         let description = format!(
             "Task body.\n\n```yaml\ndirective: directive/v0\ntarget: agalma\nref: main\nacceptance:\n{acceptance}\npriority: normal\nfamily: fix\nmax_attempts: {max_attempts}\n```\n"
         );
+        let state_dir = dir.join("state");
         let scratch = Scratch {
             origin,
-            state_dir: dir.join("state"),
+            state_dir,
+            _dir: dir,
         };
         let id = scratch.create("Scratch task", &description);
         (scratch, id)

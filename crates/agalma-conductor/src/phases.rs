@@ -2665,7 +2665,11 @@ fn transport_error_is_terminal(err: &ContractError) -> bool {
 /// The conductor cancels *before* closing the session so the interrupt reaches
 /// a live session. If the session already ended on its own, the cancel 404s;
 /// that is "already gone", not an error, and must not be reported as a failure.
-fn cancel_tolerating_gone<H: HarnessApi + ?Sized>(harness: &mut H, op: &OperationHandle, context: &str) {
+fn cancel_tolerating_gone<H: HarnessApi + ?Sized>(
+    harness: &mut H,
+    op: &OperationHandle,
+    context: &str,
+) {
     match harness.cancel_operation(op) {
         Ok(_) => {}
         Err(err) => {
@@ -2887,6 +2891,7 @@ fn cargo_bin() -> Result<PathBuf, ActivityError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agalma_testkit::ScratchDir;
 
     fn deps(repo: Option<RepoMode>) -> PhaseDeps {
         PhaseDeps {
@@ -2913,18 +2918,9 @@ mod tests {
         }
     }
 
-    fn scratch_dir(name: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("target")
-            .join("test-runs")
-            .join(format!("phases-{name}-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(dir.join("artifacts")).expect("scratch dir");
+    fn scratch_dir(name: &str) -> ScratchDir {
+        let dir = ScratchDir::new(&format!("phases-{name}"));
+        dir.child("artifacts");
         dir
     }
 

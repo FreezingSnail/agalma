@@ -28,7 +28,7 @@
 //! component-server child is re-exec'd from this test binary (or the real
 //! `agalma-ledger-server`/`agalma-kernel-server` binary when built), so a
 //! package-scoped `cargo test -p agalma-conductor` run still exercises the real
-//! process boundary.
+//! process boundary. Scratch dirs auto-remove on success (kept on failure).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -44,6 +44,7 @@ use agalma_kernel::{
     ExecState, Inputs, KernelEngine, Probe, TimerFire,
 };
 use agalma_ledger::SqliteLedger;
+use agalma_testkit::ScratchDir;
 use serde_json::json;
 
 use agalma_conductor::execution_process::{
@@ -67,27 +68,9 @@ const CHILD_KERNEL_TEST_NAME: &str = "kernel_server_child";
 // Fixtures + helpers
 // ===========================================================================
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under <root>/crates/")
-        .to_path_buf()
-}
-
-static RUN_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
 /// Short, unique run directory (sockets must fit `SUN_LEN`).
-fn fresh() -> PathBuf {
-    let n = RUN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = root()
-        .join("target")
-        .join("test-runs")
-        .join(format!("ep-{}-{n}", std::process::id()));
-    // WARNING: deletes files, but only under `target/test-runs/` (disposable).
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create run dir");
-    dir
+fn fresh() -> ScratchDir {
+    ScratchDir::new("ep")
 }
 
 fn pid_alive(pid: u32) -> bool {
@@ -164,7 +147,10 @@ fn spawn_ledger(state_dir: &Path, socket: &Path) -> LedgerProcess {
 
 fn kernel_spec(socket: &Path, state_dir: &Path, ledger_socket: &Path) -> (CommandSpec, PathBuf) {
     match resolve_server_binary(agalma_kernel::server::SERVER_BIN) {
-        Ok(bin) => (execution_server_spec(socket, state_dir, ledger_socket, None), bin),
+        Ok(bin) => (
+            execution_server_spec(socket, state_dir, ledger_socket, None),
+            bin,
+        ),
         Err(_) => {
             let exe = std::env::current_exe().expect("current_exe");
             let spec = CommandSpec::new(exe.to_string_lossy().into_owned())
@@ -359,7 +345,10 @@ fn run_scenario(ops: &mut dyn ExecutionOps, snapshot_path: &Path) -> Transcript 
         .receipt(&op)
         .expect("receipt")
         .expect("receipt recorded");
-    let pending_after_complete = ops.pending_dispatch().expect("pending after complete").len();
+    let pending_after_complete = ops
+        .pending_dispatch()
+        .expect("pending after complete")
+        .len();
 
     let timer = TimerRecord {
         timer_id: "timer:parity".to_string(),
@@ -390,14 +379,18 @@ fn run_scenario(ops: &mut dyn ExecutionOps, snapshot_path: &Path) -> Transcript 
     let _ = ops
         .submit_directive(&exec, "directive:parity", 1, directive_plan, 6)
         .expect("submit_directive");
-    let directive_pending = ops.pending_dispatch().expect("pending after directive").len();
+    let directive_pending = ops
+        .pending_dispatch()
+        .expect("pending after directive")
+        .len();
 
     ExecutionApi::cancel(ops, &exec).expect("cancel");
     let pending_after_cancel = ops.pending_dispatch().expect("pending after cancel").len();
     let status = ExecutionApi::status(ops, &exec).expect("status");
     let status_after_cancel = format!("{:?}", status.state);
 
-    ops.export_snapshot_to(snapshot_path).expect("export snapshot");
+    ops.export_snapshot_to(snapshot_path)
+        .expect("export snapshot");
     let text = std::fs::read_to_string(snapshot_path).expect("read snapshot");
     let snapshot = StateSnapshot::from_json(&text).expect("parse snapshot");
     let snapshot_json = normalize(snapshot)
@@ -449,15 +442,30 @@ fn shadow_parity_in_process_vs_process() {
     // Spot-check the scenario itself.
     assert_eq!(in_process.lease, 1, "first claim cycle");
     assert_eq!(in_process.pending_after_announce, 1);
-    assert_eq!(in_process.pending_op_ids, vec![build_op().as_str().to_string()]);
+    assert_eq!(
+        in_process.pending_op_ids,
+        vec![build_op().as_str().to_string()]
+    );
     assert_eq!(in_process.announce_dispatches, 1, "one dispatch hand-off");
     assert_eq!(in_process.receipt_kind, "operation");
-    assert_eq!(in_process.pending_after_complete, 0, "completion consumed the intent");
+    assert_eq!(
+        in_process.pending_after_complete, 0,
+        "completion consumed the intent"
+    );
     assert_eq!(in_process.due_timers, 1);
-    assert_eq!(in_process.timer_fired, vec![("timer:parity".to_string(), true)]);
+    assert_eq!(
+        in_process.timer_fired,
+        vec![("timer:parity".to_string(), true)]
+    );
     assert_eq!(in_process.directive_pending, 1);
-    assert_eq!(in_process.pending_after_cancel, 0, "cancel released the intent");
-    assert_eq!(in_process.status_after_cancel, "Failed", "Cancelled coarsens to Failed");
+    assert_eq!(
+        in_process.pending_after_cancel, 0,
+        "cancel released the intent"
+    );
+    assert_eq!(
+        in_process.status_after_cancel, "Failed",
+        "Cancelled coarsens to Failed"
+    );
 
     drop(client);
     let _ = kernel_server.stop();
@@ -468,7 +476,10 @@ fn shadow_parity_in_process_vs_process() {
 /// `process` when selected.
 #[test]
 fn transport_defaults_to_in_process() {
-    assert_eq!(ExecutionTransport::from_env(), ExecutionTransport::InProcess);
+    assert_eq!(
+        ExecutionTransport::from_env(),
+        ExecutionTransport::InProcess
+    );
     assert_eq!(ExecutionTransport::InProcess.as_str(), "in-process");
     assert_eq!(ExecutionTransport::Process.as_str(), "process");
 }
@@ -524,7 +535,8 @@ fn rebind_preserves_in_flight_pinned_operation() {
     assert_eq!(a.pending_dispatch().expect("pending a").len(), 1);
 
     // Drain + export the canonical snapshot to a file (D3).
-    a.export_snapshot_to(&snapshot_path).expect("export snapshot");
+    a.export_snapshot_to(&snapshot_path)
+        .expect("export snapshot");
     assert!(snapshot_path.is_file(), "snapshot file written");
     drop(a);
     let stopped = kernel_a.stop();
@@ -537,7 +549,8 @@ fn rebind_preserves_in_flight_pinned_operation() {
     let mut ledger_b = spawn_ledger(&b_dir, &b_ledger);
     let mut kernel_b = spawn_kernel(&b_dir, &b_ledger);
     let mut b = kernel_b.client().expect("client b");
-    b.import_snapshot_from(&snapshot_path).expect("import snapshot");
+    b.import_snapshot_from(&snapshot_path)
+        .expect("import snapshot");
 
     // The pinned operation and its binding pin survive the rebind.
     assert_eq!(b.lease_generation(&task()).expect("lease on b"), lease);
@@ -633,7 +646,10 @@ fn rollback_keeps_prior_binding_and_state() {
     let _ = ledger_b.stop();
 
     // No state lost: the prior binding serves the next operation.
-    assert!(pid_alive(kernel_a.pid()), "prior kernel survives the rollback");
+    assert!(
+        pid_alive(kernel_a.pid()),
+        "prior kernel survives the rollback"
+    );
     let state = a.load_state(&exec()).expect("load state");
     let state: agalma_kernel::KernelState = serde_json::from_value(state).expect("decode state");
     assert_eq!(state.state, ExecState::Running);
@@ -688,7 +704,11 @@ fn execution_client_duplicate_id_replay_and_connection_loss() {
     let generation = raw
         .call_with_id(2, "lease_generation", json!({ "task": "fix-parity" }))
         .expect("lease_generation");
-    assert_eq!(generation, json!(1), "duplicate begin_lease did not double the effect");
+    assert_eq!(
+        generation,
+        json!(1),
+        "duplicate begin_lease did not double the effect"
+    );
 
     // Connection loss: stop the server; the next call surfaces
     // Unavailable/UnknownOutcome (never a silent success).

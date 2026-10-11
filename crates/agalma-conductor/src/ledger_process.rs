@@ -194,9 +194,8 @@ impl LedgerHandle {
 
     /// Spawn a supervised ledger server owning `state_dir` and connect.
     pub fn process(state_dir: &Path) -> Result<LedgerHandle, ContractError> {
-        let process = LedgerProcess::spawn(state_dir, READY_TIMEOUT).map_err(|e| {
-            ContractError::KnownFailure(format!("start ledger server: {e}"))
-        })?;
+        let process = LedgerProcess::spawn(state_dir, READY_TIMEOUT)
+            .map_err(|e| ContractError::KnownFailure(format!("start ledger server: {e}")))?;
         let client = process
             .client()
             .map_err(|e| ContractError::KnownFailure(format!("connect ledger server: {e}")))?;
@@ -476,6 +475,7 @@ impl LedgerOps for LedgerHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agalma_testkit::ScratchDir;
 
     #[test]
     fn transport_from_env_defaults_to_in_process() {
@@ -495,16 +495,8 @@ mod tests {
 
     #[test]
     fn in_process_handle_is_constructed_without_a_server() {
-        let target = std::env::var_os("CARGO_TARGET_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target")
-            });
-        let dir = target.join("test-runs").join(format!("ledger-handle-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = ScratchDir::new("ledger-handle");
         let handle = LedgerHandle::in_process(&dir).expect("open ledger");
         assert!(handle._process.is_none());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -4,40 +4,24 @@
 //! scratch `bd` workspace under `target/test-runs/sweep-*` (never `/tmp`):
 //! `git init` + `bd init --skip-agents --skip-hooks`. The designer session is a
 //! scripted [`DesignerSession`] seam (no harness, no network); the gate and all
-//! backlog projections are real.
+//! backlog projections are real. Scratch dirs auto-remove on success (kept on
+//! failure for forensics).
 
 use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use agalma_contracts::TaskQueueApi;
 use agalma_conductor::sweep::{
     sweep_epics, write_live_designer_prompt, DesignerRequest, DesignerSession, PlannerGate,
 };
+use agalma_contracts::TaskQueueApi;
 use agalma_taskqueue::BdTaskQueue;
+use agalma_testkit::ScratchDir;
 use serde_json::Value;
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under <root>/crates/")
-        .to_path_buf()
-}
-
-static RUN_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-fn fresh(name: &str) -> PathBuf {
-    let n = RUN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = root()
-        .join("target")
-        .join("test-runs")
-        .join(format!("sweep-{name}-{}-{n}", std::process::id()));
-    // WARNING: deletes files, but only under `target/test-runs/` (disposable).
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create run dir");
-    dir
+fn fresh(name: &str) -> ScratchDir {
+    ScratchDir::new(&format!("sweep-{name}"))
 }
 
 fn stderr_of(out: &std::process::Output) -> String {
@@ -51,7 +35,11 @@ fn run_ok(program: &str, dir: &Path, args: &[&str]) {
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .unwrap_or_else(|e| panic!("spawn {program} {args:?}: {e}"));
-    assert!(out.status.success(), "{program} {args:?}: {}", stderr_of(&out));
+    assert!(
+        out.status.success(),
+        "{program} {args:?}: {}",
+        stderr_of(&out)
+    );
 }
 
 fn require_bd() {
@@ -67,6 +55,7 @@ fn require_bd() {
 struct Scratch {
     repo: PathBuf,
     state_dir: PathBuf,
+    _dir: ScratchDir,
 }
 
 impl Scratch {
@@ -96,7 +85,11 @@ impl Scratch {
 
         let state_dir = dir.join("state");
         fs::create_dir_all(&state_dir).expect("state dir");
-        Scratch { repo, state_dir }
+        Scratch {
+            repo,
+            state_dir,
+            _dir: dir,
+        }
     }
 
     fn beads(&self) -> PathBuf {
@@ -273,7 +266,11 @@ impl DesignerSession for ScriptedDesigner {
                 .env("BD_NON_INTERACTIVE", "1")
                 .output()
                 .expect("spawn bd in designer");
-            assert!(out.status.success(), "designer bd {args:?}: {}", stderr_of(&out));
+            assert!(
+                out.status.success(),
+                "designer bd {args:?}: {}",
+                stderr_of(&out)
+            );
             String::from_utf8_lossy(&out.stdout).into_owned()
         };
         let create = |title: &str, description: &str, labels: &str| {
@@ -344,8 +341,13 @@ fn undecomposed_epic_is_detected_and_swept() {
     let epic = scratch.create_epic("Empty epic");
     let designer = ScriptedDesigner::new(Mode::Noop);
 
-    let report = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let report = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
 
     assert_eq!(report.epics_seen, vec![epic.clone()], "epic detected");
     assert_eq!(designer.called(), vec![epic], "designer ran for the epic");
@@ -357,8 +359,13 @@ fn valid_decomposition_is_approved_staged_and_invisible_to_ready() {
     let epic = scratch.create_epic("Valid epic");
     let designer = ScriptedDesigner::new(Mode::Valid);
 
-    let report = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let report = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
     assert_eq!(report.approved, vec![epic.clone()]);
     assert!(report.rejected.is_empty(), "{report:?}");
 
@@ -374,13 +381,19 @@ fn valid_decomposition_is_approved_staged_and_invisible_to_ready() {
     }
 
     // Ready intake sees neither the epic nor the staged (deferred) children.
-    let ready = BdTaskQueue::new(&scratch.repo).ready_tasks().expect("ready");
+    let ready = BdTaskQueue::new(&scratch.repo)
+        .ready_tasks()
+        .expect("ready");
     assert!(ready.tasks.is_empty(), "no ready tasks: {:?}", ready.tasks);
-    assert!(ready.skipped.is_empty(), "nothing skipped: {:?}", ready.skipped);
+    assert!(
+        ready.skipped.is_empty(),
+        "nothing skipped: {:?}",
+        ready.skipped
+    );
 
     // The planner route was resolved and recorded as a `route.model` decision.
-    let conn = rusqlite::Connection::open(scratch.state_dir.join("ledger.sqlite"))
-        .expect("open ledger");
+    let conn =
+        rusqlite::Connection::open(scratch.state_dir.join("ledger.sqlite")).expect("open ledger");
     let class: String = conn
         .query_row(
             "SELECT json_extract(request_json,'$.context.class') FROM decisions \
@@ -398,8 +411,13 @@ fn invalid_decomposition_is_rejected_with_one_p1_fix_task() {
     let epic = scratch.create_epic("Invalid epic");
     let designer = ScriptedDesigner::new(Mode::Invalid);
 
-    let report = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let report = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
     assert_eq!(report.rejected, vec![epic.clone()]);
     assert!(report.escalated.is_empty(), "{report:?}");
 
@@ -423,9 +441,18 @@ fn invalid_decomposition_is_rejected_with_one_p1_fix_task() {
     let fix = fixes[0];
     assert_eq!(fix["priority"], 1, "decomp-fix is P1: {fix}");
     let description = fix["description"].as_str().unwrap_or_default();
-    assert!(description.contains("1. count-budget"), "ordered violations: {description}");
-    assert!(description.contains("schema-section"), "rule named: {description}");
-    assert!(description.contains("tier-mismatch"), "rule named: {description}");
+    assert!(
+        description.contains("1. count-budget"),
+        "ordered violations: {description}"
+    );
+    assert!(
+        description.contains("schema-section"),
+        "rule named: {description}"
+    );
+    assert!(
+        description.contains("tier-mismatch"),
+        "rule named: {description}"
+    );
 
     // The epic carries the rejection comment.
     let epic_issue = scratch.show(&epic);
@@ -438,7 +465,10 @@ fn invalid_decomposition_is_rejected_with_one_p1_fix_task() {
                 .join("\n")
         })
         .unwrap_or_default();
-    assert!(comments.contains("decomp-rejected"), "epic comment: {comments}");
+    assert!(
+        comments.contains("decomp-rejected"),
+        "epic comment: {comments}"
+    );
 }
 
 #[test]
@@ -448,15 +478,30 @@ fn retries_exhausted_escalates_to_human() {
 
     // Two rejected children and two prior rework tasks: the next failure is the
     // third and exhausts the retry budget.
-    scratch.create_child(&epic, "A", &low_desc("a"), "staged,difficulty:high,decomp-rejected");
-    scratch.create_child(&epic, "B", &low_desc("b"), "staged,difficulty:low,decomp-rejected");
+    scratch.create_child(
+        &epic,
+        "A",
+        &low_desc("a"),
+        "staged,difficulty:high,decomp-rejected",
+    );
+    scratch.create_child(
+        &epic,
+        "B",
+        &low_desc("b"),
+        "staged,difficulty:low,decomp-rejected",
+    );
     for _ in 0..2 {
         scratch.create_decomp_fix(&epic);
     }
 
     let designer = ScriptedDesigner::new(Mode::Noop);
-    let report = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let report = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
     assert_eq!(report.escalated, vec![epic.clone()]);
 
     let epic_issue = scratch.show(&epic);
@@ -472,8 +517,13 @@ fn retries_exhausted_escalates_to_human() {
     assert_eq!(fixes, 3, "three rework tasks recorded");
 
     // A human-labelled epic is no longer a candidate.
-    let again = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let again = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
     assert!(again.epics_seen.is_empty(), "human epic ignored: {again:?}");
 }
 
@@ -484,8 +534,13 @@ fn planner_unavailable_skips_without_sessions() {
     let designer = ScriptedDesigner::new(Mode::Valid);
 
     // AGALMA_ALLOW_PAID off: the planner route is unavailable.
-    let report = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(false, true), &designer)
-        .expect("sweep");
+    let report = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(false, true),
+        &designer,
+    )
+    .expect("sweep");
 
     assert!(report.skipped_reason.is_some(), "skip recorded: {report:?}");
     assert!(
@@ -511,8 +566,12 @@ fn live_designer_prompt_carries_epic_repo_and_retry_feedback() {
     let epic = scratch.create_epic("Prompt epic");
     // Seed a rejected child, a rework task, and an epic comment so the retry
     // context is non-empty (the production path gathers these from `bd`).
-    let rejected =
-        scratch.create_child(&epic, "R", &low_desc("r"), "staged,difficulty:low,decomp-rejected");
+    let rejected = scratch.create_child(
+        &epic,
+        "R",
+        &low_desc("r"),
+        "staged,difficulty:low,decomp-rejected",
+    );
     let fix = scratch.create_decomp_fix(&epic);
     scratch.bd_ok(&["comment", &epic, "decomp-rejected: revise the children"]);
 
@@ -532,7 +591,10 @@ fn live_designer_prompt_carries_epic_repo_and_retry_feedback() {
     let path = write_live_designer_prompt(&request).expect("compose live prompt");
     let text = fs::read_to_string(&path).expect("read composed prompt");
 
-    assert!(text.contains(&format!("epic: {epic}")), "exact epic id: {text}");
+    assert!(
+        text.contains(&format!("epic: {epic}")),
+        "exact epic id: {text}"
+    );
     assert!(
         text.contains(&scratch.repo.display().to_string()),
         "owning repository: {text}"
@@ -573,8 +635,13 @@ fn approved_children_release_only_after_human_undefer_and_unblock() {
     let scratch = Scratch::new("undefer-release");
     let epic = scratch.create_epic("Valid epic");
     let designer = ScriptedDesigner::new(Mode::Valid);
-    let report = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let report = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
     assert_eq!(report.approved, vec![epic.clone()], "{report:?}");
 
     let ids: Vec<String> = scratch
@@ -627,8 +694,13 @@ fn rejected_and_unvalidated_children_stay_hidden() {
     let scratch = Scratch::new("rejected-hidden");
     let epic = scratch.create_epic("Invalid epic");
     let designer = ScriptedDesigner::new(Mode::Invalid);
-    let report = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let report = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
     assert_eq!(report.rejected, vec![epic.clone()], "{report:?}");
 
     let rejected: Vec<String> = scratch
@@ -696,8 +768,13 @@ fn designer_failure_after_one_child_retries_and_preserves_child_identity() {
     // Sweep 1: the session dies after creating one child. The conductor must
     // reconcile the orphan (reject it, record the attempt) instead of stranding
     // the epic outside retry handling.
-    let first = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let first = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
     assert_eq!(first.epics_seen, vec![epic.clone()]);
     assert_eq!(first.rejected, vec![epic.clone()], "{first:?}");
     assert!(first.escalated.is_empty(), "{first:?}");
@@ -713,8 +790,13 @@ fn designer_failure_after_one_child_retries_and_preserves_child_identity() {
 
     // Sweep 2: the same epic is retried; the orphan keeps its identity and no
     // duplicate decomposition child appears.
-    let second = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let second = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
     assert_eq!(second.epics_seen, vec![epic.clone()], "epic retried");
     assert_eq!(designer.called().len(), 2, "designer ran again");
     assert_eq!(
@@ -725,8 +807,13 @@ fn designer_failure_after_one_child_retries_and_preserves_child_identity() {
     assert_eq!(fix_count(&scratch, &epic), 2, "attempt 2 recorded");
 
     // Sweep 3: the retry bound is reached and the epic escalates to a human.
-    let third = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let third = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
     assert_eq!(third.escalated, vec![epic.clone()], "{third:?}");
     assert_eq!(fix_count(&scratch, &epic), 3, "three attempts recorded");
     assert!(
@@ -735,9 +822,17 @@ fn designer_failure_after_one_child_retries_and_preserves_child_identity() {
     );
 
     // Sweep 4: an escalated epic is never re-dispatched.
-    let fourth = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
-    assert!(fourth.epics_seen.is_empty(), "human epic ignored: {fourth:?}");
+    let fourth = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
+    assert!(
+        fourth.epics_seen.is_empty(),
+        "human epic ignored: {fourth:?}"
+    );
     assert_eq!(designer.called().len(), 3, "no further designer session");
 }
 
@@ -749,30 +844,50 @@ fn success_with_zero_children_retries_and_escalates() {
 
     // Sweep 1: a completed session that produced no children is a failed
     // decomposition, not a dead end.
-    let first = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let first = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
     assert_eq!(first.epics_seen, vec![epic.clone()]);
     assert_eq!(first.rejected, vec![epic.clone()], "{first:?}");
     assert!(first.escalated.is_empty(), "{first:?}");
     assert_eq!(fix_count(&scratch, &epic), 1, "empty attempt recorded");
 
     // Sweep 2: the empty epic is still a candidate and retried.
-    let second = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let second = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
     assert_eq!(second.epics_seen, vec![epic.clone()], "empty epic retried");
     assert_eq!(designer.called().len(), 2, "designer ran again");
     assert_eq!(fix_count(&scratch, &epic), 2);
 
     // Sweep 3: the retry bound is reached and the epic escalates.
-    let third = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let third = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
     assert_eq!(third.escalated, vec![epic.clone()], "{third:?}");
     assert_eq!(fix_count(&scratch, &epic), 3);
     assert!(has_label(&scratch.show(&epic), "human"), "escalated");
 
     // Sweep 4: escalated epics are not re-dispatched.
-    let fourth = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let fourth = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
     assert!(fourth.epics_seen.is_empty(), "{fourth:?}");
 }
 
@@ -804,8 +919,13 @@ fn restart_after_partial_gate_projection_recovers_without_replanning() {
     scratch.bd_ok(&["update", &epic, "--add-label", "decomp-inflight"]);
 
     let designer = ScriptedDesigner::new(Mode::Valid);
-    let report = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let report = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
 
     // The interrupted attempt is finalized in place: no new designer session,
     // no duplicated children, and the repaired decomposition passes the gate.
@@ -842,8 +962,13 @@ fn restart_after_partial_gate_projection_recovers_without_replanning() {
     );
 
     // A later sweep sees the approved epic as untouched.
-    let again = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let again = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
     assert!(again.epics_seen.is_empty(), "{again:?}");
 }
 
@@ -855,8 +980,13 @@ fn hand_authored_epic_children_are_not_replanned() {
     scratch.create_child(&epic, "hand", &low_desc("h"), "difficulty:low");
 
     let designer = ScriptedDesigner::new(Mode::Valid);
-    let report = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let report = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
 
     assert!(report.epics_seen.is_empty(), "{report:?}");
     assert!(designer.called().is_empty(), "designer never ran");
@@ -869,12 +999,26 @@ fn approved_epic_is_not_redispatched() {
     let epic = scratch.create_epic("Valid epic");
     let designer = ScriptedDesigner::new(Mode::Valid);
 
-    let first = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let first = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
     assert_eq!(first.approved, vec![epic.clone()], "{first:?}");
 
-    let second = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
-        .expect("sweep");
+    let second = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
     assert!(second.epics_seen.is_empty(), "{second:?}");
-    assert_eq!(designer.called().len(), 1, "no re-dispatch of an approved epic");
+    assert_eq!(
+        designer.called().len(),
+        1,
+        "no re-dispatch of an approved epic"
+    );
 }

@@ -6,7 +6,8 @@
 //! IPC conformance for [`HarnessClient`]. Scratch state lives under
 //! `target/test-runs/harness-process-*`; the server child is re-exec'd from this
 //! test binary (or the real component-server binary when it is built) and talks
-//! the framed transport over a Unix socket.
+//! the framed transport over a Unix socket. Scratch dirs auto-remove on success
+//! (kept on failure for forensics).
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -21,15 +22,20 @@ use agalma_contracts::ids::{ArtifactRef, OperationId};
 use agalma_contracts::{
     BindingState, CommitBatch, ContractError, ExecutionEvent, ExecutionId, LedgerApi,
 };
-use agalma_harness_reference::{self as reference, ReferenceHarness, ReferenceHarnessConfig, ReferenceProfile};
+use agalma_harness_reference::{
+    self as reference, ReferenceHarness, ReferenceHarnessConfig, ReferenceProfile,
+};
 use agalma_ipc::{Client, CommandSpec};
 
-use agalma_conductor::harness_binding::{plan_binding, persist_binding, read_pinned_binding, BindPlan, HarnessKind};
+use agalma_conductor::harness_binding::{
+    persist_binding, plan_binding, read_pinned_binding, BindPlan, HarnessKind,
+};
 use agalma_conductor::harness_process::{
     ready_json, reference_server_spec, resolve_server_binary, ProcessBinding, READY_TIMEOUT,
 };
 use agalma_conductor::sandbox_process::SandboxProcess;
 use agalma_ledger::SqliteLedger;
+use agalma_testkit::ScratchDir;
 
 const MODEL: &str = "test/offline";
 const CHILD_SOCKET_ENV: &str = "AGALMA_TEST_HARNESS_SOCKET";
@@ -39,29 +45,11 @@ const CHILD_TEST_NAME: &str = "reference_server_child";
 // Fixture + helpers (mirrors tests/rebind.rs)
 // ===========================================================================
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under <root>/crates/")
-        .to_path_buf()
-}
-
 /// Short, unique run directory. Unix socket paths must fit `SUN_LEN` (~104
 /// bytes), so sockets live directly under a short `hp-<pid>-<n>` directory
 /// rather than nested `sock/` subdirectories.
-static RUN_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-fn fresh(_name: &str) -> PathBuf {
-    let n = RUN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = root()
-        .join("target")
-        .join("test-runs")
-        .join(format!("hp-{}-{n}", std::process::id()));
-    // WARNING: deletes files, but only under `target/test-runs/` (disposable).
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create run dir");
-    dir
+fn fresh(_name: &str) -> ScratchDir {
+    ScratchDir::new("hp")
 }
 
 fn workspace(dir: &Path, name: &str) -> PathBuf {
@@ -126,14 +114,19 @@ struct Scenario {
 /// Drive one reference session/turn to terminal and collect the transcript.
 fn run_scenario(harness: &mut dyn HarnessApi, ws: &Path) -> Scenario {
     let attempt: AttemptHandle = harness.start_attempt(start_req(ws)).expect("start_attempt");
-    let session = harness.create_session(create_req()).expect("create_session");
+    let session = harness
+        .create_session(create_req())
+        .expect("create_session");
     let op: OperationHandle = harness.run_turn(&session, turn_req()).expect("run_turn");
     let state = harness.inspect_operation(&op).expect("inspect_operation");
     let events = harness.read_events(&op).expect("read_events");
     let _ = harness.cancel_operation(&op);
     let _ = harness.close_session(&session);
     let evidence = harness.stop_attempt(&attempt).expect("stop_attempt");
-    assert!(evidence.process_group_gone, "cleanup evidence: {evidence:?}");
+    assert!(
+        evidence.process_group_gone,
+        "cleanup evidence: {evidence:?}"
+    );
     Scenario {
         describe: harness.describe(),
         state: state.label(),
@@ -198,10 +191,7 @@ fn reference_spec(
             reference::SCENARIO_DIR_ENV,
             scenario_dir.to_string_lossy().into_owned(),
         )
-        .env(
-            CHILD_SOCKET_ENV,
-            socket.to_string_lossy().into_owned(),
-        );
+        .env(CHILD_SOCKET_ENV, socket.to_string_lossy().into_owned());
     (spec, program)
 }
 
@@ -212,8 +202,15 @@ fn spawn_process_reference(
     generation: u32,
 ) -> ProcessBinding {
     let (spec, program) = reference_spec(profile, socket, scenario_dir);
-    ProcessBinding::spawn(spec, program, socket.to_path_buf(), generation, MODEL, READY_TIMEOUT)
-        .unwrap_or_else(|e| panic!("spawn reference server: {e}"))
+    ProcessBinding::spawn(
+        spec,
+        program,
+        socket.to_path_buf(),
+        generation,
+        MODEL,
+        READY_TIMEOUT,
+    )
+    .unwrap_or_else(|e| panic!("spawn reference server: {e}"))
 }
 
 /// Spawn a bare reference server (no supervisor) and wait for READY.
@@ -304,7 +301,10 @@ fn shadow_parity_in_process_vs_process_reference() {
         .expect("static plan")
         .binding;
     assert_eq!(record.implementation, expected.implementation);
-    assert_eq!(record.implementation_version, expected.implementation_version);
+    assert_eq!(
+        record.implementation_version,
+        expected.implementation_version
+    );
     assert_eq!(record.binding_id, expected.binding_id);
     assert_eq!(record.generation, 1);
     assert_eq!(record.capabilities, expected.capabilities);
@@ -483,14 +483,14 @@ fn harness_client_duplicate_id_replay_and_connection_loss() {
 
     let mut client = Client::connect(&socket).expect("connect");
     // A fresh attempt so create_session has an attempt context.
-    let start_params = serde_json::to_value(start_req(&workspace(&dir, "ws"))).expect("start params");
+    let start_params =
+        serde_json::to_value(start_req(&workspace(&dir, "ws"))).expect("start params");
     client
         .call_with_id(1, "start_attempt", start_params)
         .expect("start_attempt");
 
     // Duplicate request id: the recorded receipt is replayed, not re-run.
-    let session_params =
-        serde_json::to_value(create_req()).expect("create params");
+    let session_params = serde_json::to_value(create_req()).expect("create params");
     let first = client
         .call_with_id(7, "create_session", session_params.clone())
         .expect("create #1");
@@ -667,11 +667,7 @@ fn assert_failed_startup_cleanup(name: &str, ready: Option<&str>, expect: Option
 
 #[test]
 fn startup_ready_timeout_kills_and_reaps_process_tree() {
-    assert_failed_startup_cleanup(
-        "fail-timeout",
-        None,
-        Some("did not announce READY"),
-    );
+    assert_failed_startup_cleanup("fail-timeout", None, Some("did not announce READY"));
 }
 
 #[test]
@@ -685,16 +681,14 @@ fn startup_malformed_ready_kills_and_reaps_process_tree() {
 
 #[test]
 fn startup_bind_rejection_kills_and_reaps_process_tree() {
-    let bad_api =
-        r#"READY {"api":"NotHarnessApi","api_version":0,"impl":"mock","impl_version":"v1","capabilities":[]}"#;
+    let bad_api = r#"READY {"api":"NotHarnessApi","api_version":0,"impl":"mock","impl_version":"v1","capabilities":[]}"#;
     assert_failed_startup_cleanup("fail-bind", Some(bad_api), Some("bind gate rejected"));
 }
 
 #[test]
 fn startup_unconnectable_socket_kills_and_reaps_process_tree() {
     // Correct API identity, but the mock never binds the socket, so connect fails.
-    let good_api =
-        r#"READY {"api":"HarnessApi","api_version":0,"impl":"mock","impl_version":"v1","capabilities":[]}"#;
+    let good_api = r#"READY {"api":"HarnessApi","api_version":0,"impl":"mock","impl_version":"v1","capabilities":[]}"#;
     let socket = assert_failed_startup_cleanup("fail-socket", Some(good_api), None);
     // The failed start left no listener on the socket.
     assert!(

@@ -22,14 +22,15 @@
 //!    the profile boundary is intact, the proxy is the only egress;
 //! 4. the user's OpenCode state is untouched.
 //!
-//! All scratch state lives under `target/test-runs/proxy-live-*` (never `/tmp`).
+//! All scratch state lives under `target/test-runs/proxy-live-*` (never `/tmp`);
+//! scratch dirs auto-remove on success (kept on failure for forensics).
 
 #![cfg(target_os = "macos")]
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
 
 use agalma_conductor::provider_proxy::{ProviderProxy, ProxyConfig};
 use agalma_contracts::harness::{
@@ -40,24 +41,14 @@ use agalma_contracts::ids::{ArtifactRef, AttemptId, OperationId};
 use agalma_contracts::sandbox::{LaunchSpec, SandboxApi};
 use agalma_harness_opencode::{OpenCodeHarness, OpenCodeHarnessConfig};
 use agalma_sandbox::{SeatbeltSandbox, PRODUCT_PROFILE};
+use agalma_testkit::ScratchDir;
 
 fn live_enabled() -> bool {
     std::env::var("AGALMA_PROXY_LIVE").ok().as_deref() == Some("1")
 }
 
-fn run_root() -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let base = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("target")
-        .join("test-runs");
-    let root = base.join(format!("proxy-live-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&root).expect("create run root");
-    root
+fn run_root() -> ScratchDir {
+    ScratchDir::new("proxy-live")
 }
 
 fn pid_alive(pid: u32) -> bool {

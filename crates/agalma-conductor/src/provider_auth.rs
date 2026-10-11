@@ -223,23 +223,18 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agalma_testkit::ScratchDir;
 
-    fn temp_auth(name: &str, body: &str) -> PathBuf {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("target")
-            .join("test-runs")
-            .join(format!("provider-auth-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("mkdir");
+    fn temp_auth(name: &str, body: &str) -> (ScratchDir, PathBuf) {
+        let dir = ScratchDir::new(&format!("provider-auth-{name}"));
         let path = dir.join("auth.json");
         std::fs::write(&path, body).expect("write auth");
-        path
+        (dir, path)
     }
 
     #[test]
     fn reads_preferred_provider_key() {
-        let path = temp_auth(
+        let (_dir, path) = temp_auth(
             "preferred",
             r#"{"opencode":{"type":"api","key":"zen-token"},"opencode-go":{"type":"api","key":"go-token"}}"#,
         );
@@ -248,7 +243,7 @@ mod tests {
 
     #[test]
     fn falls_back_to_any_entry_with_a_key() {
-        let path = temp_auth(
+        let (_dir, path) = temp_auth(
             "fallback",
             r#"{"other":{"type":"api","key":"other-token"}}"#,
         );
@@ -257,7 +252,7 @@ mod tests {
 
     #[test]
     fn missing_token_is_an_error() {
-        let path = temp_auth("missing", r#"{"opencode-go":{"type":"api"}}"#);
+        let (_dir, path) = temp_auth("missing", r#"{"opencode-go":{"type":"api"}}"#);
         assert!(read_token(&path).is_err());
     }
 
@@ -283,14 +278,7 @@ mod tests {
     #[test]
     fn audit_event_is_recorded_without_the_token() {
         use agalma_contracts::LedgerApi;
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("target")
-            .join("test-runs")
-            .join(format!("provider-auth-audit-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = ScratchDir::new("provider-auth-audit");
         let state = AuthState::enabled("opencode.ai", "audit-secret-token");
         record_audit(&dir, &state).expect("record audit");
         let ledger = SqliteLedger::open(dir.join("ledger.sqlite")).expect("open ledger");
@@ -310,7 +298,6 @@ mod tests {
                 .contains("audit-secret-token"),
             "token must not be persisted"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

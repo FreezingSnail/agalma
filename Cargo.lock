@@ -16,6 +16,7 @@ dependencies = [
  "agalma-ledger",
  "agalma-sandbox",
  "agalma-taskqueue",
+ "agalma-testkit",
  "agalma-workspace",
  "clap",
  "rusqlite",
@@ -127,6 +128,10 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "agalma-testkit"
+version = "0.1.0"
 
 [[package]]
 name = "agalma-workspace"

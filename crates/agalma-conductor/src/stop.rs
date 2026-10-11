@@ -79,20 +79,10 @@ impl StopControl for FileStopControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agalma_testkit::ScratchDir;
 
-    fn scratch(name: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("target")
-            .join("test-runs")
-            .join(format!("stop-{name}-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-        dir
+    fn scratch(name: &str) -> ScratchDir {
+        ScratchDir::new(&format!("stop-{name}"))
     }
 
     #[test]
@@ -124,7 +114,10 @@ mod tests {
         assert!(control.stopped(), "latch retained across reads");
         let reopened =
             agalma_ledger::SqliteLedger::open(dir.join("ledger.sqlite")).expect("reopen");
-        assert!(reopened.kill_latch().expect("read latch"), "latch still set");
+        assert!(
+            reopened.kill_latch().expect("read latch"),
+            "latch still set"
+        );
     }
 
     #[test]
@@ -134,6 +127,9 @@ mod tests {
             agalma_ledger::SqliteLedger::open(dir.join("ledger.sqlite")).expect("open ledger");
         ledger.set_kill_latch(false).expect("clear latch");
         drop(ledger);
-        assert!(!FileStopControl::new(&dir).stopped(), "clear → dispatch allowed");
+        assert!(
+            !FileStopControl::new(&dir).stopped(),
+            "clear → dispatch allowed"
+        );
     }
 }

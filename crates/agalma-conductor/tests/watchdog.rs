@@ -4,7 +4,7 @@
 //! progress watchdog directly (no vendor/network); the park and reconcile cases
 //! run the real `agalma work` / `agalma reconcile` paths against a scratch
 //! `git` + isolated `bd` store under `target/test-runs/watchdog-*` (never
-//! `/tmp`). Covers:
+//! `/tmp`; scratch dirs auto-remove on success, kept on failure). Covers:
 //!
 //! - silent session → idle `stalled` verdict with a tiny idle override plus a
 //!   `provider_health` event;
@@ -17,7 +17,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use agalma_contracts::harness::{
     AttemptHandle, CancelAck, CreateSessionRequest, Describe, Event, HarnessApi, OperationHandle,
@@ -31,6 +31,7 @@ use agalma_contracts::{
 };
 use agalma_ipc::TaskQueueOps;
 use agalma_ledger::SqliteLedger;
+use agalma_testkit::ScratchDir;
 
 use agalma_conductor::digest::{self, Verdict};
 use agalma_conductor::phases::{
@@ -142,19 +143,8 @@ impl HarnessApi for FakeHarness {
     }
 }
 
-fn scratch_dir(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("target")
-        .join("test-runs")
-        .join(format!("watchdog-{name}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&dir).expect("create run dir");
-    dir
+fn scratch_dir(name: &str) -> ScratchDir {
+    ScratchDir::new(&format!("watchdog-{name}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -348,14 +338,6 @@ fn digest_counts_provider_health_stalls() {
 // Park projection: blocked + label (real bd)
 // ---------------------------------------------------------------------------
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under <root>/crates/")
-        .to_path_buf()
-}
-
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_agalma")
 }
@@ -392,15 +374,13 @@ struct Scratch {
     origin: PathBuf,
     state_dir: PathBuf,
     id: String,
+    _dir: ScratchDir,
 }
 
 impl Scratch {
     fn new(name: &str, acceptance: &str) -> Scratch {
         require_bd();
-        let dir = root().join("target").join("test-runs").join(name);
-        // WARNING: deletes files, but only under `target/test-runs/`.
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("create run dir");
+        let dir = ScratchDir::new(name);
         let origin = dir.join("origin");
         fs::create_dir_all(origin.join("src")).expect("origin src");
         fs::write(
@@ -442,6 +422,7 @@ impl Scratch {
             state_dir: dir.join("state"),
             origin,
             id,
+            _dir: dir,
         }
     }
 

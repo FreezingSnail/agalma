@@ -2,7 +2,8 @@
 //!
 //! Deterministic, in-process tests over the real repo-mode checkout/integrate
 //! effects and the deterministic reference `HarnessApi` adapters. No vendor, no
-//! network, no bd. Scratch state lives under `target/test-runs/rebind-*`.
+//! network, no bd. Scratch state lives under `target/test-runs/rebind-*`;
+//! scratch dirs auto-remove on success (kept on failure for forensics).
 //!
 //! | Case | Scenario |
 //! |------|----------|
@@ -17,8 +18,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
+use agalma_conductor::workspace_process::WorkspaceHandle;
 use agalma_contracts::harness::CAP_SYNTHETIC_FEEDBACK;
 use agalma_contracts::ids::{OperationId, TaskId};
 use agalma_contracts::{
@@ -27,13 +29,13 @@ use agalma_contracts::{
 };
 use agalma_execution::{Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
 use agalma_ledger::SqliteLedger;
-use agalma_conductor::workspace_process::WorkspaceHandle;
 
 use agalma_conductor::harness_binding::{
     describe_for, harness_handle, persist_binding, plan_binding, plan_from_describe,
     read_pinned_binding, HarnessChoice, HarnessHandle, HarnessKind,
 };
 use agalma_conductor::phases::{activities_with_mode, ActivityMode, PhaseDeps, RepoMode, RunState};
+use agalma_testkit::ScratchDir;
 
 const TASK: &str = "rebind-task";
 const ACCEPTANCE: &str = "sh -c 'test -f .agalma/reference-ok'";
@@ -42,27 +44,8 @@ fn task() -> TaskId {
     TaskId::new(TASK)
 }
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under <root>/crates/")
-        .to_path_buf()
-}
-
-fn fresh(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let dir = root()
-        .join("target")
-        .join("test-runs")
-        .join(format!("rebind-{name}-{}-{nanos}", std::process::id()));
-    // WARNING: deletes files, but only under `target/test-runs/` (disposable).
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create run dir");
-    dir
+fn fresh(name: &str) -> ScratchDir {
+    ScratchDir::new(&format!("rebind-{name}"))
 }
 
 fn stderr_of(out: &std::process::Output) -> String {
@@ -101,6 +84,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 struct Origin {
     origin: PathBuf,
     state_dir: PathBuf,
+    _dir: ScratchDir,
 }
 
 impl Origin {
@@ -123,8 +107,9 @@ impl Origin {
         run_ok("git", &origin, &["add", "-A"]);
         run_ok("git", &origin, &["commit", "-qm", "seed"]);
         Origin {
-            origin,
             state_dir: dir.join("state"),
+            origin,
+            _dir: dir,
         }
     }
 }
@@ -460,7 +445,7 @@ fn bd(origin: &Path, beads: &Path, args: &[&str]) -> std::process::Output {
 
 /// A scratch origin repo with one bd task whose acceptance checks the reference
 /// success marker.
-fn binary_scratch(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+fn binary_scratch(name: &str) -> (ScratchDir, PathBuf, PathBuf, PathBuf) {
     require_bd();
     let dir = fresh(name);
     let origin = dir.join("origin");
@@ -515,7 +500,8 @@ fn binary_scratch(name: &str) -> (PathBuf, PathBuf, PathBuf) {
     assert!(create.status.success(), "bd create: {}", stderr_of(&create));
     let value: serde_json::Value = serde_json::from_slice(&create.stdout).expect("create json");
     assert!(value["id"].as_str().is_some());
-    (origin, dir.join("state"), beads)
+    let state = dir.join("state");
+    (dir, origin, state, beads)
 }
 
 fn agalma(args: &[&str], scripted: bool) -> std::process::Output {
@@ -529,7 +515,7 @@ fn agalma(args: &[&str], scripted: bool) -> std::process::Output {
 
 #[test]
 fn binary_work_harness_flag_and_status_binding() {
-    let (origin, state, _beads) = binary_scratch("binary-reference");
+    let (_dir, origin, state, _beads) = binary_scratch("binary-reference");
     let out = agalma(
         &[
             "work",
@@ -562,7 +548,7 @@ fn binary_work_harness_flag_and_status_binding() {
     assert!(text.contains("phase=Done"), "status reports done: {text}");
 
     // A red binding parks and is visible in status.
-    let (origin2, state2, _beads2) = binary_scratch("binary-reference-fail");
+    let (_dir2, origin2, state2, _beads2) = binary_scratch("binary-reference-fail");
     let red = agalma(
         &[
             "work",

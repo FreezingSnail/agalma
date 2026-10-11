@@ -2,29 +2,16 @@
 //!
 //! Deterministic: no network, no bd, no model calls. Each test uses its own
 //! state dir under `target/test-runs/routing-*` and records real
-//! `route.model` decisions in a scratch `SqliteLedger`.
-
-use std::fs;
-use std::path::{Path, PathBuf};
+//! `route.model` decisions in a scratch `SqliteLedger`. Scratch dirs
+//! auto-remove on success (kept on failure for forensics).
 
 use agalma_conductor::routing::{self, RouteClass, RouteOrigin};
 use agalma_contracts::{LedgerApi, OperationId};
 use agalma_ledger::SqliteLedger;
+use agalma_testkit::ScratchDir;
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under <root>/crates/")
-        .to_path_buf()
-}
-
-fn fresh(name: &str) -> PathBuf {
-    let dir = root().join("target").join("test-runs").join(name);
-    // WARNING: deletes files, but only under `target/test-runs/` (disposable).
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create run dir");
-    dir
+fn fresh(name: &str) -> ScratchDir {
+    ScratchDir::new(name)
 }
 
 #[test]

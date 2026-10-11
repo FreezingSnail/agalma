@@ -3,7 +3,8 @@
 //! Native Rust tests. Cases 1, 4, and 6 spawn the real `agalma` binary against a
 //! fresh state dir; cases 2, 3, and 5 drive the executor in-process with the
 //! scripted activity set and the real checkout/integrate effects. All scratch
-//! state lives under `target/test-runs/` (never a system temp directory).
+//! state lives under `target/test-runs/` (never a system temp directory);
+//! scratch dirs auto-remove on success (kept on failure for forensics).
 //!
 //! | Case | Scenario |
 //! |------|----------|
@@ -19,19 +20,20 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::rc::Rc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
+use agalma_conductor::workspace_process::WorkspaceHandle;
 use agalma_contracts::ids::{OperationId, TaskId};
 use agalma_contracts::{
     ExecutionApi, ExecutionId, ExecutionPhase, ExecutionState, LedgerApi, StepOutcome,
 };
 use agalma_execution::{DispatchOutcome, Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
 use agalma_ledger::SqliteLedger;
-use agalma_conductor::workspace_process::WorkspaceHandle;
 use serde_json::Value;
 
 use agalma_conductor::phases::{activities_with_mode, ActivityMode, PhaseDeps, RunState};
 use agalma_conductor::workers;
+use agalma_testkit::ScratchDir;
 
 const TASK: &str = "fix-answer";
 
@@ -47,23 +49,8 @@ fn fixture_dir() -> PathBuf {
         .join("target-template")
 }
 
-fn fresh_dir(case: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let base = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("target")
-        .join("test-runs");
-    let dir = base.join(format!("recovery-{case}-{}-{nanos}", std::process::id()));
-    // WARNING: deletes files, but only under `target/test-runs/` (disposable).
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).expect("reset run dir");
-    }
-    std::fs::create_dir_all(&dir).expect("create run dir");
-    dir
+fn fresh_dir(case: &str) -> ScratchDir {
+    ScratchDir::new(&format!("recovery-{case}"))
 }
 
 fn exec_id() -> ExecutionId {

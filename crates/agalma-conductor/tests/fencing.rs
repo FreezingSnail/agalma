@@ -3,7 +3,8 @@
 //! Native Rust tests. The executor-level cases drive the real repo-mode
 //! checkout/integrate effects in-process with the scripted build/verify
 //! stand-ins; the reconcile case uses a real scratch `bd` store. All scratch
-//! state lives under `target/test-runs/` (never `/tmp`).
+//! state lives under `target/test-runs/` (never `/tmp`); scratch dirs
+//! auto-remove on success (kept on failure for forensics).
 //!
 //! | Case | Scenario |
 //! |------|----------|
@@ -17,7 +18,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use agalma_contracts::ids::{OperationId, TaskId};
 use agalma_contracts::{
@@ -27,6 +28,7 @@ use agalma_contracts::{
 use agalma_execution::{DispatchOutcome, Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
 use agalma_ipc::TaskQueueOps;
 use agalma_ledger::SqliteLedger;
+use agalma_testkit::ScratchDir;
 use agalma_workspace::Workspace;
 
 use agalma_conductor::workspace_process::WorkspaceHandle;
@@ -42,27 +44,8 @@ fn task() -> TaskId {
     TaskId::new(TASK)
 }
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under <root>/crates/")
-        .to_path_buf()
-}
-
-fn fresh(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let dir = root()
-        .join("target")
-        .join("test-runs")
-        .join(format!("fencing-{name}-{}-{nanos}", std::process::id()));
-    // WARNING: deletes files, but only under `target/test-runs/` (disposable).
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create run dir");
-    dir
+fn fresh(name: &str) -> ScratchDir {
+    ScratchDir::new(&format!("fencing-{name}"))
 }
 
 fn stderr_of(out: &std::process::Output) -> String {
@@ -101,6 +84,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 struct Origin {
     origin: PathBuf,
     state_dir: PathBuf,
+    _dir: ScratchDir,
 }
 
 impl Origin {
@@ -123,8 +107,9 @@ impl Origin {
         run_ok("git", &origin, &["add", "-A"]);
         run_ok("git", &origin, &["commit", "-qm", "seed"]);
         Origin {
-            origin,
             state_dir: dir.join("state"),
+            origin,
+            _dir: dir,
         }
     }
 

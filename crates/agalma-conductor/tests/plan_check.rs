@@ -3,32 +3,16 @@
 //! Each test runs the real `agalma` binary against its own scratch bd workspace
 //! under `target/test-runs/plan-check-*` (never `/tmp`): `git init` + `bd init
 //! --skip-agents --skip-hooks`. Children are created `--defer`red with the
-//! `staged,difficulty:*` labels so the CLI's `--all` query is exercised.
+//! `staged,difficulty:*` labels so the CLI's `--all` query is exercised. Scratch
+//! dirs auto-remove on success (kept on failure for forensics).
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under <root>/crates/")
-        .to_path_buf()
-}
+use agalma_testkit::ScratchDir;
 
-static RUN_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-fn fresh(name: &str) -> PathBuf {
-    let n = RUN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = root()
-        .join("target")
-        .join("test-runs")
-        .join(format!("plan-check-{name}-{}-{n}", std::process::id()));
-    // WARNING: deletes files, but only under `target/test-runs/` (disposable).
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create run dir");
-    dir
+fn fresh(name: &str) -> ScratchDir {
+    ScratchDir::new(&format!("plan-check-{name}"))
 }
 
 fn stderr_of(out: &std::process::Output) -> String {
@@ -42,7 +26,11 @@ fn run_ok(program: &str, dir: &Path, args: &[&str]) {
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .unwrap_or_else(|e| panic!("spawn {program} {args:?}: {e}"));
-    assert!(out.status.success(), "{program} {args:?}: {}", stderr_of(&out));
+    assert!(
+        out.status.success(),
+        "{program} {args:?}: {}",
+        stderr_of(&out)
+    );
 }
 
 fn require_bd() {
@@ -56,7 +44,7 @@ fn require_bd() {
 
 /// An isolated bd workspace under `target/test-runs/`.
 struct Scratch {
-    dir: PathBuf,
+    dir: ScratchDir,
 }
 
 impl Scratch {
@@ -86,7 +74,7 @@ impl Scratch {
     }
 
     fn repo(&self) -> &Path {
-        &self.dir
+        self.dir.path()
     }
 
     fn beads_dir(&self) -> PathBuf {
@@ -227,7 +215,10 @@ fn a_bad_decomposition_lists_rule_names_and_fails() {
         assert!(stdout.contains(rule), "missing {rule} in:\n{stdout}");
     }
     // Violations are numbered.
-    assert!(stdout.contains("1. "), "expected a numbered list:\n{stdout}");
+    assert!(
+        stdout.contains("1. "),
+        "expected a numbered list:\n{stdout}"
+    );
 }
 
 #[test]

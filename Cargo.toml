@@ -13,6 +13,7 @@ members = [
     "crates/agalma-harness-reference",
     "crates/agalma-conductor",
     "crates/agalma-kernel",
+    "crates/agalma-testkit",
 ]
 # Spike packages are standalone; they are not part of the product workspace.
 exclude = ["spikes"]

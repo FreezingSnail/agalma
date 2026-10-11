@@ -1,0 +1,9 @@
+[package]
+name = "agalma-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Agalma dev-only test scratch helper: a unique, self-cleaning ScratchDir under target/test-runs."
+publish = false
+
+[dependencies]

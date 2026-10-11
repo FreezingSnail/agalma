@@ -14,7 +14,9 @@
 //! No vendor, no network, no paid call: a mock `SandboxApi` (hosted by an
 //! `agalma-ipc` component server) starts a mock vendor HTTP server on the port
 //! the adapter allocates, records the posted bodies, and reports the child
-//! alive. Scratch state lives under `target/test-runs/designer-payload-*`.
+//! alive. Scratch state lives under `target/test-runs/dp-*` (a short prefix so
+//! the mock sandbox socket path fits `SUN_LEN`; auto-removed on success, kept on
+//! failure for forensics).
 
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
@@ -38,6 +40,7 @@ use agalma_harness_opencode::{
     SANDBOX_SOCKET_ENV,
 };
 use agalma_ipc::{register_sandbox, SandboxClient, Server, ServerInfo};
+use agalma_testkit::ScratchDir;
 use serde_json::Value;
 
 const MODEL: &str = "role-default";
@@ -47,26 +50,10 @@ const FAKE_PROGRAM: &str = "/usr/bin/true";
 // Fixtures
 // ===========================================================================
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under <root>/crates/")
-        .to_path_buf()
-}
-
-static RUN_COUNTER: AtomicU32 = AtomicU32::new(0);
-
-fn fresh(name: &str) -> PathBuf {
-    let n = RUN_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = root().join("target").join("test-runs").join(format!(
-        "designer-payload-{name}-{}-{n}",
-        std::process::id()
-    ));
-    // WARNING: deletes files, but only under `target/test-runs/` (disposable).
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create run dir");
-    fs_canonical(&dir)
+fn fresh(name: &str) -> (ScratchDir, PathBuf) {
+    let dir = ScratchDir::new(&format!("dp-{name}"));
+    let canonical = fs_canonical(dir.path());
+    (dir, canonical)
 }
 
 fn fs_canonical(path: &Path) -> PathBuf {
@@ -433,7 +420,7 @@ fn harness_config(dir: &Path, attempt: &Path) -> OpenCodeHarnessConfig {
 
 #[test]
 fn in_process_vendor_payload_identifies_epic_and_repo() {
-    let dir = fresh("in-process");
+    let (_guard, dir) = fresh("in-process");
     let sandbox_socket = dir.join("sandbox.sock");
     let records = start_mock_sandbox(&sandbox_socket);
 
@@ -460,7 +447,7 @@ fn in_process_vendor_payload_identifies_epic_and_repo() {
 
 #[test]
 fn process_vendor_payload_identifies_epic_and_repo() {
-    let dir = fresh("process");
+    let (_guard, dir) = fresh("process");
     let sandbox_socket = dir.join("sandbox.sock");
     let records = start_mock_sandbox(&sandbox_socket);
 

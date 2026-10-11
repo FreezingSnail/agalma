@@ -18,7 +18,8 @@
 //! idempotency and link target directly.
 //!
 //! Scratch state lives under `target/test-runs/cargo-home-*` (never `/tmp`); the
-//! run is offline and makes no model turn (acceptance is green).
+//! run is offline and makes no model turn (acceptance is green). Scratch dirs
+//! auto-remove on success (kept on failure for forensics).
 
 #![cfg(target_os = "macos")]
 
@@ -28,12 +29,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
+use agalma_conductor::workspace_process::WorkspaceHandle;
 use agalma_contracts::ids::{OperationId, TaskId};
 use agalma_contracts::{ExecutionId, ExecutionPhase};
 use agalma_execution::{ActivityNext, OperationContext};
-use agalma_conductor::workspace_process::WorkspaceHandle;
+use agalma_testkit::ScratchDir;
 
 use agalma_conductor::harness_binding::{harness_handle, HarnessChoice};
 use agalma_conductor::phases::{
@@ -44,27 +46,8 @@ use agalma_conductor::phases::{
 /// the seeded registry link works offline.
 const ACCEPT: &str = "cargo metadata --offline --format-version 1";
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under <root>/crates/")
-        .to_path_buf()
-}
-
-fn fresh(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let dir = root()
-        .join("target")
-        .join("test-runs")
-        .join(format!("cargo-home-{name}-{}-{nanos}", std::process::id()));
-    // WARNING: deletes files, but only under `target/test-runs/` (disposable).
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create run dir");
-    dir
+fn fresh(name: &str) -> ScratchDir {
+    ScratchDir::new(&format!("cargo-home-{name}"))
 }
 
 fn git_ok(dir: &Path, args: &[&str]) {
@@ -86,18 +69,14 @@ fn real_cargo_home() -> PathBuf {
     std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".cargo")
-        })
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".cargo"))
 }
 
 fn real_rustup_home() -> PathBuf {
     std::env::var_os("RUSTUP_HOME")
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".rustup")
-        })
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".rustup"))
 }
 
 fn cargo_bin() -> PathBuf {
@@ -155,7 +134,10 @@ fn seed_origin(dir: &Path) -> PathBuf {
 fn ensure_cargo_home_seeds_idempotent_registry_link() {
     let real_registry = real_cargo_home().join("registry");
     if !real_registry.is_dir() {
-        eprintln!("skipping: no real cargo registry at {}", real_registry.display());
+        eprintln!(
+            "skipping: no real cargo registry at {}",
+            real_registry.display()
+        );
         return;
     }
     let expected = fs::canonicalize(&real_registry).expect("canonical real registry");
@@ -193,7 +175,10 @@ fn ensure_cargo_home_seeds_idempotent_registry_link() {
 fn sandboxed_acceptance_resolves_cargo_offline() {
     let cargo_home = real_cargo_home();
     if !cargo_home.join("registry").is_dir() {
-        eprintln!("skipping: no real cargo registry under {}", cargo_home.display());
+        eprintln!(
+            "skipping: no real cargo registry under {}",
+            cargo_home.display()
+        );
         return;
     }
 
@@ -300,7 +285,9 @@ fn sandboxed_acceptance_resolves_cargo_offline() {
     );
 
     // The seeded link backs the run-local CARGO_HOME.
-    let seeded = run_root(&state_dir, &exec).join("cargo-home").join("registry");
+    let seeded = run_root(&state_dir, &exec)
+        .join("cargo-home")
+        .join("registry");
     assert!(
         fs::symlink_metadata(&seeded)
             .map(|m| m.file_type().is_symlink())

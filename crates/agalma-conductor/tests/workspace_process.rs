@@ -13,7 +13,7 @@
 //! child is re-exec'd from this test binary (or the real
 //! `agalma-workspace-server` binary when built) so a package-scoped
 //! `cargo test -p agalma-conductor` run still exercises the real process
-//! boundary.
+//! boundary. Scratch dirs auto-remove on success (kept on failure).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -21,9 +21,10 @@ use std::time::Duration;
 
 use agalma_contracts::{Checkout, ContractError, ExecutionId};
 use agalma_ipc::{
-    Client, CheckoutCall, CommandSpec, IpcError, IntegrateOriginParams, PrepareRepoParams,
+    CheckoutCall, Client, CommandSpec, IntegrateOriginParams, IpcError, PrepareRepoParams,
     WorkspaceClient, WorkspaceOps,
 };
+use agalma_testkit::ScratchDir;
 use agalma_workspace::server::SERVER_BIN;
 use agalma_workspace::Workspace;
 
@@ -39,28 +40,10 @@ const READY_TIMEOUT: Duration = Duration::from_secs(20);
 // Fixtures + helpers (mirrors tests/rebind.rs and tests/sandbox_process.rs)
 // ===========================================================================
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under <root>/crates/")
-        .to_path_buf()
-}
-
 /// Short, unique run directory. Unix socket paths must fit `SUN_LEN` (~104
 /// bytes), so sockets live directly under a short `wp-<pid>-<n>` directory.
-static RUN_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-fn fresh() -> PathBuf {
-    let n = RUN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = root()
-        .join("target")
-        .join("test-runs")
-        .join(format!("wp-{}-{n}", std::process::id()));
-    // WARNING: deletes files, but only under `target/test-runs/` (disposable).
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create run dir");
-    dir
+fn fresh() -> ScratchDir {
+    ScratchDir::new("wp")
 }
 
 fn stderr_of(out: &std::process::Output) -> String {
@@ -74,7 +57,11 @@ fn run_ok(program: &str, dir: &Path, args: &[&str]) {
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .unwrap_or_else(|e| panic!("spawn {program} {args:?}: {e}"));
-    assert!(out.status.success(), "{program} {args:?}: {}", stderr_of(&out));
+    assert!(
+        out.status.success(),
+        "{program} {args:?}: {}",
+        stderr_of(&out)
+    );
 }
 
 /// Run `git` in `dir`, capturing stdout (trimmed); panic on failure.
@@ -191,16 +178,15 @@ fn drive_template(ws: &mut dyn WorkspaceOps, dir: &Path) -> TemplateOutcome {
     let checkout = ws
         .prepare(template.to_str().expect("template utf8"), &exec)
         .expect("prepare");
-    std::fs::write(
-        Path::new(&checkout.path).join("hello.txt"),
-        "hello world\n",
-    )
-    .expect("dirty edit");
+    std::fs::write(Path::new(&checkout.path).join("hello.txt"), "hello world\n")
+        .expect("dirty edit");
 
     let diff = ws.diff(&checkout).expect("diff");
     let diff_contains_new = diff.contains("+hello world");
 
-    let receipt = ws.integrate(&checkout, &checkout.base_sha).expect("integrate");
+    let receipt = ws
+        .integrate(&checkout, &checkout.base_sha)
+        .expect("integrate");
     let candidate_is_result = receipt.candidate_sha == receipt.result_sha;
 
     let tag = "wp/extra";
@@ -213,7 +199,10 @@ fn drive_template(ws: &mut dyn WorkspaceOps, dir: &Path) -> TemplateOutcome {
 
     ws.revert(&checkout.base_sha).expect("revert");
     let reverted_tree = git(repo, &["rev-parse", "refs/heads/main^{tree}"]);
-    let base_tree = git(repo, &["rev-parse", &format!("{}^{{tree}}", checkout.base_sha)]);
+    let base_tree = git(
+        repo,
+        &["rev-parse", &format!("{}^{{tree}}", checkout.base_sha)],
+    );
 
     TemplateOutcome {
         diff_contains_new,
@@ -236,15 +225,33 @@ fn shadow_parity_template_ops() {
     let mut client = process.client().expect("connect workspace client");
     let via_process = drive_template(&mut client, &dir_proc);
 
-    assert_eq!(in_process, via_process, "workspace template transcript parity");
-    assert!(in_process.diff_contains_new, "diff shows the candidate edit");
-    assert!(in_process.candidate_is_result, "integration CAS is a fast-forward");
-    assert!(in_process.tag_points_at_candidate, "tag points at the candidate");
-    assert!(in_process.reverted_equals_base, "revert restores the base tree");
+    assert_eq!(
+        in_process, via_process,
+        "workspace template transcript parity"
+    );
+    assert!(
+        in_process.diff_contains_new,
+        "diff shows the candidate edit"
+    );
+    assert!(
+        in_process.candidate_is_result,
+        "integration CAS is a fast-forward"
+    );
+    assert!(
+        in_process.tag_points_at_candidate,
+        "tag points at the candidate"
+    );
+    assert!(
+        in_process.reverted_equals_base,
+        "revert restores the base tree"
+    );
 
     drop(client);
     let evidence = process.stop();
-    assert!(evidence.process_group_gone, "server stop evidence: {evidence:?}");
+    assert!(
+        evidence.process_group_gone,
+        "server stop evidence: {evidence:?}"
+    );
 }
 
 /// Normalized, sha/timing-free transcript of the repo-mode scenario
@@ -280,7 +287,9 @@ fn drive_repo(ws: &mut dyn WorkspaceOps, dir: &Path) -> RepoOutcome {
     let diff = ws.diff(&checkout).expect("diff");
     let diff_contains_new = diff.contains("pub fn answer() -> u32 { 42 }");
 
-    let before = ws.origin_receipt(&checkout, &origin).expect("origin_receipt before");
+    let before = ws
+        .origin_receipt(&checkout, &origin)
+        .expect("origin_receipt before");
     let sha = ws.commit_candidate(&checkout).expect("commit_candidate");
 
     let verify = ws
@@ -291,13 +300,18 @@ fn drive_repo(ws: &mut dyn WorkspaceOps, dir: &Path) -> RepoOutcome {
     let receipt = ws
         .integrate_origin(&checkout, &origin, &checkout.base_sha)
         .expect("integrate_origin");
-    let after = ws.origin_receipt(&checkout, &origin).expect("origin_receipt after");
+    let after = ws
+        .origin_receipt(&checkout, &origin)
+        .expect("origin_receipt after");
 
     let main_tree = git(&origin, &["rev-parse", "refs/heads/main^{tree}"]);
     ws.revert_origin(&origin, &checkout.base_sha, &receipt.result_sha)
         .expect("revert_origin");
     let reverted_tree = git(&origin, &["rev-parse", "refs/heads/main^{tree}"]);
-    let base_tree = git(&origin, &["rev-parse", &format!("{}^{{tree}}", checkout.base_sha)]);
+    let base_tree = git(
+        &origin,
+        &["rev-parse", &format!("{}^{{tree}}", checkout.base_sha)],
+    );
 
     RepoOutcome {
         diff_contains_new,
@@ -325,16 +339,34 @@ fn shadow_parity_repo_ops() {
     let via_process = drive_repo(&mut client, &dir_proc);
 
     assert_eq!(in_process, via_process, "workspace repo transcript parity");
-    assert!(in_process.diff_contains_new, "diff shows the candidate edit");
-    assert!(in_process.verify_checkout_exists, "verify checkout has git metadata");
+    assert!(
+        in_process.diff_contains_new,
+        "diff shows the candidate edit"
+    );
+    assert!(
+        in_process.verify_checkout_exists,
+        "verify checkout has git metadata"
+    );
     assert!(in_process.before_is_none, "no receipt before integration");
-    assert!(in_process.result_is_candidate, "candidate sha equals result sha");
-    assert!(in_process.after_is_candidate, "receipt after integration is the candidate");
-    assert!(in_process.reverted_equals_base, "revert restores the base tree");
+    assert!(
+        in_process.result_is_candidate,
+        "candidate sha equals result sha"
+    );
+    assert!(
+        in_process.after_is_candidate,
+        "receipt after integration is the candidate"
+    );
+    assert!(
+        in_process.reverted_equals_base,
+        "revert restores the base tree"
+    );
 
     drop(client);
     let evidence = process.stop();
-    assert!(evidence.process_group_gone, "server stop evidence: {evidence:?}");
+    assert!(
+        evidence.process_group_gone,
+        "server stop evidence: {evidence:?}"
+    );
 }
 
 // ===========================================================================
@@ -370,7 +402,10 @@ fn staged_rebind_keeps_pinned_checkout_usable() {
     let receipt = ws_b
         .integrate_origin(&checkout, &origin, &checkout.base_sha)
         .expect("integrate via candidate server");
-    assert_eq!(receipt.result_sha, committed, "candidate server lands A's pinned SHA");
+    assert_eq!(
+        receipt.result_sha, committed,
+        "candidate server lands A's pinned SHA"
+    );
     assert_eq!(
         git(&origin, &["rev-parse", "refs/heads/main"]),
         committed,
@@ -418,12 +453,18 @@ fn rollback_keeps_prior_checkout_and_server() {
     let mut server_b = spawn_server(&socket_b, &state);
     let b_pid = server_b.pid();
     let evidence = server_b.stop();
-    assert!(evidence.process_group_gone, "candidate stopped: {evidence:?}");
+    assert!(
+        evidence.process_group_gone,
+        "candidate stopped: {evidence:?}"
+    );
     assert!(!pid_alive(b_pid), "candidate server is gone after rollback");
 
     // No state lost: the prior server and its committed checkout survive, and
     // integration still lands the pinned candidate.
-    assert!(pid_alive(server_a.pid()), "prior server survives the rollback");
+    assert!(
+        pid_alive(server_a.pid()),
+        "prior server survives the rollback"
+    );
     let receipt = ws_a
         .integrate_origin(&checkout, &origin, &checkout.base_sha)
         .expect("integrate prior");
@@ -469,7 +510,10 @@ fn workspace_client_duplicate_id_replay_and_connection_loss() {
     let replay = client
         .call_with_id(1, "prepare_repo", prepare_params)
         .expect("prepare #2 (replay)");
-    assert_eq!(first, replay, "same id replays the recorded checkout receipt");
+    assert_eq!(
+        first, replay,
+        "same id replays the recorded checkout receipt"
+    );
     let checkout: Checkout = serde_json::from_value(first).expect("checkout");
 
     // Commit a candidate, then integrate it. The duplicate id replays; a fresh
@@ -495,7 +539,10 @@ fn workspace_client_duplicate_id_replay_and_connection_loss() {
     let integrated_replay = client
         .call_with_id(3, "integrate_origin", integrate_params.clone())
         .expect("integrate (replay)");
-    assert_eq!(integrated, integrated_replay, "same id replays the integration");
+    assert_eq!(
+        integrated, integrated_replay,
+        "same id replays the integration"
+    );
     let err = client
         .call_with_id(4, "integrate_origin", integrate_params)
         .expect_err("a fresh id must re-run and conflict");
@@ -507,7 +554,11 @@ fn workspace_client_duplicate_id_replay_and_connection_loss() {
     // Connection loss: stop the server; the next call is not silently lost.
     let _ = server.stop();
     let err = client
-        .call_with_id(5, "candidate_sha", serde_json::to_value(CheckoutCall { checkout }).unwrap())
+        .call_with_id(
+            5,
+            "candidate_sha",
+            serde_json::to_value(CheckoutCall { checkout }).unwrap(),
+        )
         .expect_err("call after server death must fail");
     assert!(
         err.is_unavailable() || err.is_unknown_outcome(),

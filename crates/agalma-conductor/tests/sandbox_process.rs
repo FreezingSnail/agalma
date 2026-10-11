@@ -11,7 +11,7 @@
 //! The server child is re-exec'd from this test binary (or the real
 //! `agalma-sandbox-server` binary when built) so a package-scoped
 //! `cargo test -p agalma-conductor` run still exercises the real process
-//! boundary.
+//! boundary. Scratch dirs auto-remove on success (kept on failure).
 
 #![cfg(target_os = "macos")]
 
@@ -27,6 +27,7 @@ use agalma_sandbox::{SeatbeltSandbox, PRODUCT_PROFILE, SERVER_BIN};
 
 use agalma_conductor::harness_process::{ready_json, resolve_server_binary};
 use agalma_conductor::sandbox_process::{sandbox_server_spec, SandboxProcess};
+use agalma_testkit::ScratchDir;
 
 const CHILD_SOCKET_ENV: &str = "AGALMA_TEST_SANDBOX_SOCKET";
 const CHILD_TEST_NAME: &str = "sandbox_server_child";
@@ -36,28 +37,10 @@ const READY_TIMEOUT: Duration = Duration::from_secs(20);
 // Fixture + helpers (mirrors tests/harness_process.rs)
 // ===========================================================================
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under <root>/crates/")
-        .to_path_buf()
-}
-
 /// Short, unique run directory. Unix socket paths must fit `SUN_LEN` (~104
 /// bytes), so sockets live directly under a short `sp-<pid>-<n>` directory.
-static RUN_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-fn fresh() -> PathBuf {
-    let n = RUN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = root()
-        .join("target")
-        .join("test-runs")
-        .join(format!("sp-{}-{n}", std::process::id()));
-    // WARNING: deletes files, but only under `target/test-runs/` (disposable).
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create run dir");
-    dir
+fn fresh() -> ScratchDir {
+    ScratchDir::new("sp")
 }
 
 /// One confined-launch scratch tree: attempt/protected/sock roots plus the
@@ -238,16 +221,25 @@ fn shadow_parity_in_process_vs_process_sandbox() {
 
     assert_eq!(in_process, via_process, "sandbox transcript parity");
     assert!(in_process.alive_before, "child is alive before terminate");
-    assert!(in_process.file_written, "confined command writes the marker");
+    assert!(
+        in_process.file_written,
+        "confined command writes the marker"
+    );
     assert!(in_process.group_gone, "terminate reports the group gone");
-    assert!(in_process.detail_nonempty, "termination evidence is recorded");
+    assert!(
+        in_process.detail_nonempty,
+        "termination evidence is recorded"
+    );
 
     drop(client);
     let evidence = {
         let mut process = process;
         process.stop()
     };
-    assert!(evidence.process_group_gone, "server stop evidence: {evidence:?}");
+    assert!(
+        evidence.process_group_gone,
+        "server stop evidence: {evidence:?}"
+    );
 }
 
 // ===========================================================================
@@ -263,7 +255,9 @@ fn staged_rebind_keeps_inflight_child_alive() {
     let mut server_a = spawn_server(&socket_a);
     let mut client_a = server_a.client().expect("client a");
     let run_a = Run::new(&dir, "rebind-a");
-    let child_a = client_a.launch(run_a.spec()).expect("launch in-flight child");
+    let child_a = client_a
+        .launch(run_a.spec())
+        .expect("launch in-flight child");
 
     // Stage the candidate ("generation 2") and swap the next operation onto it.
     let socket_b = dir.join("b-b.sock");
@@ -285,8 +279,16 @@ fn staged_rebind_keeps_inflight_child_alive() {
 
     let evidence_a = client_a.terminate(&child_a).expect("terminate a");
     let evidence_b = client_b.terminate(&child_b).expect("terminate b");
-    assert!(evidence_a.process_group_gone, "detail: {}", evidence_a.detail);
-    assert!(evidence_b.process_group_gone, "detail: {}", evidence_b.detail);
+    assert!(
+        evidence_a.process_group_gone,
+        "detail: {}",
+        evidence_a.detail
+    );
+    assert!(
+        evidence_b.process_group_gone,
+        "detail: {}",
+        evidence_b.detail
+    );
 
     drop(client_a);
     drop(client_b);
@@ -314,7 +316,10 @@ fn rollback_keeps_prior_child_and_server() {
     let mut server_b = spawn_server(&socket_b);
     let b_pid = server_b.pid();
     let evidence = server_b.stop();
-    assert!(evidence.process_group_gone, "candidate stopped: {evidence:?}");
+    assert!(
+        evidence.process_group_gone,
+        "candidate stopped: {evidence:?}"
+    );
     assert!(!pid_alive(b_pid), "candidate server is gone after rollback");
 
     // No state lost: the prior child survives and is still terminable through A.
@@ -397,8 +402,5 @@ fn sandbox_client_duplicate_id_replay_and_connection_loss() {
 #[test]
 fn ready_marker_is_parsed() {
     let line = "test sandbox_server_child ... READY {\"api\":\"SandboxApi\"}";
-    assert_eq!(
-        ready_json(line),
-        Some("{\"api\":\"SandboxApi\"}")
-    );
+    assert_eq!(ready_json(line), Some("{\"api\":\"SandboxApi\"}"));
 }

@@ -13,7 +13,7 @@
 //! server child is re-exec'd from this test binary (or the real
 //! `agalma-taskqueue-server` binary when built) so a package-scoped
 //! `cargo test -p agalma-conductor` run still exercises the real process
-//! boundary.
+//! boundary. Scratch dirs auto-remove on success (kept on failure).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -21,11 +21,16 @@ use std::process::Command;
 use std::time::Duration;
 
 use agalma_contracts::{ContractError, TaskId, TaskQueueApi};
-use agalma_ipc::{Client, CloseParams, CommandSpec, IpcError, TaskCall, TaskQueueClient, TaskQueueOps};
+use agalma_ipc::{
+    Client, CloseParams, CommandSpec, IpcError, TaskCall, TaskQueueClient, TaskQueueOps,
+};
 use agalma_taskqueue::server::SERVER_BIN;
+use agalma_testkit::ScratchDir;
 
 use agalma_conductor::harness_process::resolve_server_binary;
-use agalma_conductor::taskqueue_process::{taskqueue_server_spec, TaskQueueHandle, TaskQueueProcess};
+use agalma_conductor::taskqueue_process::{
+    taskqueue_server_spec, TaskQueueHandle, TaskQueueProcess,
+};
 
 const CHILD_SOCKET_ENV: &str = "AGALMA_TEST_TASKQUEUE_SOCKET";
 const CHILD_REPO_ENV: &str = "AGALMA_TEST_TASKQUEUE_REPO";
@@ -39,28 +44,10 @@ const VALID: &str = "Intro.\n\n```yaml\ndirective: directive/v0\ntarget: agalma\
 // Fixtures + helpers (mirrors tests/workspace_process.rs)
 // ===========================================================================
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crate lives under <root>/crates/")
-        .to_path_buf()
-}
-
 /// Short, unique run directory. Unix socket paths must fit `SUN_LEN` (~104
 /// bytes), so sockets live directly under a short `tq-<pid>-<n>` directory.
-static RUN_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-fn fresh() -> PathBuf {
-    let n = RUN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = root()
-        .join("target")
-        .join("test-runs")
-        .join(format!("tq-{}-{n}", std::process::id()));
-    // WARNING: deletes files, but only under `target/test-runs/` (disposable).
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create run dir");
-    dir
+fn fresh() -> ScratchDir {
+    ScratchDir::new("tq")
 }
 
 fn stderr_of(out: &std::process::Output) -> String {
@@ -74,7 +61,11 @@ fn run_ok(program: &str, dir: &Path, args: &[&str]) {
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .unwrap_or_else(|e| panic!("spawn {program} {args:?}: {e}"));
-    assert!(out.status.success(), "{program} {args:?}: {}", stderr_of(&out));
+    assert!(
+        out.status.success(),
+        "{program} {args:?}: {}",
+        stderr_of(&out)
+    );
 }
 
 fn require_bd() {
@@ -88,12 +79,12 @@ fn require_bd() {
 
 /// An isolated bd workspace under `target/test-runs/`.
 struct Scratch {
-    dir: PathBuf,
+    dir: ScratchDir,
 }
 
 impl Scratch {
     /// Initialize `dir` as a git repo with a local `.beads` store.
-    fn new(dir: PathBuf) -> Self {
+    fn new(dir: ScratchDir) -> Self {
         require_bd();
         std::fs::create_dir_all(&dir).expect("create scratch dir");
         run_ok("git", &dir, &["init", "-q"]);
@@ -119,7 +110,7 @@ impl Scratch {
     }
 
     fn repo(&self) -> &Path {
-        &self.dir
+        self.dir.path()
     }
 
     fn beads_dir(&self) -> PathBuf {
@@ -331,7 +322,10 @@ fn run_scenario(queue: &mut dyn TaskQueueOps, scratch: &Scratch) -> Transcript {
 
     queue.claim(&TaskId::new(&claimed)).expect("claim");
     queue
-        .comment(&TaskId::new(&ready), "phase=build execution=exec:tq:1 lease=1")
+        .comment(
+            &TaskId::new(&ready),
+            "phase=build execution=exec:tq:1 lease=1",
+        )
         .expect("comment");
     queue
         .add_label(&TaskId::new(&parked), "parked")
@@ -352,14 +346,17 @@ fn run_scenario(queue: &mut dyn TaskQueueOps, scratch: &Scratch) -> Transcript {
         ("Parked", &parked),
         ("Not a task", &nontask),
     ] {
-        let projection = queue
-            .projection(&TaskId::new(id))
-            .expect("projection");
+        let projection = queue.projection(&TaskId::new(id)).expect("projection");
         let mut labels = projection.labels.clone();
         labels.sort();
         let mut comments = projection.comments.clone();
         comments.sort();
-        projections.push((title.to_string(), projection.status.clone(), labels, comments));
+        projections.push((
+            title.to_string(),
+            projection.status.clone(),
+            labels,
+            comments,
+        ));
     }
 
     Transcript {
@@ -372,14 +369,12 @@ fn run_scenario(queue: &mut dyn TaskQueueOps, scratch: &Scratch) -> Transcript {
 
 #[test]
 fn shadow_parity_in_process_vs_process() {
-    let dir_in = fresh();
-    let scratch_in = Scratch::new(dir_in.clone());
+    let scratch_in = Scratch::new(fresh());
     let mut inproc = TaskQueueHandle::in_process(scratch_in.repo());
     let in_process = run_scenario(&mut inproc, &scratch_in);
 
-    let dir_proc = fresh();
-    let scratch_proc = Scratch::new(dir_proc.clone());
-    let socket = dir_proc.join("a.sock");
+    let scratch_proc = Scratch::new(fresh());
+    let socket = scratch_proc.repo().join("a.sock");
     let mut process = spawn_server(&socket, scratch_proc.repo());
     let mut client = process.client().expect("connect taskqueue client");
     let via_process = run_scenario(&mut client, &scratch_proc);
@@ -408,7 +403,10 @@ fn shadow_parity_in_process_vs_process() {
 
     drop(client);
     let evidence = process.stop();
-    assert!(evidence.process_group_gone, "server stop evidence: {evidence:?}");
+    assert!(
+        evidence.process_group_gone,
+        "server stop evidence: {evidence:?}"
+    );
 }
 
 /// Readiness parity across the process boundary with a blocking dependency: a
@@ -416,19 +414,21 @@ fn shadow_parity_in_process_vs_process() {
 /// and process bindings agree.
 #[test]
 fn process_binding_withholds_blocked_children() {
-    let dir = fresh();
-    let scratch = Scratch::new(dir.clone());
+    let scratch = Scratch::new(fresh());
     let prereq = scratch.create("Prerequisite", VALID);
     let child = scratch.create("Blocked child", VALID);
     let independent = scratch.create("Independent", VALID);
     scratch.dep_add(&child, &prereq);
 
-    let socket = dir.join("np4.sock");
+    let socket = scratch.repo().join("np4.sock");
     let mut server = spawn_server(&socket, scratch.repo());
     let mut client = server.client().expect("connect taskqueue client");
 
     let process_ids = sorted_ready_ids(&client);
-    assert!(process_ids.contains(&prereq), "prerequisite ready: {process_ids:?}");
+    assert!(
+        process_ids.contains(&prereq),
+        "prerequisite ready: {process_ids:?}"
+    );
     assert!(
         process_ids.contains(&independent),
         "independent work ready: {process_ids:?}"
@@ -455,7 +455,10 @@ fn process_binding_withholds_blocked_children() {
         process_ids.contains(&child),
         "child ready after prerequisite closes: {process_ids:?}"
     );
-    assert!(!process_ids.contains(&prereq), "closed prerequisite gone: {process_ids:?}");
+    assert!(
+        !process_ids.contains(&prereq),
+        "closed prerequisite gone: {process_ids:?}"
+    );
 
     drop(client);
     let _ = server.stop();
@@ -467,8 +470,7 @@ fn process_binding_withholds_blocked_children() {
 /// binding (process transport inherits the server behavior).
 #[test]
 fn undefer_release_survives_restart_and_matches_process_binding() {
-    let dir = fresh();
-    let scratch = Scratch::new(dir.clone());
+    let scratch = Scratch::new(fresh());
     let approved = scratch.create_deferred(
         "Approved",
         "staged,difficulty:low,decomp-approved",
@@ -477,7 +479,7 @@ fn undefer_release_survives_restart_and_matches_process_binding() {
     let unvalidated = scratch.create_deferred("Unvalidated", "staged,difficulty:low", "2099-01-01");
 
     // Generation 1: no human authorization yet, so nothing is released.
-    let socket_a = dir.join("ap-a.sock");
+    let socket_a = scratch.repo().join("ap-a.sock");
     let mut server_a = spawn_server(&socket_a, scratch.repo());
     let a = server_a.client().expect("client a");
     assert!(sorted_ready_ids(&a).is_empty(), "no pre-approval release");
@@ -488,7 +490,7 @@ fn undefer_release_survives_restart_and_matches_process_binding() {
     let _ = server_a.stop();
 
     // Generation 2: a fresh process with a rebuilt adapter sees the release.
-    let socket_b = dir.join("ap-b.sock");
+    let socket_b = scratch.repo().join("ap-b.sock");
     let mut server_b = spawn_server(&socket_b, scratch.repo());
     let b = server_b.client().expect("client b");
     let process_ids = sorted_ready_ids(&b);
@@ -520,21 +522,20 @@ fn undefer_release_survives_restart_and_matches_process_binding() {
 
 #[test]
 fn staged_rebind_keeps_pinned_claim() {
-    let dir = fresh();
-    let scratch = Scratch::new(dir.clone());
+    let scratch = Scratch::new(fresh());
     let claimed = scratch.create("Pinned", VALID);
     let task = TaskId::new(&claimed);
 
     // "Generation 1": claim on server A. The claim is the durable in-flight
     // artifact pinned to A.
-    let socket_a = dir.join("b-a.sock");
+    let socket_a = scratch.repo().join("b-a.sock");
     let mut server_a = spawn_server(&socket_a, scratch.repo());
     let mut a = server_a.client().expect("client a");
     let evidence = a.claim(&task).expect("claim in-flight");
     let a_pid = server_a.pid();
 
     // Stage the candidate ("generation 2") and continue the next operation on it.
-    let socket_b = dir.join("b-b.sock");
+    let socket_b = scratch.repo().join("b-b.sock");
     let mut server_b = spawn_server(&socket_b, scratch.repo());
     let mut b = server_b.client().expect("client b");
 
@@ -564,13 +565,12 @@ fn staged_rebind_keeps_pinned_claim() {
 
 #[test]
 fn rollback_keeps_prior_claim_and_server() {
-    let dir = fresh();
-    let scratch = Scratch::new(dir.clone());
+    let scratch = Scratch::new(fresh());
     let id = scratch.create("Prior", VALID);
     let task = TaskId::new(&id);
 
     // Prior active binding: server A owns a persisted claim and comment.
-    let socket_a = dir.join("c-a.sock");
+    let socket_a = scratch.repo().join("c-a.sock");
     let mut server_a = spawn_server(&socket_a, scratch.repo());
     let mut a = server_a.client().expect("client a");
     let evidence = a.claim(&task).expect("claim prior");
@@ -578,7 +578,7 @@ fn rollback_keeps_prior_claim_and_server() {
         .expect("comment prior");
 
     // Candidate binding: server B is staged then rolled back (stopped).
-    let socket_b = dir.join("c-b.sock");
+    let socket_b = scratch.repo().join("c-b.sock");
     let mut server_b = spawn_server(&socket_b, scratch.repo());
     let b_pid = server_b.pid();
     let stopped = server_b.stop();
@@ -586,7 +586,10 @@ fn rollback_keeps_prior_claim_and_server() {
     assert!(!pid_alive(b_pid), "candidate server is gone after rollback");
 
     // No state lost: the prior server and its claim survive.
-    assert!(pid_alive(server_a.pid()), "prior server survives the rollback");
+    assert!(
+        pid_alive(server_a.pid()),
+        "prior server survives the rollback"
+    );
     let projection = a.projection(&task).expect("projection prior");
     assert_eq!(projection.status, "in_progress");
     assert_eq!(projection.assignee, evidence.assignee);
@@ -607,12 +610,11 @@ fn rollback_keeps_prior_claim_and_server() {
 
 #[test]
 fn taskqueue_client_duplicate_id_replay_and_connection_loss() {
-    let dir = fresh();
-    let scratch = Scratch::new(dir.clone());
+    let scratch = Scratch::new(fresh());
     let id = scratch.create("Claimable", VALID);
     let task = TaskId::new(&id);
 
-    let socket = dir.join("d.sock");
+    let socket = scratch.repo().join("d.sock");
     let mut server = spawn_server(&socket, scratch.repo());
     let mut client = Client::connect(&socket).expect("connect");
 
@@ -629,9 +631,11 @@ fn taskqueue_client_duplicate_id_replay_and_connection_loss() {
     // Close the issue, then replay the SAME id: the recorded receipt is still
     // returned even though a real re-run would now be refused ("not claimable:
     // status closed") — proving the effect ran exactly once.
-    let close_params =
-        serde_json::to_value(CloseParams { id: task.clone(), reason: "done".to_string() })
-            .expect("close params");
+    let close_params = serde_json::to_value(CloseParams {
+        id: task.clone(),
+        reason: "done".to_string(),
+    })
+    .expect("close params");
     client
         .call_with_id(2, "close_task", close_params)
         .expect("close");
@@ -655,8 +659,7 @@ fn taskqueue_client_duplicate_id_replay_and_connection_loss() {
 
     // Connection loss: stop the server; the next call is not silently lost.
     let _ = server.stop();
-    let projection_params =
-        serde_json::to_value(TaskCall { id: task }).expect("projection params");
+    let projection_params = serde_json::to_value(TaskCall { id: task }).expect("projection params");
     let err = client
         .call_with_id(4, "projection", projection_params)
         .expect_err("call after server death must fail");
@@ -666,7 +669,7 @@ fn taskqueue_client_duplicate_id_replay_and_connection_loss() {
     );
 
     // Connecting to a socket with no server is Unavailable.
-    let missing = TaskQueueClient::connect(&dir.join("nope.sock"));
+    let missing = TaskQueueClient::connect(&scratch.repo().join("nope.sock"));
     assert!(
         matches!(missing, Err(IpcError::Unavailable(_))),
         "missing socket is Unavailable"

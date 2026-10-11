@@ -6,10 +6,23 @@
 //! request is on the wire an unobserved result is an `UnknownOutcome`, since an
 //! effect may already have occurred. Replaying the same request id recovers the
 //! recorded receipt from the server.
+//!
+//! # Id invariant
+//!
+//! Auto-allocated ids (used by [`Client::call`] and [`Client::call_typed`]) are
+//! **connection-unique**: each connection seeds `next_id` from a per-process
+//! unique base ([`seed_next_id`]) and increments monotonically, so a fresh
+//! connection never reuses another connection's ids. This matters because the
+//! server's receipt map is keyed by request id only and is intentionally global
+//! — explicit [`Client::call_with_id`] replay must survive reconnects. Without
+//! the unique seed, a new connection starting at id 1 would replay the previous
+//! connection's recorded response for id 1 (a cross-method, wrong-typed replay).
 
 use std::io::{BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -18,6 +31,35 @@ use serde_json::Value;
 use crate::envelope::{Request, Response, PROTOCOL_VERSION};
 use crate::error::IpcError;
 use crate::frame::{self, FrameError};
+
+/// Process-global counter giving each connection a distinct auto-id band.
+static CONNECTION_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Width of the per-connection id band: a connection's auto ids stay inside the
+/// aligned `2^BAND_BITS` block that its seed begins.
+const BAND_BITS: u32 = 20;
+
+/// Seed for a connection's auto-allocated request ids.
+///
+/// Auto ids must be unique per connection (see the module docs). The seed packs
+/// a *connection slot* into the high bits and shifts it left by [`BAND_BITS`],
+/// so each slot owns a disjoint aligned block of ids. The slot combines three
+/// parts: the process id (distinguishes processes sharing one server), wall-clock
+/// nanoseconds (extra entropy across process restarts), and a process-global
+/// connection counter (distinguishes connections within a process). Because the
+/// slot is unique per connection, so is its id block.
+fn seed_next_id() -> u64 {
+    let pid = u64::from(std::process::id()) & 0x003F_FFFF; // 22 bits
+    let seq = CONNECTION_SEQ.fetch_add(1, Ordering::Relaxed) & 0x0003_FFFF; // 18 bits
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let entropy = (nanos >> 8) & 0xF; // 4 bits
+    // slot = pid[43..22] | entropy[21..18] | seq[17..0]; the disjoint bit fields
+    // keep `seq` canonical, so distinct connections get distinct slots.
+    ((pid << 22) | (entropy << 18) | seq) << BAND_BITS
+}
 
 /// A client connection to a component server.
 pub struct Client {
@@ -40,8 +82,16 @@ impl Client {
         Ok(Client {
             stream,
             reader,
-            next_id: 1,
+            next_id: seed_next_id(),
         })
+    }
+
+    /// The next auto-allocated request id.
+    ///
+    /// Auto ids are connection-unique (see the module docs); this is exposed for
+    /// tests that assert the id invariant across connections.
+    pub fn next_id(&self) -> u64 {
+        self.next_id
     }
 
     /// Call `method` with `params`, assigning a fresh request id.

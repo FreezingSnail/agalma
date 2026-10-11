@@ -190,6 +190,68 @@ fn replay_survives_reconnect() {
 }
 
 #[test]
+fn fresh_connection_auto_ids_do_not_replay_prior_connection() {
+    // Regression for agalma-sxw: `SandboxSource` opens a fresh client per use.
+    // `launch` returns a map; `alive` returns a bool. If auto ids collided across
+    // connections, connection B's `alive` would replay connection A's `launch`
+    // map and fail the bool decode — the live factory-run failure.
+    let mut server = Server::new(info());
+    server.on("launch", |_params: Value| -> Result<Value, ContractError> {
+        Ok(json!({ "pid": 4242, "running": true }))
+    });
+    server.on("alive", |_params: Value| -> Result<Value, ContractError> {
+        Ok(json!(true))
+    });
+
+    let socket = socket_path("autoid");
+    let _server = spawn_server(server, socket.clone());
+
+    // The server serves one connection at a time, so record on A, close it, then
+    // reconnect as B — exactly how `SandboxSource` opens a fresh client per use.
+    let id_a = {
+        let mut first = Client::connect(&socket).expect("connect A");
+        let id = first.next_id();
+        assert_eq!(id, id & !0xF_FFFF, "seed must be band-aligned");
+        let launched = first.call("launch", json!({})).expect("launch");
+        assert_eq!(launched, json!({ "pid": 4242, "running": true }));
+        id
+    }; // connection A closed
+
+    let mut second = Client::connect(&socket).expect("connect B");
+    let id_b = second.next_id();
+
+    // Two sequential connects must start in different id bands (their high bits
+    // are the connection slot). `>> 20` is the band width chosen by the client.
+    assert_ne!(
+        id_a >> 20,
+        id_b >> 20,
+        "sequential connections must not share an id band (ids {id_a}, {id_b})"
+    );
+
+    // Connection B's auto id differs from A's, so `alive` reaches the handler
+    // and decodes as a bool instead of replaying A's recorded map.
+    let alive: bool = second
+        .call_typed("alive", &json!({}))
+        .expect("alive must reach the handler, not replay launch");
+    assert!(alive);
+}
+
+#[test]
+fn sequential_connects_have_distinct_seeds() {
+    // The core invariant: auto-allocated ids are connection-unique.
+    let socket = socket_path("seeds");
+    let _server = spawn_server(test_server(Arc::new(AtomicU64::new(0))), socket.clone());
+
+    let a = Client::connect(&socket).expect("connect A");
+    let b = Client::connect(&socket).expect("connect B");
+    let c = Client::connect(&socket).expect("connect C");
+
+    assert_ne!(a.next_id(), b.next_id());
+    assert_ne!(b.next_id(), c.next_id());
+    assert_ne!(a.next_id(), c.next_id());
+}
+
+#[test]
 fn connect_failure_is_unavailable() {
     let missing = socket_path("missing");
     // Path was never bound.

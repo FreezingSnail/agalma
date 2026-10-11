@@ -140,6 +140,7 @@ async fn live_attempt_turn_cancel_stop_no_orphans() {
     if let Some(extra) = std::env::var_os("AGALMA_HARNESS_EXTRA_RO") {
         config.extra_ro = Some(PathBuf::from(extra));
     }
+    let keep_runtime_state = config.keep_runtime_state;
     let mut harness = OpenCodeHarness::new(Box::new(SeatbeltSandbox::new()), config);
 
     let describe = harness.describe();
@@ -246,6 +247,13 @@ async fn live_attempt_turn_cancel_stop_no_orphans() {
     let _ = harness.close_session(&session);
     let _ = harness.close_session(&session2);
 
+    // Check before stop can delete evidence: actual turns must not create
+    // OpenCode's unused Git snapshot store.
+    assert!(
+        !attempt_dir.join("xdg-data/opencode/snapshot").exists(),
+        "OpenCode created a snapshot store despite snapshots:false"
+    );
+
     // --- stop attempt: process evidence + no orphans -----------------------
     let evidence = harness.stop_attempt(&attempt).expect("stop_attempt");
     eprintln!("stop evidence: {}", evidence.detail);
@@ -260,6 +268,25 @@ async fn live_attempt_turn_cancel_stop_no_orphans() {
         survivors.is_empty(),
         "no confined process may survive stop; found {survivors:?}"
     );
+    assert!(
+        workspace.join(".git").is_dir(),
+        "workspace survives cleanup"
+    );
+    if !keep_runtime_state {
+        for sub in ["xdg-config", "xdg-data", "xdg-cache", "xdg-state", "tmp"] {
+            assert!(!attempt_dir.join(sub).exists(), "{sub} survived stop");
+        }
+        assert!(
+            fs::read_dir(&attempt_dir).unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("opencode-log-")
+            }),
+            "server log preserved"
+        );
+    }
 
     // --- user OpenCode state untouched -------------------------------------
     assert_eq!(

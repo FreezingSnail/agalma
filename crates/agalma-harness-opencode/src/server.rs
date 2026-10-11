@@ -128,10 +128,12 @@ where
                 .unwrap_or_else(|| Path::new("."))
                 .join("sandbox.sock")
         });
-    let sandbox =
-        SandboxClient::connect(&sandbox_socket).map_err(|e| {
-            format!("connect sandbox server at {}: {e}", sandbox_socket.display())
-        })?;
+    let sandbox = SandboxClient::connect(&sandbox_socket).map_err(|e| {
+        format!(
+            "connect sandbox server at {}: {e}",
+            sandbox_socket.display()
+        )
+    })?;
     let mut server = build_server(Box::new(sandbox), config);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

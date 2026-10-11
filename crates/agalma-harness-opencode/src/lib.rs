@@ -19,7 +19,7 @@ mod provider_lease;
 mod server;
 mod translate;
 
-pub use adapter::{OpenCodeHarness, OpenCodeHarnessConfig, DEFAULT_MODEL};
+pub use adapter::{OpenCodeHarness, OpenCodeHarnessConfig, DEFAULT_MODEL, KEEP_STATE_ENV};
 pub use config::{build_config, OpenCodeConfigInit};
 pub use server::{
     build_server, config_from_env, run_from_args, server_command, EXTRA_RW_ENV, PAID_ENV,

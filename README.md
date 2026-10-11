@@ -95,6 +95,13 @@ cargo run --offline -p agalma-conductor -- run \
 
 All run artifacts live under `target/test-runs/` — never a system temp directory. Dependency versions are pinned exactly in `Cargo.toml`; no new crates without explicit approval (`docs/m0-dependencies.md`).
 
+OpenCode attempts disable native snapshots; Agalma uses workspace Git for rollback.
+The harness clears stale runtime folders before launch and removes them after stop
+or drop once the process group is gone. Server logs remain under the attempt root
+as `opencode-log-<unique-id>/`; workspace files are preserved. Set
+`AGALMA_HARNESS_KEEP_STATE=1` to retain runtime state after stop for debugging
+(the next launch still clears stale state).
+
 ## Docs
 
 - `docs/architecture.md` — full architecture, components, roadmap

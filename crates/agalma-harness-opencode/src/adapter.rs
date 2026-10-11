@@ -113,7 +113,23 @@ pub struct OpenCodeHarnessConfig {
     pub provider_api_key: Option<String>,
     /// How long `start_attempt` waits for `/api/info` to answer.
     pub readiness_timeout: Duration,
+    /// Keep the attempt's runtime state (XDG dirs, tmp, HOME, `opencode.db`)
+    /// after the attempt stops, for forensics. Defaults from
+    /// [`KEEP_STATE_ENV`]; off means the state is removed on stop (the server
+    /// log is always kept).
+    pub keep_runtime_state: bool,
 }
+
+/// Environment switch (`1`) that keeps attempt runtime state after stop.
+pub const KEEP_STATE_ENV: &str = "AGALMA_HARNESS_KEEP_STATE";
+
+/// Config document handed to every server via `OPENCODE_CONFIG_CONTENT` (the
+/// highest-precedence OpenCode v2 config source). Agalma never rewinds through
+/// OpenCode — rollback is the workspace's git (candidate branch, CAS integrate,
+/// revert) — so OpenCode's per-step git snapshots of the workspace are pure
+/// cost: they re-capture the worktree every few seconds into an object store
+/// that is never packed (`agalma-mlw`, `agalma-22f`).
+const SERVER_CONFIG_CONTENT: &str = r#"{"snapshots":false}"#;
 
 impl OpenCodeHarnessConfig {
     /// Build a config with the four sandbox roots and a 30 s readiness timeout.
@@ -139,6 +155,7 @@ impl OpenCodeHarnessConfig {
             provider_id: None,
             provider_api_key: None,
             readiness_timeout: Duration::from_secs(30),
+            keep_runtime_state: std::env::var(KEEP_STATE_ENV).is_ok_and(|v| v == "1"),
         }
     }
 }
@@ -195,6 +212,9 @@ pub struct OpenCodeHarness {
     session_prompts: BTreeMap<String, String>,
     ops: BTreeMap<String, OcOp>,
     provider_config: Option<ProviderLease>,
+    /// `(attempt root, workspace)` of the launched server, for runtime-state
+    /// cleanup once the server is gone.
+    runtime: Option<(PathBuf, PathBuf)>,
     stopped: bool,
 }
 
@@ -232,6 +252,7 @@ impl OpenCodeHarness {
             session_prompts: BTreeMap::new(),
             ops: BTreeMap::new(),
             provider_config: None,
+            runtime: None,
             stopped: false,
         }
     }
@@ -293,6 +314,10 @@ impl OpenCodeHarness {
         // Recover a provider override leaked by a dead attempt before anything
         // reads the workspace config; a live foreign lease is a conflict.
         provider_lease::reconcile(&workspace_abs)?;
+        // A crashed earlier attempt in this root never ran its cleanup; start
+        // from empty runtime state rather than inheriting its database/caches.
+        clear_runtime_state(&root, &workspace_abs);
+        self.runtime = Some((root.clone(), workspace_abs.clone()));
         let mut dirs = BTreeMap::new();
         for sub in RUNTIME_SUBDIRS {
             dirs.insert(sub, canonical_dir(&root.join(sub))?);
@@ -408,6 +433,11 @@ impl OpenCodeHarness {
         for (key, value) in &self.config.extra_env {
             env.insert(key.clone(), value.clone());
         }
+        // Apply this after extra_env so every launch disables snapshots.
+        env.insert(
+            "OPENCODE_CONFIG_CONTENT".to_string(),
+            SERVER_CONFIG_CONTENT.to_string(),
+        );
 
         let spec = LaunchSpec {
             program: program.to_string_lossy().into_owned(),
@@ -490,6 +520,18 @@ impl OpenCodeHarness {
         }
     }
 
+    /// Remove the stopped server's runtime state unless kept for forensics.
+    /// Skipped while the process group may still be alive (it could still be
+    /// writing); the next launch in the same root clears it instead.
+    fn cleanup_runtime_state(&mut self, evidence: &StopEvidence) {
+        if self.config.keep_runtime_state || !evidence.process_group_gone {
+            return;
+        }
+        if let Some((root, workspace)) = self.runtime.take() {
+            clear_runtime_state(&root, &workspace);
+        }
+    }
+
     fn native_for(&self, op: &OperationHandle) -> Result<String, ContractError> {
         self.ops
             .get(op.id.as_str())
@@ -559,8 +601,9 @@ impl Drop for OpenCodeHarness {
         if self.stopped {
             return;
         }
-        let _ = self.terminate_child();
+        let evidence = self.terminate_child();
         self.cleanup_provider_config();
+        self.cleanup_runtime_state(&evidence);
     }
 }
 
@@ -585,6 +628,7 @@ impl HarnessApi for OpenCodeHarness {
         }
         self.attempt_id = Some(AttemptId::derive(1));
         self.workspace = Some(req.workspace.clone());
+        self.stopped = false;
         self.spawn_server(&req.workspace)?;
         let handle = AttemptHandle {
             id: self.attempt_id.clone().expect("attempt id allocated above"),
@@ -736,6 +780,7 @@ impl HarnessApi for OpenCodeHarness {
         let _ = attempt;
         let evidence = self.terminate_child();
         self.cleanup_provider_config();
+        self.cleanup_runtime_state(&evidence);
         self.stopped = true;
         self.attempt = None;
         self.attempt_id = None;
@@ -804,6 +849,49 @@ fn ensure_runtime_outside_workspace(root: &Path, workspace: &Path) -> Result<(),
         workspace.display(),
         RUNTIME_SUBDIRS.join(", ")
     )))
+}
+
+/// Remove the per-attempt runtime subdirectories under `root` (`agalma-mlw`).
+///
+/// The server's log is kept: `xdg-data/opencode/log` moves to
+/// `<root>/opencode-log-<unique-id>` (small, and the evidence stall analysis
+/// reads). A subdirectory that is or contains `workspace` is never touched —
+/// some layouts nest the worktree under the attempt root (e.g. `work`).
+/// Symlinks are unlinked without traversing them, including when finding the
+/// log directory. If preserving a log fails, its runtime directory is retained.
+/// Best-effort: failures leave state for the next launch to clear.
+fn clear_runtime_state(root: &Path, workspace: &Path) {
+    for sub in RUNTIME_SUBDIRS {
+        let dir = root.join(sub);
+        if workspace.starts_with(&dir) {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(&dir) else {
+            continue;
+        };
+        if !metadata.is_dir() {
+            let _ = fs::remove_file(&dir);
+            continue;
+        }
+        if sub == "xdg-data" {
+            let data = dir.join("opencode");
+            // Do not move another directory's logs via a symlink left by a
+            // worker (remove_dir_all below will only unlink the symlink).
+            if fs::symlink_metadata(&data).is_ok_and(|m| m.is_dir()) {
+                let log = data.join("log");
+                if fs::symlink_metadata(&log).is_ok_and(|m| m.is_dir())
+                    && fs::rename(
+                        &log,
+                        root.join(format!("opencode-log-{}", random_password())),
+                    )
+                    .is_err()
+                {
+                    continue;
+                }
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 /// Decide the outcome of a cancel from the `interrupt` response.
@@ -1271,6 +1359,223 @@ mod tests {
         );
         assert!(!workspace.join(provider_lease::LEASE_FILE).exists());
         drop(h);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Simulate what a server leaves behind: log, snapshot store, db, bun libs.
+    fn seed_runtime(attempt: &Path) {
+        let data = attempt.join("xdg-data").join("opencode");
+        fs::create_dir_all(data.join("log")).unwrap();
+        fs::write(data.join("log").join("opencode.log"), "server log\n").unwrap();
+        fs::create_dir_all(data.join("snapshot").join("objects")).unwrap();
+        fs::write(data.join("snapshot").join("objects").join("blob"), "x").unwrap();
+        fs::write(data.join("opencode.db"), "db").unwrap();
+        fs::create_dir_all(attempt.join("tmp")).unwrap();
+        fs::write(attempt.join("tmp").join(".bun-lib.dylib"), "lib").unwrap();
+    }
+
+    /// Preserved `opencode-log-*` dirs under `attempt` holding the server log.
+    fn preserved_logs(attempt: &Path) -> Vec<PathBuf> {
+        fs::read_dir(attempt)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("opencode-log-"))
+                    && p.join("opencode.log").is_file()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_launch_disables_opencode_snapshots() {
+        // agalma-mlw: Agalma never rewinds through OpenCode, so its per-step git
+        // snapshots of the workspace are pure cost (the 3.8 GB store).
+        let (root, workspace) = layout("no-snapshots");
+        let sandbox = RecordingSandbox::default();
+        let mut h = harness(&root, &root.join("attempt"), &sandbox);
+        h.config.extra_env.insert(
+            "OPENCODE_CONFIG_CONTENT".to_string(),
+            r#"{"snapshots":true}"#.to_string(),
+        );
+        start(&mut h, &workspace);
+        let spec = &sandbox.launches()[0];
+        let content: Value =
+            serde_json::from_str(&spec.env["OPENCODE_CONFIG_CONTENT"]).expect("config json");
+        assert_eq!(content["snapshots"], Value::Bool(false), "{content}");
+        drop(h);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stale_runtime_state_is_cleared_before_launch() {
+        // A crashed attempt never cleaned up; the next launch must not inherit
+        // its database, snapshot store, or temp files — but keeps its log.
+        let (root, workspace) = layout("stale-runtime");
+        let attempt = root.join("attempt");
+        seed_runtime(&attempt);
+        let sandbox = RecordingSandbox::default();
+        let mut h = harness(&root, &attempt, &sandbox);
+        h.config.keep_runtime_state = true; // isolate the pre-launch clear
+        start(&mut h, &workspace);
+        let data = attempt.join("xdg-data").join("opencode");
+        assert!(
+            !data.join("snapshot").exists(),
+            "stale snapshot store removed"
+        );
+        assert!(!data.join("opencode.db").exists(), "stale db removed");
+        assert!(!attempt.join("tmp").join(".bun-lib.dylib").exists());
+        assert!(
+            attempt.join("xdg-data").is_dir(),
+            "fresh runtime dirs created"
+        );
+        assert_eq!(preserved_logs(&attempt).len(), 1, "prior server log kept");
+        drop(h);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn drop_and_stop_remove_runtime_state_but_keep_the_log() {
+        let (root, workspace) = layout("runtime-cleanup");
+        for via_stop in [false, true] {
+            let attempt = root.join(format!("attempt-{via_stop}"));
+            let sandbox = RecordingSandbox::default();
+            let mut h = harness(&root, &attempt, &sandbox);
+            h.config.keep_runtime_state = false;
+            start(&mut h, &workspace);
+            seed_runtime(&attempt);
+            if via_stop {
+                h.stop_attempt(&AttemptHandle {
+                    id: AttemptId::derive(1),
+                })
+                .expect("stop");
+            }
+            drop(h);
+            for sub in RUNTIME_SUBDIRS {
+                assert!(
+                    !attempt.join(sub).exists(),
+                    "{sub} survived cleanup (via_stop={via_stop})"
+                );
+            }
+            assert_eq!(
+                preserved_logs(&attempt).len(),
+                1,
+                "log kept (via_stop={via_stop})"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cleanup_never_touches_a_workspace_nested_in_a_runtime_dir() {
+        // The live smoke layout nests the worktree at `<attempt>/work` (== HOME).
+        let (root, _) = layout("nested-workspace");
+        let attempt = root.join("attempt");
+        let workspace = attempt.join("work");
+        fs::create_dir_all(&workspace).unwrap();
+        assert!(Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&workspace)
+            .status()
+            .expect("git init")
+            .success());
+        fs::write(workspace.join("src.rs"), "fn main() {}\n").unwrap();
+        let sandbox = RecordingSandbox::default();
+        let mut h = harness(&root, &attempt, &sandbox);
+        h.config.keep_runtime_state = false;
+        start(&mut h, &workspace);
+        seed_runtime(&attempt);
+        drop(h);
+        assert!(workspace.join(".git").is_dir(), "workspace repo survives");
+        assert!(
+            workspace.join("src.rs").is_file(),
+            "workspace files survive"
+        );
+        assert!(
+            !attempt.join("xdg-data").exists(),
+            "other runtime state removed"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn keep_flag_retains_runtime_state_for_forensics() {
+        let (root, workspace) = layout("keep-runtime");
+        let attempt = root.join("attempt");
+        let sandbox = RecordingSandbox::default();
+        let mut h = harness(&root, &attempt, &sandbox);
+        h.config.keep_runtime_state = true;
+        start(&mut h, &workspace);
+        seed_runtime(&attempt);
+        drop(h);
+        assert!(attempt.join("xdg-data/opencode/opencode.db").is_file());
+        assert!(attempt.join("xdg-data/opencode/log/opencode.log").is_file());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn repeated_cleanup_preserves_each_log() {
+        let (root, workspace) = layout("repeated-cleanup");
+        let attempt = root.join("attempt");
+        for content in ["first", "second"] {
+            seed_runtime(&attempt);
+            fs::write(attempt.join("xdg-data/opencode/log/opencode.log"), content).unwrap();
+            clear_runtime_state(&attempt, &workspace);
+        }
+        let mut contents: Vec<_> = preserved_logs(&attempt)
+            .into_iter()
+            .map(|p| fs::read_to_string(p.join("opencode.log")).unwrap())
+            .collect();
+        contents.sort();
+        assert_eq!(contents, ["first", "second"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_unlinks_runtime_symlinks_without_moving_external_logs() {
+        use std::os::unix::fs::symlink;
+        let (root, workspace) = layout("symlink-cleanup");
+        let outside = root.join("outside");
+        fs::create_dir_all(outside.join("opencode/log")).unwrap();
+        let log = outside.join("opencode/log/opencode.log");
+        fs::write(&log, "external log").unwrap();
+        for (name, link_path, target) in [
+            ("data", "xdg-data", outside.clone()),
+            ("opencode", "xdg-data/opencode", outside.join("opencode")),
+            ("log", "xdg-data/opencode/log", outside.join("opencode/log")),
+            ("broken", "tmp", root.join("missing")),
+        ] {
+            let attempt = root.join(name);
+            let link = attempt.join(link_path);
+            fs::create_dir_all(link.parent().unwrap()).unwrap();
+            symlink(target, &link).unwrap();
+            clear_runtime_state(&attempt, &workspace);
+            assert!(fs::symlink_metadata(&link).is_err());
+            assert_eq!(fs::read_to_string(&log).unwrap(), "external log");
+            assert!(preserved_logs(&attempt).is_empty());
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn drop_cleans_runtime_after_a_stopped_harness_is_restarted() {
+        let (root, workspace) = layout("restart-cleanup");
+        let attempt = root.join("attempt");
+        let sandbox = RecordingSandbox::default();
+        let mut h = harness(&root, &attempt, &sandbox);
+        h.config.keep_runtime_state = false;
+        start(&mut h, &workspace);
+        h.stop_attempt(&AttemptHandle {
+            id: AttemptId::derive(1),
+        })
+        .unwrap();
+        start(&mut h, &workspace);
+        seed_runtime(&attempt);
+        drop(h);
+        assert!(!attempt.join("xdg-data").exists());
+        assert_eq!(preserved_logs(&attempt).len(), 1);
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -120,6 +120,7 @@ pub fn spec(root: &Path) -> LaunchSpec {
         protected_dir: root.clone(),
         sock_dir: root,
         extra_ro_roots: Vec::new(),
+        extra_rw_roots: Vec::new(),
     }
 }
 

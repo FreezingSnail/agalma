@@ -39,6 +39,7 @@ use agalma_contracts::sandbox::{LaunchSpec, SandboxApi, SandboxChild};
 use serde_json::{json, Value};
 
 use crate::http::HttpClient;
+use crate::provider_lease::{self, ProviderLease};
 use crate::translate;
 
 /// Reported implementation name (binding identity).
@@ -79,6 +80,11 @@ pub struct OpenCodeHarnessConfig {
     /// (Seatbelt `EXTRA_RO2`, `EXTRA_RO3`), e.g. toolchain homes the confined
     /// worker needs (`~/.cargo`, `~/.rustup`). At most two are honoured.
     pub extra_ro_roots: Vec<PathBuf>,
+    /// Extra read/write root (Seatbelt `EXTRA_RW`; at most one honoured), e.g.
+    /// the target repo a planning session edits. Keeping the repo here instead
+    /// of making it `attempt_dir` keeps OpenCode's runtime state (XDG dirs, its
+    /// git snapshot store) out of the worktree it snapshots.
+    pub extra_rw_roots: Vec<PathBuf>,
     /// Additional environment variables for the confined server, merged over
     /// the adapter's base environment (e.g. `RUSTUP_HOME`, `CARGO_HOME`,
     /// `PATH` additions for the toolchain).
@@ -124,6 +130,7 @@ impl OpenCodeHarnessConfig {
             sock_dir: sock_dir.into(),
             extra_ro: None,
             extra_ro_roots: Vec::new(),
+            extra_rw_roots: Vec::new(),
             extra_env: BTreeMap::new(),
             program: None,
             model: None,
@@ -167,35 +174,6 @@ struct OcOp {
     native_session: String,
 }
 
-/// Temporary provider override owned by one harness attempt.
-///
-/// Restores a user config on normal shutdown, but never restores another
-/// Agalma-generated loopback override left by an interrupted attempt.
-struct ProviderConfigLease {
-    path: PathBuf,
-    generated: Vec<u8>,
-    previous: Option<Vec<u8>>,
-}
-
-impl ProviderConfigLease {
-    fn restore(self) {
-        let Ok(current) = fs::read(&self.path) else {
-            return;
-        };
-        if current != self.generated {
-            return;
-        }
-        match self.previous {
-            Some(previous) => {
-                let _ = fs::write(&self.path, previous);
-            }
-            None => {
-                let _ = fs::remove_file(&self.path);
-            }
-        }
-    }
-}
-
 /// OpenCode-backed [`HarnessApi`].
 pub struct OpenCodeHarness {
     sandbox: Box<dyn SandboxApi + Send>,
@@ -216,7 +194,7 @@ pub struct OpenCodeHarness {
     /// turn prompt.
     session_prompts: BTreeMap<String, String>,
     ops: BTreeMap<String, OcOp>,
-    provider_config: Option<ProviderConfigLease>,
+    provider_config: Option<ProviderLease>,
     stopped: bool,
 }
 
@@ -306,17 +284,17 @@ impl OpenCodeHarness {
         extra_ro_roots.extend(self.config.extra_ro_roots.iter().cloned());
 
         // Isolated attempt tree: <attempt>/{xdg-config,xdg-data,xdg-cache,
-        // xdg-state,tmp,work}. `work` is the attempt-scoped HOME.
+        // xdg-state,tmp,work}. `work` is the attempt-scoped HOME. The guard runs
+        // before any subdirectory is created so a refused launch leaves nothing
+        // behind in the workspace.
         let root = canonical_dir(&self.config.attempt_dir)?;
+        let workspace_abs = canonical_dir(Path::new(workspace))?;
+        ensure_runtime_outside_workspace(&root, &workspace_abs)?;
+        // Recover a provider override leaked by a dead attempt before anything
+        // reads the workspace config; a live foreign lease is a conflict.
+        provider_lease::reconcile(&workspace_abs)?;
         let mut dirs = BTreeMap::new();
-        for sub in [
-            "xdg-config",
-            "xdg-data",
-            "xdg-cache",
-            "xdg-state",
-            "tmp",
-            "work",
-        ] {
+        for sub in RUNTIME_SUBDIRS {
             dirs.insert(sub, canonical_dir(&root.join(sub))?);
         }
         let protected = canonical_dir(&self.config.protected_dir)?;
@@ -327,7 +305,12 @@ impl OpenCodeHarness {
                 self.config.profile_path
             ))
         })?;
-        let workspace_abs = canonical_dir(Path::new(workspace))?;
+        let extra_rw_roots = self
+            .config
+            .extra_rw_roots
+            .iter()
+            .map(|dir| canonical_dir(dir))
+            .collect::<Result<Vec<_>, _>>()?;
 
         // Allocate a loopback port, then refuse to launch if something already
         // owns it: connecting to a stale server would silently break isolation.
@@ -378,7 +361,8 @@ impl OpenCodeHarness {
         // Paid HTTP-forward mode: point the provider at the loopback proxy with
         // a dummy key. The provider config must live in `OPENCODE_CONFIG_DIR`
         // (== the workspace; see the short-circuit note above), so it is written
-        // there and locally excluded from the candidate commit.
+        // there under a lease (restored on stop, recovered after a crash) and
+        // locally excluded from the candidate commit.
         if let Some(base_url) = self
             .config
             .provider_base_url
@@ -390,7 +374,10 @@ impl OpenCodeHarness {
                 .provider_id
                 .clone()
                 .unwrap_or_else(|| DEFAULT_PAID_PROVIDER_ID.to_string());
-            let lease = write_provider_config(&workspace_abs, &provider_id, &base_url)?;
+            let lease = provider_lease::acquire(
+                &workspace_abs,
+                render_provider_config(&provider_id, &base_url),
+            )?;
             self.provider_config = Some(lease);
             env.insert(
                 "OPENCODE_API_KEY".to_string(),
@@ -439,6 +426,10 @@ impl OpenCodeHarness {
             protected_dir: protected.to_string_lossy().into_owned(),
             sock_dir: sock.to_string_lossy().into_owned(),
             extra_ro_roots: extra_ro_roots
+                .iter()
+                .map(|root| root.to_string_lossy().into_owned())
+                .collect(),
+            extra_rw_roots: extra_rw_roots
                 .iter()
                 .map(|root| root.to_string_lossy().into_owned())
                 .collect(),
@@ -495,7 +486,7 @@ impl OpenCodeHarness {
 
     fn cleanup_provider_config(&mut self) {
         if let Some(lease) = self.provider_config.take() {
-            lease.restore();
+            lease.release();
         }
     }
 
@@ -768,71 +759,51 @@ fn derive_extra_ro(program: &Path) -> PathBuf {
         .unwrap_or_else(|| real.clone())
 }
 
-/// Write the provider base-URL override into `workspace/opencode.json` and, when
-/// the workspace is a git repo, locally exclude it so it never enters the
-/// candidate commit (`agalma-csw.2`). The returned lease restores a pre-existing
-/// user config and removes the override when the harness attempt ends.
-fn write_provider_config(
-    workspace: &Path,
-    provider_id: &str,
-    base_url: &str,
-) -> Result<ProviderConfigLease, ContractError> {
-    let path = workspace.join("opencode.json");
-    let generated = render_provider_config(provider_id, base_url).into_bytes();
-    let previous = fs::read(&path)
-        .ok()
-        .filter(|contents| !is_agalma_provider_config(contents));
-    fs::write(&path, &generated).map_err(|e| {
-        ContractError::KnownFailure(format!("write provider config {}: {e}", path.display()))
-    })?;
-    // Local excludes are per-clone and never committed; a missing `.git` (a
-    // non-repo fixture checkout) is fine — there is no candidate commit then.
-    let exclude = workspace.join(".git").join("info").join("exclude");
-    if workspace.join(".git").is_dir() {
-        if let Some(parent) = exclude.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let existing = fs::read_to_string(&exclude).unwrap_or_default();
-        if !existing.lines().any(|line| line.trim() == "opencode.json") {
-            let mut updated = existing;
-            if !updated.is_empty() && !updated.ends_with('\n') {
-                updated.push('\n');
-            }
-            updated.push_str("opencode.json\n");
-            let _ = fs::write(&exclude, updated);
-        }
-    }
-    Ok(ProviderConfigLease {
-        path,
-        generated,
-        previous,
-    })
-}
+/// Attempt-root subdirectories the adapter renders as the server's runtime
+/// state (`HOME`, `TMPDIR`, `XDG_*`).
+const RUNTIME_SUBDIRS: [&str; 6] = [
+    "xdg-config",
+    "xdg-data",
+    "xdg-cache",
+    "xdg-state",
+    "tmp",
+    "work",
+];
 
-fn is_agalma_provider_config(contents: &[u8]) -> bool {
-    let Ok(value) = serde_json::from_slice::<Value>(contents) else {
-        return false;
-    };
-    let Some(root) = value.as_object() else {
-        return false;
-    };
-    if root.keys().any(|key| key != "$schema" && key != "provider") {
-        return false;
+/// Refuse a launch whose attempt root sits inside the workspace unless git
+/// ignores it (`agalma-22f`).
+///
+/// The attempt root holds OpenCode's runtime state, including the git snapshot
+/// store it keeps of the workspace. OpenCode snapshots every unignored file in
+/// the workspace, so an unignored store inside the worktree snapshots itself and
+/// grows without bound (observed: 3.8 GB, 272k files, `git add --all` pinned at
+/// ~900% CPU, every OpenCode session in the repo hung). An attempt root equal to
+/// the workspace can never be ignored and is always refused; a non-git
+/// workspace has no ignore rules, so a nested root is refused there too.
+fn ensure_runtime_outside_workspace(root: &Path, workspace: &Path) -> Result<(), ContractError> {
+    if !root.starts_with(workspace) {
+        return Ok(());
     }
-    let Some(providers) = root.get("provider").and_then(Value::as_object) else {
-        return false;
-    };
-    if providers.len() != 1 {
-        return false;
+    let ignored = root != workspace
+        && Command::new("git")
+            .arg("-C")
+            .arg(workspace)
+            .args(["check-ignore", "-q", "--"])
+            .arg(root)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+    if ignored {
+        return Ok(());
     }
-    providers
-        .values()
-        .next()
-        .and_then(|provider| provider.pointer("/options/baseURL"))
-        .and_then(Value::as_str)
-        .and_then(|url| url.strip_prefix("http://127.0.0.1:"))
-        .map(|port| !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()))
-        .unwrap_or(false)
+    Err(ContractError::KnownFailure(format!(
+        "attempt root {} is inside workspace {} and not git-ignored; the harness \
+         runtime state ({}) would be snapshotted into the worktree. Use an attempt \
+         root outside the workspace and grant the workspace as an extra read/write root.",
+        root.display(),
+        workspace.display(),
+        RUNTIME_SUBDIRS.join(", ")
+    )))
 }
 
 /// Decide the outcome of a cancel from the `interrupt` response.
@@ -1051,89 +1022,256 @@ mod tests {
         assert!(!json.contains("apiKey"));
     }
 
-    #[test]
-    fn write_provider_config_places_file_and_locally_excludes_it() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("target")
-            .join("test-runs")
-            .join(format!("provider-config-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let workspace = dir.join("checkout");
-        fs::create_dir_all(workspace.join(".git").join("info")).expect("git info dir");
-        let lease = write_provider_config(&workspace, "opencode-go", "http://127.0.0.1:9999")
-            .expect("write config");
-        assert_eq!(lease.path, workspace.join("opencode.json"));
-        let text = fs::read_to_string(&lease.path).expect("read config");
-        assert!(text.contains("http://127.0.0.1:9999"), "{text}");
-        let exclude =
-            fs::read_to_string(workspace.join(".git").join("info").join("exclude")).unwrap();
-        assert!(
-            exclude.lines().any(|l| l.trim() == "opencode.json"),
-            "{exclude}"
+    /// Records launches and reports the child dead, so `start_attempt` fails
+    /// fast at readiness without a real server.
+    #[derive(Clone, Default)]
+    struct RecordingSandbox {
+        launches: std::sync::Arc<std::sync::Mutex<Vec<LaunchSpec>>>,
+    }
+
+    impl RecordingSandbox {
+        fn launches(&self) -> Vec<LaunchSpec> {
+            self.launches.lock().expect("launch log").clone()
+        }
+    }
+
+    impl SandboxApi for RecordingSandbox {
+        fn launch(&mut self, spec: LaunchSpec) -> Result<SandboxChild, ContractError> {
+            let attempt = spec.attempt.clone();
+            self.launches.lock().expect("launch log").push(spec);
+            Ok(SandboxChild {
+                pid: 0,
+                pgid: 0,
+                attempt,
+                started_at_unix_ms: 0,
+            })
+        }
+
+        fn alive(&self, _child: &SandboxChild) -> Result<bool, ContractError> {
+            Ok(false)
+        }
+
+        fn terminate(&mut self, _child: &SandboxChild) -> Result<StopEvidence, ContractError> {
+            Ok(StopEvidence {
+                process_group_gone: true,
+                detail: "fake".to_string(),
+            })
+        }
+    }
+
+    /// `<target>/test-runs/adapter-<name>-<pid>/` with a git workspace `repo/`.
+    fn layout(name: &str) -> (PathBuf, PathBuf) {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/test-runs")
+            .join(format!("adapter-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("repo")).expect("layout");
+        let root = fs::canonicalize(&root).expect("canonical root");
+        fs::write(root.join("worker.sb"), "(version 1)\n(deny default)\n").expect("profile");
+        let workspace = root.join("repo");
+        let status = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&workspace)
+            .status()
+            .expect("git init");
+        assert!(status.success(), "git init");
+        (root, workspace)
+    }
+
+    fn harness(root: &Path, attempt: &Path, sandbox: &RecordingSandbox) -> OpenCodeHarness {
+        let mut config = OpenCodeHarnessConfig::new(
+            root.join("worker.sb"),
+            attempt,
+            root.join("protected"),
+            root.join("sock"),
         );
-        // Idempotent: a second write does not duplicate the exclude entry.
-        let second =
-            write_provider_config(&workspace, "opencode-go", "http://127.0.0.1:9999").unwrap();
-        let exclude =
-            fs::read_to_string(workspace.join(".git").join("info").join("exclude")).unwrap();
+        config.program = Some(PathBuf::from("/usr/bin/true"));
+        config.extra_ro = Some(PathBuf::from("/usr/bin"));
+        OpenCodeHarness::new(Box::new(sandbox.clone()), config)
+    }
+
+    fn start(harness: &mut OpenCodeHarness, workspace: &Path) -> ContractError {
+        harness
+            .start_attempt(StartAttemptRequest {
+                workspace: workspace.to_string_lossy().into_owned(),
+                role: "designer".to_string(),
+                genome_ref: ArtifactRef::derive("genome").to_string(),
+                constraints_ref: ArtifactRef::derive("platform-constraints").to_string(),
+                limits: agalma_contracts::harness::Limits {
+                    wall_ms: 1_000,
+                    tokens: 0,
+                    cost_micros: 0,
+                },
+                operation_id: OperationId::new("op:adapter-test"),
+            })
+            .expect_err("the fake child is never ready")
+    }
+
+    fn untracked(workspace: &Path) -> String {
+        let out = Command::new("git")
+            .args(["status", "--porcelain", "--untracked-files=all"])
+            .current_dir(workspace)
+            .output()
+            .expect("git status");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    fn dead_pid() -> u32 {
+        let mut child = Command::new("/usr/bin/true").spawn().expect("spawn true");
+        let pid = child.id();
+        child.wait().expect("reap true");
+        pid
+    }
+
+    #[test]
+    fn runtime_state_stays_outside_a_workspace_granted_read_write() {
+        // agalma-22f: a planning session edits the repo (EXTRA_RW) while
+        // OpenCode's XDG/tmp/HOME state — its git snapshot store included —
+        // lives in a conductor-owned attempt root, never in the worktree.
+        let (root, workspace) = layout("runtime-outside");
+        let sandbox = RecordingSandbox::default();
+        let mut h = harness(&root, &root.join("attempt"), &sandbox);
+        h.config.extra_rw_roots = vec![workspace.clone()];
+        let err = start(&mut h, &workspace);
+        assert!(err.to_string().contains("readiness"), "{err}");
+
+        let launches = sandbox.launches();
+        assert_eq!(launches.len(), 1, "one launch");
+        let spec = &launches[0];
+        assert_eq!(spec.attempt_dir, root.join("attempt").to_string_lossy());
         assert_eq!(
-            exclude
-                .lines()
-                .filter(|l| l.trim() == "opencode.json")
-                .count(),
-            1,
-            "{exclude}"
+            spec.extra_rw_roots,
+            vec![workspace.to_string_lossy().into_owned()]
         );
-        second.restore();
-        lease.restore();
-        assert!(!workspace.join("opencode.json").exists());
-        let _ = fs::remove_dir_all(&dir);
+        for key in [
+            "HOME",
+            "TMPDIR",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+        ] {
+            let value = Path::new(&spec.env[key]);
+            assert!(
+                !value.starts_with(&workspace),
+                "{key}={} must not be inside the workspace",
+                value.display()
+            );
+        }
+        for sub in RUNTIME_SUBDIRS {
+            assert!(!workspace.join(sub).exists(), "{sub} leaked into the repo");
+        }
+        assert_eq!(untracked(&workspace), "", "worktree stays clean");
+        drop(h);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn generated_stale_provider_config_is_not_restored() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("target")
-            .join("test-runs")
-            .join(format!("provider-config-stale-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let workspace = dir.join("checkout");
-        fs::create_dir_all(&workspace).expect("workspace dir");
+    fn unignored_attempt_root_inside_workspace_is_refused() {
+        let (root, workspace) = layout("runtime-refused");
+        for attempt in [workspace.clone(), workspace.join(".agalma-runtime")] {
+            let sandbox = RecordingSandbox::default();
+            let mut h = harness(&root, &attempt, &sandbox);
+            let err = start(&mut h, &workspace);
+            assert!(
+                matches!(&err, ContractError::KnownFailure(m) if m.contains("not git-ignored")),
+                "attempt {}: {err:?}",
+                attempt.display()
+            );
+            assert!(sandbox.launches().is_empty(), "refused before launch");
+            for sub in RUNTIME_SUBDIRS {
+                assert!(
+                    !workspace.join(sub).exists(),
+                    "{sub} created before refusal"
+                );
+                assert!(!attempt.join(sub).exists(), "{sub} created before refusal");
+            }
+        }
+        assert_eq!(
+            untracked(&workspace),
+            "",
+            "a refused launch leaves no files"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ignored_attempt_root_inside_workspace_is_allowed() {
+        let (root, workspace) = layout("runtime-ignored");
+        fs::write(workspace.join(".git/info/exclude"), ".agalma-runtime/\n").expect("exclude");
+        let sandbox = RecordingSandbox::default();
+        let attempt = workspace.join(".agalma-runtime");
+        let mut h = harness(&root, &attempt, &sandbox);
+        let err = start(&mut h, &workspace);
+        assert!(err.to_string().contains("readiness"), "{err}");
+        assert_eq!(sandbox.launches().len(), 1, "guard passes an ignored root");
+        assert_eq!(
+            untracked(&workspace),
+            "",
+            "ignored runtime state stays invisible"
+        );
+        drop(h);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn failed_start_releases_the_paid_override_on_drop() {
+        // A user's own loopback config (local model server) must come back
+        // byte-exact; the old heuristic would have deleted it.
+        let (root, workspace) = layout("paid-release");
+        let user = br#"{"provider":{"ollama":{"options":{"baseURL":"http://127.0.0.1:11434"}}}}"#;
+        fs::write(workspace.join(provider_lease::CONFIG_FILE), user).expect("user config");
+        let sandbox = RecordingSandbox::default();
+        let mut h = harness(&root, &root.join("attempt"), &sandbox);
+        h.config.provider_base_url = Some("http://127.0.0.1:9".to_string());
+        start(&mut h, &workspace);
+
+        let spec = &sandbox.launches()[0];
+        assert_eq!(spec.env["OPENCODE_API_KEY"], DUMMY_PROVIDER_KEY);
+        let held = fs::read_to_string(workspace.join(provider_lease::CONFIG_FILE)).unwrap();
+        assert!(
+            held.contains("127.0.0.1:9\""),
+            "override held while leased: {held}"
+        );
+
+        drop(h);
+        assert_eq!(
+            fs::read(workspace.join(provider_lease::CONFIG_FILE)).unwrap(),
+            user
+        );
+        assert!(!workspace.join(provider_lease::LEASE_FILE).exists());
+        assert_eq!(
+            untracked(&workspace),
+            "",
+            "override and lease record stay locally excluded"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn any_later_launch_recovers_an_override_leaked_by_a_dead_owner() {
+        // The SIGKILL case: no Drop ran. The next launch in the workspace — even
+        // a free-route one with no override of its own — restores the user file.
+        let (root, workspace) = layout("leak-recovery");
+        let user = "{\"theme\":\"user\"}";
+        let leaked = render_provider_config("opencode-go", "http://127.0.0.1:59163");
+        fs::write(workspace.join(provider_lease::CONFIG_FILE), &leaked).unwrap();
         fs::write(
-            workspace.join("opencode.json"),
-            render_provider_config("opencode-go", "http://127.0.0.1:59163"),
+            workspace.join(provider_lease::LEASE_FILE),
+            json!({"owner_pid": dead_pid(), "generated": leaked, "previous": user}).to_string(),
         )
-        .expect("stale config");
-        let lease = write_provider_config(&workspace, "opencode-go", "http://127.0.0.1:9999")
-            .expect("replace config");
-        lease.restore();
-        assert!(!workspace.join("opencode.json").exists());
-        let _ = fs::remove_dir_all(&dir);
-    }
+        .unwrap();
 
-    #[test]
-    fn user_provider_config_is_restored() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("target")
-            .join("test-runs")
-            .join(format!("provider-config-user-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let workspace = dir.join("checkout");
-        fs::create_dir_all(&workspace).expect("workspace dir");
-        let original =
-            br#"{"provider":{"opencode-go":{"options":{"baseURL":"https://example.test"}}}}"#;
-        fs::write(workspace.join("opencode.json"), original).expect("user config");
-        let lease = write_provider_config(&workspace, "opencode-go", "http://127.0.0.1:9999")
-            .expect("replace config");
-        lease.restore();
-        assert_eq!(fs::read(workspace.join("opencode.json")).unwrap(), original);
-        let _ = fs::remove_dir_all(&dir);
+        let sandbox = RecordingSandbox::default();
+        let mut h = harness(&root, &root.join("attempt"), &sandbox);
+        start(&mut h, &workspace);
+        assert_eq!(
+            fs::read_to_string(workspace.join(provider_lease::CONFIG_FILE)).unwrap(),
+            user
+        );
+        assert!(!workspace.join(provider_lease::LEASE_FILE).exists());
+        drop(h);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

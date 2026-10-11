@@ -298,14 +298,17 @@ impl LiveConciergeSession {
 impl ConciergeSession for LiveConciergeSession {
     fn run(&self, request: &ConciergeRequest) -> Result<String, ContractError> {
         let key = sanitize(&request.run_key);
+        let dir_key = format!("concierge/{key}");
         // The per-intake prompt is read by the adapter on the parent
         // filesystem; the goal file and the output contract are read/written by
-        // the confined session, so they live under the attempt root (the repo).
+        // the confined session, so they live under the session's attempt root
+        // (conductor-owned, outside the target repo — agalma-22f).
         let scratch = request.state_dir.join("concierge").join(&key);
         std::fs::create_dir_all(&scratch).map_err(|e| {
             ContractError::KnownFailure(format!("mkdir {}: {e}", scratch.display()))
         })?;
-        let attempt_scratch = request.repo.join(".agalma-concierge").join(&key);
+        let attempt_scratch =
+            crate::session::attempt_root(&request.state_dir, &dir_key).join("intake");
         std::fs::create_dir_all(&attempt_scratch).map_err(|e| {
             ContractError::KnownFailure(format!("mkdir {}: {e}", attempt_scratch.display()))
         })?;
@@ -326,7 +329,7 @@ impl ConciergeSession for LiveConciergeSession {
             role: "concierge".to_string(),
             model: request.model.clone(),
             repo: request.repo.clone(),
-            dir_key: format!("concierge/{key}"),
+            dir_key,
             socket_name: format!("harness-concierge-{key}.sock"),
             operation_id: OperationId::new(format!("op:concierge:{key}")),
             prompt_path,

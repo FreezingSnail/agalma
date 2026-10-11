@@ -15,12 +15,13 @@
 mod adapter;
 mod config;
 mod http;
+mod provider_lease;
 mod server;
 mod translate;
 
 pub use adapter::{OpenCodeHarness, OpenCodeHarnessConfig, DEFAULT_MODEL};
 pub use config::{build_config, OpenCodeConfigInit};
 pub use server::{
-    build_server, config_from_env, run_from_args, server_command, PAID_ENV, PROFILE_PATH_ENV,
-    PROXY_URL_ENV, ROOT_ENV, SANDBOX_SOCKET_ENV, SERVER_BIN,
+    build_server, config_from_env, run_from_args, server_command, EXTRA_RW_ENV, PAID_ENV,
+    PROFILE_PATH_ENV, PROXY_URL_ENV, ROOT_ENV, SANDBOX_SOCKET_ENV, SERVER_BIN,
 };

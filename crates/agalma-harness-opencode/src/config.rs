@@ -8,9 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::adapter::{
-    OpenCodeHarnessConfig, DEFAULT_PAID_PROVIDER_ID, DUMMY_PROVIDER_KEY,
-};
+use crate::adapter::{OpenCodeHarnessConfig, DEFAULT_PAID_PROVIDER_ID, DUMMY_PROVIDER_KEY};
 
 /// Inputs to [`build_config`]; the per-slice values both call sites already have.
 #[derive(Clone, Debug)]
@@ -32,6 +30,9 @@ pub struct OpenCodeConfigInit {
     pub paid_proxy: bool,
     /// Extra read-only roots for the confined worker.
     pub extra_ro_roots: Vec<PathBuf>,
+    /// Extra read/write roots (at most one honoured), e.g. a target repo the
+    /// session edits while its runtime state stays under `attempt_dir`.
+    pub extra_rw_roots: Vec<PathBuf>,
     /// Additional child environment (toolchain homes, PATH additions).
     pub extra_env: BTreeMap<String, String>,
 }
@@ -50,6 +51,7 @@ pub fn build_config(init: OpenCodeConfigInit) -> OpenCodeHarnessConfig {
         proxy_url,
         paid_proxy,
         extra_ro_roots,
+        extra_rw_roots,
         extra_env,
     } = init;
 
@@ -71,6 +73,7 @@ pub fn build_config(init: OpenCodeConfigInit) -> OpenCodeHarnessConfig {
         }
     }
     config.extra_ro_roots = extra_ro_roots;
+    config.extra_rw_roots = extra_rw_roots;
     config.extra_env = extra_env;
     config
 }
@@ -89,6 +92,7 @@ mod tests {
             proxy_url: Some("http://127.0.0.1:41234".to_string()),
             paid_proxy: paid,
             extra_ro_roots: Vec::new(),
+            extra_rw_roots: Vec::new(),
             extra_env: BTreeMap::new(),
         }
     }

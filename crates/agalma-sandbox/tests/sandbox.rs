@@ -29,6 +29,7 @@ struct Run {
     protected: PathBuf,
     sock: PathBuf,
     extra_ro: PathBuf,
+    extra_rw: PathBuf,
 }
 
 fn new_run(test: &str) -> Run {
@@ -42,7 +43,7 @@ fn new_run(test: &str) -> Run {
         .join("target")
         .join("test-runs");
     let root = base.join(format!("sandbox-{test}-{}-{nanos}", std::process::id()));
-    for dir in ["attempt", "protected", "sock", "extra"] {
+    for dir in ["attempt", "protected", "sock", "extra", "extra-rw"] {
         fs::create_dir_all(root.join(dir)).expect("create run dir");
     }
     let root = fs::canonicalize(&root).expect("canonicalize run dir");
@@ -51,6 +52,7 @@ fn new_run(test: &str) -> Run {
         protected: root.join("protected"),
         sock: root.join("sock"),
         extra_ro: root.join("extra"),
+        extra_rw: root.join("extra-rw"),
         root,
     }
 }
@@ -99,6 +101,7 @@ impl Run {
             protected_dir: self.path_str(&self.protected),
             sock_dir: self.path_str(&self.sock),
             extra_ro_roots: vec![self.path_str(&self.extra_ro)],
+            extra_rw_roots: Vec::new(),
         }
     }
 }
@@ -166,6 +169,42 @@ async fn write_inside_allowed_outside_denied() {
 
     let evidence = sandbox.terminate(&child).expect("terminate");
     assert!(evidence.process_group_gone, "detail: {}", evidence.detail);
+}
+
+#[tokio::test]
+async fn extra_rw_root_is_writable_only_when_granted() {
+    // agalma-22f: a session edits a target repo granted via EXTRA_RW while its
+    // runtime state stays in ATTEMPT. Ungranted, the same root stays read-only.
+    let run = new_run("extra-rw");
+    let profile = run.write_profile("worker.sb", PRODUCT_PROFILE);
+    let script = format!(
+        "echo rw > {rw}/granted.txt 2>/dev/null; echo done > {attempt}/marker",
+        rw = run.extra_rw.display(),
+        attempt = run.attempt.display(),
+    );
+    let mut sandbox = SeatbeltSandbox::new();
+
+    for granted in [false, true] {
+        let _ = fs::remove_file(run.attempt.join("marker"));
+        let _ = fs::remove_file(run.extra_rw.join("granted.txt"));
+        let mut spec = run.spec(&profile);
+        spec.args = vec!["-c".to_string(), script.clone()];
+        if granted {
+            spec.extra_rw_roots = vec![run.path_str(&run.extra_rw)];
+        }
+        let child = sandbox.launch(spec).expect("confined launch");
+        assert!(
+            wait_for(&run.attempt.join("marker"), Duration::from_secs(10)),
+            "confined command did not finish (granted={granted})"
+        );
+        assert_eq!(
+            run.extra_rw.join("granted.txt").exists(),
+            granted,
+            "EXTRA_RW write must succeed iff the root is granted"
+        );
+        let evidence = sandbox.terminate(&child).expect("terminate");
+        assert!(evidence.process_group_gone, "detail: {}", evidence.detail);
+    }
 }
 
 #[tokio::test]

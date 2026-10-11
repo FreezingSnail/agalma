@@ -79,7 +79,8 @@ pub struct SessionSpec {
     pub role: String,
     /// Planner-route model pinned for the session.
     pub model: String,
-    /// Attempt root (the target repository; read/write).
+    /// Target repository (read/write via the extra read/write root; never the
+    /// sandbox ATTEMPT root, which holds runtime state).
     pub repo: PathBuf,
     /// Scratch subdirectory under the state dir (e.g. `sweep/<epic>`).
     pub dir_key: String,
@@ -114,10 +115,13 @@ pub fn run_session(
     let protected = canonical_dir(&root.join("protected"))?;
     let sock = canonical_dir(&root.join("sock"))?;
 
-    // The session authors tickets via `bd` in the target repo, so the repo is
-    // the sandbox ATTEMPT root (writable); opencode's ephemeral state lives
-    // under `protected`/`sock` and the repo-local XDG dirs.
-    let attempt_dir = spec.repo.clone();
+    // The session authors tickets via `bd` in the target repo, so the repo must
+    // be writable — but as the extra read/write root, not the sandbox ATTEMPT
+    // root. ATTEMPT holds OpenCode's runtime state (XDG dirs, tmp, HOME, its git
+    // snapshot store); inside the repo that state is snapshotted back into
+    // itself and grows without bound (agalma-22f). It lives under the state dir.
+    let attempt_dir = canonical_dir(&attempt_root(&live.state_dir, &spec.dir_key))?;
+    let repo = canonical_dir(&spec.repo)?;
 
     let mut env = live.toolchain_env.clone();
     let cargo_home = ensure_cargo_home(&root)
@@ -148,6 +152,7 @@ pub fn run_session(
         proxy_url: live.proxy_url.clone(),
         paid_proxy: live.paid_proxy,
         extra_ro_roots,
+        extra_rw_roots: vec![repo],
         extra_env: env,
     });
 
@@ -217,6 +222,14 @@ fn capture_output(path: Option<&Path>) -> Option<String> {
     path.map(|path| std::fs::read_to_string(path).unwrap_or_default())
 }
 
+/// The sandbox ATTEMPT root for the session keyed `dir_key`: conductor-owned,
+/// under the state dir, never inside the target repo. Session handoff files
+/// the confined session reads or writes (e.g. the concierge goal/output) belong
+/// here too. Matches the process-transport server's `<root>/attempt`.
+pub fn attempt_root(state_dir: &Path, dir_key: &str) -> PathBuf {
+    state_dir.join(dir_key).join("attempt")
+}
+
 /// Directory containing the `bd` binary (resolved from the conductor's PATH).
 fn bd_bin_dir() -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|path| {
@@ -248,5 +261,16 @@ mod tests {
     fn sanitize_is_filesystem_safe() {
         assert_eq!(sanitize("agalma-i5h.4"), "agalma-i5h-4");
         assert_eq!(sanitize("concierge/goal#1"), "concierge-goal-1");
+    }
+
+    #[test]
+    fn attempt_root_is_state_owned_never_the_repo() {
+        // agalma-22f: the ATTEMPT root carries OpenCode runtime state; it must
+        // sit under the state dir so it never lands in the target repo.
+        let state = Path::new("/state");
+        let root = attempt_root(state, "concierge/abc");
+        assert_eq!(root, Path::new("/state/concierge/abc/attempt"));
+        assert!(root.starts_with(state));
+        assert!(!root.starts_with("/repo"));
     }
 }

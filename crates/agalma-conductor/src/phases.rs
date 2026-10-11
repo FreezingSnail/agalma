@@ -573,6 +573,7 @@ impl BuildActivity {
             proxy_url: self.deps.proxy_url.clone(),
             paid_proxy: self.deps.paid_proxy,
             extra_ro_roots: self.deps.extra_ro_roots.clone(),
+            extra_rw_roots: Vec::new(),
             extra_env: env,
         });
 
@@ -1245,6 +1246,7 @@ impl VerifyActivity {
                         .iter()
                         .map(|root| root.to_string_lossy().into_owned())
                         .collect(),
+                    extra_rw_roots: Vec::new(),
                 };
                 sandbox
                     .run(&spec, self.deps.verify_timeout)
@@ -1506,6 +1508,7 @@ impl VerifyActivity {
             proxy_url: self.deps.proxy_url.clone(),
             paid_proxy: self.deps.paid_proxy,
             extra_ro_roots: self.deps.extra_ro_roots.clone(),
+            extra_rw_roots: Vec::new(),
             extra_env: self.deps.toolchain_env.clone(),
         });
 
@@ -1710,6 +1713,7 @@ impl Activity for VerifyActivity {
                 .iter()
                 .map(|root| root.to_string_lossy().into_owned())
                 .collect(),
+            extra_rw_roots: Vec::new(),
         };
 
         let mut sandbox = SeatbeltSandbox::new();

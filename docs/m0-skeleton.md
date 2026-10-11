@@ -142,10 +142,13 @@ Reuse S0c fixture cases where the semantics overlap (tests ported into
 ## Sandbox details
 
 Product profile at `crates/agalma-sandbox/profiles/worker.sb` (from S0b, params
-`ATTEMPT`, `PROTECTED`, `SOCKDIR`, `EXTRA_RO`, `EXTRA_RO2`, `EXTRA_RO3`). The
-launcher always renders all three `EXTRA_RO*` slots; unused slots carry an inert
-placeholder (`/dev/null`, already read-permitted) because `sandbox-exec` rejects
-an empty `(subpath ...)` pattern. Conditions: fail-closed render
+`ATTEMPT`, `PROTECTED`, `SOCKDIR`, `EXTRA_RO`, `EXTRA_RO2`, `EXTRA_RO3`,
+`EXTRA_RW`). The launcher always renders every extra-root slot; unused slots
+carry an inert placeholder (`/dev/null`, already read/write-permitted) because
+`sandbox-exec` rejects an empty `(subpath ...)` pattern. `EXTRA_RW` (added by
+`agalma-22f`) lets a planning session edit the target repo while its runtime
+state stays in a state-dir `ATTEMPT` root; the OpenCode adapter refuses any
+attempt root inside the workspace that git does not ignore. Conditions: fail-closed render
 gate; attempt-scoped `TMPDIR`/`XDG_*`; toolchain read roots rendered;
 termination signals descendants explicitly (macOS EPERM on group signal) then
 verifies; `mach-lookup` stays broad for M0 with a TODO + open item.

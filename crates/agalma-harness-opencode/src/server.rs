@@ -38,6 +38,10 @@ pub const PAID_ENV: &str = "AGALMA_HARNESS_PAID_PROXY";
 /// B1.3: the harness server no longer embeds `agalma-sandbox`; it connects a
 /// [`SandboxClient`] to this socket for confined `opencode serve` launches.
 pub const SANDBOX_SOCKET_ENV: &str = "AGALMA_SANDBOX_SOCKET";
+/// Environment variable naming an extra read/write root (Seatbelt `EXTRA_RW`),
+/// e.g. the target repo a planning session edits while its runtime state stays
+/// under the attempt root.
+pub const EXTRA_RW_ENV: &str = "AGALMA_HARNESS_EXTRA_RW";
 
 /// Launch spec for the OpenCode server.
 pub fn server_command() -> CommandSpec {
@@ -66,6 +70,11 @@ pub fn config_from_env(root: PathBuf) -> OpenCodeHarnessConfig {
         "CARGO_TARGET_DIR".to_string(),
         root.join("agent-target").to_string_lossy().into_owned(),
     );
+    let extra_rw_roots = std::env::var_os(EXTRA_RW_ENV)
+        .filter(|root| !root.is_empty())
+        .map(PathBuf::from)
+        .into_iter()
+        .collect();
     build_config(OpenCodeConfigInit {
         profile_path,
         attempt_dir: root.join("attempt"),
@@ -75,6 +84,7 @@ pub fn config_from_env(root: PathBuf) -> OpenCodeHarnessConfig {
         proxy_url,
         paid_proxy,
         extra_ro_roots: Vec::new(),
+        extra_rw_roots,
         extra_env,
     })
 }

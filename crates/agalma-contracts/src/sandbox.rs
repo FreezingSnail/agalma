@@ -22,9 +22,15 @@ use crate::ids::AttemptId;
 /// parameter (fail-closed). `extra_ro_roots` may hold fewer than three roots;
 /// the launcher must still render every slot (unused slots are inert).
 ///
+/// `extra_rw_roots` grants writable roots beyond `attempt_dir` (Seatbelt
+/// `EXTRA_RW`), e.g. a target repository a session must edit while its own
+/// runtime state stays in a conductor-owned `attempt_dir`.
+///
 /// `env` is the complete child environment. The caller owns attempt-scoping:
 /// `TMPDIR` and `XDG_*` must point inside `attempt_dir`, because the profile
-/// denies the global temp dir and the user's real XDG directories.
+/// denies the global temp dir and the user's real XDG directories. They must
+/// not point inside a writable workspace root: harness runtime state (e.g. a
+/// git snapshot store) inside the worktree it watches feeds back on itself.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchSpec {
     pub program: String,
@@ -44,6 +50,11 @@ pub struct LaunchSpec {
     /// are honoured; the launcher always renders all three slots, padding
     /// unused ones with an inert value.
     pub extra_ro_roots: Vec<String>,
+    /// Extra read/write roots (Seatbelt `EXTRA_RW`). At most one is honoured;
+    /// the launcher always renders the slot, padding it with an inert value.
+    /// Absent on the wire means none (older clients stay compatible).
+    #[serde(default)]
+    pub extra_rw_roots: Vec<String>,
 }
 
 /// Opaque handle to a launched confined child.

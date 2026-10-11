@@ -28,7 +28,7 @@ use agalma_contracts::sandbox::{LaunchSpec, SandboxApi, SandboxChild};
 
 use crate::profile::{
     self, EXTRA_RO_SLOTS, INERT_EXTRA_RO, PARAM_ATTEMPT, PARAM_EXTRA_RO, PARAM_EXTRA_RO2,
-    PARAM_EXTRA_RO3, PARAM_PROTECTED, PARAM_SOCKDIR,
+    PARAM_EXTRA_RO3, PARAM_EXTRA_RW, PARAM_PROTECTED, PARAM_SOCKDIR,
 };
 
 /// Seatbelt launch tool. Deprecated but the only local confinement mechanism;
@@ -317,10 +317,11 @@ fn preflight(profile: &Path, spec: &LaunchSpec) -> Result<(), ContractError> {
 /// `EXTRA_RO*` slots are always rendered (their names are referenced by the
 /// product profile); when fewer than three roots are supplied the remaining
 /// slots carry [`INERT_EXTRA_RO`], which `sandbox-exec` accepts and which
-/// grants nothing the profile does not already allow.
+/// grants nothing the profile does not already allow. The single `EXTRA_RW`
+/// slot follows the same rule.
 fn param_args(spec: &LaunchSpec) -> Vec<String> {
     let extra_params = [PARAM_EXTRA_RO, PARAM_EXTRA_RO2, PARAM_EXTRA_RO3];
-    let mut args = Vec::with_capacity((3 + EXTRA_RO_SLOTS) * 2);
+    let mut args = Vec::with_capacity((4 + EXTRA_RO_SLOTS) * 2);
     for (name, value) in [
         (PARAM_ATTEMPT, spec.attempt_dir.as_str()),
         (PARAM_PROTECTED, spec.protected_dir.as_str()),
@@ -339,6 +340,14 @@ fn param_args(spec: &LaunchSpec) -> Vec<String> {
         args.push("-D".to_string());
         args.push(format!("{param}={value}"));
     }
+    let rw = spec
+        .extra_rw_roots
+        .first()
+        .filter(|root| !root.is_empty())
+        .map(String::as_str)
+        .unwrap_or(INERT_EXTRA_RO);
+    args.push("-D".to_string());
+    args.push(format!("{PARAM_EXTRA_RW}={rw}"));
     args
 }
 
@@ -457,6 +466,7 @@ mod tests {
             protected_dir: "/p".to_string(),
             sock_dir: "/s".to_string(),
             extra_ro_roots: vec!["/e".to_string(), "/e2".to_string()],
+            extra_rw_roots: vec!["/w".to_string()],
         };
         assert_eq!(
             param_args(&spec),
@@ -473,6 +483,8 @@ mod tests {
                 "EXTRA_RO2=/e2".to_string(),
                 "-D".to_string(),
                 format!("EXTRA_RO3={INERT_EXTRA_RO}"),
+                "-D".to_string(),
+                "EXTRA_RW=/w".to_string(),
             ]
         );
     }
@@ -490,6 +502,7 @@ mod tests {
             protected_dir: "/p".to_string(),
             sock_dir: "/s".to_string(),
             extra_ro_roots: vec![],
+            extra_rw_roots: vec![],
         };
         assert_eq!(
             param_args(&spec),
@@ -506,6 +519,8 @@ mod tests {
                 format!("EXTRA_RO2={INERT_EXTRA_RO}"),
                 "-D".to_string(),
                 format!("EXTRA_RO3={INERT_EXTRA_RO}"),
+                "-D".to_string(),
+                format!("EXTRA_RW={INERT_EXTRA_RO}"),
             ]
         );
     }

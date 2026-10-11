@@ -480,6 +480,9 @@ pub fn open_opencode_harness(init: OpenCodeHarnessInit) -> Result<LiveHarness, S
             if let Some(url) = &init.config.proxy_url {
                 spec = spec.env(opencode::PROXY_URL_ENV, url.clone());
             }
+            if let Some(rw) = init.config.extra_rw_roots.first() {
+                spec = spec.env(opencode::EXTRA_RW_ENV, rw.to_string_lossy().into_owned());
+            }
             if init.config.provider_base_url.is_some() {
                 spec = spec.env(opencode::PAID_ENV, "1");
             }

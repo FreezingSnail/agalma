@@ -13,9 +13,11 @@
 ;;   EXTRA_RO  -> extra read-only root (e.g. harness install tree)
 ;;   EXTRA_RO2 -> additional read-only root (e.g. toolchain home)
 ;;   EXTRA_RO3 -> additional read-only root
+;;   EXTRA_RW  -> extra read/write root (e.g. a target repo a session edits
+;;                while its runtime state stays in ATTEMPT)
 ;; Every referenced parameter MUST be supplied or sandbox-exec fails closed.
-;; The launcher always renders all THREE extra-root slots; unused slots carry
-;; an inert placeholder (`/dev/null`) so the profile never fails to compile.
+;; The launcher always renders every extra-root slot; unused slots carry an
+;; inert placeholder (`/dev/null`) so the profile never fails to compile.
 ;;
 ;; TODO(mach-lookup narrowing): `(allow mach-lookup)` is deliberately broad for
 ;;   M0 — dyld/Foundation/system services need it for any functioning process.
@@ -64,6 +66,11 @@
 ;; --- attempt-owned working area: full read/write ----------------------------
 (allow file-read* file-write*
     (subpath (param "ATTEMPT")))
+
+;; --- optional extra read/write root (inert `/dev/null` when unused; already
+;; read/write-permitted above, so the placeholder widens nothing) -------------
+(allow file-read* file-write*
+    (subpath (param "EXTRA_RW")))
 
 ;; --- protected tests: readable, NOT writable ---------------------------------
 (allow file-read* (subpath (param "PROTECTED")))

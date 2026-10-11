@@ -28,6 +28,9 @@ pub const PARAM_EXTRA_RO2: &str = "EXTRA_RO2";
 /// Profile parameter: extra read-only root (slot 3).
 pub const PARAM_EXTRA_RO3: &str = "EXTRA_RO3";
 
+/// Profile parameter: extra read/write root (single slot).
+pub const PARAM_EXTRA_RW: &str = "EXTRA_RW";
+
 /// Number of extra read-only root slots the launcher always renders.
 pub const EXTRA_RO_SLOTS: usize = 3;
 
@@ -41,13 +44,14 @@ pub const INERT_EXTRA_RO: &str = "/dev/null";
 
 /// Every parameter the launcher supplies. A profile that references any other
 /// name can never be fully substituted and must fail closed.
-pub const SUPPLIED_PARAMS: [&str; 6] = [
+pub const SUPPLIED_PARAMS: [&str; 7] = [
     PARAM_ATTEMPT,
     PARAM_PROTECTED,
     PARAM_SOCKDIR,
     PARAM_EXTRA_RO,
     PARAM_EXTRA_RO2,
     PARAM_EXTRA_RO3,
+    PARAM_EXTRA_RW,
 ];
 
 /// Why a profile was rejected. Rendered by the launcher as a `KnownFailure`.

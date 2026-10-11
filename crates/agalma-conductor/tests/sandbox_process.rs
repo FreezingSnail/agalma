@@ -127,6 +127,7 @@ impl Run {
             protected_dir: self.protected.to_string_lossy().into_owned(),
             sock_dir: self.sock.to_string_lossy().into_owned(),
             extra_ro_roots: vec![self.extra.to_string_lossy().into_owned()],
+            extra_rw_roots: Vec::new(),
         }
     }
 }

@@ -704,11 +704,10 @@ impl HarnessApi for OpenCodeHarness {
             .clone()
             .ok_or_else(|| ContractError::KnownFailure("start_attempt first".to_string()))?;
         self.turn_seq += 1;
-        let prompt = self
-            .session_prompts
-            .get(session.id.as_str())
-            .cloned()
-            .unwrap_or_else(|| prompt_for(&req.input_ref));
+        let prompt = posted_prompt(
+            self.session_prompts.get(session.id.as_str()).map(String::as_str),
+            &req.input_ref,
+        );
         let body = json!({ "text": prompt }).to_string();
         let path = format!("/api/session/{native}/prompt");
         let (code, resp) = self
@@ -943,6 +942,19 @@ fn prompt_for(input_ref: &ArtifactRef) -> String {
     }
 }
 
+/// The exact text a turn posts to the vendor: the session prompt resolved from
+/// `CreateSessionRequest::prompts_ref` when the file was readable, else the
+/// canned fallback keyed by the canonical input artifact.
+///
+/// A role that composes real per-task input (e.g. the designer) always supplies
+/// a readable prompt file, so its composed text — never an opaque artifact id —
+/// is what reaches the vendor. This is the single seam the payload tests pin.
+pub fn posted_prompt(session_prompt: Option<&str>, input_ref: &ArtifactRef) -> String {
+    session_prompt
+        .map(str::to_string)
+        .unwrap_or_else(|| prompt_for(input_ref))
+}
+
 /// Resolve a `prompts_ref` that names a readable file on the parent filesystem
 /// into its text. The conductor points this at its builder prompt; the live
 /// smoke tests pass a canonical artifact name that does not resolve, so the
@@ -1073,6 +1085,21 @@ mod tests {
             PROMPT_CANCEL
         );
         assert_eq!(prompt_for(&ArtifactRef::derive("turn-1")), PROMPT_TURN);
+    }
+
+    #[test]
+    fn posted_prompt_prefers_the_resolved_session_prompt() {
+        // A composed per-task prompt (epic id + repository) is posted verbatim;
+        // only a missing session prompt falls back to the canned text.
+        let input = ArtifactRef::derive("designer-turn");
+        let composed =
+            "## Input (this epic)\n\nepic: agalma-aaa\nrepository: /repos/alpha\n";
+        assert_eq!(posted_prompt(Some(composed), &input), composed);
+        assert_eq!(posted_prompt(None, &input), PROMPT_TURN);
+        assert_eq!(
+            posted_prompt(None, &ArtifactRef::derive("cancel-turn")),
+            PROMPT_CANCEL
+        );
     }
 
     #[test]

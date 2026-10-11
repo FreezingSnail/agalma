@@ -139,6 +139,130 @@ pub trait DesignerSession {
     fn run(&self, request: &DesignerRequest) -> Result<(), ContractError>;
 }
 
+/// Prior-decomposition feedback woven into a re-run designer prompt.
+///
+/// Gathered from the epic's backlog state when the sweep re-runs the designer
+/// after a failed gate: the staged children the gate marked `decomp-rejected`,
+/// the `decomp-fix` rework task(s), and the epic's own comments (rejection /
+/// escalation reasons). Absent on a first decomposition.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RetryContext {
+    /// Ids of staged children the failed gate marked `decomp-rejected`.
+    pub rejected_children: Vec<String>,
+    /// Ids of the `decomp-fix` rework tasks under the epic.
+    pub rework_tasks: Vec<String>,
+    /// The epic's comment bodies.
+    pub comments: Vec<String>,
+}
+
+impl RetryContext {
+    /// Whether there is any feedback worth adding to the prompt.
+    pub fn is_empty(&self) -> bool {
+        self.rejected_children.is_empty()
+            && self.rework_tasks.is_empty()
+            && self.comments.is_empty()
+    }
+}
+
+/// Compose the complete per-epic designer prompt: the canonical role text plus
+/// the explicit input block naming the epic and its owned repository (and any
+/// prior-decomposition feedback). This is the exact text handed to the harness
+/// and posted to the vendor.
+pub fn designer_prompt(epic: &str, repo: &Path, retry: Option<&RetryContext>) -> String {
+    compose_designer_prompt(crate::DESIGNER_PROMPT, epic, repo, retry)
+}
+
+/// Compose a designer prompt from explicit canonical `role` text plus the
+/// per-epic input block. Keeps the role instructions single-sourced (the caller
+/// passes the canonical `designer.md` content) while making the selected epic,
+/// its repository, and any retry feedback unambiguous.
+pub fn compose_designer_prompt(
+    role: &str,
+    epic: &str,
+    repo: &Path,
+    retry: Option<&RetryContext>,
+) -> String {
+    let mut out = String::from(role.trim_end());
+    out.push_str("\n\n");
+    out.push_str(&render_input_block(epic, repo));
+    if let Some(retry) = retry.filter(|ctx| !ctx.is_empty()) {
+        out.push('\n');
+        out.push_str(&render_retry_block(epic, retry));
+    }
+    out
+}
+
+/// The explicit per-epic input block: exact epic id, owning repository, and the
+/// read-the-design instruction. No `<epic-id>` placeholder — the real id.
+fn render_input_block(epic: &str, repo: &Path) -> String {
+    format!(
+        "## Input (this epic)\n\n\
+         epic: {epic}\n\
+         repository: {repo}\n\n\
+         Read this epic's current design before decomposing:\n\n\
+         ```\nbd show {epic} --json --include-comments\n```\n\n\
+         Decompose only `{epic}`. Do not touch any other epic. Every child you \
+         create must be parented to `{epic}` and reference its design for shared \
+         context.\n",
+        repo = repo.display()
+    )
+}
+
+/// The failed-decomposition feedback block, rendered only when present.
+fn render_retry_block(epic: &str, retry: &RetryContext) -> String {
+    let mut out = format!(
+        "## Prior decomposition feedback\n\n\
+         A previous decomposition of `{epic}` failed validation. Read this \
+         feedback and revise the children so `agalma plan-check --epic {epic}` \
+         passes. Do not weaken the rules.\n"
+    );
+    if !retry.rejected_children.is_empty() {
+        out.push_str("\nRejected staged child(ren):\n");
+        for id in &retry.rejected_children {
+            out.push_str(&format!("- {id}\n"));
+        }
+    }
+    if !retry.rework_tasks.is_empty() {
+        out.push_str("\nRework task(s):\n");
+        for id in &retry.rework_tasks {
+            out.push_str(&format!("- {id}\n"));
+        }
+    }
+    if !retry.comments.is_empty() {
+        out.push_str("\nEpic comments:\n");
+        for comment in &retry.comments {
+            out.push_str(&format!("- {comment}\n"));
+        }
+    }
+    out
+}
+
+/// Gather prior-decomposition feedback for `epic`, or `None` on a clean first
+/// run. Reads the epic's children (rejected + `decomp-fix`) and comments.
+pub fn gather_retry_context(
+    queue: &BdTaskQueue,
+    epic: &str,
+) -> Result<Option<RetryContext>, ContractError> {
+    let children = queue.plan_children(epic)?;
+    let rejected_children = children
+        .iter()
+        .filter(|child| child.labels.iter().any(|label| label == DECOMP_REJECTED))
+        .map(|child| child.id.clone())
+        .collect();
+    let rework_tasks = children
+        .iter()
+        .filter(|child| child.labels.iter().any(|label| label == DECOMP_FIX_LABEL))
+        .map(|child| child.id.clone())
+        .collect();
+    let comments = queue.projection(&TaskId::new(epic))?.comments;
+    let context = RetryContext {
+        rejected_children,
+        rework_tasks,
+        comments,
+    };
+    Ok(if context.is_empty() { None } else { Some(context) })
+}
+
 /// What the sweep did, for logging and tests.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SweepReport {
@@ -418,6 +542,7 @@ impl LiveDesignerSession {
 impl DesignerSession for LiveDesignerSession {
     fn run(&self, request: &DesignerRequest) -> Result<(), ContractError> {
         let key = sanitize(&request.epic);
+        let prompt_path = write_live_designer_prompt(request)?;
         let spec = SessionSpec {
             role: "designer".to_string(),
             model: request.model.clone(),
@@ -425,7 +550,7 @@ impl DesignerSession for LiveDesignerSession {
             dir_key: format!("sweep/{key}"),
             socket_name: format!("harness-sweep-{key}.sock"),
             operation_id: OperationId::new(format!("op:sweep:{}", request.epic)),
-            prompt_path: request.prompt_path.clone(),
+            prompt_path,
             input_ref: ArtifactRef::derive("designer-turn"),
             tool_policy_ref: ArtifactRef::derive("tool-policy-designer"),
             genome_ref: ArtifactRef::derive("genome"),
@@ -435,6 +560,47 @@ impl DesignerSession for LiveDesignerSession {
         };
         crate::session::run_session(&self.live, &spec).map(|_| ())
     }
+}
+
+/// Compose and materialize the per-epic designer prompt for `request`, returning
+/// its canonical (absolute) path.
+///
+/// This is the production composition step: it reads the canonical role text
+/// from `request.prompt_path`, gathers failed-decomposition feedback from the
+/// target repo, composes the explicit input block (exact epic id + repository),
+/// and writes the result. Handing the model the epic it must decompose — not an
+/// opaque artifact id — is the whole point.
+pub fn write_live_designer_prompt(request: &DesignerRequest) -> Result<PathBuf, ContractError> {
+    let key = sanitize(&request.epic);
+    let queue = BdTaskQueue::new(&request.repo);
+    let retry = gather_retry_context(&queue, &request.epic)?;
+    let role = std::fs::read_to_string(&request.prompt_path)
+        .unwrap_or_else(|_| crate::DESIGNER_PROMPT.to_string());
+    let text = compose_designer_prompt(&role, &request.epic, &request.repo, retry.as_ref());
+    write_composed_prompt(&request.state_dir, &key, &text)
+}
+
+/// Write the composed per-epic designer prompt under the state dir and return
+/// its canonical (absolute) path. Canonicalizing keeps it readable by the
+/// harness whether the adapter runs in-process or behind the process boundary
+/// (whose working directory differs).
+fn write_composed_prompt(
+    state_dir: &Path,
+    key: &str,
+    text: &str,
+) -> Result<PathBuf, ContractError> {
+    let dir = state_dir.join("sweep").join(key);
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        ContractError::KnownFailure(format!("cannot create prompt dir {}: {e}", dir.display()))
+    })?;
+    let path = dir.join("prompt.md");
+    std::fs::write(&path, text).map_err(|e| {
+        ContractError::KnownFailure(format!(
+            "cannot write designer prompt {}: {e}",
+            path.display()
+        ))
+    })?;
+    Ok(std::fs::canonicalize(&path).unwrap_or(path))
 }
 
 #[cfg(test)]
@@ -473,5 +639,47 @@ mod tests {
         let text = render_fix_description("epic-1", &violations);
         assert!(text.contains("1. count-budget: 2 children below minimum 8"));
         assert!(text.contains("2. schema-section: child x: headings missing"));
+    }
+
+    #[test]
+    fn designer_prompt_names_the_exact_epic_and_repo_for_two_requests() {
+        // Two distinct crate/epic requests must each identify their own epic and
+        // repository; neither may present a placeholder as the selected id.
+        let a = designer_prompt("agalma-aaa", Path::new("/repos/alpha"), None);
+        let b = designer_prompt("agalma-bbb", Path::new("/repos/beta"), None);
+
+        assert!(a.contains("epic: agalma-aaa"), "{a}");
+        assert!(a.contains("repository: /repos/alpha"), "{a}");
+        assert!(!a.contains("agalma-bbb"), "request A leaked B's epic: {a}");
+
+        assert!(b.contains("epic: agalma-bbb"), "{b}");
+        assert!(b.contains("repository: /repos/beta"), "{b}");
+        assert!(!b.contains("agalma-aaa"), "request B leaked A's epic: {b}");
+
+        // The misleading literal placeholder is gone from the composed prompt.
+        assert!(!a.contains("bd show <epic-id>"), "{a}");
+        // The canonical role text is preserved verbatim.
+        assert!(a.contains(crate::DESIGNER_PROMPT.trim_end()), "{a}");
+    }
+
+    #[test]
+    fn designer_prompt_omits_retry_block_without_feedback() {
+        let text = designer_prompt("agalma-aaa", Path::new("/repos/alpha"), None);
+        assert!(!text.contains("Prior decomposition feedback"), "{text}");
+    }
+
+    #[test]
+    fn designer_prompt_includes_failed_decomposition_feedback() {
+        let retry = RetryContext {
+            rejected_children: vec!["agalma-c1".to_string(), "agalma-c2".to_string()],
+            rework_tasks: vec!["agalma-fix9".to_string()],
+            comments: vec!["decomp-rejected: 2 violation(s)".to_string()],
+        };
+        let text = designer_prompt("agalma-aaa", Path::new("/repos/alpha"), Some(&retry));
+        assert!(text.contains("Prior decomposition feedback"), "{text}");
+        assert!(text.contains("agalma-c1"), "{text}");
+        assert!(text.contains("agalma-c2"), "{text}");
+        assert!(text.contains("agalma-fix9"), "{text}");
+        assert!(text.contains("decomp-rejected: 2 violation(s)"), "{text}");
     }
 }

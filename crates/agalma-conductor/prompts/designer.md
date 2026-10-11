@@ -6,15 +6,22 @@ Rust decides consequences. Your output MUST pass `agalma plan-check`.
 
 ## Inputs
 
-The conductor hands you the epic as a **read-only** backlog entry. Start with
-`bd show <epic-id>` and treat the epic design as the source of truth. Spike
+The conductor appends an **Input** block naming the exact epic id and the
+repository that owns it (plus any prior-decomposition feedback). That block is
+authoritative: it is the epic you decompose, never a different one. Treat the
+epic as a **read-only** backlog entry. Start with `bd show` on the epic id given
+in the Input block and treat the epic design as the source of truth. Spike
 unknowns if needed: read existing code and interfaces, and the `git log` of
 completed dependencies; cite sources inline. Keep it lightweight.
+
+If the Input block carries **prior decomposition feedback**, a previous attempt
+failed validation: read it and revise the children accordingly without weakening
+the rules.
 
 ## Role mandate
 
 1. **Read** the epic design (the source of truth). Do not restate it in
-   children; children reference `bd show <epic-id>` for shared context.
+   children; children reference `bd show` on the same epic id for shared context.
 2. **Decompose** the epic into **8–12 child tickets**. Hard budget, not a
    per-area invitation. Group adjacent concerns into vertically complete,
    independently landable slices. Before creating anything, write the proposed
@@ -37,7 +44,8 @@ completed dependencies; cite sources inline. Keep it lightweight.
 7. **Self-audit** before success: run `bd show` for every child and inspect the
    fixed headings, the caps, the deferred status, `staged`, exactly one
    difficulty label, the description, design, acceptance, parent, and direct
-   dependencies. Then inspect `bd dep tree <epic-id>`. Fix every omission,
+   dependencies. Then inspect `bd dep tree` for the epic id from the Input block.
+   Fix every omission,
    wrong ownership, missing edge, malformed command, and test-order gap. Do not
    emit output until the audit passes.
 
@@ -95,7 +103,7 @@ quotes, backticks, backslashes, or `$`. Re-read every created ticket with
 On success, emit exactly these lines:
 
 ```
-designed: <epic-id>
+designed: <epic id from the Input block>
 subtasks: <child-id-1>, <child-id-2>, ...
 deps: <child-id-b> -> <child-id-a>
 staged: <child-id-1>, <child-id-2>, ...

@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use agalma_contracts::TaskQueueApi;
-use agalma_conductor::sweep::{sweep_epics, DesignerRequest, DesignerSession, PlannerGate};
+use agalma_conductor::sweep::{
+    sweep_epics, write_live_designer_prompt, DesignerRequest, DesignerSession, PlannerGate,
+};
 use agalma_taskqueue::BdTaskQueue;
 use serde_json::Value;
 
@@ -477,6 +479,54 @@ fn planner_unavailable_skips_without_sessions() {
     );
     assert!(designer.called().is_empty(), "no designer session ran");
     assert!(scratch.children(&epic).is_empty(), "no children created");
+}
+
+// ---------------------------------------------------------------------------
+// Live designer prompt composition (agalma-lve): the per-epic prompt handed to
+// the model must name the exact epic and repository and carry retry feedback.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn live_designer_prompt_carries_epic_repo_and_retry_feedback() {
+    let scratch = Scratch::new("designer-prompt");
+    let epic = scratch.create_epic("Prompt epic");
+    // Seed a rejected child, a rework task, and an epic comment so the retry
+    // context is non-empty (the production path gathers these from `bd`).
+    let rejected =
+        scratch.create_child(&epic, "R", &low_desc("r"), "staged,difficulty:low,decomp-rejected");
+    let fix = scratch.create_decomp_fix(&epic);
+    scratch.bd_ok(&["comment", &epic, "decomp-rejected: revise the children"]);
+
+    // Materialize the canonical role prompt exactly as `sweep_epics` does.
+    let prompts = scratch.state_dir.join("prompts");
+    fs::create_dir_all(&prompts).expect("prompts dir");
+    let role_path = prompts.join("designer.md");
+    fs::write(&role_path, agalma_conductor::DESIGNER_PROMPT).expect("write canonical prompt");
+
+    let request = DesignerRequest {
+        epic: epic.clone(),
+        repo: scratch.repo.clone(),
+        state_dir: scratch.state_dir.clone(),
+        model: "planner/model".to_string(),
+        prompt_path: role_path,
+    };
+    let path = write_live_designer_prompt(&request).expect("compose live prompt");
+    let text = fs::read_to_string(&path).expect("read composed prompt");
+
+    assert!(text.contains(&format!("epic: {epic}")), "exact epic id: {text}");
+    assert!(
+        text.contains(&scratch.repo.display().to_string()),
+        "owning repository: {text}"
+    );
+    assert!(text.contains("Prior decomposition feedback"), "{text}");
+    assert!(text.contains(&rejected), "rejected child id: {text}");
+    assert!(text.contains(&fix), "rework task id: {text}");
+    assert!(
+        text.contains("decomp-rejected: revise the children"),
+        "epic comment feedback: {text}"
+    );
+    // No misleading placeholder masquerades as the selected id.
+    assert!(!text.contains("bd show <epic-id>"), "{text}");
 }
 
 // ---------------------------------------------------------------------------

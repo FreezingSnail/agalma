@@ -11,6 +11,7 @@
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use agalma_contracts::harness::{
     AttemptHandle, CreateSessionRequest, Describe, HarnessApi, Limits, OperationHandle,
@@ -27,6 +28,7 @@ use agalma_conductor::harness_binding::{plan_binding, persist_binding, read_pinn
 use agalma_conductor::harness_process::{
     ready_json, reference_server_spec, resolve_server_binary, ProcessBinding, READY_TIMEOUT,
 };
+use agalma_conductor::sandbox_process::SandboxProcess;
 use agalma_ledger::SqliteLedger;
 
 const MODEL: &str = "test/offline";
@@ -549,5 +551,253 @@ fn harness_client_maps_transport_loss_to_contract_error() {
             ContractError::UnknownOutcome(_) | ContractError::KnownFailure(_)
         ),
         "dead transport maps to a contract error: {err:?}"
+    );
+}
+
+// ===========================================================================
+// Case e — startup-failure cleanup ownership (agalma-5l5)
+//
+// `std::process::Child` does not kill on drop, so a startup failure between
+// spawn and full construction used to leak the server and its descendants. The
+// supervisor now installs a cleanup owner (`SupervisedChild`) at spawn and
+// retains it through READY, the bind gate, and connect. Each case below drives a
+// failing mock (via `/bin/sh`, offline, no live provider), asserts the leader
+// and its descendant are gone, the leader is reaped, the diagnostic survives,
+// and a subsequent start on the same socket still succeeds.
+// ===========================================================================
+
+/// `Some(stat)` while `pid` exists (`stat` is `ps` process state, `Z` = zombie),
+/// `None` once it is fully gone. A reaped child has no `ps` entry.
+fn proc_stat(pid: u32) -> Option<String> {
+    let out = Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    let stat = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if stat.is_empty() {
+        None
+    } else {
+        Some(stat)
+    }
+}
+
+/// Poll until `pid` has no `ps` entry (gone and reaped), up to `timeout`.
+fn wait_gone(pid: u32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if proc_stat(pid).is_none() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A `/bin/sh` mock component server. It records its own pid and the pid of a
+/// background descendant in the same process group, optionally prints one
+/// `ready` stdout line, then stays alive well past any startup timeout.
+fn mock_spec(leader: &Path, descendant: &Path, ready: Option<&str>) -> CommandSpec {
+    let ready_cmd = match ready {
+        Some(line) => format!("printf '%s\\n' '{line}'; "),
+        None => String::new(),
+    };
+    let script = format!(
+        "echo $$ > '{leader}'; /bin/sleep 30 & echo $! > '{descendant}'; {ready_cmd}exec /bin/sleep 30",
+        leader = leader.display(),
+        descendant = descendant.display(),
+    );
+    CommandSpec::new("/bin/sh").arg("-c").arg(script)
+}
+
+fn read_pid(path: &Path) -> u32 {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read pid {}: {e}", path.display()))
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("parse pid {}: {e}", path.display()))
+}
+
+/// Spawn a failing mock binding and assert the whole process tree is gone and
+/// the leader is reaped while `expect` survives in the diagnostic.
+fn assert_failed_startup_cleanup(name: &str, ready: Option<&str>, expect: Option<&str>) -> PathBuf {
+    let dir = fresh(name);
+    let socket = dir.join("s.sock");
+    let leader = dir.join("leader.pid");
+    let descendant = dir.join("descendant.pid");
+
+    let err = match ProcessBinding::spawn(
+        mock_spec(&leader, &descendant, ready),
+        PathBuf::from("/bin/sh"),
+        socket.clone(),
+        1,
+        MODEL,
+        Duration::from_millis(300),
+    ) {
+        Ok(_) => panic!("mock startup must fail"),
+        Err(e) => e,
+    };
+    if let Some(fragment) = expect {
+        assert!(err.contains(fragment), "diagnostic preserved: {err:?}");
+    }
+
+    let leader_pid = read_pid(&leader);
+    let descendant_pid = read_pid(&descendant);
+
+    assert!(
+        wait_gone(leader_pid, Duration::from_secs(5)),
+        "{name}: leader {leader_pid} survived failed startup (stat {:?})",
+        proc_stat(leader_pid)
+    );
+    // A killed-but-unreaped leader would still show as a zombie `Z`.
+    assert!(
+        proc_stat(leader_pid).is_none(),
+        "{name}: leader {leader_pid} not reaped (stat {:?})",
+        proc_stat(leader_pid)
+    );
+    assert!(
+        wait_gone(descendant_pid, Duration::from_secs(5)),
+        "{name}: descendant {descendant_pid} survived failed startup (stat {:?})",
+        proc_stat(descendant_pid)
+    );
+
+    socket
+}
+
+#[test]
+fn startup_ready_timeout_kills_and_reaps_process_tree() {
+    assert_failed_startup_cleanup(
+        "fail-timeout",
+        None,
+        Some("did not announce READY"),
+    );
+}
+
+#[test]
+fn startup_malformed_ready_kills_and_reaps_process_tree() {
+    assert_failed_startup_cleanup(
+        "fail-malformed",
+        Some("READY {this is not json"),
+        Some("malformed READY"),
+    );
+}
+
+#[test]
+fn startup_bind_rejection_kills_and_reaps_process_tree() {
+    let bad_api =
+        r#"READY {"api":"NotHarnessApi","api_version":0,"impl":"mock","impl_version":"v1","capabilities":[]}"#;
+    assert_failed_startup_cleanup("fail-bind", Some(bad_api), Some("bind gate rejected"));
+}
+
+#[test]
+fn startup_unconnectable_socket_kills_and_reaps_process_tree() {
+    // Correct API identity, but the mock never binds the socket, so connect fails.
+    let good_api =
+        r#"READY {"api":"HarnessApi","api_version":0,"impl":"mock","impl_version":"v1","capabilities":[]}"#;
+    let socket = assert_failed_startup_cleanup("fail-socket", Some(good_api), None);
+    // The failed start left no listener on the socket.
+    assert!(
+        Client::connect(&socket).is_err(),
+        "no server should be listening after a failed start"
+    );
+}
+
+#[test]
+fn retry_on_the_same_socket_after_failed_startup_succeeds() {
+    let dir = fresh("retry");
+    let socket = dir.join("r.sock");
+    let leader = dir.join("leader.pid");
+    let descendant = dir.join("descendant.pid");
+
+    let err = match ProcessBinding::spawn(
+        mock_spec(&leader, &descendant, None),
+        PathBuf::from("/bin/sh"),
+        socket.clone(),
+        1,
+        MODEL,
+        Duration::from_millis(300),
+    ) {
+        Ok(_) => panic!("first start fails"),
+        Err(e) => e,
+    };
+    assert!(err.contains("did not announce READY"), "{err:?}");
+    assert!(wait_gone(read_pid(&leader), Duration::from_secs(5)));
+
+    // Same socket path: the real reference server starts and runs cleanly.
+    let scenario = dir.join("scenario");
+    std::fs::create_dir_all(&scenario).expect("scenario dir");
+    let binding = spawn_process_reference(ReferenceProfile::Success, &socket, &scenario, 1);
+    let pid = binding.pid();
+    assert!(
+        proc_stat(pid).is_some(),
+        "retry binding must be alive on the same socket"
+    );
+
+    // Normal drop stops it (no leak on the happy path).
+    drop(binding);
+    assert!(
+        wait_gone(pid, Duration::from_secs(5)),
+        "retry binding leaked after drop (stat {:?})",
+        proc_stat(pid)
+    );
+}
+
+#[test]
+fn supervisor_startup_restart_drop_lifecycle() {
+    let dir = fresh("lifecycle");
+    let socket = dir.join("l.sock");
+    let scenario = dir.join("scenario");
+    std::fs::create_dir_all(&scenario).expect("scenario dir");
+
+    // Normal startup.
+    let mut binding = spawn_process_reference(ReferenceProfile::Success, &socket, &scenario, 1);
+    let started = binding.pid();
+    assert!(proc_stat(started).is_some(), "server alive after startup");
+
+    // Restart keeps the binding id/generation and yields a live server.
+    binding.restart().expect("restart");
+    let restarted = binding.pid();
+    assert!(proc_stat(restarted).is_some(), "server alive after restart");
+
+    // Drop stops the supervised process tree.
+    let final_pid = binding.pid();
+    drop(binding);
+    assert!(
+        wait_gone(final_pid, Duration::from_secs(5)),
+        "server leaked after drop (stat {:?})",
+        proc_stat(final_pid)
+    );
+}
+
+#[test]
+fn shared_boundary_sandbox_ready_timeout_leaves_no_process() {
+    // The cleanup owner lives in the shared `spawn_supervised` helper, so a
+    // READY failure on a non-harness boundary is covered as well.
+    let dir = fresh("shared-sandbox");
+    let socket = dir.join("s.sock");
+    let leader = dir.join("leader.pid");
+    let descendant = dir.join("descendant.pid");
+
+    let err = match SandboxProcess::spawn_with_spec(
+        mock_spec(&leader, &descendant, None),
+        PathBuf::from("/bin/sh"),
+        socket,
+        Duration::from_millis(300),
+    ) {
+        Ok(_) => panic!("sandbox mock startup must fail"),
+        Err(e) => e,
+    };
+    assert!(err.contains("did not announce READY"), "{err:?}");
+
+    let leader_pid = read_pid(&leader);
+    assert!(
+        wait_gone(leader_pid, Duration::from_secs(5)),
+        "sandbox leader {leader_pid} survived failed startup"
+    );
+    assert!(proc_stat(leader_pid).is_none(), "sandbox leader not reaped");
+    assert!(
+        wait_gone(read_pid(&descendant), Duration::from_secs(5)),
+        "sandbox descendant survived failed startup"
     );
 }

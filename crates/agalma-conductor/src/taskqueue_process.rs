@@ -102,10 +102,10 @@ impl TaskQueueProcess {
         socket: PathBuf,
         timeout: Duration,
     ) -> Result<TaskQueueProcess, String> {
-        let (child, _info) = spawn_supervised(&spec, &program, &socket, timeout)?;
+        let (guard, _info) = spawn_supervised(&spec, &program, &socket, timeout)?;
         Ok(TaskQueueProcess {
             socket,
-            child,
+            child: guard.into_child(),
             stopped: false,
         })
     }

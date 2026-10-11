@@ -99,10 +99,10 @@ impl WorkspaceProcess {
         socket: PathBuf,
         timeout: Duration,
     ) -> Result<WorkspaceProcess, String> {
-        let (child, _info) = spawn_supervised(&spec, &program, &socket, timeout)?;
+        let (guard, _info) = spawn_supervised(&spec, &program, &socket, timeout)?;
         Ok(WorkspaceProcess {
             socket,
-            child,
+            child: guard.into_child(),
             stopped: false,
         })
     }

@@ -60,10 +60,10 @@ impl SandboxProcess {
         socket: PathBuf,
         timeout: Duration,
     ) -> Result<SandboxProcess, String> {
-        let (child, _info) = spawn_supervised(&spec, &program, &socket, timeout)?;
+        let (guard, _info) = spawn_supervised(&spec, &program, &socket, timeout)?;
         Ok(SandboxProcess {
             socket,
-            child,
+            child: guard.into_child(),
             stopped: false,
         })
     }

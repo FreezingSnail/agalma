@@ -121,11 +121,11 @@ impl ExecutionProcess {
         state_dir: PathBuf,
         timeout: Duration,
     ) -> Result<ExecutionProcess, String> {
-        let (child, _info) = spawn_supervised(&spec, &program, &socket, timeout)?;
+        let (guard, _info) = spawn_supervised(&spec, &program, &socket, timeout)?;
         Ok(ExecutionProcess {
             socket,
             state_dir,
-            child,
+            child: guard.into_child(),
             stopped: false,
         })
     }

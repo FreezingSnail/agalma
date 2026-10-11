@@ -131,7 +131,11 @@ impl ProcessBinding {
         model: &str,
         timeout: Duration,
     ) -> Result<ProcessBinding, String> {
-        let (child, info) = spawn_supervised(&spec, &program, &socket, timeout)?;
+        // The cleanup guard owns the freshly spawned group for every fallible
+        // startup stage (READY wait is inside `spawn_supervised`; bind gate and
+        // client connect follow here). Ownership transfers to the binding only
+        // once construction is complete, so no error path leaks the server tree.
+        let (guard, info) = spawn_supervised(&spec, &program, &socket, timeout)?;
 
         let describe = describe_from_info(&info);
         let plan = harness_binding::plan_from_describe(
@@ -144,6 +148,8 @@ impl ProcessBinding {
         .map_err(|e| format!("bind gate rejected {}: {e}", info.impl_name))?;
 
         let client = HarnessClient::connect(&socket).map_err(|e| e.to_string())?;
+
+        let child = guard.into_child();
 
         Ok(ProcessBinding {
             socket,
@@ -576,12 +582,18 @@ fn pid_alive(pid: u32) -> bool {
 /// Creates the socket's parent directory, drops any stale socket, spawns
 /// `program` from `spec` as a process-group leader (so `stop_supervised` can
 /// signal the whole tree), and waits for the `READY {json}` handshake.
+///
+/// The returned [`SupervisedChild`] owns cleanup: if any startup stage up to
+/// and including the READY wait fails, its `Drop` terminates and reaps the
+/// process group before the error propagates, so a failed start never leaks the
+/// server or its descendants. The caller relinquishes ownership with
+/// [`SupervisedChild::into_child`] only after the component is fully built.
 pub(crate) fn spawn_supervised(
     spec: &CommandSpec,
     program: &Path,
     socket: &Path,
     timeout: Duration,
-) -> Result<(Child, ServerInfo), String> {
+) -> Result<(SupervisedChild, ServerInfo), String> {
     if let Some(parent) = socket.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("create socket dir {}: {e}", parent.display()))?;
@@ -600,17 +612,63 @@ pub(crate) fn spawn_supervised(
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let mut child = command
+    let child = command
         .spawn()
         .map_err(|e| format!("spawn {}: {e}", program.display()))?;
 
-    let stdout = child
+    // Retain cleanup ownership from the instant of successful spawn: every
+    // fallible stage below (stdout capture, READY wait) drops this guard on
+    // error and tears the group down.
+    let mut guard = SupervisedChild::new(child);
+
+    let stdout = guard
+        .child_mut()
         .stdout
         .take()
         .ok_or_else(|| "server stdout not captured".to_string())?;
     let reader = BufReader::new(stdout);
     let info = read_ready(reader, timeout)?;
-    Ok((child, info))
+    Ok((guard, info))
+}
+
+/// Cleanup-owning handle for a supervised child during startup.
+///
+/// `std::process::Child` does not terminate the process on drop, so an error
+/// returned between spawn and full construction would otherwise leak the server
+/// and its descendants. The guard closes that gap: on `Drop` (i.e. any early
+/// return) it runs [`stop_supervised`] — `SIGTERM` the process group, escalate
+/// to `SIGKILL` if needed, reap the leader — while never touching process
+/// groups or sockets it does not own (the group is the one created at spawn).
+pub(crate) struct SupervisedChild {
+    child: Option<Child>,
+}
+
+impl SupervisedChild {
+    fn new(child: Child) -> Self {
+        SupervisedChild { child: Some(child) }
+    }
+
+    fn child_mut(&mut self) -> &mut Child {
+        self.child
+            .as_mut()
+            .expect("supervised child already relinquished")
+    }
+
+    /// Relinquish cleanup ownership once the component is fully constructed,
+    /// handing the child to its permanent owner.
+    pub(crate) fn into_child(mut self) -> Child {
+        self.child
+            .take()
+            .expect("supervised child already relinquished")
+    }
+}
+
+impl Drop for SupervisedChild {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = stop_supervised(child);
+        }
+    }
 }
 
 /// Stop a supervised child: `SIGTERM` the process group, wait, escalate to

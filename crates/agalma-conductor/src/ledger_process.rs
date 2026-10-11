@@ -112,11 +112,11 @@ impl LedgerProcess {
         state_dir: PathBuf,
         timeout: Duration,
     ) -> Result<LedgerProcess, String> {
-        let (child, _info) = spawn_supervised(&spec, &program, &socket, timeout)?;
+        let (guard, _info) = spawn_supervised(&spec, &program, &socket, timeout)?;
         Ok(LedgerProcess {
             socket,
             state_dir,
-            child,
+            child: guard.into_child(),
             stopped: false,
         })
     }

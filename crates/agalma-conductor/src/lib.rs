@@ -22,6 +22,7 @@ pub mod provider_proxy;
 pub mod reconcile;
 pub mod routing;
 pub mod sandbox_process;
+pub mod sweep;
 pub mod task;
 pub mod taskqueue_process;
 pub mod work;

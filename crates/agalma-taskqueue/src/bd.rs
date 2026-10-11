@@ -21,6 +21,21 @@ use crate::block::parse_task_block;
 
 /// Label marking a task terminal-but-unfinished (design §"Task model").
 pub const PARKED_LABEL: &str = "parked";
+/// Label marking a staged decomposition child (CP.3): hidden from `bd ready`
+/// until a human `bd undefer`s it.
+pub const STAGED_LABEL: &str = "staged";
+/// Label marking an epic escalated to a human (CP.3): excluded from `bd ready`.
+pub const HUMAN_LABEL: &str = "human";
+/// Label marking a decomposition rework task (CP.3): excluded from `bd ready`.
+pub const DECOMP_FIX_LABEL: &str = "decomp-fix";
+
+/// One open epic as the CP.3 sweep sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EpicRecord {
+    pub id: String,
+    pub title: String,
+    pub labels: Vec<String>,
+}
 
 /// Task backlog adapter backed by the `bd` CLI.
 pub struct BdTaskQueue {
@@ -127,17 +142,93 @@ impl BdTaskQueue {
             .map(BdIssue::into_child_task)
             .collect())
     }
+
+    /// Open epics (type `epic`, status `open`), excluding any already escalated
+    /// to a human (`human` label). Used by the CP.3 epic sweep to find
+    /// undecomposed or rejected epics.
+    pub fn open_epics(&self) -> Result<Vec<EpicRecord>, ContractError> {
+        let stdout = self.bd_ok(&[
+            "list",
+            "--type",
+            "epic",
+            "--status",
+            "open",
+            "--exclude-label",
+            HUMAN_LABEL,
+            "--json",
+            "--limit",
+            "0",
+        ])?;
+        Ok(parse_issues(&stdout)?
+            .into_iter()
+            .map(|issue| EpicRecord {
+                id: issue.id,
+                title: issue.title,
+                labels: issue.labels.unwrap_or_default(),
+            })
+            .collect())
+    }
+
+    /// Create a task issue via `bd create`, returning its id. `parent` attaches
+    /// it under an epic; `defer` (a `YYYY-MM-DD` date) hides it from `bd ready`
+    /// by construction; `labels` is a comma-joined label list.
+    pub fn create_task(
+        &self,
+        title: &str,
+        description: &str,
+        parent: Option<&str>,
+        priority: u8,
+        labels: &[&str],
+        defer: Option<&str>,
+    ) -> Result<String, ContractError> {
+        let priority = priority.to_string();
+        let mut args: Vec<String> = vec![
+            "create".to_string(),
+            title.to_string(),
+            "-t".to_string(),
+            "task".to_string(),
+            "-p".to_string(),
+            priority,
+            "--description".to_string(),
+            description.to_string(),
+            "--json".to_string(),
+        ];
+        if let Some(parent) = parent {
+            args.push("--parent".to_string());
+            args.push(parent.to_string());
+        }
+        if !labels.is_empty() {
+            args.push("--labels".to_string());
+            args.push(labels.join(","));
+        }
+        if let Some(defer) = defer {
+            args.push("--defer".to_string());
+            args.push(defer.to_string());
+        }
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let stdout = self.bd_ok(&refs)?;
+        let issue = parse_issues(&stdout)?.into_iter().next().ok_or_else(|| {
+            ContractError::KnownFailure("bd create returned no issue".to_string())
+        })?;
+        Ok(issue.id)
+    }
 }
 
 impl TaskQueueApi for BdTaskQueue {
     fn ready_tasks(&self) -> Result<ReadyTasks, ContractError> {
+        // Ready contract (CP.3): never hand epics or staged/`human`/`decomp-fix`
+        // issues to the claim path. bd filters below; the loop re-checks
+        // defensively so the projection never depends on the CLI's flag
+        // semantics.
         let stdout = self.bd_ok(&[
             "list",
             "--json",
             "--status",
             "open",
+            "--exclude-type",
+            "epic",
             "--exclude-label",
-            PARKED_LABEL,
+            "parked,staged,human,decomp-fix",
             "--limit",
             "0",
         ])?;
@@ -148,7 +239,13 @@ impl TaskQueueApi for BdTaskQueue {
         for issue in issues {
             // Defensive re-check: bd filters above, but the projection must not
             // depend on the CLI's flag semantics.
-            if issue.status != "open" || issue.has_label(PARKED_LABEL) {
+            if issue.status != "open"
+                || issue.issue_type.as_deref() == Some("epic")
+                || issue.has_label(PARKED_LABEL)
+                || issue.has_label(STAGED_LABEL)
+                || issue.has_label(HUMAN_LABEL)
+                || issue.has_label(DECOMP_FIX_LABEL)
+            {
                 continue;
             }
             let id = issue.id.clone();
@@ -243,6 +340,8 @@ struct BdIssue {
     description: String,
     #[serde(default)]
     design: Option<String>,
+    #[serde(default)]
+    issue_type: Option<String>,
     status: String,
     #[serde(default)]
     assignee: Option<String>,

@@ -181,6 +181,28 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
         Err(err) => eprintln!("agalma: boot reconcile failed: {err}"),
     }
 
+    // Epic sweep (CP.3): before ordinary claiming, run one serial designer
+    // session per candidate epic and project the decomposition gate. Best-effort:
+    // a sweep failure must not block the work loop, and an unavailable planner
+    // route skips the sweep (never a silent downgrade).
+    match crate::sweep::run_sweep(
+        &repo,
+        &state_dir,
+        paid_available,
+        proxy_url.clone(),
+        override_model.as_deref(),
+    ) {
+        Ok(report) if report.skipped_reason.is_none() => eprintln!(
+            "agalma: epic sweep: {} candidate(s), {} approved, {} rejected, {} escalated",
+            report.epics_seen.len(),
+            report.approved.len(),
+            report.rejected.len(),
+            report.escalated.len()
+        ),
+        Ok(_) => {}
+        Err(err) => eprintln!("agalma: epic sweep failed: {err}"),
+    }
+
     let mut processed: u32 = 0;
     let mut last: Option<Terminal> = None;
     loop {

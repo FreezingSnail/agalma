@@ -35,7 +35,8 @@ the rules.
    model name or an effort level as the tier.
 4. **Stage every child**: exactly one `difficulty:low` or `difficulty:high`
    label plus `staged`, created deferred (`--defer <date>`) so it is hidden from
-   `bd ready` by construction.
+   `bd ready` by construction. Always pass `--no-inherit-labels` when creating a
+   child so the epic's own planning markers are never copied onto it.
 5. **Add dependency edges before staging**: `bd dep add <child> <prerequisite>`
    for every direct prerequisite.
 6. **Author the intake block** for every executable child: a `directive/v0`

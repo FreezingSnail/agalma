@@ -232,6 +232,8 @@ fn low_desc(id: &str) -> String {
 struct ScriptedDesigner {
     mode: Mode,
     called: RefCell<Vec<String>>,
+    /// Whether a `FailAfterOne` designer has already emitted its partial child.
+    emitted_partial: RefCell<bool>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -239,6 +241,9 @@ enum Mode {
     Valid,
     Invalid,
     Noop,
+    /// Create exactly one staged child on the first run, then fail the session
+    /// (an interrupted designer that dies mid-decomposition).
+    FailAfterOne,
 }
 
 impl ScriptedDesigner {
@@ -246,6 +251,7 @@ impl ScriptedDesigner {
         ScriptedDesigner {
             mode,
             called: RefCell::new(Vec::new()),
+            emitted_partial: RefCell::new(false),
         }
     }
 
@@ -308,6 +314,19 @@ impl DesignerSession for ScriptedDesigner {
                 create("B", &missing, "staged,difficulty:low");
             }
             Mode::Noop => {}
+            Mode::FailAfterOne => {
+                // The first run leaves one staged child behind and then dies;
+                // later runs fail without creating anything new, so any
+                // duplicate child in the backlog would be the conductor's doing.
+                let mut emitted = self.emitted_partial.borrow_mut();
+                if !*emitted {
+                    create("partial", &low_desc("partial"), "staged,difficulty:low");
+                    *emitted = true;
+                }
+                return Err(agalma_contracts::ContractError::KnownFailure(
+                    "scripted designer failure after one child".to_string(),
+                ));
+            }
         }
         Ok(())
     }
@@ -635,4 +654,227 @@ fn rejected_and_unvalidated_children_stay_hidden() {
         ready_ids(&scratch.repo).is_empty(),
         "a never-validated staged child stays hidden after a status change"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Durable per-epic planning outcome (agalma-yy1): interrupted, empty, and
+// partially projected decompositions retry across restart, preserve child
+// identity, and escalate at the retry bound; approved epics stay untouched.
+// ---------------------------------------------------------------------------
+
+/// The number of `decomp-fix` rework tasks parented to `epic`.
+fn fix_count(scratch: &Scratch, epic: &str) -> usize {
+    scratch
+        .children(epic)
+        .iter()
+        .filter(|c| Scratch::labels(c).contains(&"decomp-fix".to_string()))
+        .count()
+}
+
+/// The staged (decomposition membership) child ids under `epic`, sorted.
+fn staged_ids(scratch: &Scratch, epic: &str) -> Vec<String> {
+    let mut ids: Vec<String> = scratch
+        .children(epic)
+        .iter()
+        .filter(|c| Scratch::labels(c).contains(&"staged".to_string()))
+        .filter_map(|c| c["id"].as_str().map(str::to_string))
+        .collect();
+    ids.sort();
+    ids
+}
+
+fn has_label(value: &Value, label: &str) -> bool {
+    Scratch::labels(value).contains(&label.to_string())
+}
+
+#[test]
+fn designer_failure_after_one_child_retries_and_preserves_child_identity() {
+    let scratch = Scratch::new("fail-after-one");
+    let epic = scratch.create_epic("Partial epic");
+    let designer = ScriptedDesigner::new(Mode::FailAfterOne);
+
+    // Sweep 1: the session dies after creating one child. The conductor must
+    // reconcile the orphan (reject it, record the attempt) instead of stranding
+    // the epic outside retry handling.
+    let first = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
+        .expect("sweep");
+    assert_eq!(first.epics_seen, vec![epic.clone()]);
+    assert_eq!(first.rejected, vec![epic.clone()], "{first:?}");
+    assert!(first.escalated.is_empty(), "{first:?}");
+
+    let orphans = staged_ids(&scratch, &epic);
+    assert_eq!(orphans.len(), 1, "one partial child: {orphans:?}");
+    let orphan = orphans[0].clone();
+    assert!(
+        has_label(&scratch.show(&orphan), "decomp-rejected"),
+        "the orphan is reconciled (rejected), not forgotten"
+    );
+    assert_eq!(fix_count(&scratch, &epic), 1, "attempt 1 recorded");
+
+    // Sweep 2: the same epic is retried; the orphan keeps its identity and no
+    // duplicate decomposition child appears.
+    let second = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
+        .expect("sweep");
+    assert_eq!(second.epics_seen, vec![epic.clone()], "epic retried");
+    assert_eq!(designer.called().len(), 2, "designer ran again");
+    assert_eq!(
+        staged_ids(&scratch, &epic),
+        vec![orphan.clone()],
+        "child identity preserved, no duplicate"
+    );
+    assert_eq!(fix_count(&scratch, &epic), 2, "attempt 2 recorded");
+
+    // Sweep 3: the retry bound is reached and the epic escalates to a human.
+    let third = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
+        .expect("sweep");
+    assert_eq!(third.escalated, vec![epic.clone()], "{third:?}");
+    assert_eq!(fix_count(&scratch, &epic), 3, "three attempts recorded");
+    assert!(
+        has_label(&scratch.show(&epic), "human"),
+        "epic escalated to a human"
+    );
+
+    // Sweep 4: an escalated epic is never re-dispatched.
+    let fourth = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
+        .expect("sweep");
+    assert!(fourth.epics_seen.is_empty(), "human epic ignored: {fourth:?}");
+    assert_eq!(designer.called().len(), 3, "no further designer session");
+}
+
+#[test]
+fn success_with_zero_children_retries_and_escalates() {
+    let scratch = Scratch::new("zero-children");
+    let epic = scratch.create_epic("Empty epic");
+    let designer = ScriptedDesigner::new(Mode::Noop);
+
+    // Sweep 1: a completed session that produced no children is a failed
+    // decomposition, not a dead end.
+    let first = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
+        .expect("sweep");
+    assert_eq!(first.epics_seen, vec![epic.clone()]);
+    assert_eq!(first.rejected, vec![epic.clone()], "{first:?}");
+    assert!(first.escalated.is_empty(), "{first:?}");
+    assert_eq!(fix_count(&scratch, &epic), 1, "empty attempt recorded");
+
+    // Sweep 2: the empty epic is still a candidate and retried.
+    let second = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
+        .expect("sweep");
+    assert_eq!(second.epics_seen, vec![epic.clone()], "empty epic retried");
+    assert_eq!(designer.called().len(), 2, "designer ran again");
+    assert_eq!(fix_count(&scratch, &epic), 2);
+
+    // Sweep 3: the retry bound is reached and the epic escalates.
+    let third = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
+        .expect("sweep");
+    assert_eq!(third.escalated, vec![epic.clone()], "{third:?}");
+    assert_eq!(fix_count(&scratch, &epic), 3);
+    assert!(has_label(&scratch.show(&epic), "human"), "escalated");
+
+    // Sweep 4: escalated epics are not re-dispatched.
+    let fourth = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
+        .expect("sweep");
+    assert!(fourth.epics_seen.is_empty(), "{fourth:?}");
+}
+
+#[test]
+fn restart_after_partial_gate_projection_recovers_without_replanning() {
+    let scratch = Scratch::new("restart-partial");
+    let epic = scratch.create_epic("Interrupted epic");
+
+    // Simulate a process death mid-gate: a complete valid decomposition whose
+    // approval was projected for only three of eight children, with the durable
+    // in-flight marker and attempt counter still present.
+    let ids: Vec<String> = (0..8)
+        .map(|i| {
+            scratch.create_child(
+                &epic,
+                &format!("child {i}"),
+                &low_desc(&format!("c{i}")),
+                "staged,difficulty:low",
+            )
+        })
+        .collect();
+    for id in &ids[..3] {
+        scratch.bd_ok(&["update", id, "--add-label", "decomp-approved"]);
+    }
+    // A stale rejection from an even earlier attempt: a passing gate must clear
+    // it so a repaired decomposition can recover.
+    scratch.bd_ok(&["update", &ids[3], "--add-label", "decomp-rejected"]);
+    scratch.bd_ok(&["update", &epic, "--add-label", "decomp-attempts:1"]);
+    scratch.bd_ok(&["update", &epic, "--add-label", "decomp-inflight"]);
+
+    let designer = ScriptedDesigner::new(Mode::Valid);
+    let report = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
+        .expect("sweep");
+
+    // The interrupted attempt is finalized in place: no new designer session,
+    // no duplicated children, and the repaired decomposition passes the gate.
+    assert_eq!(report.recovered, vec![epic.clone()], "{report:?}");
+    assert!(report.epics_swept.is_empty(), "no new session: {report:?}");
+    assert!(designer.called().is_empty(), "designer never re-run");
+    assert_eq!(report.approved, vec![epic.clone()], "{report:?}");
+
+    assert_eq!(staged_ids(&scratch, &epic), {
+        let mut sorted = ids.clone();
+        sorted.sort();
+        sorted
+    });
+    for id in &ids {
+        let issue = scratch.show(id);
+        assert!(
+            has_label(&issue, "decomp-approved"),
+            "child {id} approved by recovery"
+        );
+        assert!(
+            !has_label(&issue, "decomp-rejected"),
+            "child {id} stale rejection cleared by the passing gate"
+        );
+    }
+    assert!(
+        !has_label(&scratch.show(&epic), "decomp-inflight"),
+        "in-flight marker cleared"
+    );
+
+    // Recovered-but-approved children stay invisible until a human `bd undefer`.
+    assert!(
+        ready_ids(&scratch.repo).is_empty(),
+        "approved children stay deferred pending `bd undefer`"
+    );
+
+    // A later sweep sees the approved epic as untouched.
+    let again = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
+        .expect("sweep");
+    assert!(again.epics_seen.is_empty(), "{again:?}");
+}
+
+#[test]
+fn hand_authored_epic_children_are_not_replanned() {
+    let scratch = Scratch::new("hand-authored");
+    let epic = scratch.create_epic("Hand-authored epic");
+    // A child with no `staged` marker is not the sweep's decomposition to touch.
+    scratch.create_child(&epic, "hand", &low_desc("h"), "difficulty:low");
+
+    let designer = ScriptedDesigner::new(Mode::Valid);
+    let report = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
+        .expect("sweep");
+
+    assert!(report.epics_seen.is_empty(), "{report:?}");
+    assert!(designer.called().is_empty(), "designer never ran");
+    assert_eq!(scratch.children(&epic).len(), 1, "children untouched");
+}
+
+#[test]
+fn approved_epic_is_not_redispatched() {
+    let scratch = Scratch::new("approved-untouched");
+    let epic = scratch.create_epic("Valid epic");
+    let designer = ScriptedDesigner::new(Mode::Valid);
+
+    let first = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
+        .expect("sweep");
+    assert_eq!(first.approved, vec![epic.clone()], "{first:?}");
+
+    let second = sweep_epics(&scratch.repo, &scratch.state_dir, &gate(true, true), &designer)
+        .expect("sweep");
+    assert!(second.epics_seen.is_empty(), "{second:?}");
+    assert_eq!(designer.called().len(), 1, "no re-dispatch of an approved epic");
 }

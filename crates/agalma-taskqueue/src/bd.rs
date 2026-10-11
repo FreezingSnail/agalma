@@ -38,6 +38,25 @@ pub const DECOMP_REJECTED_LABEL: &str = "decomp-rejected";
 pub const HUMAN_LABEL: &str = "human";
 /// Label marking a decomposition rework task (CP.3): excluded from `bd ready`.
 pub const DECOMP_FIX_LABEL: &str = "decomp-fix";
+/// Label on an epic while one designer attempt is in flight (CP.3 recovery).
+///
+/// Set on the epic immediately before the designer session starts and removed
+/// once the attempt's verdict is projected. A durable present marker at the
+/// next sweep means the previous attempt was interrupted (process death or
+/// cancelled session): the sweep reconciles the partial children instead of
+/// spawning a second designer session over the same epic.
+pub const DECOMP_INFLIGHT_LABEL: &str = "decomp-inflight";
+/// Prefix of the durable per-epic attempt counter label (`decomp-attempts:<n>`).
+///
+/// Records how many designer attempts an epic has consumed so the retry bound
+/// survives restart even before a `decomp-fix` rework task exists. Monotonic;
+/// the sweep reads the maximum matching value.
+pub const DECOMP_ATTEMPTS_PREFIX: &str = "decomp-attempts:";
+/// Prefix of the per-rework-task label naming the attempt it belongs to
+/// (`decomp-attempt:<n>`). Lets the gate reuse an attempt's `decomp-fix` task
+/// when a crash lands between rework creation and verdict projection, instead
+/// of fabricating a second rework task for the same attempt.
+pub const DECOMP_ATTEMPT_PREFIX: &str = "decomp-attempt:";
 
 /// One open epic as the CP.3 sweep sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -201,6 +220,10 @@ impl BdTaskQueue {
             priority,
             "--description".to_string(),
             description.to_string(),
+            // bd inherits a parent's labels onto new children; a rework task must
+            // carry only its own bookkeeping labels, never the epic's planning
+            // markers (`decomp-inflight`, `decomp-attempts:*`) or a stale verdict.
+            "--no-inherit-labels".to_string(),
             "--json".to_string(),
         ];
         if let Some(parent) = parent {

@@ -22,8 +22,9 @@ use agalma_contracts::{ContractError, TaskId};
 
 pub use agalma_ipc::{IssueProjection, TaskQueueOps};
 pub use bd::{
-    BdTaskQueue, EpicRecord, DECOMP_APPROVED_LABEL, DECOMP_FIX_LABEL, DECOMP_REJECTED_LABEL,
-    HUMAN_LABEL, PARKED_LABEL, STAGED_LABEL,
+    BdTaskQueue, EpicRecord, DECOMP_APPROVED_LABEL, DECOMP_ATTEMPTS_PREFIX, DECOMP_ATTEMPT_PREFIX,
+    DECOMP_FIX_LABEL, DECOMP_INFLIGHT_LABEL, DECOMP_REJECTED_LABEL, HUMAN_LABEL, PARKED_LABEL,
+    STAGED_LABEL,
 };
 pub use block::{parse_task_block, BlockError, TaskBlock};
 

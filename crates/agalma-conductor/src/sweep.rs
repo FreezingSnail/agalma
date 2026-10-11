@@ -22,9 +22,34 @@
 //!    human.
 //!
 //! Retry counting: the number of prior `decomp-fix` tasks under the epic (each
-//! failed gate creates exactly one). An epic is a candidate while that count is
-//! below [`MAX_DECOMP_RETRIES`]; the failure that reaches the bound also adds the
-//! `human` label and stops the epic from being re-swept.
+//! failed gate creates exactly one) reconciled with the durable
+//! `decomp-attempts:<n>` epic label, so an attempt that never reached the gate
+//! (an interrupted or empty decomposition) is still counted. An epic is a
+//! candidate while the count is below [`MAX_DECOMP_RETRIES`]; the failure that
+//! reaches the bound also adds the `human` label and stops the epic from being
+//! re-swept.
+//!
+//! ## Durable per-epic planning outcome (recovery)
+//!
+//! Candidacy and retry counting read durable state on the epic, never only the
+//! children's labels (which two failure paths — a designer that dies after
+//! creating some children, and a completed session that produces zero children —
+//! leave unlabelled, silently stranding the epic):
+//!
+//! - `decomp-attempts:<n>` — how many attempts the epic has consumed;
+//! - `decomp-inflight` — an attempt is under way; present at the next sweep
+//!   means it was interrupted, so the sweep finalizes the partial children
+//!   ([`apply_gate`]) instead of starting a second designer session.
+//!
+//! The gate verdict stays on the `staged` children (`decomp-approved` /
+//! `decomp-rejected`) and in the epic's comment, never as an epic label: bd
+//! inherits parent labels onto new children, so an epic verdict label would
+//! poison a later repaired decomposition with a stale rejection.
+//!
+//! `staged` children are decomposition membership; `decomp-fix` tasks are
+//! bookkeeping/rework. Hand-authored (neither `staged` nor `decomp-fix`)
+//! children mark an epic whose decomposition is not the sweep's to touch, so it
+//! is never blindly replanned.
 //!
 //! ## Testability
 //!
@@ -36,7 +61,9 @@ use std::path::{Path, PathBuf};
 
 use agalma_contracts::ids::ArtifactRef;
 use agalma_contracts::{ContractError, OperationId, TaskFamily, TaskId, TaskQueueApi};
-use agalma_taskqueue::{decomp, BdTaskQueue, DECOMP_FIX_LABEL, HUMAN_LABEL, STAGED_LABEL};
+use agalma_taskqueue::{
+    decomp, BdTaskQueue, EpicRecord, DECOMP_FIX_LABEL, HUMAN_LABEL, STAGED_LABEL,
+};
 
 use crate::routing;
 use crate::session::{sanitize, LiveSession, SessionSpec};
@@ -55,6 +82,38 @@ pub const DECOMP_FIX_PRIORITY: u8 = 1;
 pub const DECOMP_FIX_DEFER: &str = "2099-01-01";
 /// Number of failed decomposition gates tolerated before human escalation.
 pub const MAX_DECOMP_RETRIES: usize = 3;
+/// Durable in-flight marker label on the epic (see module docs).
+pub const DECOMP_INFLIGHT: &str = agalma_taskqueue::DECOMP_INFLIGHT_LABEL;
+/// Prefix of the durable per-epic attempt counter label (`decomp-attempts:<n>`).
+pub const DECOMP_ATTEMPTS_PREFIX: &str = agalma_taskqueue::DECOMP_ATTEMPTS_PREFIX;
+/// Prefix of the per-rework-task attempt label (`decomp-attempt:<n>`).
+pub const DECOMP_ATTEMPT_PREFIX: &str = agalma_taskqueue::DECOMP_ATTEMPT_PREFIX;
+
+/// The epic label recording that `n` attempts have been started.
+fn attempts_label(n: usize) -> String {
+    format!("{DECOMP_ATTEMPTS_PREFIX}{n}")
+}
+
+/// The rework-task label recording the attempt `n` it belongs to.
+fn attempt_label(n: usize) -> String {
+    format!("{DECOMP_ATTEMPT_PREFIX}{n}")
+}
+
+/// The highest attempt number recorded on the epic's labels (0 when absent).
+fn max_attempt_label(labels: &[String]) -> usize {
+    labels
+        .iter()
+        .filter_map(|label| label.strip_prefix(DECOMP_ATTEMPTS_PREFIX))
+        .filter_map(|value| value.parse::<usize>().ok())
+        .max()
+        .unwrap_or(0)
+}
+
+/// Attempts an epic has consumed: the durable counter reconciled with the
+/// number of `decomp-fix` rework tasks (the pre-existing attempt record).
+fn observed_attempts(labels: &[String], fixes: usize) -> usize {
+    max_attempt_label(labels).max(fixes)
+}
 
 /// The planner route gate: paid opt-in plus a present provider credential (or an
 /// explicit `--model`/`AGALMA_MODEL` override).
@@ -278,6 +337,8 @@ pub struct SweepReport {
     pub rejected: Vec<String>,
     /// Epics escalated to a human (retries exhausted).
     pub escalated: Vec<String>,
+    /// Epics whose interrupted (in-flight) attempt was finalized on restart.
+    pub recovered: Vec<String>,
 }
 
 /// Run one serial sweep over the open epics in `repo`.
@@ -302,10 +363,27 @@ pub fn sweep_epics(
     let mut queue = BdTaskQueue::new(repo);
     let epics = queue.open_epics()?;
     for epic in epics {
-        if !is_candidate(&queue, &epic.id)? {
+        if !is_candidate(&queue, &epic)? {
             continue;
         }
         report.epics_seen.push(epic.id.clone());
+
+        // An in-flight marker left by a previous sweep means that attempt was
+        // interrupted (process death / cancelled session). Finalize the partial
+        // children it left behind instead of starting a second designer session
+        // over the same epic — never duplicate decomposition work.
+        if epic.labels.iter().any(|label| label == DECOMP_INFLIGHT) {
+            let fixes = count_fixes(&queue, &epic.id)?;
+            let attempt = observed_attempts(&epic.labels, fixes).max(1);
+            eprintln!(
+                "agalma: epic sweep: recovering interrupted decomposition for {} (attempt {attempt})",
+                epic.id
+            );
+            apply_gate(&mut queue, &epic.id, attempt, &mut report)?;
+            finish_attempt(&mut queue, &epic.id)?;
+            report.recovered.push(epic.id.clone());
+            continue;
+        }
 
         // Resolve (and durably record) the planner route for this epic.
         let route = match routing::resolve_route(
@@ -327,6 +405,13 @@ pub fn sweep_epics(
             }
         };
 
+        // Start (and durably record) this attempt before the session runs, so a
+        // crash mid-session is recoverable and the retry bound survives restart.
+        let fixes = count_fixes(&queue, &epic.id)?;
+        let attempt = observed_attempts(&epic.labels, fixes) + 1;
+        queue.add_label(&TaskId::new(&epic.id), &attempts_label(attempt))?;
+        queue.add_label(&TaskId::new(&epic.id), DECOMP_INFLIGHT)?;
+
         let request = DesignerRequest {
             epic: epic.id.clone(),
             repo: repo.to_path_buf(),
@@ -338,15 +423,19 @@ pub fn sweep_epics(
             "agalma: epic sweep: running designer for {} (model {})",
             epic.id, route.model
         );
-        if let Err(err) = designer.run(&request) {
-            eprintln!(
-                "agalma: epic sweep: designer session for {} failed: {err}",
-                epic.id
-            );
-            continue;
+        match designer.run(&request) {
+            Ok(()) => report.epics_swept.push(epic.id.clone()),
+            Err(err) => {
+                eprintln!(
+                    "agalma: epic sweep: designer session for {} failed: {err}",
+                    epic.id
+                );
+            }
         }
-        report.epics_swept.push(epic.id.clone());
-        apply_gate(&mut queue, &epic.id, &mut report)?;
+        // Reconcile whatever the attempt left behind (a complete set, a partial
+        // set, or nothing at all) and project one verdict.
+        apply_gate(&mut queue, &epic.id, attempt, &mut report)?;
+        finish_attempt(&mut queue, &epic.id)?;
     }
     Ok(report)
 }
@@ -374,34 +463,90 @@ pub fn run_sweep(
     sweep_epics(repo, state_dir, &gate, &session)
 }
 
-/// A candidate epic: zero children, or rejected children with retries left.
-fn is_candidate(queue: &BdTaskQueue, epic: &str) -> Result<bool, ContractError> {
-    let children = queue.plan_children(epic)?;
-    if children.is_empty() {
-        return Ok(true);
-    }
+/// Count an epic's `decomp-fix` rework tasks (its historical attempt record).
+fn count_fixes(queue: &BdTaskQueue, epic: &str) -> Result<usize, ContractError> {
+    Ok(queue
+        .plan_children(epic)?
+        .iter()
+        .filter(|child| child.labels.iter().any(|l| l == DECOMP_FIX_LABEL))
+        .count())
+}
+
+/// Clear the durable in-flight marker once an attempt's verdict is projected.
+fn finish_attempt(queue: &mut BdTaskQueue, epic: &str) -> Result<(), ContractError> {
+    queue.remove_label(&TaskId::new(epic), DECOMP_INFLIGHT)
+}
+
+/// Whether the epic is a decomposition candidate.
+///
+/// Candidacy is derived from durable state — the children's set membership and
+/// the epic's own attempt/verdict labels — never from a single verdict label
+/// alone, so interrupted, empty, and partially projected decompositions all
+/// stay eligible across restart:
+///
+/// - an epic with hand-authored (neither `staged` nor `decomp-fix`) children is
+///   never blindly replanned;
+/// - a durable in-flight marker forces candidacy so the interrupted attempt is
+///   finalized even if it already approved some children;
+/// - an approved epic (every `staged` child carries `decomp-approved` with none
+///   rejected) is never re-dispatched;
+/// - otherwise the epic is a candidate while its attempt count is below
+///   [`MAX_DECOMP_RETRIES`].
+///
+/// The verdict itself is durable on the children (`decomp-approved` /
+/// `decomp-rejected`, the bits the ready predicate reads) and in the epic's
+/// comments; it is deliberately never an epic label, which bd would inherit onto
+/// any later child and thereby poison a repaired decomposition.
+fn is_candidate(queue: &BdTaskQueue, epic: &EpicRecord) -> Result<bool, ContractError> {
+    let children = queue.plan_children(&epic.id)?;
     let staged: Vec<&decomp::ChildTask> = children
         .iter()
         .filter(|child| child.labels.iter().any(|l| l == STAGED_LABEL))
         .collect();
-    let rejected = staged
-        .iter()
-        .any(|child| child.labels.iter().any(|l| l == DECOMP_REJECTED));
-    let approved = staged
-        .iter()
-        .any(|child| child.labels.iter().any(|l| l == DECOMP_APPROVED));
+
+    let has_hand_authored = children.iter().any(|child| {
+        !child.labels.iter().any(|l| l == STAGED_LABEL)
+            && !child.labels.iter().any(|l| l == DECOMP_FIX_LABEL)
+    });
+    if has_hand_authored {
+        return Ok(false);
+    }
+
+    if epic.labels.iter().any(|label| label == DECOMP_INFLIGHT) {
+        return Ok(true);
+    }
+    if !staged.is_empty() {
+        let all_approved = staged
+            .iter()
+            .all(|child| child.labels.iter().any(|l| l == DECOMP_APPROVED));
+        let any_rejected = staged
+            .iter()
+            .any(|child| child.labels.iter().any(|l| l == DECOMP_REJECTED));
+        if all_approved && !any_rejected {
+            return Ok(false);
+        }
+    }
+
     let fixes = children
         .iter()
         .filter(|child| child.labels.iter().any(|l| l == DECOMP_FIX_LABEL))
         .count();
-    Ok(rejected && !approved && fixes < MAX_DECOMP_RETRIES)
+    Ok(observed_attempts(&epic.labels, fixes) < MAX_DECOMP_RETRIES)
 }
 
-/// Run the CP.1 validator over the epic's staged children and project the gate
+/// Run the CP.1 validator over the epic's `staged` children and project the gate
 /// verdict onto the backlog.
+///
+/// Only `staged` children are decomposition membership; `decomp-fix` rework
+/// tasks and any hand-authored children are never validated or labelled by the
+/// gate. `attempt` is the durable attempt number this verdict belongs to: the
+/// rework task carries it so a crash between rework creation and verdict
+/// projection reuses the same task instead of fabricating a duplicate, and the
+/// attempt reaching [`MAX_DECOMP_RETRIES`] escalates the epic to a human.
 fn apply_gate(
     queue: &mut BdTaskQueue,
     epic: &str,
+    attempt: usize,
     report: &mut SweepReport,
 ) -> Result<(), ContractError> {
     let all = queue.plan_children(epic)?;
@@ -420,6 +565,11 @@ fn apply_gate(
 
     if violations.is_empty() {
         for child in &staged {
+            // The gate verdict supersedes any earlier one: a passing set must
+            // not keep a stale `decomp-rejected` bit (the ready predicate hides
+            // such a child forever, and a repaired decomposition would never
+            // recover).
+            queue.remove_label(&TaskId::new(&child.id), DECOMP_REJECTED)?;
             queue.add_label(&TaskId::new(&child.id), DECOMP_APPROVED)?;
         }
         queue.comment(
@@ -434,21 +584,34 @@ fn apply_gate(
     }
 
     for child in &staged {
+        // Symmetrically, a failing set drops any stale approval so the verdict
+        // is unambiguous (a partially projected approval must not veto retries).
+        queue.remove_label(&TaskId::new(&child.id), DECOMP_APPROVED)?;
         queue.add_label(&TaskId::new(&child.id), DECOMP_REJECTED)?;
     }
-    let prior = all
-        .iter()
-        .filter(|child| child.labels.iter().any(|l| l == DECOMP_FIX_LABEL))
-        .count();
     let description = render_fix_description(epic, &violations);
-    let fix_id = queue.create_task(
-        &format!("decomp-fix: {epic}"),
-        &description,
-        Some(epic),
-        DECOMP_FIX_PRIORITY,
-        &[DECOMP_FIX_LABEL],
-        Some(DECOMP_FIX_DEFER),
-    )?;
+    let attempt_tag = attempt_label(attempt);
+    // Reuse this attempt's rework task when a prior pass already created it (a
+    // crash landed between rework creation and verdict projection), so an
+    // interrupted attempt never fabricates a second rework task.
+    let existing_fix = all.iter().find(|child| {
+        child.labels.iter().any(|l| l == DECOMP_FIX_LABEL)
+            && child.labels.iter().any(|l| l == &attempt_tag)
+    });
+    let fix_id = match existing_fix {
+        Some(task) => task.id.clone(),
+        None => {
+            let labels = [DECOMP_FIX_LABEL, attempt_tag.as_str()];
+            queue.create_task(
+                &format!("decomp-fix: {epic}"),
+                &description,
+                Some(epic),
+                DECOMP_FIX_PRIORITY,
+                &labels,
+                Some(DECOMP_FIX_DEFER),
+            )?
+        }
+    };
     queue.comment(
         &TaskId::new(epic),
         &format!(
@@ -458,17 +621,16 @@ fn apply_gate(
     )?;
     report.rejected.push(epic.to_string());
 
-    let failures = prior + 1;
-    if failures >= MAX_DECOMP_RETRIES {
+    if attempt >= MAX_DECOMP_RETRIES {
         queue.add_label(&TaskId::new(epic), HUMAN_LABEL)?;
         queue.comment(
             &TaskId::new(epic),
             &format!(
-                "decomp retries exhausted ({failures}/{MAX_DECOMP_RETRIES}); escalating to a human"
+                "decomp retries exhausted ({attempt}/{MAX_DECOMP_RETRIES}); escalating to a human"
             ),
         )?;
         eprintln!(
-            "agalma: epic sweep: {epic} escalated to a human after {failures} failed decomposition(s)"
+            "agalma: epic sweep: {epic} escalated to a human after {attempt} failed decomposition(s)"
         );
         report.escalated.push(epic.to_string());
     }

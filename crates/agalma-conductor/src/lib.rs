@@ -20,6 +20,7 @@ pub mod phases;
 pub mod plan_check;
 pub mod provider_auth;
 pub mod provider_proxy;
+pub mod reap;
 pub mod reconcile;
 pub mod routing;
 pub mod sandbox_process;
@@ -158,6 +159,10 @@ async fn run_command(args: RunArgs) -> ExitCode {
     };
 
     report(&status);
+    if crate::reap::is_terminal(status.phase, status.state) {
+        let reap = crate::reap::reap_execution(&state_dir, &execution);
+        eprintln!("agalma: reap {}", crate::reap::summary_line(&reap));
+    }
     if status.phase == ExecutionPhase::Done {
         ExitCode::SUCCESS
     } else {

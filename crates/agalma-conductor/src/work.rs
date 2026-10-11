@@ -173,6 +173,11 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
         harness.clone(),
     )?;
 
+    // Boot reap sweep: after recovery, delete the heavy scratch of every
+    // terminal execution still on disk (crash leftovers and pre-fix state
+    // dirs). Best-effort, idempotent.
+    crate::reap::reap_terminal(&state_dir, &ledger);
+
     // Boot projection reconcile: rewrite the bd projection to match the ledger
     // (ledger wins) before admitting new work. Best-effort: a reconcile failure
     // must not block the work loop.
@@ -213,7 +218,9 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
         // (`agalma-r2l`). The latch is never cleared here; only the human
         // `agalma resume` flow clears it.
         if state_dir.join("STOP").exists() || ledger.kill_latch()? {
-            eprintln!("agalma: stop policy active (STOP sentinel or kill latch); halting work loop");
+            eprintln!(
+                "agalma: stop policy active (STOP sentinel or kill latch); halting work loop"
+            );
             break;
         }
         if let Some(max) = args.max_tasks {
@@ -465,6 +472,13 @@ fn finalize(
             queue.comment(&task.task_id, &format!("parked: {reason}"))?;
         }
         Terminal::Blocked => {}
+    }
+
+    // Reap the execution's heavy scratch now that it is terminal. Covers both
+    // fresh paths and executions driven by `recover_inflight`. Best-effort.
+    if matches!(terminal, Terminal::Done | Terminal::Parked(_)) {
+        let reap = crate::reap::reap_execution(state_dir, execution);
+        eprintln!("agalma: reap {}", crate::reap::summary_line(&reap));
     }
     Ok(())
 }

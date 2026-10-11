@@ -298,36 +298,28 @@ fn red_verify_produces_diagnosis_then_retries_then_parks() {
     }
 
     // M1.4: verify commits the candidate working tree on the candidate branch
-    // before running acceptance, so the checkout is clean and the candidate SHA
-    // is what the pristine verification checkout (and integration) use. No
-    // artifact/prompt leaked into the tree.
-    let checkout = run_root.join("checkout");
-    let status = Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(&checkout)
-        .output()
-        .expect("git status");
+    // before running acceptance, so the candidate SHA is what the pristine
+    // verification checkout (and integration) use. The terminal run reaps the
+    // heavy checkout clone (`agalma-36y`); the digest is the surviving record of
+    // the committed candidate and the source it touched.
+    let digest: Value =
+        serde_json::from_str(&fs::read_to_string(artifacts.join("digest.json")).expect("digest"))
+            .expect("digest json");
     assert!(
-        String::from_utf8_lossy(&status.stdout).trim().is_empty(),
-        "candidate tree is clean after the pre-verify commit: {}",
-        String::from_utf8_lossy(&status.stdout)
+        digest["candidate_sha"].as_str().is_some(),
+        "candidate committed before verify: {digest}"
+    );
+    let touched: Vec<&str> = digest["files_touched"]
+        .as_array()
+        .map(|files| files.iter().filter_map(|f| f["path"].as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        touched.iter().any(|p| p.ends_with("src/lib.rs")),
+        "the candidate commit carries the builder's source: {touched:?}"
     );
     assert!(
-        !checkout.join("artifacts").exists(),
-        "no verifier artifacts inside the checkout"
-    );
-
-    // The builder's source edit is committed on the candidate branch: the
-    // candidate HEAD is one commit ahead of the base and touches src/lib.rs.
-    let changed = Command::new("git")
-        .args(["show", "--name-only", "--pretty=format:", "HEAD"])
-        .current_dir(&checkout)
-        .output()
-        .expect("git show");
-    let changed = String::from_utf8_lossy(&changed.stdout).trim().to_string();
-    assert!(
-        changed.lines().any(|line| line.ends_with("src/lib.rs")),
-        "the candidate commit carries the builder's source: {changed:?}"
+        !run_root.join("checkout").exists(),
+        "terminal run reaps the checkout clone"
     );
 
     // No merge on red.

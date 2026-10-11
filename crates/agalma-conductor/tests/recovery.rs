@@ -320,20 +320,31 @@ fn crash_mid_build_terminates_survivor_before_redispatch() {
         "termination evidence: {evidence}"
     );
 
-    // No duplicate side effects: main is the candidate exactly once.
-    let checkout = state.join("runs/exec-fix-answer-1/checkout");
+    // No duplicate side effects: the recorded integrate receipt merged the
+    // candidate as-is. The terminal run reaps the heavyweight checkout clone
+    // (`agalma-36y`), so the durable ledger receipt is the surviving proof that
+    // `main` advanced to the candidate exactly once.
+    let receipt = SqliteLedger::open(state.join("ledger.sqlite"))
+        .expect("open ledger")
+        .operation_receipt(&OperationId::derive(&exec, "integrate"))
+        .expect("receipt lookup")
+        .expect("integrate receipt recorded");
+    let result = &receipt.result["result"];
     assert_eq!(
-        git(&checkout, &["rev-parse", "refs/heads/main"]),
-        git(
-            &checkout,
-            &["rev-parse", "refs/heads/candidate/exec-fix-answer-1"]
-        ),
-        "main == candidate"
+        result["result_sha"].as_str(),
+        result["candidate_sha"].as_str(),
+        "merged candidate as-is (exactly once): {}",
+        receipt.result
     );
-    assert_eq!(git(&checkout, &["rev-list", "--count", "main"]), "2");
     assert_eq!(
-        git(&checkout, &["tag", "-l", "m0/exec-fix-answer-1"]),
-        "m0/exec-fix-answer-1"
+        result["tag"].as_str(),
+        Some("m0/exec-fix-answer-1"),
+        "integration tag recorded: {}",
+        receipt.result
+    );
+    assert!(
+        !state.join("runs/exec-fix-answer-1/checkout").exists(),
+        "terminal run reaps the checkout clone"
     );
 
     let status = run_subcommand("status", &state, &[]);

@@ -36,6 +36,17 @@ inside the approval; new direct crates do not.
   `Conflict`, `UnknownOutcome`).
 - `clap`: `agalma run|resume|status`; hand-rolling CLI parsing buys nothing.
 
+## Later approved additions
+
+Approved by the user on 2026-10-11 for the TUI epic (`agalma-3kr`):
+
+| Crate | Version | Purpose | Features |
+|---|---|---|---|
+| `ratatui` | 0.30.2 | full-screen TUI widgets/layout (design: docs/tui-design.md) | default |
+| `crossterm` | 0.29.0 | terminal raw mode, input events, backend for ratatui | default |
+
+Pinned `=` like the shortlist; `agalma-conductor` only.
+
 ## Excluded on purpose
 
 - No HTTP client crate (reqwest/ureq/hyper): the OpenCode adapter's hand-rolled

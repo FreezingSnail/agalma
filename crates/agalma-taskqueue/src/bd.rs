@@ -113,6 +113,20 @@ impl BdTaskQueue {
         self.bd_ok(&["update", id.as_str(), "--remove-label", label])?;
         Ok(())
     }
+
+    /// List an epic's children as decomposition records, including deferred and
+    /// staged children (`--all` lifts the default status filter). Used by the
+    /// CP.1 validator (`agalma plan-check`).
+    pub fn plan_children(
+        &self,
+        parent: &str,
+    ) -> Result<Vec<crate::decomp::ChildTask>, ContractError> {
+        let stdout = self.bd_ok(&["list", "--parent", parent, "--all", "--json", "--limit", "0"])?;
+        Ok(parse_issues(&stdout)?
+            .into_iter()
+            .map(BdIssue::into_child_task)
+            .collect())
+    }
 }
 
 impl TaskQueueApi for BdTaskQueue {
@@ -208,6 +222,18 @@ struct BdComment {
     text: Option<String>,
 }
 
+/// A dependency edge as `bd list --json` reports it. `bd show --json` nests a
+/// different (full-issue) shape under the same key, so every field is optional
+/// and non-matching edges are ignored — this keeps the shared `parse_issues`
+/// usable for both payloads.
+#[derive(Debug, Deserialize)]
+struct BdDependency {
+    #[serde(default)]
+    depends_on_id: Option<String>,
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
+}
+
 /// Subset of the bd issue JSON the adapter consumes.
 #[derive(Debug, Deserialize)]
 struct BdIssue {
@@ -215,6 +241,8 @@ struct BdIssue {
     title: String,
     #[serde(default)]
     description: String,
+    #[serde(default)]
+    design: Option<String>,
     status: String,
     #[serde(default)]
     assignee: Option<String>,
@@ -222,6 +250,8 @@ struct BdIssue {
     started_at: Option<String>,
     #[serde(default)]
     labels: Option<Vec<String>>,
+    #[serde(default)]
+    dependencies: Option<Vec<BdDependency>>,
     #[serde(default)]
     comments: Option<Vec<BdComment>>,
 }
@@ -260,6 +290,26 @@ impl BdIssue {
             family: block.family,
             max_attempts: block.max_attempts,
             raw_block: block.raw_block,
+        }
+    }
+
+    /// Project an issue into a decomposition child record. Only `blocks` edges
+    /// (sibling dependencies) are kept; the `parent-child` edge is dropped.
+    fn into_child_task(self) -> crate::decomp::ChildTask {
+        let depends_on = self
+            .dependencies
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|edge| edge.kind.as_deref() == Some("blocks"))
+            .filter_map(|edge| edge.depends_on_id)
+            .collect();
+        crate::decomp::ChildTask {
+            id: self.id,
+            title: self.title,
+            description: self.description,
+            design: self.design,
+            labels: self.labels.unwrap_or_default(),
+            depends_on,
         }
     }
 }

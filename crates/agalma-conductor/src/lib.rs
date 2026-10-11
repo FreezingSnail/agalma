@@ -16,6 +16,7 @@ pub mod harness_binding;
 pub mod harness_process;
 pub mod ledger_process;
 pub mod phases;
+pub mod plan_check;
 pub mod provider_auth;
 pub mod provider_proxy;
 pub mod reconcile;
@@ -59,6 +60,7 @@ pub async fn run() -> ExitCode {
         Command::Status(args) => status_command(&args),
         Command::Digest(args) => digest_command(&args),
         Command::Models => models_command(),
+        Command::PlanCheck(args) => crate::plan_check::run_plan_check(&args),
     }
 }
 

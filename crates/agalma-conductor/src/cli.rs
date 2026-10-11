@@ -29,6 +29,8 @@ pub enum Command {
     Digest(DigestArgs),
     /// Print the model routing table and the active routes (H3).
     Models,
+    /// Validate an epic's staged decomposition (CP.1): schema, caps, tier, graph.
+    PlanCheck(PlanCheckArgs),
 }
 
 /// Arguments for `agalma work`.
@@ -112,4 +114,21 @@ pub struct DigestArgs {
     /// Override the state directory.
     #[arg(long, value_name = "DIR")]
     pub state_dir: Option<PathBuf>,
+}
+
+/// Arguments for `agalma plan-check`.
+#[derive(Debug, Args)]
+pub struct PlanCheckArgs {
+    /// Epic whose deferred/staged children are validated.
+    #[arg(long, value_name = "ID")]
+    pub epic: String,
+    /// Repository (bd workspace) holding the backlog; defaults to the cwd.
+    #[arg(long, value_name = "PATH")]
+    pub repo: Option<PathBuf>,
+    /// Override the minimum child count (`count-budget`).
+    #[arg(long, value_name = "N")]
+    pub min_children: Option<usize>,
+    /// Minimum median dependency-wave width (`graph-width`).
+    #[arg(long, value_name = "N")]
+    pub min_width: Option<usize>,
 }

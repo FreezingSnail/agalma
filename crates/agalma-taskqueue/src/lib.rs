@@ -15,6 +15,7 @@
 
 mod bd;
 pub mod block;
+pub mod decomp;
 pub mod server;
 
 use agalma_contracts::{ContractError, TaskId};

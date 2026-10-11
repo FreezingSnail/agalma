@@ -292,7 +292,9 @@ pub enum RouteClass {
     Builder,
     /// Verifier / diagnosis: strict-schema tier.
     Verifier,
-    /// Planner / decision JSON: static baseline, no model.
+    /// Planner / decision: strong paid models, strongest-first. Paid-only: there
+    /// is no free fallback, so the class fails closed when no candidate is
+    /// eligible.
     Planner,
 }
 
@@ -310,9 +312,9 @@ impl RouteClass {
 /// Derive the route class from the phase role and task family.
 ///
 /// Verifier/diagnosis roles own the strict-schema tier; planner/decision roles
-/// use the static baseline (no model). Every builder family (bench, feature,
-/// fix, mutation) shares the v1 free-first list; the family is recorded in the
-/// route decision context for later refinement.
+/// use the strong paid tier (paid-only, fails closed). Every builder family
+/// (bench, feature, fix, mutation) shares the v1 free-first list; the family is
+/// recorded in the route decision context for later refinement.
 pub fn route_class(role: &str, family: TaskFamily) -> RouteClass {
     match role {
         "verifier" | "diagnosis" => RouteClass::Verifier,
@@ -340,7 +342,13 @@ pub fn candidates(class: RouteClass) -> &'static [&'static str] {
             "opencode-go/gpt-6-luna",
             "opencode/big-pickle",
         ],
-        RouteClass::Planner => &[],
+        // Strongest-first. Paid-only: every entry is a paid spec, so the class
+        // has no free fallback (see [`eligible_paid`]).
+        RouteClass::Planner => &[
+            "opencode-go/deepseek-v4-pro",
+            "opencode-go/gpt-6-luna",
+            "opencode-go/claude-haiku-5-5",
+        ],
     }
 }
 
@@ -374,6 +382,13 @@ pub fn allow_paid_from_env() -> bool {
     )
 }
 
+/// Whether a paid provider credential is present on this host. Reads the
+/// OpenCode auth store (no network); mirrors the gate the work loop applies at
+/// proxy start ([`crate::provider_proxy::ProxyConfig::from_env`]).
+pub fn paid_credential_available() -> bool {
+    crate::provider_proxy::ProxyConfig::from_env().auth.present
+}
+
 /// The explicit model override (`--model` flag, else `AGALMA_MODEL`), or `None`.
 pub fn explicit_model(flag: Option<&str>) -> Option<String> {
     flag.map(str::trim)
@@ -394,8 +409,6 @@ pub enum RouteOrigin {
     Static,
     /// Explicit `--model`/`AGALMA_MODEL` override.
     Override,
-    /// Planner/decision class: static baseline, no model.
-    Baseline,
 }
 
 impl RouteOrigin {
@@ -404,7 +417,6 @@ impl RouteOrigin {
         match self {
             RouteOrigin::Static => "static",
             RouteOrigin::Override => "override",
-            RouteOrigin::Baseline => "baseline",
         }
     }
 }
@@ -416,7 +428,7 @@ pub struct RouteSelection {
     pub class: RouteClass,
     /// Task family the route was resolved for.
     pub family: TaskFamily,
-    /// Resolved `provider/model` id (`static` for the planner class).
+    /// Resolved `provider/model` id.
     pub model: String,
     /// How the model was chosen.
     pub origin: RouteOrigin,
@@ -463,25 +475,21 @@ pub fn resolve_route(
     override_model: Option<&str>,
 ) -> Result<RouteSelection, ContractError> {
     let class = route_class(role, family);
-    if class == RouteClass::Planner {
-        return Ok(RouteSelection {
-            class,
-            family,
-            model: "static".to_string(),
-            origin: RouteOrigin::Baseline,
-            allow_paid,
-            spec: None,
-        });
-    }
-
     let override_model = override_model.map(str::trim).filter(|s| !s.is_empty());
     let candidate_ids: Vec<String> = match override_model {
         Some(model) => vec![model.to_string()],
         None => eligible_paid(class, allow_paid, paid_available),
     };
     if candidate_ids.is_empty() {
+        // The planner class is paid-only: an empty candidate list is a hard
+        // failure, never a silent fallback to a free builder model.
+        let hint = if class == RouteClass::Planner {
+            "; planner is paid-only and fails closed rather than fall back to a free builder model"
+        } else {
+            ""
+        };
         return Err(ContractError::KnownFailure(format!(
-            "no eligible route candidates for class {} (allow_paid={allow_paid}, paid_available={paid_available})",
+            "no eligible route candidates for class {} (allow_paid={allow_paid}, paid_available={paid_available}){hint}",
             class.as_str()
         )));
     }
@@ -620,15 +628,23 @@ pub fn cash_quota_for_usage(
 }
 
 /// Render the `agalma models` table plus the active routes and allow-paid state.
-pub fn render_models() -> String {
-    let allow_paid = allow_paid_from_env();
+///
+/// `allow_paid` is [`allow_paid_from_env`]; `paid_available` is whether a paid
+/// provider credential is present ([`paid_credential_available`]). The planner
+/// class is paid-only: its candidates are always listed, together with the
+/// active route or the reason it is unavailable.
+pub fn render_models(allow_paid: bool, paid_available: bool) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "agalma model routing (table revision {MODEL_TABLE_REVISION})\n"
     ));
     out.push_str(&format!(
-        "allow_paid: {} ({ALLOW_PAID_ENV})\n\n",
+        "allow_paid: {} ({ALLOW_PAID_ENV})\n",
         if allow_paid { "on" } else { "off (free-only)" }
+    ));
+    out.push_str(&format!(
+        "paid_credential: {}\n\n",
+        if paid_available { "present" } else { "absent" }
     ));
     out.push_str("id\tprovider\tin/out\tcache r/w\tctx\tstrict\tcash\tquota\n");
     for spec in MODEL_TABLE {
@@ -664,8 +680,26 @@ pub fn render_models() -> String {
             }
         ));
     }
-    out.push_str("  planner (static): no model\n");
+    out.push_str(&format!(
+        "  {} (paid-only): {}\n",
+        RouteClass::Planner.as_str(),
+        planner_route_line(allow_paid, paid_available)
+    ));
     out
+}
+
+/// The planner route line: the paid candidate list (strongest-first) plus the
+/// active route, or the reason the class is unavailable.
+fn planner_route_line(allow_paid: bool, paid_available: bool) -> String {
+    let listed = candidates(RouteClass::Planner).join(" -> ");
+    let status = if !allow_paid {
+        format!("unavailable: {ALLOW_PAID_ENV} is off")
+    } else if !paid_available {
+        "unavailable: no paid provider credential present".to_string()
+    } else {
+        format!("active: {}", candidates(RouteClass::Planner)[0])
+    };
+    format!("{listed} [{status}]")
 }
 
 /// Stable 64-bit FNV-1a hash of a string (hex).
@@ -785,6 +819,63 @@ mod tests {
                 .first()
                 .map(String::as_str),
             Some("opencode-go/claude-haiku-5-5")
+        );
+    }
+
+    #[test]
+    fn planner_candidates_are_paid_and_strongest_first() {
+        assert_eq!(
+            candidates(RouteClass::Planner).to_vec(),
+            vec![
+                "opencode-go/deepseek-v4-pro",
+                "opencode-go/gpt-6-luna",
+                "opencode-go/claude-haiku-5-5",
+            ]
+        );
+        for id in candidates(RouteClass::Planner) {
+            let spec = spec(id).unwrap_or_else(|| panic!("missing planner spec {id}"));
+            assert!(spec.is_paid(), "planner candidate {id} must be paid");
+        }
+    }
+
+    #[test]
+    fn planner_eligibility_requires_opt_in_and_credential() {
+        // Both gates present: the full strongest-first list, no free entries.
+        assert_eq!(
+            eligible_paid(RouteClass::Planner, true, true),
+            candidates(RouteClass::Planner)
+                .iter()
+                .map(|id| (*id).to_string())
+                .collect::<Vec<_>>()
+        );
+        // Any missing gate yields an empty list (no free fallback).
+        assert!(eligible_paid(RouteClass::Planner, true, false).is_empty());
+        assert!(eligible_paid(RouteClass::Planner, false, true).is_empty());
+        assert!(eligible_paid(RouteClass::Planner, false, false).is_empty());
+    }
+
+    #[test]
+    fn models_output_lists_planner_candidates_and_status() {
+        let active = render_models(true, true);
+        for id in candidates(RouteClass::Planner) {
+            assert!(active.contains(id), "planner candidate {id} missing:\n{active}");
+        }
+        assert!(active.contains("planner (paid-only)"), "{active}");
+        assert!(
+            active.contains("active: opencode-go/deepseek-v4-pro"),
+            "{active}"
+        );
+
+        let no_credential = render_models(true, false);
+        assert!(
+            no_credential.contains("unavailable: no paid provider credential present"),
+            "{no_credential}"
+        );
+
+        let off = render_models(false, false);
+        assert!(
+            off.contains("unavailable: AGALMA_ALLOW_PAID is off"),
+            "{off}"
         );
     }
 

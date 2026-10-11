@@ -167,7 +167,7 @@ fn override_wins_and_is_recorded_as_override() {
 }
 
 #[test]
-fn planner_class_is_static_and_records_no_model() {
+fn planner_uses_strong_paid_route_and_records_it() {
     let state_dir = fresh("routing-planner");
     let selection = routing::resolve_route(
         &state_dir,
@@ -176,10 +176,57 @@ fn planner_class_is_static_and_records_no_model() {
         agalma_contracts::TaskFamily::Feature,
         true,
         true,
-        Some("should-not-be-used"),
+        None,
     )
     .expect("resolve planner");
     assert_eq!(selection.class, RouteClass::Planner);
-    assert_eq!(selection.model, "static");
-    assert_eq!(selection.origin, RouteOrigin::Baseline);
+    assert_eq!(selection.model, "opencode-go/deepseek-v4-pro");
+    assert_eq!(selection.origin, RouteOrigin::Static);
+    assert!(selection.is_paid());
+
+    // Recorded as a `route.model` decision under the planner op id.
+    let ledger = SqliteLedger::open(state_dir.join("ledger.sqlite")).expect("open ledger");
+    let op = OperationId::new("op:route:task-p:planner:paid");
+    let outcome = ledger.decision_outcome(&op).expect("read outcome");
+    let outcome = outcome.expect("route decision recorded");
+    match outcome {
+        agalma_contracts::DecisionOutcome::Applied {
+            chosen: Some(chosen),
+            ..
+        } => assert_eq!(chosen, "opencode-go/deepseek-v4-pro"),
+        other => panic!("unexpected outcome {other:?}"),
+    }
+}
+
+#[test]
+fn planner_fails_closed_without_opt_in_or_credential() {
+    let no_opt_in = fresh("routing-planner-no-opt-in");
+    let err = routing::resolve_route(
+        &no_opt_in,
+        "task-p",
+        "planner",
+        agalma_contracts::TaskFamily::Feature,
+        false,
+        true,
+        None,
+    )
+    .expect_err("planner must fail closed without AGALMA_ALLOW_PAID");
+    let msg = err.to_string();
+    assert!(msg.contains("planner"), "error names the class: {msg}");
+    assert!(msg.contains("paid"), "error explains the paid gate: {msg}");
+
+    let no_credential = fresh("routing-planner-no-credential");
+    assert!(
+        routing::resolve_route(
+            &no_credential,
+            "task-p",
+            "planner",
+            agalma_contracts::TaskFamily::Feature,
+            true,
+            false,
+            None,
+        )
+        .is_err(),
+        "planner must fail closed without a provider credential"
+    );
 }

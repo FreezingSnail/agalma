@@ -28,6 +28,12 @@ pub mod work;
 pub mod workers;
 pub mod workspace_process;
 
+/// Canonical concierge role prompt (CP.2, `agalma-i5h.3`): goal → epic + design.
+pub const CONCIERGE_PROMPT: &str = include_str!("../prompts/concierge.md");
+/// Canonical designer role prompt (CP.2, `agalma-i5h.3`): epic design → staged
+/// decomposition.
+pub const DESIGNER_PROMPT: &str = include_str!("../prompts/designer.md");
+
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
@@ -65,9 +71,15 @@ pub async fn run() -> ExitCode {
 }
 
 /// `agalma models`: print the H3 model table, active routes, and allow-paid
-/// state (no state dir needed; the policy is static).
+/// state (no state dir needed; the policy is static). The paid-credential state
+/// gates the paid-only planner route.
 fn models_command() -> ExitCode {
-    print!("{}", crate::routing::render_models());
+    let allow_paid = crate::routing::allow_paid_from_env();
+    let paid_available = crate::routing::paid_credential_available();
+    print!(
+        "{}",
+        crate::routing::render_models(allow_paid, paid_available)
+    );
     ExitCode::SUCCESS
 }
 

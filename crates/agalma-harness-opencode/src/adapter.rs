@@ -167,6 +167,35 @@ struct OcOp {
     native_session: String,
 }
 
+/// Temporary provider override owned by one harness attempt.
+///
+/// Restores a user config on normal shutdown, but never restores another
+/// Agalma-generated loopback override left by an interrupted attempt.
+struct ProviderConfigLease {
+    path: PathBuf,
+    generated: Vec<u8>,
+    previous: Option<Vec<u8>>,
+}
+
+impl ProviderConfigLease {
+    fn restore(self) {
+        let Ok(current) = fs::read(&self.path) else {
+            return;
+        };
+        if current != self.generated {
+            return;
+        }
+        match self.previous {
+            Some(previous) => {
+                let _ = fs::write(&self.path, previous);
+            }
+            None => {
+                let _ = fs::remove_file(&self.path);
+            }
+        }
+    }
+}
+
 /// OpenCode-backed [`HarnessApi`].
 pub struct OpenCodeHarness {
     sandbox: Box<dyn SandboxApi + Send>,
@@ -187,6 +216,7 @@ pub struct OpenCodeHarness {
     /// turn prompt.
     session_prompts: BTreeMap<String, String>,
     ops: BTreeMap<String, OcOp>,
+    provider_config: Option<ProviderConfigLease>,
     stopped: bool,
 }
 
@@ -223,6 +253,7 @@ impl OpenCodeHarness {
             session_native: BTreeMap::new(),
             session_prompts: BTreeMap::new(),
             ops: BTreeMap::new(),
+            provider_config: None,
             stopped: false,
         }
     }
@@ -359,7 +390,8 @@ impl OpenCodeHarness {
                 .provider_id
                 .clone()
                 .unwrap_or_else(|| DEFAULT_PAID_PROVIDER_ID.to_string());
-            write_provider_config(&workspace_abs, &provider_id, &base_url)?;
+            let lease = write_provider_config(&workspace_abs, &provider_id, &base_url)?;
+            self.provider_config = Some(lease);
             env.insert(
                 "OPENCODE_API_KEY".to_string(),
                 self.config
@@ -461,6 +493,12 @@ impl OpenCodeHarness {
         }
     }
 
+    fn cleanup_provider_config(&mut self) {
+        if let Some(lease) = self.provider_config.take() {
+            lease.restore();
+        }
+    }
+
     fn native_for(&self, op: &OperationHandle) -> Result<String, ContractError> {
         self.ops
             .get(op.id.as_str())
@@ -531,6 +569,7 @@ impl Drop for OpenCodeHarness {
             return;
         }
         let _ = self.terminate_child();
+        self.cleanup_provider_config();
     }
 }
 
@@ -705,6 +744,7 @@ impl HarnessApi for OpenCodeHarness {
     fn stop_attempt(&mut self, attempt: &AttemptHandle) -> Result<StopEvidence, ContractError> {
         let _ = attempt;
         let evidence = self.terminate_child();
+        self.cleanup_provider_config();
         self.stopped = true;
         self.attempt = None;
         self.attempt_id = None;
@@ -730,14 +770,19 @@ fn derive_extra_ro(program: &Path) -> PathBuf {
 
 /// Write the provider base-URL override into `workspace/opencode.json` and, when
 /// the workspace is a git repo, locally exclude it so it never enters the
-/// candidate commit (`agalma-csw.2`).
+/// candidate commit (`agalma-csw.2`). The returned lease restores a pre-existing
+/// user config and removes the override when the harness attempt ends.
 fn write_provider_config(
     workspace: &Path,
     provider_id: &str,
     base_url: &str,
-) -> Result<PathBuf, ContractError> {
+) -> Result<ProviderConfigLease, ContractError> {
     let path = workspace.join("opencode.json");
-    fs::write(&path, render_provider_config(provider_id, base_url)).map_err(|e| {
+    let generated = render_provider_config(provider_id, base_url).into_bytes();
+    let previous = fs::read(&path)
+        .ok()
+        .filter(|contents| !is_agalma_provider_config(contents));
+    fs::write(&path, &generated).map_err(|e| {
         ContractError::KnownFailure(format!("write provider config {}: {e}", path.display()))
     })?;
     // Local excludes are per-clone and never committed; a missing `.git` (a
@@ -757,7 +802,37 @@ fn write_provider_config(
             let _ = fs::write(&exclude, updated);
         }
     }
-    Ok(path)
+    Ok(ProviderConfigLease {
+        path,
+        generated,
+        previous,
+    })
+}
+
+fn is_agalma_provider_config(contents: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<Value>(contents) else {
+        return false;
+    };
+    let Some(root) = value.as_object() else {
+        return false;
+    };
+    if root.keys().any(|key| key != "$schema" && key != "provider") {
+        return false;
+    }
+    let Some(providers) = root.get("provider").and_then(Value::as_object) else {
+        return false;
+    };
+    if providers.len() != 1 {
+        return false;
+    }
+    providers
+        .values()
+        .next()
+        .and_then(|provider| provider.pointer("/options/baseURL"))
+        .and_then(Value::as_str)
+        .and_then(|url| url.strip_prefix("http://127.0.0.1:"))
+        .map(|port| !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or(false)
 }
 
 /// Decide the outcome of a cancel from the `interrupt` response.
@@ -987,10 +1062,10 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let workspace = dir.join("checkout");
         fs::create_dir_all(workspace.join(".git").join("info")).expect("git info dir");
-        let path = write_provider_config(&workspace, "opencode-go", "http://127.0.0.1:9999")
+        let lease = write_provider_config(&workspace, "opencode-go", "http://127.0.0.1:9999")
             .expect("write config");
-        assert_eq!(path, workspace.join("opencode.json"));
-        let text = fs::read_to_string(&path).expect("read config");
+        assert_eq!(lease.path, workspace.join("opencode.json"));
+        let text = fs::read_to_string(&lease.path).expect("read config");
         assert!(text.contains("http://127.0.0.1:9999"), "{text}");
         let exclude =
             fs::read_to_string(workspace.join(".git").join("info").join("exclude")).unwrap();
@@ -999,7 +1074,8 @@ mod tests {
             "{exclude}"
         );
         // Idempotent: a second write does not duplicate the exclude entry.
-        write_provider_config(&workspace, "opencode-go", "http://127.0.0.1:9999").unwrap();
+        let second =
+            write_provider_config(&workspace, "opencode-go", "http://127.0.0.1:9999").unwrap();
         let exclude =
             fs::read_to_string(workspace.join(".git").join("info").join("exclude")).unwrap();
         assert_eq!(
@@ -1010,6 +1086,53 @@ mod tests {
             1,
             "{exclude}"
         );
+        second.restore();
+        lease.restore();
+        assert!(!workspace.join("opencode.json").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn generated_stale_provider_config_is_not_restored() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("test-runs")
+            .join(format!("provider-config-stale-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let workspace = dir.join("checkout");
+        fs::create_dir_all(&workspace).expect("workspace dir");
+        fs::write(
+            workspace.join("opencode.json"),
+            render_provider_config("opencode-go", "http://127.0.0.1:59163"),
+        )
+        .expect("stale config");
+        let lease = write_provider_config(&workspace, "opencode-go", "http://127.0.0.1:9999")
+            .expect("replace config");
+        lease.restore();
+        assert!(!workspace.join("opencode.json").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn user_provider_config_is_restored() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("test-runs")
+            .join(format!("provider-config-user-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let workspace = dir.join("checkout");
+        fs::create_dir_all(&workspace).expect("workspace dir");
+        let original =
+            br#"{"provider":{"opencode-go":{"options":{"baseURL":"https://example.test"}}}}"#;
+        fs::write(workspace.join("opencode.json"), original).expect("user config");
+        let lease = write_provider_config(&workspace, "opencode-go", "http://127.0.0.1:9999")
+            .expect("replace config");
+        lease.restore();
+        assert_eq!(fs::read(workspace.join("opencode.json")).unwrap(), original);
         let _ = fs::remove_dir_all(&dir);
     }
 

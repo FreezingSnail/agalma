@@ -47,10 +47,27 @@ Approved by the user on 2026-10-11 for the TUI epic (`agalma-3kr`):
 
 Pinned `=` like the shortlist; `agalma-conductor` only.
 
+Approved by the user on 2026-10-11 for the IPC v2 epic (`agalma-ebg`; design:
+`docs/ipc-connect-design.md`):
+
+| Crate | Version | Purpose | Features |
+|---|---|---|---|
+| `connectrpc` | 0.9.1 | ConnectRPC runtime for the nano-service transport (Connect protocol over HTTP/2 on a Unix socket) | `default-features = false`, `server`, `client` |
+| `buffa` | 0.9.2 | generated protobuf messages for the IPC envelope | default (`std`, `fast-utf8`) |
+| `connectrpc-build` | 0.9.0 | build.rs codegen for `agalma-ipc/proto/ipc.proto` (build-dependency) | default |
+
+Pinned `=`; `agalma-ipc` only. The Connect stack's transitives (hyper,
+hyper-util, tower, tower-http, futures, http, http-body(-util), bytes,
+tokio-util, tracing, async-trait, base64, percent-encoding, pin-project,
+sync_wrapper, libc) arrive through these approved crates and stay inside the
+approval by the rule above. No TLS, compression, or protobuf-JSON features.
+
 ## Excluded on purpose
 
 - No HTTP client crate (reqwest/ureq/hyper): the OpenCode adapter's hand-rolled
-  `TcpStream` client from S0d is retained; revisit after M0 measurement.
+  `TcpStream` client from S0d is retained; revisit after M0 measurement. The
+  IPC v2 stack pulls hyper in transitively, confined to `agalma-ipc` and not
+  used by the adapter.
 - No git library (git2): `git` CLI via `std::process` stays private to
   `agalma-workspace`.
 - No logging/tracing crate yet: `eprintln` + ledger records; revisit at M3.

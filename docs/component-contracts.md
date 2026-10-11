@@ -16,8 +16,10 @@ imports of another implementation or access to its private state are forbidden.
 The initial deployment is one Rust supervisor with modules communicating through
 typed APIs, plus supervised processes where isolation or a different runtime is
 needed. In-process calls use the same domain schemas and semantics as process
-calls. The initial process transport is framed JSON over stdio or a Unix socket.
-Process boundaries can move without changing the domain contract. Nano services
+calls. The initial process transport is ConnectRPC over a Unix domain socket,
+carrying Agalma's serde JSON payloads inside a thin IPC envelope
+(`docs/ipc-connect-design.md`). Process boundaries can move without changing
+the domain contract. Nano services
 require neither a network server per component nor additional databases.
 
 The contract package defines serializable request/result/event schemas, API

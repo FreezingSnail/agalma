@@ -50,10 +50,12 @@ Schema (stable; additive changes only, bump `schema_version` field to match):
 
 ## Live transport
 
-Polling, not push. `agalma-ipc` is strictly request/response (4-byte BE length
+Polling, not push (v1). `agalma-ipc` is request/response today (4-byte BE length
 + JSON envelope, no subscriptions, one in-flight call per connection); the
-conductor's own component sockets follow the same shape. A read-only refresh
-loop is therefore the only transport that needs no component changes.
+conductor's own component sockets follow the same shape. The IPC v2 design
+(`docs/ipc-connect-design.md`) replaces the framing with ConnectRPC
+(multiplexed calls, future server-streaming option), but v1 watch stays a
+read-only refresh loop so no component changes are needed.
 
 - `agalma watch` (new conductor subcommand): full-screen refresh loop calling
   the same in-process read-model function as `status --json`; default 1 s

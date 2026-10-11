@@ -23,8 +23,8 @@ pub enum Command {
     Reconcile(ReconcileArgs),
     /// Clear the kill latch and resume dispatch (human-only).
     Resume(StateArgs),
-    /// Report ledger and execution status.
-    Status(StateArgs),
+    /// Report ledger and execution status (TUI read-model snapshot).
+    Status(StatusArgs),
     /// Print the recorded digest for an execution (JSON + one-line summary).
     Digest(DigestArgs),
     /// Print the model routing table and the active routes (H3).
@@ -89,6 +89,18 @@ pub struct StateArgs {
     /// platform application-support directory).
     #[arg(long, value_name = "DIR")]
     pub state_dir: Option<PathBuf>,
+}
+
+/// Arguments for `agalma status`.
+#[derive(Debug, Args)]
+pub struct StatusArgs {
+    /// Override the state directory (defaults to `AGALMA_STATE_DIR` or the
+    /// platform application-support directory).
+    #[arg(long, value_name = "DIR")]
+    pub state_dir: Option<PathBuf>,
+    /// Emit the read-model snapshot as JSON (TUI contract).
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `agalma digest`.

@@ -42,7 +42,7 @@ use agalma_ledger::SqliteLedger;
 use clap::Parser;
 use tokio::signal::unix::{signal, SignalKind};
 
-use crate::cli::{Cli, Command, DigestArgs, ReconcileArgs, RunArgs, StateArgs};
+use crate::cli::{Cli, Command, DigestArgs, ReconcileArgs, RunArgs, StateArgs, StatusArgs};
 use crate::composition::Composition;
 use crate::config::{Config, PHASE_PLAN};
 use crate::ledger_process::{ledger_socket, LedgerHandle, LedgerTransport};
@@ -361,7 +361,12 @@ fn binding_label<L: LedgerApi + ?Sized>(
     }
 }
 
-fn status_command(args: &StateArgs) -> ExitCode {
+/// `agalma status [--json]`: report ledger and execution status.
+///
+/// Without `--json`, prints the human-oriented report. With `--json`, emits the
+/// TUI read-model snapshot: a single JSON document carrying the state-dir
+/// presence (`exists`), the kill latch, and one entry per execution.
+fn status_command(args: &StatusArgs) -> ExitCode {
     let state_dir = match crate::config::resolve_state_dir(args.state_dir.as_deref()) {
         Ok(dir) => dir,
         Err(err) => {
@@ -370,7 +375,71 @@ fn status_command(args: &StateArgs) -> ExitCode {
         }
     };
     let ledger_path = state_dir.join("ledger.sqlite");
-    if !ledger_path.exists() {
+    let exists = ledger_path.exists();
+    let mut kill_latch = false;
+    let mut executions: Vec<serde_json::Value> = Vec::new();
+    if exists {
+        let ledger = match SqliteLedger::open(&ledger_path) {
+            Ok(ledger) => ledger,
+            Err(err) => {
+                eprintln!(
+                    "agalma: cannot open ledger {}: {err}",
+                    ledger_path.display()
+                );
+                return ExitCode::FAILURE;
+            }
+        };
+        let records = match ledger.executions() {
+            Ok(records) => records,
+            Err(err) => {
+                eprintln!("agalma: cannot read executions: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
+        for record in &records {
+            let parked = ledger.events(&record.execution_id).ok().and_then(|events| {
+                events
+                    .iter()
+                    .rev()
+                    .find(|e| e.kind == "parked")
+                    .and_then(|e| e.payload.get("reason"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            });
+            executions.push(serde_json::json!({
+                "execution_id": record.execution_id.to_string(),
+                "phase": format!("{:?}", record.phase),
+                "state": format!("{:?}", record.state),
+                "attempt": record.attempt,
+                "parked_reason": parked,
+                "harness": binding_label(&ledger, record),
+            }));
+        }
+        kill_latch = match ledger.kill_latch() {
+            Ok(latched) => latched,
+            Err(err) => {
+                eprintln!("agalma: cannot read kill latch: {err}");
+                false
+            }
+        };
+    }
+    if args.json {
+        let snapshot = serde_json::json!({
+            "state_dir": state_dir.display().to_string(),
+            "exists": exists,
+            "kill_latch": kill_latch,
+            "executions": executions,
+        });
+        match serde_json::to_string(&snapshot) {
+            Ok(text) => println!("{text}"),
+            Err(err) => {
+                eprintln!("agalma: cannot serialize status snapshot: {err}");
+                return ExitCode::FAILURE;
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
+    if !exists {
         println!("agalma: no ledger at {}", ledger_path.display());
         return ExitCode::SUCCESS;
     }
@@ -384,17 +453,17 @@ fn status_command(args: &StateArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let executions = match ledger.executions() {
-        Ok(executions) => executions,
+    let records = match ledger.executions() {
+        Ok(records) => records,
         Err(err) => {
             eprintln!("agalma: cannot read executions: {err}");
             return ExitCode::FAILURE;
         }
     };
-    if executions.is_empty() {
+    if records.is_empty() {
         println!("no executions");
     }
-    for record in &executions {
+    for record in &records {
         let parked = ledger.events(&record.execution_id).ok().and_then(|events| {
             events
                 .iter()

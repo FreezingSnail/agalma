@@ -32,22 +32,14 @@
 //! (create a valid/invalid decomposition, or do nothing) without touching the
 //! harness. [`LiveDesignerSession`] is the production implementation.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-use agalma_contracts::harness::{
-    CreateSessionRequest, HarnessApi, Limits, OperationState, RunTurnRequest, StartAttemptRequest,
-};
 use agalma_contracts::ids::ArtifactRef;
 use agalma_contracts::{ContractError, OperationId, TaskFamily, TaskId, TaskQueueApi};
-use agalma_harness_opencode::{build_config, OpenCodeConfigInit};
 use agalma_taskqueue::{decomp, BdTaskQueue, DECOMP_FIX_LABEL, HUMAN_LABEL, STAGED_LABEL};
 
-use crate::harness_process::{self, HarnessTransport, OpenCodeHarnessInit};
-use crate::phases::{ensure_cargo_home, poll_terminal, PollOutcome};
-use crate::sandbox_process::SandboxSource;
 use crate::routing;
+use crate::session::{sanitize, LiveSession, SessionSpec};
 
 /// Label applied to children a passing decomposition gate accepted.
 pub const DECOMP_APPROVED: &str = "decomp-approved";
@@ -400,15 +392,11 @@ fn write_designer_prompt(state_dir: &Path) -> Result<PathBuf, ContractError> {
 
 /// Production [`DesignerSession`]: one confined OpenCode session per epic, run
 /// in the target repo with the `designer.md` prompt and the planner-route model.
+/// The session machinery is shared with the concierge through
+/// [`crate::session`]; the designer ignores the captured output and relies on
+/// the `bd` side effects it authors.
 pub struct LiveDesignerSession {
-    state_dir: PathBuf,
-    profile_path: PathBuf,
-    proxy_url: Option<String>,
-    paid_proxy: bool,
-    extra_ro_roots: Vec<PathBuf>,
-    toolchain_env: BTreeMap<String, String>,
-    turn_timeout: Duration,
-    idle_timeout: Duration,
+    live: LiveSession,
 }
 
 impl LiveDesignerSession {
@@ -418,155 +406,32 @@ impl LiveDesignerSession {
         proxy_url: Option<String>,
         paid_available: bool,
     ) -> Result<Self, ContractError> {
-        let profile_path = state_dir.join("worker.sb");
-        std::fs::write(&profile_path, agalma_sandbox::PRODUCT_PROFILE).map_err(|e| {
-            ContractError::KnownFailure(format!(
-                "cannot write sandbox profile {}: {e}",
-                profile_path.display()
-            ))
-        })?;
-        let (extra_ro_roots, toolchain_env) = crate::composition::toolchain()?;
         Ok(LiveDesignerSession {
-            state_dir: state_dir.to_path_buf(),
-            profile_path,
-            proxy_url,
-            paid_proxy: paid_available && routing::allow_paid_from_env(),
-            extra_ro_roots,
-            toolchain_env,
-            turn_timeout: crate::composition::DEFAULT_TURN_TIMEOUT,
-            idle_timeout: crate::composition::resolve_idle_timeout(),
+            live: LiveSession::build(state_dir, proxy_url, paid_available)?,
         })
     }
 }
 
 impl DesignerSession for LiveDesignerSession {
     fn run(&self, request: &DesignerRequest) -> Result<(), ContractError> {
-        let root = self
-            .state_dir
-            .join("sweep")
-            .join(sanitize(&request.epic));
-        let protected = canonical_dir(&root.join("protected"))?;
-        let sock = canonical_dir(&root.join("sock"))?;
-
-        // The designer authors tickets via `bd` in the target repo, so the repo
-        // is the sandbox ATTEMPT root (writable); opencode's ephemeral state
-        // lives under `protected`/`sock` and the repo-local XDG dirs.
-        let attempt_dir = request.repo.clone();
-
-        let mut env = self.toolchain_env.clone();
-        let cargo_home = ensure_cargo_home(&root)
-            .map_err(|e| ContractError::KnownFailure(format!("cargo home: {e}")))?;
-        env.insert(
-            "CARGO_HOME".to_string(),
-            cargo_home.to_string_lossy().into_owned(),
-        );
-        // `bd` must be reachable inside the sandbox: prepend its directory to
-        // PATH and expose that directory read-only.
-        let mut extra_ro_roots = self.extra_ro_roots.clone();
-        if let Some(dir) = bd_bin_dir() {
-            let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-            let base = env.get("PATH").cloned().unwrap_or_default();
-            env.insert(
-                "PATH".to_string(),
-                format!("{}:{}", dir.to_string_lossy(), base),
-            );
-            extra_ro_roots.push(dir);
-        }
-
-        let config = build_config(OpenCodeConfigInit {
-            profile_path: self.profile_path.clone(),
-            attempt_dir,
-            protected_dir: protected,
-            sock_dir: sock,
-            model: request.model.clone(),
-            proxy_url: self.proxy_url.clone(),
-            paid_proxy: self.paid_proxy,
-            extra_ro_roots,
-            extra_env: env,
-        });
-
-        let sandbox = SandboxSource::new(self.state_dir.clone());
-        let sandbox_socket = sandbox.ensure()?;
-        let harness_socket = self
-            .state_dir
-            .join(format!("harness-sweep-{}.sock", sanitize(&request.epic)));
-        let mut harness = harness_process::open_opencode_harness(OpenCodeHarnessInit {
-            transport: HarnessTransport::from_env(),
-            config,
-            root: root.clone(),
-            model: request.model.clone(),
-            generation: 1,
-            sandbox_socket,
-            harness_socket,
-        })
-        .map_err(ContractError::KnownFailure)?;
-
-        let attempt = harness.start_attempt(StartAttemptRequest {
-            workspace: request.repo.to_string_lossy().into_owned(),
+        let key = sanitize(&request.epic);
+        let spec = SessionSpec {
             role: "designer".to_string(),
-            genome_ref: ArtifactRef::derive("genome").to_string(),
-            constraints_ref: ArtifactRef::derive("platform-constraints").to_string(),
-            limits: Limits {
-                wall_ms: self.turn_timeout.as_millis() as u64,
-                tokens: 0,
-                cost_micros: 0,
-            },
+            model: request.model.clone(),
+            repo: request.repo.clone(),
+            dir_key: format!("sweep/{key}"),
+            socket_name: format!("harness-sweep-{key}.sock"),
             operation_id: OperationId::new(format!("op:sweep:{}", request.epic)),
-        })?;
-
-        let session = harness.create_session(CreateSessionRequest {
-            role: "designer".to_string(),
-            model: request.model.clone(),
-            prompts_ref: request.prompt_path.to_string_lossy().into_owned(),
-            handoff_refs: Vec::new(),
-            tool_policy_ref: ArtifactRef::derive("tool-policy-designer").to_string(),
-        })?;
-        let op = harness.run_turn(
-            &session,
-            RunTurnRequest {
-                input_ref: ArtifactRef::derive("designer-turn"),
-                bounded_turns: 1,
-                deadline_ms: self.turn_timeout.as_millis() as u64,
-            },
-        )?;
-        let outcome = poll_terminal(&mut harness, &op, self.idle_timeout, self.turn_timeout);
-        if matches!(outcome, PollOutcome::Stalled(_) | PollOutcome::TimedOut) {
-            let _ = harness.cancel_operation(&op);
-        }
-        let _ = harness.close_session(&session);
-        let _ = harness.stop_attempt(&attempt);
-
-        match outcome {
-            PollOutcome::Terminal(OperationState::Completed { .. }) => Ok(()),
-            other => Err(ContractError::KnownFailure(format!(
-                "designer session for {} ended without completion: {other:?}",
-                request.epic
-            ))),
-        }
+            prompt_path: request.prompt_path.clone(),
+            input_ref: ArtifactRef::derive("designer-turn"),
+            tool_policy_ref: ArtifactRef::derive("tool-policy-designer"),
+            genome_ref: ArtifactRef::derive("genome"),
+            constraints_ref: ArtifactRef::derive("platform-constraints"),
+            output_path: None,
+            error_label: format!("designer session for {}", request.epic),
+        };
+        crate::session::run_session(&self.live, &spec).map(|_| ())
     }
-}
-
-/// Directory containing the `bd` binary (resolved from the conductor's PATH).
-fn bd_bin_dir() -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path).find(|dir| dir.join("bd").is_file())
-    })
-}
-
-/// Filesystem-safe name for a per-epic sweep directory.
-fn sanitize(epic: &str) -> String {
-    epic.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
-        .collect()
-}
-
-/// Create `path` (recursively) and return its canonical form.
-fn canonical_dir(path: &Path) -> Result<PathBuf, ContractError> {
-    std::fs::create_dir_all(path).map_err(|e| {
-        ContractError::KnownFailure(format!("mkdir {}: {e}", path.display()))
-    })?;
-    std::fs::canonicalize(path)
-        .map_err(|e| ContractError::KnownFailure(format!("resolve {}: {e}", path.display())))
 }
 
 #[cfg(test)]
@@ -605,10 +470,5 @@ mod tests {
         let text = render_fix_description("epic-1", &violations);
         assert!(text.contains("1. count-budget: 2 children below minimum 8"));
         assert!(text.contains("2. schema-section: child x: headings missing"));
-    }
-
-    #[test]
-    fn sanitize_is_filesystem_safe() {
-        assert_eq!(sanitize("agalma-i5h.4"), "agalma-i5h-4");
     }
 }

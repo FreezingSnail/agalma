@@ -9,6 +9,7 @@
 
 pub mod cli;
 pub mod composition;
+pub mod concierge;
 pub mod config;
 pub mod digest;
 pub mod execution_process;
@@ -22,6 +23,7 @@ pub mod provider_proxy;
 pub mod reconcile;
 pub mod routing;
 pub mod sandbox_process;
+pub mod session;
 pub mod sweep;
 pub mod task;
 pub mod taskqueue_process;
@@ -68,6 +70,7 @@ pub async fn run() -> ExitCode {
         Command::Digest(args) => digest_command(&args),
         Command::Models => models_command(),
         Command::PlanCheck(args) => crate::plan_check::run_plan_check(&args),
+        Command::Concierge(args) => crate::concierge::run_concierge_command(&args),
     }
 }
 

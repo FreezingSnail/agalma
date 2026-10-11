@@ -24,6 +24,7 @@ pub mod reconcile;
 pub mod routing;
 pub mod sandbox_process;
 pub mod session;
+pub mod stop;
 pub mod sweep;
 pub mod task;
 pub mod taskqueue_process;

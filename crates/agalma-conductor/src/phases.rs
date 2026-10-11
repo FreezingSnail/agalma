@@ -70,6 +70,7 @@ use serde_json::json;
 use crate::harness_binding::{self, HarnessHandle, HarnessKind};
 use crate::harness_process::{self, HarnessTransport, LiveHarness, OpenCodeHarnessInit};
 use crate::sandbox_process::SandboxSource;
+use crate::stop::{FileStopControl, StopControl};
 use crate::workers::{self, Survivor};
 use crate::workspace_process::WorkspaceHandle;
 
@@ -733,7 +734,13 @@ impl BuildActivity {
                 },
             )
             .map_err(contract_err)?;
-        let outcome = poll_terminal(harness, &op, self.deps.idle_timeout, self.deps.turn_timeout);
+        let outcome = poll_terminal(
+            harness,
+            &op,
+            self.deps.idle_timeout,
+            self.deps.turn_timeout,
+            Some(&FileStopControl::new(&self.deps.state_dir)),
+        );
         // Cancel before close: the interrupt must reach a live session, and a
         // 404 means it already ended (benign). A terminal outcome needs no
         // cancel.
@@ -817,6 +824,20 @@ impl BuildActivity {
                 Ok(ActivityOutcome {
                     result: json!({ "status": "timeout", "attempt": ctx.attempt }),
                     next: ActivityNext::Advance,
+                })
+            }
+            PollOutcome::Stopped => {
+                // Stop requested mid-turn (`agalma-r2l`): the session was
+                // cancelled before close. Retry so the executor re-enters and
+                // the outer stop policy (STOP check / kill latch) halts before
+                // any further dispatch; no new paid call runs under a stop.
+                eprintln!(
+                    "agalma: build attempt {} cancelled: stop requested",
+                    ctx.attempt
+                );
+                Ok(ActivityOutcome {
+                    result: json!({ "status": "stopped", "attempt": ctx.attempt }),
+                    next: ActivityNext::Retry { failure },
                 })
             }
         }
@@ -1024,7 +1045,13 @@ impl BuildActivity {
                 },
             )
             .map_err(contract_err)?;
-        let outcome = poll_terminal(harness, &op, self.deps.idle_timeout, self.deps.turn_timeout);
+        let outcome = poll_terminal(
+            harness,
+            &op,
+            self.deps.idle_timeout,
+            self.deps.turn_timeout,
+            Some(&FileStopControl::new(&self.deps.state_dir)),
+        );
         // Cancel before close: the interrupt must reach a live session, and a
         // 404 means it already ended (benign). A terminal outcome needs no
         // cancel.
@@ -1071,6 +1098,10 @@ impl BuildActivity {
             PollOutcome::TimedOut => Ok(ActivityOutcome {
                 result: json!({ "status": "timeout", "attempt": ctx.attempt }),
                 next: ActivityNext::Advance,
+            }),
+            PollOutcome::Stopped => Ok(ActivityOutcome {
+                result: json!({ "status": "stopped", "attempt": ctx.attempt }),
+                next: ActivityNext::Retry { failure },
             }),
         }
     }
@@ -1580,7 +1611,13 @@ impl VerifyActivity {
                 },
             )
             .map_err(contract_err)?;
-        let outcome = poll_terminal(harness, &op, self.deps.idle_timeout, self.deps.turn_timeout);
+        let outcome = poll_terminal(
+            harness,
+            &op,
+            self.deps.idle_timeout,
+            self.deps.turn_timeout,
+            Some(&FileStopControl::new(&self.deps.state_dir)),
+        );
         settle_after_poll(
             harness,
             &op,
@@ -1637,6 +1674,10 @@ impl VerifyActivity {
                     },
                 )
                 .unwrap_or_else(|err| eprintln!("agalma: provider_health for verifier: {err}"));
+                zero_usage()
+            }
+            PollOutcome::Stopped => {
+                eprintln!("agalma: verifier session cancelled: stop requested");
                 zero_usage()
             }
             PollOutcome::Terminal(_) => zero_usage(),
@@ -2551,6 +2592,9 @@ pub enum PollOutcome {
     /// The hard wall-clock bound elapsed without a terminal state (existing
     /// behavior: advance to verify / record zero usage).
     TimedOut,
+    /// A stop was requested (STOP sentinel or kill latch) while the operation
+    /// was running: the caller must cancel/close the session (`agalma-r2l`).
+    Stopped,
 }
 
 /// Progress fingerprint: the operation status plus usage/token deltas and
@@ -2646,23 +2690,30 @@ fn settle_after_poll<H: HarnessApi + ?Sized>(
     outcome: &PollOutcome,
     context: &str,
 ) {
-    if matches!(outcome, PollOutcome::Stalled(_) | PollOutcome::TimedOut) {
+    if matches!(
+        outcome,
+        PollOutcome::Stalled(_) | PollOutcome::TimedOut | PollOutcome::Stopped
+    ) {
         cancel_tolerating_gone(harness, op, context);
     }
     let _ = harness.close_session(session);
 }
 
-/// Poll `inspect_operation` until terminal, a stall, or the hard wall bound.
+/// Poll `inspect_operation` until terminal, a stall, the hard wall bound, or a
+/// stop request.
 ///
 /// The progress watchdog cancels a session with no token/state delta for
 /// `idle_timeout` (verdict `stalled`); a session-not-found/connection-refused
 /// transport error fast-fails immediately. Transient poll errors log and keep
-/// waiting. `wall_timeout` is the unchanged hard cap.
+/// waiting. `wall_timeout` is the unchanged hard cap. When `stop` reports a
+/// stop, the poll returns [`PollOutcome::Stopped`] promptly (within one poll
+/// interval) so the caller cancels the session (`agalma-r2l`).
 pub fn poll_terminal<H: HarnessApi + ?Sized>(
     harness: &mut H,
     op: &OperationHandle,
     idle_timeout: Duration,
     wall_timeout: Duration,
+    stop: Option<&dyn StopControl>,
 ) -> PollOutcome {
     let started = Instant::now();
     let deadline = started + wall_timeout;
@@ -2670,6 +2721,11 @@ pub fn poll_terminal<H: HarnessApi + ?Sized>(
     let mut last_change = started;
     let mut tokens = 0u64;
     loop {
+        if let Some(stop) = stop {
+            if stop.stopped() {
+                return PollOutcome::Stopped;
+            }
+        }
         match harness.inspect_operation(op) {
             Ok(state) if state.is_terminal() => return PollOutcome::Terminal(state),
             Ok(state) => {
@@ -3011,6 +3067,9 @@ mod tests {
         calls: Vec<&'static str>,
         /// When set, `cancel_operation` returns a session-gone 404.
         cancel_gone: bool,
+        /// When set, create the `STOP` sentinel at this path once `polls`
+        /// reaches the threshold (drives the stop-poll cancellation test).
+        stop_file: Option<(PathBuf, u32)>,
     }
 
     impl FakeTurn {
@@ -3021,6 +3080,7 @@ mod tests {
                 terminal_after,
                 calls: Vec::new(),
                 cancel_gone: false,
+                stop_file: None,
             }
         }
 
@@ -3077,6 +3137,11 @@ mod tests {
             _op: &OperationHandle,
         ) -> Result<OperationState, ContractError> {
             self.polls += 1;
+            if let Some((path, after)) = &self.stop_file {
+                if self.polls >= *after {
+                    let _ = std::fs::write(path, b"stop");
+                }
+            }
             if self.polls >= self.terminal_after {
                 return Ok(OperationState::Completed {
                     result_ref: ArtifactRef::derive("turn-result"),
@@ -3150,6 +3215,7 @@ mod tests {
             &op,
             Duration::from_millis(1200),
             Duration::from_secs(30),
+            None,
         );
         match outcome {
             PollOutcome::Terminal(OperationState::Completed { usage, .. }) => {
@@ -3173,6 +3239,7 @@ mod tests {
             &op,
             Duration::from_millis(1200),
             Duration::from_secs(30),
+            None,
         );
         match outcome {
             PollOutcome::Stalled(stall) => {
@@ -3200,6 +3267,50 @@ mod tests {
             vec!["cancel", "close"],
             "interrupt must precede the DELETE"
         );
+    }
+
+    #[test]
+    fn stop_sentinel_during_poll_cancels_within_bound() {
+        // agalma-r2l: a STOP sentinel created while the turn runs must cancel
+        // the poll promptly (within the poll interval), and the sentinel must
+        // remain (no implicit clearing anywhere).
+        let dir = scratch_dir("stop-during-poll");
+        let stop_path = dir.join("STOP");
+        let mut harness = FakeTurn::new(FakeMode::Silent, 1_000);
+        harness.stop_file = Some((stop_path.clone(), 1));
+        let control = FileStopControl::new(&dir);
+        let op = FakeTurn::op();
+        let started = Instant::now();
+        let outcome = poll_terminal(
+            &mut harness,
+            &op,
+            Duration::from_secs(120),
+            Duration::from_secs(600),
+            Some(&control),
+        );
+        let elapsed = started.elapsed();
+        match outcome {
+            PollOutcome::Stopped => {}
+            other => panic!("expected stop, got {other:?} after {elapsed:?}"),
+        }
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "stop cancellation bounded by the poll interval: {elapsed:?}"
+        );
+        assert!(
+            stop_path.exists(),
+            "stop state retained (never implicitly cleared)"
+        );
+    }
+
+    #[test]
+    fn stopped_verdict_cancels_before_close() {
+        // The shared settle path treats a stop like a stall: cancel then close.
+        let mut harness = FakeTurn::new(FakeMode::Silent, 5);
+        let op = FakeTurn::op();
+        let session = FakeTurn::session();
+        settle_after_poll(&mut harness, &op, &session, &PollOutcome::Stopped, "test");
+        assert_eq!(harness.calls, vec!["cancel", "close"]);
     }
 
     #[test]

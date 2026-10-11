@@ -28,6 +28,7 @@ use crate::harness_process::{self, HarnessTransport, OpenCodeHarnessInit};
 use crate::phases::{ensure_cargo_home, poll_terminal, PollOutcome};
 use crate::routing;
 use crate::sandbox_process::SandboxSource;
+use crate::stop::{FileStopControl, StopControl};
 
 /// Per-conductor live session configuration shared by every role.
 ///
@@ -43,6 +44,10 @@ pub struct LiveSession {
     toolchain_env: BTreeMap<String, String>,
     turn_timeout: Duration,
     idle_timeout: Duration,
+    /// Stop control polled while the session runs (`agalma-r2l`). A `STOP`
+    /// sentinel or the durable kill latch cancels the turn and refuses to start
+    /// a new one; the control is never cleared here.
+    stop: Box<dyn StopControl>,
 }
 
 impl LiveSession {
@@ -69,7 +74,14 @@ impl LiveSession {
             toolchain_env,
             turn_timeout: crate::composition::DEFAULT_TURN_TIMEOUT,
             idle_timeout: crate::composition::resolve_idle_timeout(),
+            stop: Box::new(FileStopControl::new(state_dir)),
         })
+    }
+
+    /// Install a custom stop control (tests embed a scripted one).
+    pub fn with_stop(mut self, stop: Box<dyn StopControl>) -> Self {
+        self.stop = stop;
+        self
     }
 }
 
@@ -111,6 +123,16 @@ pub fn run_session(
     live: &LiveSession,
     spec: &SessionSpec,
 ) -> Result<Option<String>, ContractError> {
+    // Dispatch gate (`agalma-r2l`): never start a session under an active stop.
+    // This is the innermost admission check behind the sweep/intake gates; it
+    // closes the window where a stop arrives between candidacy and dispatch.
+    if live.stop.stopped() {
+        return Err(ContractError::KnownFailure(format!(
+            "{} not started: stop requested (STOP sentinel or kill latch set)",
+            spec.error_label
+        )));
+    }
+
     let root = live.state_dir.join(&spec.dir_key);
     let protected = canonical_dir(&root.join("protected"))?;
     let sock = canonical_dir(&root.join("sock"))?;
@@ -198,8 +220,19 @@ pub fn run_session(
             deadline_ms: live.turn_timeout.as_millis() as u64,
         },
     )?;
-    let outcome = poll_terminal(&mut harness, &op, live.idle_timeout, live.turn_timeout);
-    if matches!(outcome, PollOutcome::Stalled(_) | PollOutcome::TimedOut) {
+    let outcome = poll_terminal(
+        &mut harness,
+        &op,
+        live.idle_timeout,
+        live.turn_timeout,
+        Some(&*live.stop),
+    );
+    // Cancel before close: the interrupt must reach a live session. A stop
+    // requested mid-turn is a non-terminal outcome, so it cancels here too.
+    if matches!(
+        outcome,
+        PollOutcome::Stalled(_) | PollOutcome::TimedOut | PollOutcome::Stopped
+    ) {
         let _ = harness.cancel_operation(&op);
     }
     let _ = harness.close_session(&session);
@@ -209,6 +242,10 @@ pub fn run_session(
         PollOutcome::Terminal(OperationState::Completed { .. }) => {
             Ok(capture_output(spec.output_path.as_deref()))
         }
+        PollOutcome::Stopped => Err(ContractError::KnownFailure(format!(
+            "{} cancelled: stop requested (STOP sentinel or kill latch set)",
+            spec.error_label
+        ))),
         other => Err(ContractError::KnownFailure(format!(
             "{} ended without completion: {other:?}",
             spec.error_label
@@ -257,6 +294,39 @@ fn canonical_dir(path: &Path) -> Result<PathBuf, ContractError> {
 mod tests {
     use super::*;
 
+    fn scratch_dir(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("test-runs")
+            .join(format!("session-{name}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    fn spec() -> SessionSpec {
+        SessionSpec {
+            role: "designer".to_string(),
+            model: "test/offline".to_string(),
+            repo: PathBuf::from("."),
+            dir_key: "sweep/stopped".to_string(),
+            socket_name: "harness-stopped.sock".to_string(),
+            operation_id: OperationId::new("op:stopped"),
+            prompt_path: PathBuf::from("prompt.md"),
+            input_ref: ArtifactRef::derive("designer-turn"),
+            tool_policy_ref: ArtifactRef::derive("tool-policy-designer"),
+            genome_ref: ArtifactRef::derive("genome"),
+            constraints_ref: ArtifactRef::derive("platform-constraints"),
+            output_path: None,
+            error_label: "designer session".to_string(),
+        }
+    }
+
     #[test]
     fn sanitize_is_filesystem_safe() {
         assert_eq!(sanitize("agalma-i5h.4"), "agalma-i5h-4");
@@ -272,5 +342,21 @@ mod tests {
         assert_eq!(root, Path::new("/state/concierge/abc/attempt"));
         assert!(root.starts_with(state));
         assert!(!root.starts_with("/repo"));
+    }
+
+    #[test]
+    fn stopped_session_refuses_to_dispatch() {
+        // agalma-r2l: a preexisting STOP sentinel must prevent the session from
+        // even being built (no harness, no paid call).
+        let dir = scratch_dir("stopped");
+        std::fs::write(dir.join("STOP"), b"stop").expect("write STOP");
+        let live = LiveSession::build(&dir, None, false).expect("build live session");
+        let err = run_session(&live, &spec()).expect_err("stopped must not dispatch");
+        assert!(err.to_string().contains("stop"), "{err}");
+        // Nothing session-scoped was materialized.
+        assert!(
+            !dir.join("sweep").exists(),
+            "no session scratch created while stopped"
+        );
     }
 }

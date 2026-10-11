@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use agalma_contracts::ContractError;
+use agalma_contracts::LedgerApi;
 use agalma_conductor::cli::{Cli, Command as CliCommand};
 use agalma_conductor::concierge::{run_concierge, ConciergeRequest, ConciergeSession};
 use agalma_conductor::sweep::PlannerGate;
@@ -311,6 +312,71 @@ fn planner_unavailable_fails_closed_without_a_session() {
     // No route decision is recorded either.
     let ledger = scratch.state_dir.join("ledger.sqlite");
     assert!(!ledger.exists(), "no session, no ledger: {}", ledger.display());
+}
+
+// ---------------------------------------------------------------------------
+// Stop policy (`agalma-r2l`): an explicit concierge intake obeys the same STOP
+// sentinel + durable kill latch as the automatic sweep.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn concierge_intake_blocked_by_stop_sentinel() {
+    let scratch = Scratch::new("stopped");
+    fs::write(scratch.state_dir.join("STOP"), b"stop").expect("write STOP");
+    let session = ScriptedConcierge::new(Behavior::EpicWithDesign);
+
+    let err = run_concierge(
+        &scratch.repo,
+        &scratch.state_dir,
+        "stand up a TUI",
+        &gate(true, true),
+        &session,
+    )
+    .expect_err("a stop must suppress the intake");
+
+    assert!(err.to_string().contains("stop policy"), "clear reason: {err}");
+    assert!(session.called().is_empty(), "no session spawned while stopped");
+    // The stop is never cleared implicitly by the intake.
+    assert!(scratch.state_dir.join("STOP").exists(), "STOP retained");
+    // No route decision was recorded before the stop check.
+    assert!(
+        !scratch.state_dir.join("ledger.sqlite").exists(),
+        "no ledger/route recorded while stopped"
+    );
+}
+
+#[test]
+fn concierge_intake_blocked_by_kill_latch() {
+    let scratch = Scratch::new("latched");
+    {
+        let mut ledger =
+            agalma_ledger::SqliteLedger::open(scratch.state_dir.join("ledger.sqlite"))
+                .expect("open ledger");
+        ledger.set_kill_latch(true).expect("set latch");
+    }
+    assert!(
+        !scratch.state_dir.join("STOP").exists(),
+        "STOP absent; only the latch is set"
+    );
+    let session = ScriptedConcierge::new(Behavior::EpicWithDesign);
+
+    let err = run_concierge(
+        &scratch.repo,
+        &scratch.state_dir,
+        "stand up a TUI",
+        &gate(true, true),
+        &session,
+    )
+    .expect_err("a kill latch must suppress the intake");
+
+    assert!(err.to_string().contains("stop policy"), "clear reason: {err}");
+    assert!(session.called().is_empty(), "no session spawned");
+    let ledger = agalma_ledger::SqliteLedger::open(scratch.state_dir.join("ledger.sqlite"))
+        .expect("reopen ledger");
+    assert!(
+        ledger.kill_latch().expect("read latch"),
+        "latch retained (never implicitly cleared)"
+    );
 }
 
 #[test]

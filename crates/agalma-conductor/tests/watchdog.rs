@@ -177,6 +177,7 @@ fn silent_session_is_stalled_and_records_provider_health() {
         &op,
         Duration::from_millis(300),
         Duration::from_secs(30),
+        None,
     );
 
     let stall = match outcome {
@@ -221,7 +222,7 @@ fn session_gone_fast_fails_without_waiting_for_idle() {
     };
     let idle = Duration::from_secs(60);
     let started = Instant::now();
-    let outcome = poll_terminal(&mut harness, &op, idle, Duration::from_secs(600));
+    let outcome = poll_terminal(&mut harness, &op, idle, Duration::from_secs(600), None);
     let elapsed = started.elapsed();
 
     let stall = match outcome {
@@ -252,6 +253,7 @@ fn transient_poll_error_does_not_fast_fail() {
         &op,
         Duration::from_millis(300),
         Duration::from_secs(30),
+        None,
     );
     match outcome {
         PollOutcome::Stalled(stall) => {

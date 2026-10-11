@@ -184,7 +184,9 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
     // Epic sweep (CP.3): before ordinary claiming, run one serial designer
     // session per candidate epic and project the decomposition gate. Best-effort:
     // a sweep failure must not block the work loop, and an unavailable planner
-    // route skips the sweep (never a silent downgrade).
+    // route skips the sweep (never a silent downgrade). The sweep applies the
+    // stop policy (STOP sentinel or kill latch) before any planning dispatch
+    // (`agalma-r2l`).
     match crate::sweep::run_sweep(
         &repo,
         &state_dir,
@@ -206,8 +208,12 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
     let mut processed: u32 = 0;
     let mut last: Option<Terminal> = None;
     loop {
-        if state_dir.join("STOP").exists() {
-            eprintln!("agalma: STOP sentinel present; halting work loop");
+        // Stop policy before any claim/dispatch: the `STOP` sentinel OR the
+        // durable kill latch halts the loop before it can mutate the backlog
+        // (`agalma-r2l`). The latch is never cleared here; only the human
+        // `agalma resume` flow clears it.
+        if state_dir.join("STOP").exists() || ledger.kill_latch()? {
+            eprintln!("agalma: stop policy active (STOP sentinel or kill latch); halting work loop");
             break;
         }
         if let Some(max) = args.max_tasks {

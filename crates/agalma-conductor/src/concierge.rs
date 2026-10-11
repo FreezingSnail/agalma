@@ -30,6 +30,7 @@ use serde_json::Value;
 use crate::cli::ConciergeArgs;
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
 use crate::session::{sanitize, LiveSession, SessionSpec};
+use crate::stop::{FileStopControl, StopControl};
 use crate::sweep::PlannerGate;
 use crate::{config, routing};
 
@@ -71,6 +72,11 @@ pub struct ConciergeReport {
 
 /// Run one concierge intake against `repo`.
 ///
+/// Stop-safe entry point: honors the production stop policy (`<state>/STOP`
+/// sentinel or the ledger kill latch), so an explicit concierge intake never
+/// launches a paid planning session while stopped (`agalma-r2l`). Tests that
+/// script the control call [`run_concierge_with_stop`].
+///
 /// Fails closed when the planner route is unavailable, before any session is
 /// spawned. Records the `route.model` decision (class `planner`) through the
 /// shared routing seam.
@@ -81,6 +87,35 @@ pub fn run_concierge(
     gate: &PlannerGate,
     session: &dyn ConciergeSession,
 ) -> Result<ConciergeReport, ContractError> {
+    run_concierge_with_stop(
+        repo,
+        state_dir,
+        goal,
+        gate,
+        session,
+        &FileStopControl::new(state_dir),
+    )
+}
+
+/// Run one concierge intake honoring an explicit stop control.
+///
+/// The stop policy is applied before the planner-route resolution and before
+/// the session runs: while stopped, no route decision is recorded and no
+/// session is spawned. The control is never cleared here.
+pub fn run_concierge_with_stop(
+    repo: &Path,
+    state_dir: &Path,
+    goal: &str,
+    gate: &PlannerGate,
+    session: &dyn ConciergeSession,
+    stop: &dyn StopControl,
+) -> Result<ConciergeReport, ContractError> {
+    if stop.stopped() {
+        return Err(ContractError::KnownFailure(
+            "stop policy active (STOP sentinel or kill latch); concierge intake suppressed"
+                .to_string(),
+        ));
+    }
     if !gate.available() {
         return Err(ContractError::KnownFailure(gate.unavailable_reason()));
     }

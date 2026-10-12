@@ -23,7 +23,9 @@
 //! (`begin_step`/`begin_pending_step`/`complete_step`), so an in-process binding
 //! and a process binding expose one surface.
 
-use agalma_contracts::{ArtifactRef, ExecutionId, ExecutionPhase, OperationId, StepOutcome, TaskId};
+use agalma_contracts::{
+    ArtifactRef, ExecutionId, ExecutionPhase, OperationId, StepOutcome, TaskId,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

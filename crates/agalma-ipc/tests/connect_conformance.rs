@@ -18,8 +18,8 @@ use std::time::Duration;
 use agalma_contracts::ContractError;
 use agalma_ipc::connect::ConnectClient;
 use agalma_ipc::error::IpcError;
-use agalma_ipc::server::{Server, ServerInfo};
 use agalma_ipc::proto::agalma::ipc::v1::{IpcClient, IpcRequest};
+use agalma_ipc::server::{Server, ServerInfo};
 use agalma_testkit::ScratchDir;
 use serde_json::{json, Value};
 
@@ -52,9 +52,12 @@ fn test_server(counter: Arc<AtomicU64>) -> Server {
             Ok(json!({ "count": n }))
         },
     );
-    server.on("fail.known", |_params: Value| -> Result<Value, ContractError> {
-        Err(ContractError::KnownFailure("boom".into()))
-    });
+    server.on(
+        "fail.known",
+        |_params: Value| -> Result<Value, ContractError> {
+            Err(ContractError::KnownFailure("boom".into()))
+        },
+    );
     server.on(
         "fail.unknown_outcome",
         |_params: Value| -> Result<Value, ContractError> {

@@ -62,7 +62,10 @@ impl From<serde_json::Error> for FrameError {
 
 fn check_len(len: usize) -> Result<(), FrameError> {
     if len > MAX_FRAME {
-        Err(FrameError::TooLarge { len, max: MAX_FRAME })
+        Err(FrameError::TooLarge {
+            len,
+            max: MAX_FRAME,
+        })
     } else {
         Ok(())
     }
@@ -213,10 +216,7 @@ mod tests {
     #[test]
     fn read_reports_truncated_prefix() {
         let mut reader = Cursor::new(vec![0u8, 1u8]);
-        assert!(matches!(
-            read_payload(&mut reader),
-            Err(FrameError::Io(_))
-        ));
+        assert!(matches!(read_payload(&mut reader), Err(FrameError::Io(_))));
     }
 
     #[test]
@@ -224,10 +224,7 @@ mod tests {
         let mut bytes = 8u32.to_be_bytes().to_vec();
         bytes.extend_from_slice(b"abc"); // only 3 of 8 bytes
         let mut reader = Cursor::new(bytes);
-        assert!(matches!(
-            read_payload(&mut reader),
-            Err(FrameError::Io(_))
-        ));
+        assert!(matches!(read_payload(&mut reader), Err(FrameError::Io(_))));
     }
 
     #[test]

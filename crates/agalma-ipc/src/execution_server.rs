@@ -190,7 +190,8 @@ where
         let shared = Arc::clone(&shared);
         server.on("begin_pending_step", move |params: Value| {
             let call: PendingStepCall = decode_params(params)?;
-            let result = lock(&shared).begin_pending_step(&call.execution_id, &call.operation_id)?;
+            let result =
+                lock(&shared).begin_pending_step(&call.execution_id, &call.operation_id)?;
             encode_result(result)
         });
     }

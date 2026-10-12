@@ -58,9 +58,12 @@ fn test_server(counter: Arc<AtomicU64>) -> Server {
             Ok(json!({ "count": n }))
         },
     );
-    server.on("fail.known", |_params: Value| -> Result<Value, ContractError> {
-        Err(ContractError::KnownFailure("boom".into()))
-    });
+    server.on(
+        "fail.known",
+        |_params: Value| -> Result<Value, ContractError> {
+            Err(ContractError::KnownFailure("boom".into()))
+        },
+    );
     server
 }
 
@@ -94,7 +97,9 @@ fn echo_round_trip() {
     let _server = spawn_server(test_server(Arc::new(AtomicU64::new(0))), socket.clone());
 
     let mut client = Client::connect(&socket).expect("connect");
-    let out = client.call("echo", json!({"hello": "world"})).expect("call");
+    let out = client
+        .call("echo", json!({"hello": "world"}))
+        .expect("call");
     assert_eq!(out, json!({"hello": "world"}));
 }
 
@@ -243,9 +248,7 @@ fn sequential_connects_have_distinct_seeds() {
 fn connect_failure_is_unavailable() {
     let (_dir, missing) = socket_path("missing");
     // Path was never bound.
-    let err = Client::connect(&missing)
-        .err()
-        .expect("connect must fail");
+    let err = Client::connect(&missing).err().expect("connect must fail");
     assert!(err.is_unavailable(), "expected Unavailable, got {err:?}");
 }
 
@@ -279,7 +282,9 @@ fn method_not_found_is_unsupported_capability() {
     let _server = spawn_server(test_server(Arc::new(AtomicU64::new(0))), socket.clone());
 
     let mut client = Client::connect(&socket).expect("connect");
-    let err = client.call("does.not.exist", json!({})).expect_err("must fail");
+    let err = client
+        .call("does.not.exist", json!({}))
+        .expect_err("must fail");
     match err {
         IpcError::Contract(ContractError::UnsupportedCapability(message)) => {
             assert!(message.contains("does.not.exist"));
@@ -295,7 +300,10 @@ fn contract_error_propagates() {
 
     let mut client = Client::connect(&socket).expect("connect");
     let err = client.call("fail.known", json!({})).expect_err("must fail");
-    assert_eq!(err, IpcError::Contract(ContractError::KnownFailure("boom".into())));
+    assert_eq!(
+        err,
+        IpcError::Contract(ContractError::KnownFailure("boom".into()))
+    );
 }
 
 #[test]
@@ -318,7 +326,8 @@ fn server_rejects_oversized_frame() {
 
     let mut raw = UnixStream::connect(&socket).expect("connect");
     let declared = u32::try_from(MAX_FRAME).expect("fits") + 1;
-    raw.write_all(&declared.to_be_bytes()).expect("write prefix");
+    raw.write_all(&declared.to_be_bytes())
+        .expect("write prefix");
     raw.flush().expect("flush");
 
     // The server refuses the frame and closes the connection.

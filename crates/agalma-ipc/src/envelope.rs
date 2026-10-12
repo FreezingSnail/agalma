@@ -139,7 +139,8 @@ mod tests {
 
     #[test]
     fn request_params_default_to_null() {
-        let decoded: Request = serde_json::from_value(json!({"v": 1, "id": 2, "method": "m"})).unwrap();
+        let decoded: Request =
+            serde_json::from_value(json!({"v": 1, "id": 2, "method": "m"})).unwrap();
         assert_eq!(decoded.params, serde_json::Value::Null);
     }
 

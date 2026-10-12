@@ -163,7 +163,10 @@ pub trait ExecutionOps: ExecutionApi {
     fn pending_dispatch(&self) -> Result<Vec<DispatchIntent>, ContractError>;
 
     /// Recorded receipt for a completed operation (idempotency anchor).
-    fn receipt(&self, operation_id: &OperationId) -> Result<Option<OperationReceipt>, ContractError>;
+    fn receipt(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<OperationReceipt>, ContractError>;
 
     /// Fire every overdue timer, returning the JSON-encoded `Vec<TimerFire>`.
     fn fire_due_timers(&mut self, now_unix_ms: u64) -> Result<Value, ContractError>;
@@ -393,9 +396,7 @@ impl ExecutionApi for ExecutionClient {
             let status = self.status(execution)?;
             return Ok(match status.state {
                 ExecutionState::Parked => StepOutcome::Parked {
-                    reason: status
-                        .parked_reason
-                        .unwrap_or_else(|| "parked".to_string()),
+                    reason: status.parked_reason.unwrap_or_else(|| "parked".to_string()),
                 },
                 _ => StepOutcome::Idle {
                     phase: status.phase,
@@ -521,7 +522,10 @@ impl ExecutionOps for ExecutionClient {
         self.call("pending_dispatch", &serde_json::json!({}))
     }
 
-    fn receipt(&self, operation_id: &OperationId) -> Result<Option<OperationReceipt>, ContractError> {
+    fn receipt(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<OperationReceipt>, ContractError> {
         self.call(
             "receipt",
             &ReceiptCall {

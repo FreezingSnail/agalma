@@ -350,7 +350,11 @@ impl Schema {
     }
 
     fn to_descriptor(&self) -> FileDescriptorSet {
-        let messages = self.messages.iter().map(|m| self.message_proto(m)).collect();
+        let messages = self
+            .messages
+            .iter()
+            .map(|m| self.message_proto(m))
+            .collect();
 
         let service = self
             .services

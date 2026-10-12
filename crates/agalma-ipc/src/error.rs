@@ -62,9 +62,7 @@ impl IpcError {
     /// Decode a wire `(code, message)` pair into an [`IpcError`].
     pub fn from_wire(code: &str, message: &str) -> IpcError {
         match code {
-            "KnownFailure" => {
-                IpcError::Contract(ContractError::KnownFailure(message.to_string()))
-            }
+            "KnownFailure" => IpcError::Contract(ContractError::KnownFailure(message.to_string())),
             "UnsupportedCapability" => {
                 IpcError::Contract(ContractError::UnsupportedCapability(message.to_string()))
             }
@@ -137,7 +135,10 @@ mod tests {
         ];
         for case in cases {
             let (code, message) = contract_error_wire(&case);
-            assert_eq!(IpcError::from_wire(code, &message), IpcError::Contract(case));
+            assert_eq!(
+                IpcError::from_wire(code, &message),
+                IpcError::Contract(case)
+            );
         }
     }
 

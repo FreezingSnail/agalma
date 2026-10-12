@@ -56,8 +56,8 @@ pub(crate) fn seed_next_id() -> u64 {
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
     let entropy = (nanos >> 8) & 0xF; // 4 bits
-    // slot = pid[43..22] | entropy[21..18] | seq[17..0]; the disjoint bit fields
-    // keep `seq` canonical, so distinct connections get distinct slots.
+                                      // slot = pid[43..22] | entropy[21..18] | seq[17..0]; the disjoint bit fields
+                                      // keep `seq` canonical, so distinct connections get distinct slots.
     ((pid << 22) | (entropy << 18) | seq) << BAND_BITS
 }
 
@@ -71,9 +71,8 @@ pub struct Client {
 impl Client {
     /// Connect to the server listening on `socket`.
     pub fn connect(socket: &Path) -> Result<Client, IpcError> {
-        let stream = UnixStream::connect(socket).map_err(|e| {
-            IpcError::unavailable(format!("connect to {}: {e}", socket.display()))
-        })?;
+        let stream = UnixStream::connect(socket)
+            .map_err(|e| IpcError::unavailable(format!("connect to {}: {e}", socket.display())))?;
         let reader = BufReader::new(
             stream
                 .try_clone()
@@ -112,13 +111,19 @@ impl Client {
         let id = self.next_id;
         self.next_id += 1;
         let result = self.call_with_id(id, method, value)?;
-        serde_json::from_value(result).map_err(|e| IpcError::protocol(format!("decode result: {e}")))
+        serde_json::from_value(result)
+            .map_err(|e| IpcError::protocol(format!("decode result: {e}")))
     }
 
     /// Call `method` with an explicit request `id` (for replay after a
     /// connection loss). Reusing an id is safe: the server returns its recorded
     /// receipt rather than re-running the effect.
-    pub fn call_with_id(&mut self, id: u64, method: &str, params: Value) -> Result<Value, IpcError> {
+    pub fn call_with_id(
+        &mut self,
+        id: u64,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, IpcError> {
         let request = Request::new(id, method, params);
         let payload = frame::encode_json(&request)
             .map_err(|e| IpcError::protocol(format!("encode request id {id}: {e}")))?;
@@ -162,7 +167,9 @@ impl Client {
             match self.stream.write(&buf[written..]) {
                 Ok(0) => {
                     return Err(if written == 0 {
-                        IpcError::unavailable(format!("connection closed before request id {id} was sent"))
+                        IpcError::unavailable(format!(
+                            "connection closed before request id {id} was sent"
+                        ))
                     } else {
                         IpcError::unknown_outcome(format!(
                             "connection closed after {written} bytes of request id {id}"

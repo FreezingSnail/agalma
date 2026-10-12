@@ -196,8 +196,7 @@ mod tests {
         let ledger = SqliteLedger::open(dir.join(DB_NAME)).expect("open ledger");
         let server = build_server(ledger);
         assert_eq!(server.info().impl_name, IMPL_NAME);
-        agalma_ipc::ledger_server::ensure_all_handlers(&server)
-            .expect("all handlers registered");
+        agalma_ipc::ledger_server::ensure_all_handlers(&server).expect("all handlers registered");
     }
 
     #[test]

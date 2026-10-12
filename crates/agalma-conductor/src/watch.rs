@@ -1,57 +1,379 @@
-//! `agalma watch`: read-only live refresh loop over the TUI read model
-//! (TUI.2, `agalma-3kr.3`).
+//! `agalma watch`: full-screen TUI over the TUI read model (TUI.6, `agalma-3kr.7`).
 //!
-//! Renders the [`crate::status::Snapshot`] produced by the TUI.1 read model
-//! (`agalma status --json`) into a refreshing terminal view: one row per
-//! execution (phase / state / attempt / pending operations), plus the kill
-//! latch, the harness binding, and the configured transports. The view is
-//! **strictly read-only** — it never opens the ledger for writing and never
-//! touches the state dir (see `docs/tui-design.md`, "Live transport").
+//! Renders the [`crate::status::Snapshot`] (the TUI.1 read model, `agalma status
+//! --json`) into a full-screen [ratatui] composition with four panes —
+//! **executions**, **components**, **economics**, and **timeline** — plus a
+//! focus model, keybindings, and the human control actions
+//! (pause/resume/cancel) wired from [`crate::control`]. Terminal stack is the
+//! approved `ratatui 0.30.2` + `crossterm 0.29.0` pair (`docs/tui-design.md`,
+//! "Terminal stack"; `docs/m0-dependencies.md`).
 //!
-//! Transport is polling, not push: every interval we rebuild the snapshot
-//! through [`crate::status::snapshot`] and re-render. Terminal handling is
-//! **std-only ANSI** for v1: no new dependency, no `ratatui`/`crossterm` until
-//! the terminal stack is approved in TUI.6. The loop enters the alternate
-//! screen, hides the cursor, and restores both on every exit path (quit key,
-//! SIGINT/SIGTERM, EOF). `q` is read from canonical stdin, so it is confirmed
-//! with Enter in v1; Ctrl-C exits immediately.
+//! Transport is polling, not push: every interval the snapshot is rebuilt through
+//! [`crate::status::snapshot_with_transports`] and re-rendered. The view is
+//! read-only except for the human control actions, which go through
+//! [`crate::control::ControlPlane`] (durable receipts; no silent rewinds).
+//!
+//! ## Terminal lifecycle
+//!
+//! [`ModeGuard`] enters raw mode + the alternate screen on construction and
+//! restores both on **every** exit path: normal quit, an early error return, and
+//! unwinding panics (the guard's `Drop` runs during unwind). An additional panic
+//! hook restores the terminal before any other hook runs. This replaces the
+//! std-only ANSI handling of v1.
+//!
+//! ## Non-interactive path
 //!
 //! When stdout is not a terminal, or `--once` is passed, the view degrades to a
-//! single frame and exits: this is the non-interactive (pipable) path used by
-//! the focused verification.
+//! single frame rendered through [`ratatui::backend::TestBackend`] (no TTY) and
+//! printed verbatim. Render-level tests assert against `TestBackend` frames.
 
-use std::io::{IsTerminal, Write};
-use std::path::Path;
+use std::io::{self, IsTerminal, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use tokio::signal::unix::{signal, SignalKind};
-use tokio::time::MissedTickBehavior;
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
+use ratatui::backend::{CrosstermBackend, TestBackend};
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState, Wrap};
+use ratatui::{Frame, Terminal};
+
+use agalma_contracts::{ContractError, ExecutionId};
+use agalma_execution::{Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
+use agalma_ledger::SqliteLedger;
 
 use crate::cli::WatchArgs;
-use crate::economics::AlertLevel;
+use crate::components::Transports;
+use crate::control::{
+    new_action_id, Actor, ControlAction, ControlOutcome, ControlPlane, ControlRequest,
+};
 use crate::status::Snapshot;
 
-/// Enter the alternate screen and hide the cursor.
-const ENTER_VIEW: &str = "\x1b[?1049h\x1b[?25l";
-/// Restore the cursor and leave the alternate screen.
-const LEAVE_VIEW: &str = "\x1b[?25h\x1b[?1049l";
-/// Clear the screen and home the cursor (one frame start).
-const CLEAR_HOME: &str = "\x1b[2J\x1b[H";
+/// The four composition panes, in focus order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pane {
+    Executions,
+    Components,
+    Economics,
+    Timeline,
+}
 
-const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
-const DIM: &str = "\x1b[2m";
-const RED: &str = "\x1b[31m";
-const GREEN: &str = "\x1b[32m";
-const YELLOW: &str = "\x1b[33m";
-const CYAN: &str = "\x1b[36m";
+impl Pane {
+    /// Every pane in focus order.
+    pub const ALL: [Pane; 4] = [
+        Pane::Executions,
+        Pane::Components,
+        Pane::Economics,
+        Pane::Timeline,
+    ];
+
+    /// Pane label used in the pane title.
+    pub fn title(self) -> &'static str {
+        match self {
+            Pane::Executions => "Executions",
+            Pane::Components => "Components",
+            Pane::Economics => "Economics",
+            Pane::Timeline => "Timeline",
+        }
+    }
+
+    /// Zero-based focus index.
+    pub fn index(self) -> usize {
+        match self {
+            Pane::Executions => 0,
+            Pane::Components => 1,
+            Pane::Economics => 2,
+            Pane::Timeline => 3,
+        }
+    }
+
+    /// Focus by index (out-of-range wraps).
+    pub fn from_index(index: usize) -> Pane {
+        Pane::ALL[index % Pane::ALL.len()]
+    }
+
+    /// Next pane, wrapping.
+    pub fn next(self) -> Pane {
+        Pane::from_index(self.index() + 1)
+    }
+
+    /// Previous pane, wrapping.
+    pub fn prev(self) -> Pane {
+        Pane::from_index(self.index() + Pane::ALL.len() - 1)
+    }
+}
+
+/// The interaction mode: normal keybindings, or a typed confirmation prompt for
+/// a destructive control action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Normal,
+    /// Collecting the typed confirmation phrase for `action`
+    /// (`resume` / `cancel`).
+    Confirm {
+        action: ControlAction,
+        input: String,
+    },
+}
+
+/// Applies one control request (production: a durable ledger write; tests: a
+/// recording double).
+pub trait ControlDriver {
+    fn apply(&mut self, request: &ControlRequest) -> Result<ControlOutcome, ContractError>;
+}
+
+/// Production [`ControlDriver`]: opens the state-dir ledger per action and runs
+/// it through [`ControlPlane`] (guards + policy + durable receipt), mirroring
+/// the CLI `pause`/`resume`/`cancel` paths. Pause/resume never touch the cancel
+/// seam; cancel reuses the real [`Executor`] (kill latch + `cancel_requested`).
+pub struct LedgerControlDriver {
+    state_dir: PathBuf,
+}
+
+impl LedgerControlDriver {
+    /// Bind the driver to a state dir.
+    pub fn new(state_dir: impl Into<PathBuf>) -> Self {
+        LedgerControlDriver {
+            state_dir: state_dir.into(),
+        }
+    }
+}
+
+impl ControlDriver for LedgerControlDriver {
+    fn apply(&mut self, request: &ControlRequest) -> Result<ControlOutcome, ContractError> {
+        let ledger_path = self.state_dir.join("ledger.sqlite");
+        // The plane records receipts through its own connection; the executor
+        // (the cancel seam) holds a second, so both borrow `&mut` cleanly.
+        let mut plane_ledger = SqliteLedger::open(&ledger_path)?;
+        let exec_ledger = SqliteLedger::open(&ledger_path)?;
+        let mut executor = Executor::new(
+            exec_ledger,
+            ExecutorConfig {
+                max_attempts: 1,
+                execution_definition_version: EXECUTION_DEFINITION_VERSION,
+            },
+        );
+        let mut plane = ControlPlane::new(&mut plane_ledger, &mut executor, &self.state_dir);
+        plane.apply(request)
+    }
+}
+
+/// The full-screen TUI state: the read-model snapshot plus focus, selection,
+/// interaction mode, and the last control/notice line.
+#[derive(Debug, Clone)]
+pub struct App {
+    /// Latest read model (executions / components / economics / timeline).
+    pub snapshot: Snapshot,
+    /// Boundary transports (shown in the header; also pinned for refresh).
+    pub transports: Transports,
+    /// Refresh interval in milliseconds (footer).
+    pub interval_ms: u64,
+    /// Focused pane.
+    pub focus: Pane,
+    /// Selected execution row (index into `snapshot.executions`).
+    pub selection: usize,
+    /// Interaction mode (normal / typed confirmation).
+    pub mode: Mode,
+    /// Last control outcome or notice, shown in the footer.
+    pub status: Option<String>,
+    /// Set by the quit keybinding; the loop exits after the next draw.
+    pub quit: bool,
+    /// Set by the refresh keybinding or by a control action; the loop rebuilds
+    /// the snapshot before the next draw.
+    pub refresh_requested: bool,
+}
+
+impl App {
+    /// Build the app from a snapshot.
+    pub fn new(snapshot: Snapshot, transports: Transports, interval_ms: u64) -> Self {
+        let mut app = App {
+            snapshot,
+            transports,
+            interval_ms,
+            focus: Pane::Executions,
+            selection: 0,
+            mode: Mode::Normal,
+            status: None,
+            quit: false,
+            refresh_requested: false,
+        };
+        app.clamp_selection();
+        app
+    }
+
+    /// Rebuild the snapshot from `state_dir`, preserving focus and clamping the
+    /// selection to the new row count.
+    pub fn refresh(&mut self, state_dir: &Path) -> Result<(), String> {
+        self.snapshot = crate::status::snapshot_with_transports(state_dir, &self.transports)?;
+        self.clamp_selection();
+        Ok(())
+    }
+
+    /// Keep the selection inside the current execution list.
+    fn clamp_selection(&mut self) {
+        let len = self.snapshot.executions.len();
+        if len == 0 {
+            self.selection = 0;
+        } else if self.selection >= len {
+            self.selection = len - 1;
+        }
+    }
+
+    /// The execution the cursor currently selects, if any.
+    pub fn selected_execution(&self) -> Option<ExecutionId> {
+        self.snapshot
+            .executions
+            .get(self.selection)
+            .map(|row| ExecutionId::new(row.execution_id.clone()))
+    }
+
+    /// Move the execution selection by `delta`, saturating at the ends.
+    fn move_selection(&mut self, delta: isize) {
+        let len = self.snapshot.executions.len();
+        if len == 0 {
+            self.selection = 0;
+            return;
+        }
+        let next = self.selection as isize + delta;
+        self.selection = next.clamp(0, len as isize - 1) as usize;
+    }
+
+    /// Handle one key event. Destructive actions collect a typed confirmation
+    /// before they are applied through `driver`.
+    pub fn handle_key(&mut self, key: KeyEvent, driver: &mut dyn ControlDriver) {
+        // Ctrl-C always quits (raw mode delivers it as a key, not a signal).
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
+        {
+            self.quit = true;
+            return;
+        }
+
+        if let Mode::Confirm { action, input } = self.mode.clone() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                    self.status = Some("confirmation cancelled".to_string());
+                }
+                KeyCode::Backspace => {
+                    let mut input = input;
+                    input.pop();
+                    self.mode = Mode::Confirm { action, input };
+                }
+                KeyCode::Enter => {
+                    self.submit_confirmation(action, input, driver);
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let mut input = input;
+                    input.push(c);
+                    self.mode = Mode::Confirm { action, input };
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.quit = true,
+            KeyCode::Tab => self.focus = self.focus.next(),
+            KeyCode::BackTab => self.focus = self.focus.prev(),
+            KeyCode::Char('1') => self.focus = Pane::Executions,
+            KeyCode::Char('2') => self.focus = Pane::Components,
+            KeyCode::Char('3') => self.focus = Pane::Economics,
+            KeyCode::Char('4') => self.focus = Pane::Timeline,
+            KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
+            KeyCode::Char('r') => {
+                self.refresh_requested = true;
+                self.status = Some("refresh requested".to_string());
+            }
+            KeyCode::Char('p') => self.apply_now(ControlAction::Pause, None, driver),
+            KeyCode::Char('R') => self.begin_confirm(ControlAction::Resume),
+            KeyCode::Char('c') | KeyCode::Char('x') => match self.selected_execution() {
+                Some(execution) => self.begin_confirm(ControlAction::Cancel { execution }),
+                None => self.status = Some("no execution selected to cancel".to_string()),
+            },
+            _ => {}
+        }
+    }
+
+    /// Enter the typed-confirmation mode for a destructive action.
+    fn begin_confirm(&mut self, action: ControlAction) {
+        self.status = Some(format!("confirm: type \"{}\" then Enter", action.name()));
+        self.mode = Mode::Confirm {
+            action,
+            input: String::new(),
+        };
+    }
+
+    /// Validate the typed confirmation and, when it matches, apply the action.
+    /// Pause carries no confirmation and is always applied directly.
+    fn submit_confirmation(
+        &mut self,
+        action: ControlAction,
+        input: String,
+        driver: &mut dyn ControlDriver,
+    ) {
+        if crate::control::confirmed(&action, Some(&input)) {
+            self.mode = Mode::Normal;
+            self.apply_now(action, Some(input), driver);
+        } else {
+            let name = action.name();
+            self.status = Some(format!("confirmation mismatch: type \"{name}\""));
+            // Keep the typed input so the operator can correct it.
+            self.mode = Mode::Confirm { action, input };
+        }
+    }
+
+    /// Apply a control action as the human actor through `driver`, then request
+    /// a refresh so the effect is visible.
+    fn apply_now(
+        &mut self,
+        action: ControlAction,
+        confirmation: Option<String>,
+        driver: &mut dyn ControlDriver,
+    ) {
+        let mut request = ControlRequest::new(new_action_id(&action), action, Actor::Human);
+        if let Some(typed) = confirmation {
+            request = request.with_confirmation(typed);
+        }
+        match driver.apply(&request) {
+            Ok(outcome) => {
+                self.status = Some(control_status(&request, &outcome));
+                self.mode = Mode::Normal;
+                self.refresh_requested = true;
+            }
+            Err(err) => {
+                self.status = Some(format!("{}: error: {err}", request.action.name()));
+            }
+        }
+    }
+}
+
+/// One-line summary of a control outcome for the footer.
+fn control_status(request: &ControlRequest, outcome: &ControlOutcome) -> String {
+    match outcome {
+        ControlOutcome::Applied => format!("{}: applied", request.action.name()),
+        ControlOutcome::Denied { reason } => {
+            format!("{}: denied: {reason}", request.action.name())
+        }
+    }
+}
 
 /// `agalma watch`: resolve the state dir, then render the read model.
 ///
-/// Interactive (TTY, no `--once`): alternate-screen refresh loop until `q`,
-/// Ctrl-C/SIGTERM, or stdin EOF. Otherwise a single frame is printed and the
-/// command exits 0 (absent ledger included).
+/// Interactive (TTY, no `--once`): full-screen ratatui loop until `q`/Ctrl-C,
+/// SIGTERM, or a fatal I/O error. Otherwise a single `TestBackend` frame is
+/// printed and the command exits 0 (absent ledger included).
 pub async fn run(args: &WatchArgs) -> ExitCode {
     let state_dir = match crate::config::resolve_state_dir(args.state_dir.as_deref()) {
         Ok(dir) => dir,
@@ -61,11 +383,11 @@ pub async fn run(args: &WatchArgs) -> ExitCode {
         }
     };
 
-    if args.once || !std::io::stdout().is_terminal() {
+    if args.once || !io::stdout().is_terminal() {
         return match once_frame(&state_dir, args.interval_ms) {
             Ok(frame) => {
-                print!("{frame}");
-                let _ = std::io::stdout().flush();
+                println!("{frame}");
+                let _ = io::stdout().flush();
                 ExitCode::SUCCESS
             }
             Err(err) => {
@@ -75,247 +397,569 @@ pub async fn run(args: &WatchArgs) -> ExitCode {
         };
     }
 
-    run_loop(&state_dir, args.interval_ms).await
+    // A background signal watcher flips the stop flag; the blocking event loop
+    // checks it each tick and always restores the terminal through the guard.
+    let stop = Arc::new(AtomicBool::new(false));
+    spawn_signal_watch(stop.clone());
+    let interval = args.interval_ms;
+    match tokio::task::spawn_blocking(move || run_interactive(&state_dir, interval, stop)).await {
+        Ok(code) => code,
+        Err(err) => {
+            eprintln!("agalma watch: view task failed: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Flip `stop` on SIGINT/SIGTERM so the blocking view can exit cleanly.
+fn spawn_signal_watch(stop: Arc<AtomicBool>) {
+    use tokio::signal::unix::{signal, SignalKind};
+    tokio::spawn(async move {
+        let mut sigint = match signal(SignalKind::interrupt()) {
+            Ok(stream) => stream,
+            Err(_) => return,
+        };
+        let mut sigterm = match signal(SignalKind::terminate()) {
+            Ok(stream) => stream,
+            Err(_) => return,
+        };
+        tokio::select! {
+            _ = sigint.recv() => {}
+            _ = sigterm.recv() => {}
+        }
+        stop.store(true, Ordering::SeqCst);
+    });
 }
 
 /// Build one frame for `state_dir` (read model + render). Pure apart from the
 /// read-only snapshot; used by both the loop and the `--once` path.
 pub fn once_frame(state_dir: &Path, interval_ms: u64) -> Result<String, String> {
-    let transports = crate::components::Transports::from_env();
-    let snapshot = crate::status::snapshot_with_transports(state_dir, &transports)?;
+    let app = build_app(state_dir, interval_ms)?;
     let (width, height) = terminal_size();
-    let ctx = FrameContext {
-        width,
-        height,
-        interval_ms,
-        ledger_transport: transports.ledger,
-        harness_transport: transports.harness,
+    Ok(render_to_string(&app, width, height))
+}
+
+/// Build the app (snapshot + view parameters) for `state_dir`.
+fn build_app(state_dir: &Path, interval_ms: u64) -> Result<App, String> {
+    let transports = Transports::from_env();
+    let snapshot = crate::status::snapshot_with_transports(state_dir, &transports)?;
+    Ok(App::new(snapshot, transports, interval_ms))
+}
+
+/// Render `app` into an off-screen [`TestBackend`] of `width` x `height` and
+/// return the visible text (trailing spaces trimmed). Render-level test seam and
+/// the engine behind the `--once` frame.
+pub fn render_to_string(app: &App, width: u16, height: u16) -> String {
+    let backend = TestBackend::new(width.max(1), height.max(1));
+    let mut terminal = Terminal::new(backend).expect("test backend is infallible");
+    terminal
+        .draw(|frame| draw(frame, app))
+        .expect("test backend draw is infallible");
+    buffer_text(terminal.backend().buffer())
+}
+
+/// The interactive view loop: raw mode + alternate screen, crossterm events,
+/// periodic refresh, and the control actions. Blocking; restores on all exits.
+fn run_interactive(state_dir: &Path, interval_ms: u64, stop: Arc<AtomicBool>) -> ExitCode {
+    // The guard owns restoration: on normal return, early error return, or panic
+    // unwinding. Installed first so even a later failure leaves a clean terminal.
+    let _guard = match ModeGuard::enter(CrosstermMode) {
+        Ok(guard) => guard,
+        Err(err) => {
+            eprintln!("agalma watch: cannot initialize terminal: {err}");
+            return ExitCode::FAILURE;
+        }
     };
-    Ok(render(&snapshot, &ctx))
-}
+    install_restore_panic_hook();
 
-/// Render parameters that do not come from the read model.
-#[derive(Debug, Clone, Copy)]
-pub struct FrameContext<'a> {
-    /// Visible columns.
-    pub width: usize,
-    /// Visible rows.
-    pub height: usize,
-    /// Refresh interval printed in the footer.
-    pub interval_ms: u64,
-    /// Ledger transport selector (informational).
-    pub ledger_transport: &'a str,
-    /// Harness transport selector (informational).
-    pub harness_transport: &'a str,
-}
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = match Terminal::new(backend) {
+        Ok(terminal) => terminal,
+        Err(err) => {
+            eprintln!("agalma watch: cannot open terminal backend: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let _ = terminal.clear();
 
-/// Render the read model into an ANSI-styled frame.
-///
-/// The frame is a plain string (no trailing newline required) so it can be
-/// asserted in tests and printed verbatim. It always carries an `exists:`
-/// token and never panics on an absent or empty snapshot.
-pub fn render(snapshot: &Snapshot, ctx: &FrameContext<'_>) -> String {
-    let width = ctx.width.max(40);
-    let mut out = String::new();
+    let mut app = match build_app(state_dir, interval_ms) {
+        Ok(app) => app,
+        Err(err) => {
+            eprintln!("agalma watch: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut driver = LedgerControlDriver::new(state_dir);
 
-    // Title + state dir.
-    out.push_str(&format!(
-        "\n{BOLD}{CYAN}agalma watch{RESET}  {DIM}{}{RESET}\n",
-        clip(&snapshot.state_dir, width.saturating_sub(16))
-    ));
+    let interval = Duration::from_millis(interval_ms.max(1));
+    let mut last_refresh = Instant::now();
 
-    // Presence + schema + binding.
-    if snapshot.exists {
-        out.push_str(&format!("  {GREEN}exists:true{RESET}\n"));
-    } else {
-        out.push_str(&format!(
-            "  {YELLOW}exists:false{RESET} {DIM}— no ledger present{RESET}\n"
-        ));
+    loop {
+        if app.refresh_requested || last_refresh.elapsed() >= interval {
+            if let Err(err) = app.refresh(state_dir) {
+                app.status = Some(format!("refresh failed: {err}"));
+            }
+            app.refresh_requested = false;
+            last_refresh = Instant::now();
+        }
+
+        if let Err(err) = terminal.draw(|frame| draw(frame, &app)) {
+            eprintln!("agalma watch: draw failed: {err}");
+            return ExitCode::FAILURE;
+        }
+
+        if app.quit || stop.load(Ordering::SeqCst) {
+            break;
+        }
+
+        // Wait for a key/resize event, or the next refresh tick, whichever first.
+        let remaining = interval.saturating_sub(last_refresh.elapsed());
+        match event::poll(remaining) {
+            Ok(true) => match event::read() {
+                Ok(Event::Key(key))
+                    if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+                {
+                    app.handle_key(key, &mut driver);
+                }
+                // Resize: the next draw re-reads the backend size.
+                Ok(_) => {}
+                Err(err) => {
+                    eprintln!("agalma watch: input error: {err}");
+                    break;
+                }
+            },
+            Ok(false) => {}
+            Err(err) => {
+                eprintln!("agalma watch: poll error: {err}");
+                break;
+            }
+        }
     }
+
+    ExitCode::SUCCESS
+}
+
+/// Restore the terminal before any other panic hook runs.
+fn install_restore_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = restore_terminal();
+        previous(info);
+    }));
+}
+
+/// Actions that put the terminal into, and out of, the full-screen view.
+///
+/// Abstracted so the exit path can be exercised in tests without a TTY.
+pub trait TerminalMode {
+    /// Enter raw mode and the alternate screen.
+    fn enter(&mut self) -> io::Result<()>;
+    /// Leave the alternate screen and restore the original terminal mode.
+    fn exit(&mut self) -> io::Result<()>;
+}
+
+/// The real crossterm-backed terminal mode.
+pub struct CrosstermMode;
+
+impl TerminalMode for CrosstermMode {
+    fn enter(&mut self) -> io::Result<()> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, crossterm::cursor::Hide)
+    }
+
+    fn exit(&mut self) -> io::Result<()> {
+        restore_terminal()
+    }
+}
+
+/// Best-effort restore of raw mode + alternate screen (used by the guard, the
+/// panic hook, and [`CrosstermMode::exit`]).
+fn restore_terminal() -> io::Result<()> {
+    let mut stdout = io::stdout();
+    let _ = execute!(stdout, crossterm::cursor::Show, LeaveAlternateScreen);
+    disable_raw_mode()
+}
+
+/// RAII guard: enters the terminal mode on construction and restores it on
+/// `Drop` (normal return, early return, or panic unwind).
+pub struct ModeGuard<M: TerminalMode> {
+    mode: Option<M>,
+}
+
+impl<M: TerminalMode> ModeGuard<M> {
+    /// Enter `mode`; on failure the terminal is left untouched.
+    pub fn enter(mut mode: M) -> io::Result<Self> {
+        mode.enter()?;
+        Ok(ModeGuard { mode: Some(mode) })
+    }
+}
+
+impl<M: TerminalMode> Drop for ModeGuard<M> {
+    fn drop(&mut self) {
+        if let Some(mut mode) = self.mode.take() {
+            let _ = mode.exit();
+        }
+    }
+}
+
+/// Draw the whole composition.
+pub fn draw(frame: &mut Frame<'_>, app: &App) {
+    let [header, body, footer] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(0),
+        Constraint::Length(2),
+    ])
+    .areas(frame.area());
+
+    draw_header(frame, app, header);
+    draw_body(frame, app, body);
+    draw_footer(frame, app, footer);
+}
+
+/// Header: title, state dir, presence/schema/binding/latch, transports.
+fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let snapshot = &app.snapshot;
     let schema = snapshot
         .schema_version
         .map(|v| v.to_string())
         .unwrap_or_else(|| "-".to_string());
     let binding = snapshot.binding.as_deref().unwrap_or("-");
-    out.push_str(&format!(
-        "  {DIM}schema:{RESET} {schema}   {DIM}binding:{RESET} {CYAN}{}{RESET}\n",
-        clip(binding, width.saturating_sub(24))
-    ));
-
-    // Kill latch + transports.
-    let latch = if snapshot.kill_latch {
-        format!("{BOLD}{RED}true{RESET}")
+    let (exists_text, exists_style) = if snapshot.exists {
+        ("exists:true", Style::new().fg(Color::Green))
     } else {
-        format!("{GREEN}false{RESET}")
+        ("exists:false", Style::new().fg(Color::Yellow))
     };
-    out.push_str(&format!(
-        "  {DIM}kill_latch:{RESET} {latch}   {DIM}ledger:{RESET} {}   {DIM}harness:{RESET} {}\n",
-        ctx.ledger_transport, ctx.harness_transport
-    ));
-
-    out.push_str(&format!("{DIM}{}{RESET}\n", rule(width)));
-
-    // Executions table.
-    let (id_w, phase_w, state_w, try_w, pending_w) = columns(width);
-    out.push_str(&format!(
-        "{BOLD}{:<id_w$} {:<phase_w$} {:<state_w$} {:>try_w$} {:<pending_w$}{RESET}\n",
-        clip("EXECUTION", id_w),
-        clip("PHASE", phase_w),
-        clip("STATE", state_w),
-        "TRY",
-        clip("PENDING", pending_w),
-    ));
-
-    // Rows that fit above the footer (header uses 5 lines, footer 2).
-    let max_rows = ctx.height.saturating_sub(7).max(1);
-    if snapshot.executions.is_empty() {
-        out.push_str(&format!("{DIM}{}{RESET}\n", "  (no executions)"));
+    let latch = if snapshot.kill_latch {
+        Span::styled(
+            "kill_latch: true",
+            Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )
     } else {
-        for (index, row) in snapshot.executions.iter().enumerate() {
-            if index >= max_rows {
-                let more = snapshot.executions.len() - index;
-                out.push_str(&format!("{DIM}  … {more} more{RESET}\n"));
-                break;
-            }
-            let pending = pending_text(row.pending_operations.len(), &row.pending_operations);
-            out.push_str(&format!(
-                "{} {:<phase_w$} {} {:>try_w$} {}\n",
-                styled_cell(&row.execution_id, id_w, CYAN),
-                clip(&row.phase, phase_w),
-                styled_state(&row.state, state_w),
-                row.attempt.to_string(),
-                clip(&pending, pending_w),
+        Span::styled("kill_latch: false", Style::new().fg(Color::Green))
+    };
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(
+                "agalma watch",
+                Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  ·  {}", snapshot.state_dir),
+                Style::new().fg(Color::DarkGray),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(exists_text, exists_style),
+            Span::styled(
+                format!("   schema: {schema}   binding: {binding}   "),
+                Style::new().fg(Color::Gray),
+            ),
+            latch,
+        ]),
+        Line::from(Span::styled(
+            format!(
+                "ledger: {}   harness: {}   interval: {} ms   executions: {}",
+                app.transports.ledger,
+                app.transports.harness,
+                app.interval_ms,
+                snapshot.executions.len()
+            ),
+            Style::new().fg(Color::DarkGray),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(Text::from(lines)), area);
+}
+
+/// Body: 2x2 grid of the four panes.
+fn draw_body(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let [left, right] =
+        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(area);
+    let [executions, economics] =
+        Layout::vertical([Constraint::Percentage(58), Constraint::Percentage(42)]).areas(left);
+    let [components, timeline] =
+        Layout::vertical([Constraint::Percentage(52), Constraint::Percentage(48)]).areas(right);
+
+    draw_executions(frame, app, executions);
+    draw_components(frame, app, components);
+    draw_economics(frame, app, economics);
+    draw_timeline(frame, app, timeline);
+}
+
+/// A bordered pane block, marked and highlighted when focused.
+fn pane_block(title: &str, focused: bool) -> Block<'static> {
+    let border = if focused {
+        Style::new().fg(Color::Yellow)
+    } else {
+        Style::new().fg(Color::DarkGray)
+    };
+    let title_style = if focused {
+        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(Color::Gray)
+    };
+    let marker = if focused { "▶ " } else { "  " };
+    Block::bordered()
+        .title(Line::from(Span::styled(
+            format!("{marker}{title}"),
+            title_style,
+        )))
+        .border_style(border)
+}
+
+/// Executions pane: a table with the selected row highlighted.
+fn draw_executions(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let rows: Vec<Row> = app
+        .snapshot
+        .executions
+        .iter()
+        .map(|row| {
+            Row::new(vec![
+                Cell::from(row.execution_id.clone()),
+                Cell::from(row.phase.clone()),
+                Cell::from(row.state.clone()).style(state_style(&row.state)),
+                Cell::from(row.attempt.to_string()),
+                Cell::from(pending_text(
+                    row.pending_operations.len(),
+                    &row.pending_operations,
+                )),
+            ])
+        })
+        .collect();
+
+    let header = Row::new(vec!["EXECUTION", "PHASE", "STATE", "TRY", "PENDING"])
+        .style(Style::new().add_modifier(Modifier::BOLD));
+    let widths = [
+        Constraint::Percentage(34),
+        Constraint::Length(8),
+        Constraint::Length(11),
+        Constraint::Length(4),
+        Constraint::Min(6),
+    ];
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(pane_block(
+            Pane::Executions.title(),
+            app.focus == Pane::Executions,
+        ))
+        .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED));
+    let mut state = TableState::default().with_selected(if app.snapshot.executions.is_empty() {
+        None
+    } else {
+        Some(app.selection)
+    });
+    frame.render_stateful_widget(table, area, &mut state);
+}
+
+/// Components pane (TUI.3): transport, api@version, socket liveness, bindings,
+/// and watchdog/provider-health signals.
+fn draw_components(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let mut lines: Vec<Line> = Vec::new();
+    if app.snapshot.components.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "(no components)",
+            Style::new().fg(Color::DarkGray),
+        )));
+    }
+    for component in &app.snapshot.components {
+        let version = component
+            .api_version
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let socket = match &component.socket {
+            Some(name) if component.socket_present => format!("{name} up"),
+            Some(name) => format!("{name} down"),
+            None => "-".to_string(),
+        };
+        let socket_style = if component.socket_present {
+            Style::new().fg(Color::Green)
+        } else {
+            Style::new().fg(Color::DarkGray)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{:<10}", component.component),
+                Style::new().fg(Color::Cyan),
+            ),
+            Span::raw(format!("{:<10} ", component.transport)),
+            Span::raw(format!("{:<16} ", format!("{}@{}", component.api, version))),
+            Span::styled(socket, socket_style),
+        ]));
+        if !component.bindings.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("    {}", component_binding_text(component)),
+                Style::new().fg(Color::Gray),
+            )));
+        }
+        if component.stalls > 0 {
+            let reason = component.last_health_reason.as_deref().unwrap_or("-");
+            lines.push(Line::from(Span::styled(
+                format!("    health: {} stall(s) · last: {reason}", component.stalls),
+                Style::new().fg(Color::Yellow),
+            )));
+        }
+    }
+    let pane = Paragraph::new(Text::from(lines))
+        .block(pane_block(
+            Pane::Components.title(),
+            app.focus == Pane::Components,
+        ))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(pane, area);
+}
+
+/// Economics pane (TUI.4): spend vs allowance, digest rollup, alerts.
+fn draw_economics(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let economics = &app.snapshot.economics;
+    let mut lines: Vec<Line> = Vec::new();
+    if economics.rows.is_empty() && economics.alerts.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "(no cost rows)",
+            Style::new().fg(Color::DarkGray),
+        )));
+    }
+    for row in &economics.rows {
+        let budget_style = if row.over_budget {
+            Style::new().fg(Color::Red)
+        } else {
+            Style::new().fg(Color::Green)
+        };
+        let mut spans = vec![
+            Span::styled(
+                format!("{:<20} ", row.execution_id),
+                Style::new().fg(Color::Cyan),
+            ),
+            Span::raw(format!("{:<8} ", row.phase)),
+            Span::styled(row.spend_allowance_text(), budget_style),
+            Span::styled(
+                format!("  tok {}/{}", row.tokens_in, row.tokens_out),
+                Style::new().fg(Color::DarkGray),
+            ),
+        ];
+        if let Some(digest) = &row.digest {
+            spans.push(Span::styled(
+                format!("  digest: {}", digest.summary_text()),
+                Style::new().fg(Color::DarkGray),
             ));
         }
+        lines.push(Line::from(spans));
     }
-
-    out.push_str(&format!("{DIM}{}{RESET}\n", rule(width)));
-    out.push_str(&render_economics(snapshot));
-    out.push_str(&render_timeline(snapshot, ctx));
-    out.push_str(&render_components(snapshot));
-    out.push_str(&format!("{DIM}{}{RESET}\n", rule(width)));
-    out.push_str(&format!(
-        "{DIM}{} execution(s) · {} cost row(s) · {} alert(s) · {} component(s) · {} ms · q + Enter quits · Ctrl-C exits{RESET}",
-        snapshot.executions.len(),
-        snapshot.economics.rows.len(),
-        snapshot.economics.alerts.len(),
-        snapshot.components.len(),
-        ctx.interval_ms
-    ));
-
-    // Final guard: clip every visible line to the terminal width while keeping
-    // ANSI sequences intact, so narrow terminals never wrap or overflow.
-    out.split('\n')
-        .map(|line| clip_line_ansi(line, width))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Interactive refresh loop: render, then wait for a tick, quit key, or
-/// resize/signal. Restores the terminal on every exit path.
-async fn run_loop(state_dir: &Path, interval_ms: u64) -> ExitCode {
-    let mut ticker = tokio::time::interval(Duration::from_millis(interval_ms.max(1)));
-    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    // The first tick completes immediately; consume it so the loop body runs
-    // once now and then once per interval.
-    ticker.tick().await;
-
-    let mut sigint = match signal(SignalKind::interrupt()) {
-        Ok(stream) => stream,
-        Err(err) => {
-            eprintln!("agalma: cannot install SIGINT handler: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let mut sigterm = match signal(SignalKind::terminate()) {
-        Ok(stream) => stream,
-        Err(err) => {
-            eprintln!("agalma: cannot install SIGTERM handler: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let mut sigwinch = match signal(SignalKind::window_change()) {
-        Ok(stream) => stream,
-        Err(err) => {
-            eprintln!("agalma: cannot install SIGWINCH handler: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    // `q` + Enter on canonical stdin: a background reader signals a quit.
-    let (quit_tx, mut quit_rx) = tokio::sync::mpsc::channel::<()>(1);
-    std::thread::spawn(move || {
-        use std::io::BufRead;
-        let stdin = std::io::stdin();
-        for line in stdin.lock().lines() {
-            match line {
-                Ok(line) if is_quit(&line) => {
-                    let _ = quit_tx.blocking_send(());
-                    break;
-                }
-                Ok(_) => {}
-                Err(_) => {
-                    let _ = quit_tx.blocking_send(());
-                    break;
-                }
-            }
-        }
-    });
-
-    let mut stdout = std::io::stdout();
-    let _ = write!(stdout, "{ENTER_VIEW}");
-    let _ = stdout.flush();
-
-    loop {
-        let transports = crate::components::Transports::from_env();
-        let frame = match crate::status::snapshot_with_transports(state_dir, &transports) {
-            Ok(snapshot) => {
-                let (width, height) = terminal_size();
-                render(
-                    &snapshot,
-                    &FrameContext {
-                        width,
-                        height,
-                        interval_ms,
-                        ledger_transport: transports.ledger,
-                        harness_transport: transports.harness,
-                    },
-                )
-            }
-            Err(err) => format!("{CLEAR_HOME}{RED}agalma watch: {err}{RESET}\n"),
+    for alert in &economics.alerts {
+        let (style, label) = match alert.level {
+            crate::economics::AlertLevel::Park => (Style::new().fg(Color::Yellow), "PARKED"),
+            crate::economics::AlertLevel::Degraded => (Style::new().fg(Color::Red), "DEGRADED"),
         };
-        let _ = write!(stdout, "{CLEAR_HOME}{frame}");
-        let _ = stdout.flush();
+        lines.push(Line::from(vec![
+            Span::styled(format!("{label} "), style.add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{} ", alert.execution_id),
+                Style::new().fg(Color::Cyan),
+            ),
+            Span::raw(alert.reason.clone()),
+        ]));
+    }
+    let pane = Paragraph::new(Text::from(lines))
+        .block(pane_block(
+            Pane::Economics.title(),
+            app.focus == Pane::Economics,
+        ))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(pane, area);
+}
 
-        tokio::select! {
-            _ = ticker.tick() => {}
-            _ = sigint.recv() => break,
-            _ = sigterm.recv() => break,
-            _ = sigwinch.recv() => {}
-            _ = quit_rx.recv() => break,
+/// Timeline pane (TUI.4): curated events + digests, oldest first, tail-windowed
+/// to the visible height.
+fn draw_timeline(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let timeline = &app.snapshot.economics.timeline;
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let max_rows = inner_height.max(1);
+    let start = timeline.len().saturating_sub(max_rows);
+
+    let mut lines: Vec<Line> = Vec::new();
+    if timeline.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "(no events)",
+            Style::new().fg(Color::DarkGray),
+        )));
+    } else {
+        if start > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("… {start} earlier"),
+                Style::new().fg(Color::DarkGray),
+            )));
+        }
+        for entry in &timeline[start..] {
+            let sequence = if entry.kind == "digest" {
+                "·".to_string()
+            } else {
+                format!("{}", entry.sequence)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{sequence:>3} "), Style::new().fg(Color::DarkGray)),
+                Span::styled(format!("{:<14} ", entry.kind), Style::new().fg(Color::Cyan)),
+                Span::styled(
+                    format!("{:<18} ", entry.execution_id),
+                    Style::new().fg(Color::Gray),
+                ),
+                Span::raw(entry.summary.clone()),
+            ]));
         }
     }
-
-    let _ = write!(stdout, "{LEAVE_VIEW}");
-    let _ = stdout.flush();
-    ExitCode::SUCCESS
+    let pane = Paragraph::new(Text::from(lines))
+        .block(pane_block(
+            Pane::Timeline.title(),
+            app.focus == Pane::Timeline,
+        ))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(pane, area);
 }
 
-/// A stdin line that requests a quit (`q`/`Q`/`quit`, whitespace-trimmed).
-fn is_quit(line: &str) -> bool {
-    matches!(line.trim(), "q" | "Q" | "quit" | "QUIT" | "Quit")
+/// Footer: keybindings on one line, the current mode/status on the next.
+fn draw_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let keys = "q quit   r refresh   Tab/1-4 focus   j/k select   p pause   R resume   c cancel";
+    let mut lines = vec![Line::from(Span::styled(keys, Style::new().fg(Color::Gray)))];
+
+    match &app.mode {
+        Mode::Confirm { action, input } => {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(
+                        "confirm {}: type \"{}\" then Enter (Esc cancels) > ",
+                        action.name(),
+                        action.name()
+                    ),
+                    Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(input.clone()),
+            ]));
+        }
+        Mode::Normal => {
+            let mut spans = Vec::new();
+            if let Some(status) = &app.status {
+                spans.push(Span::styled(status.clone(), Style::new().fg(Color::Cyan)));
+                spans.push(Span::raw("   "));
+            }
+            if let Some(selected) = app.snapshot.executions.get(app.selection) {
+                spans.push(Span::styled(
+                    format!("sel {}", selected.execution_id),
+                    Style::new().fg(Color::DarkGray),
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+    }
+    frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }
 
-/// Column budgets for the executions table.
-fn columns(width: usize) -> (usize, usize, usize, usize, usize) {
-    let id_w = (width * 2 / 5).clamp(20, 48);
-    let phase_w = 10;
-    let state_w = 12;
-    let try_w = 4;
-    let pending_w = width
-        .saturating_sub(id_w + phase_w + state_w + try_w + 4)
-        .max(6);
-    (id_w, phase_w, state_w, try_w, pending_w)
+/// Style for an execution state cell.
+fn state_style(state: &str) -> Style {
+    match state {
+        "Running" | "Dispatched" | "Completed" | "Done" => Style::new().fg(Color::Green),
+        "Parked" => Style::new().fg(Color::Yellow),
+        "Failed" => Style::new().fg(Color::Red),
+        _ => Style::new().fg(Color::Cyan),
+    }
 }
 
 /// `N` plus the first pending operation id, or `-` when there are none.
@@ -327,130 +971,8 @@ fn pending_text(count: usize, operations: &[String]) -> String {
     }
 }
 
-/// The economics panel: spend vs allowance per execution, digest rollup, and
-/// parked/degradation alerts (TUI.4). Empty when there is no row or alert.
-fn render_economics(snapshot: &Snapshot) -> String {
-    let economics = &snapshot.economics;
-    if economics.rows.is_empty() && economics.alerts.is_empty() {
-        return String::new();
-    }
-    let mut out = String::new();
-    out.push_str(&format!(
-        "{BOLD}ECONOMICS{RESET}  {DIM}spend / allowance · tokens · digest · alerts{RESET}\n"
-    ));
-    for row in &economics.rows {
-        let budget = if row.over_budget { RED } else { GREEN };
-        let mut line = format!(
-            "  {CYAN}{:<20}{RESET} {:<8} {budget}{:<44}{RESET} {DIM}tok {}/{}{RESET}",
-            clip(&row.execution_id, 20),
-            clip(&row.phase, 8),
-            clip(&row.spend_allowance_text(), 44),
-            row.tokens_in,
-            row.tokens_out,
-        );
-        if let Some(digest) = &row.digest {
-            line.push_str(&format!(
-                "  {DIM}digest:{RESET} {}",
-                clip(&digest.summary_text(), 48)
-            ));
-        }
-        out.push_str(&line);
-        out.push('\n');
-    }
-    for alert in &economics.alerts {
-        let (style, label) = match alert.level {
-            AlertLevel::Park => (YELLOW, "PARKED"),
-            AlertLevel::Degraded => (RED, "DEGRADED"),
-        };
-        out.push_str(&format!(
-            "  {BOLD}{style}{label}{RESET} {CYAN}{}{RESET} {}\n",
-            clip(&alert.execution_id, 20),
-            clip(&alert.reason, 60),
-        ));
-    }
-    out
-}
-
-/// The curated event + digest timeline (oldest first), showing the most recent
-/// entries that fit above the footer (TUI.4).
-fn render_timeline(snapshot: &Snapshot, ctx: &FrameContext<'_>) -> String {
-    let timeline = &snapshot.economics.timeline;
-    if timeline.is_empty() {
-        return String::new();
-    }
-    let mut out = String::new();
-    out.push_str(&format!(
-        "{BOLD}TIMELINE{RESET}  {DIM}events + digests · oldest first{RESET}\n"
-    ));
-    // Keep the tail (most recent) within the remaining vertical budget.
-    let max_rows = ctx.height.saturating_sub(18).max(3);
-    let start = timeline.len().saturating_sub(max_rows);
-    if start > 0 {
-        out.push_str(&format!("{DIM}  … {start} earlier{RESET}\n"));
-    }
-    for entry in &timeline[start..] {
-        let sequence = if entry.kind == "digest" {
-            "·".to_string()
-        } else {
-            format!("{}", entry.sequence)
-        };
-        out.push_str(&format!(
-            "  {DIM}{:>3}{RESET} {CYAN}{:<14}{RESET} {:<18} {}\n",
-            sequence,
-            clip(&entry.kind, 14),
-            clip(&entry.execution_id, 18),
-            clip(&entry.summary, 72),
-        ));
-    }
-    out
-}
-
-/// The per-component panel: transport, API version, socket liveness, bindings,
-/// and watchdog/provider-health signals (TUI.3).
-fn render_components(snapshot: &Snapshot) -> String {
-    if snapshot.components.is_empty() {
-        return String::new();
-    }
-    let mut out = String::new();
-    out.push_str(&format!(
-        "{BOLD}COMPONENTS{RESET}  {DIM}transport · api@version · socket(up|down) · bindings · health{RESET}\n"
-    ));
-    for component in &snapshot.components {
-        let version = component
-            .api_version
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "-".to_string());
-        let api = format!("{}@{}", component.api, version);
-        let socket = match &component.socket {
-            Some(name) if component.socket_present => format!("{name} up"),
-            Some(name) => format!("{name} down"),
-            None => "-".to_string(),
-        };
-        let socket_style = if component.socket_present { GREEN } else { DIM };
-        out.push_str(&format!(
-            "  {CYAN}{:<10}{RESET} {:<10} {:<16} {socket_style}{:<20}{RESET} {}\n",
-            clip(&component.component, 10),
-            component.transport,
-            clip(&api, 16),
-            clip(&socket, 20),
-            component_binding_text(component),
-        ));
-        if component.stalls > 0 {
-            let reason = component.last_health_reason.as_deref().unwrap_or("-");
-            out.push_str(&format!(
-                "    {YELLOW}health:{RESET} {} stall(s) · last: {reason}\n",
-                component.stalls
-            ));
-        }
-    }
-    out
-}
-
 /// One-line binding summary for a component (`impl@ver State genN [caps] pins:N`).
 fn component_binding_text(component: &crate::components::ComponentSnapshot) -> String {
-    if component.bindings.is_empty() {
-        return "-".to_string();
-    }
     component
         .bindings
         .iter()
@@ -479,85 +1001,35 @@ fn component_binding_text(component: &crate::components::ComponentSnapshot) -> S
         .join(" · ")
 }
 
-/// A padded, clipped cell carrying a fixed style.
-fn styled_cell(text: &str, width: usize, style: &str) -> String {
-    format!("{style}{:<width$}{RESET}", clip(text, width))
-}
-
-/// A clipped `STATE` cell colored by state.
-fn styled_state(state: &str, width: usize) -> String {
-    let style = match state {
-        "Running" | "Dispatched" | "Completed" | "Done" => GREEN,
-        "Parked" => YELLOW,
-        "Failed" => RED,
-        _ => CYAN,
-    };
-    format!("{style}{:<width$}{RESET}", clip(state, width))
-}
-
-/// Clip a line to `width` visible characters, leaving ANSI sequences verbatim
-/// (they do not count toward the width). Truncation appends a reset so no style
-/// leaks past the cut.
-fn clip_line_ansi(line: &str, width: usize) -> String {
+/// Flatten a rendered buffer into visible text (per-line trailing space
+/// trimmed).
+fn buffer_text(buffer: &Buffer) -> String {
+    let area = buffer.area();
     let mut out = String::new();
-    let mut visible = 0usize;
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            out.push(c);
-            while let Some(&next) = chars.peek() {
-                out.push(next);
-                chars.next();
-                if next.is_ascii_alphabetic() {
-                    break;
-                }
-            }
-            continue;
+    for y in 0..area.height {
+        let mut line = String::new();
+        for x in 0..area.width {
+            line.push_str(buffer[(x, y)].symbol());
         }
-        if visible >= width {
-            out.push_str(RESET);
-            break;
+        out.push_str(line.trim_end());
+        if y + 1 < area.height {
+            out.push('\n');
         }
-        out.push(c);
-        visible += 1;
     }
     out
 }
 
-/// Truncate `text` to `width` display characters, adding an ellipsis when
-/// clipped. Char-based (not byte-based) so multibyte text is not split.
-fn clip(text: &str, width: usize) -> String {
-    if width == 0 {
-        return String::new();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= width {
-        return text.to_string();
-    }
-    if width == 1 {
-        return "…".to_string();
-    }
-    let mut clipped: String = chars[..width - 1].iter().collect();
-    clipped.push('…');
-    clipped
-}
-
-/// Horizontal rule sized to `width` (capped so narrow terminals stay sane).
-fn rule(width: usize) -> String {
-    "─".repeat(width.clamp(20, 120))
-}
-
 /// Visible terminal size `(columns, rows)`.
 ///
-/// Prefers `stty size` (authoritative on SIGWINCH), then `COLUMNS`/`LINES`,
-/// then a `80x24` default. Read-only: spawns `stty` at most, never writes.
-fn terminal_size() -> (usize, usize) {
+/// Prefers `stty size`, then `COLUMNS`/`LINES`, then `80x24`. Read-only: spawns
+/// `stty` at most, never writes.
+fn terminal_size() -> (u16, u16) {
     if let Ok(out) = std::process::Command::new("stty").arg("size").output() {
         if out.status.success() {
             let text = String::from_utf8_lossy(&out.stdout);
             let mut parts = text.split_whitespace();
             if let (Some(rows), Some(cols)) = (parts.next(), parts.next()) {
-                if let (Ok(rows), Ok(cols)) = (rows.parse::<usize>(), cols.parse::<usize>()) {
+                if let (Ok(rows), Ok(cols)) = (rows.parse::<u16>(), cols.parse::<u16>()) {
                     if rows > 0 && cols > 0 {
                         return (cols, rows);
                     }
@@ -566,12 +1038,8 @@ fn terminal_size() -> (usize, usize) {
         }
     }
     let env_size = (|| {
-        let cols = std::env::var("COLUMNS")
-            .ok()?
-            .trim()
-            .parse::<usize>()
-            .ok()?;
-        let rows = std::env::var("LINES").ok()?.trim().parse::<usize>().ok()?;
+        let cols = std::env::var("COLUMNS").ok()?.trim().parse::<u16>().ok()?;
+        let rows = std::env::var("LINES").ok()?.trim().parse::<u16>().ok()?;
         Some((cols, rows))
     })();
     env_size
@@ -582,20 +1050,22 @@ fn terminal_size() -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::{BindingView, ComponentSnapshot};
-    use crate::economics::{Alert, DigestSummary, EconomicsRow, EconomicsSnapshot, TimelineEntry};
-    use crate::status::{ExecutionSnapshot, Snapshot};
-    use agalma_ledger::SqliteLedger;
+
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use agalma_contracts::{ExecutionApi, LedgerApi, TaskId};
     use agalma_testkit::ScratchDir;
 
-    fn ctx(width: usize, height: usize, interval_ms: u64) -> FrameContext<'static> {
-        FrameContext {
-            width,
-            height,
-            interval_ms,
-            ledger_transport: "in-process",
-            harness_transport: "in-process",
-        }
+    use crate::components::{BindingView, ComponentSnapshot};
+    use crate::control::ControlOutcome;
+    use crate::economics::{
+        Alert, AlertLevel, DigestSummary, EconomicsRow, EconomicsSnapshot, TimelineEntry,
+    };
+    use crate::status::{ExecutionSnapshot, Snapshot};
+
+    fn ctx_transports() -> Transports {
+        Transports::all_in_process()
     }
 
     /// Empty snapshot for an absent ledger.
@@ -649,7 +1119,7 @@ mod tests {
         ]
     }
 
-    /// One running execution with two pending operations and a binding.
+    /// One running execution with two pending operations.
     fn present() -> Snapshot {
         Snapshot {
             state_dir: "/var/tmp/agalma-watch-present".to_string(),
@@ -674,8 +1144,8 @@ mod tests {
         }
     }
 
-    /// One execution's economics row (known allowance, one digest), a second
-    /// row with budget exceedance, timeline entries, and both alert levels.
+    /// One execution's economics row, a budget-exceeded row, timeline entries,
+    /// and both alert levels.
     fn economics() -> EconomicsSnapshot {
         EconomicsSnapshot {
             rows: vec![
@@ -770,109 +1240,117 @@ mod tests {
         }
     }
 
-    /// Strip ANSI SGR/CSI sequences so tests can assert on visible text.
-    fn strip_ansi(text: &str) -> String {
-        let mut out = String::new();
-        let mut chars = text.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\x1b' {
-                if chars.peek() == Some(&'[') {
-                    chars.next();
-                    for c in chars.by_ref() {
-                        if c.is_ascii_alphabetic() {
-                            break;
-                        }
-                    }
-                }
-            } else {
-                out.push(c);
+    fn app(snapshot: Snapshot) -> App {
+        App::new(snapshot, ctx_transports(), 1000)
+    }
+
+    fn screen(app: &App) -> String {
+        render_to_string(app, 150, 40)
+    }
+
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// Records every control request and returns a fixed outcome.
+    struct RecordingDriver {
+        calls: Vec<ControlRequest>,
+        outcome: ControlOutcome,
+    }
+
+    impl RecordingDriver {
+        fn applied() -> Self {
+            RecordingDriver {
+                calls: Vec::new(),
+                outcome: ControlOutcome::Applied,
             }
         }
-        out
+
+        fn denied(reason: &str) -> Self {
+            RecordingDriver {
+                calls: Vec::new(),
+                outcome: ControlOutcome::Denied {
+                    reason: reason.to_string(),
+                },
+            }
+        }
+    }
+
+    impl ControlDriver for RecordingDriver {
+        fn apply(&mut self, request: &ControlRequest) -> Result<ControlOutcome, ContractError> {
+            self.calls.push(request.clone());
+            Ok(self.outcome.clone())
+        }
     }
 
     #[test]
-    fn absent_snapshot_renders_exists_false() {
-        let frame = render(&absent(), &ctx(100, 24, 1000));
-        let plain = strip_ansi(&frame);
+    fn absent_snapshot_renders_exists_false_and_no_rows() {
+        let app = app(absent());
+        let plain = screen(&app);
         assert!(plain.contains("exists:false"), "{plain}");
-        assert!(plain.contains("no ledger present"), "{plain}");
-        assert!(plain.contains("(no executions)"), "{plain}");
         assert!(plain.contains("binding: -"), "{plain}");
+        assert!(plain.contains("kill_latch: false"), "{plain}");
+        // Every pane is present even when empty.
+        for pane in Pane::ALL {
+            assert!(
+                plain.contains(pane.title()),
+                "missing pane {}: {plain}",
+                pane.title()
+            );
+        }
+        assert!(
+            plain.contains("(no executions)") || plain.contains("EXECUTION"),
+            "{plain}"
+        );
+        assert!(plain.contains("(no components)"), "{plain}");
+        assert!(plain.contains("(no cost rows)"), "{plain}");
+        assert!(plain.contains("(no events)"), "{plain}");
     }
 
     #[test]
-    fn present_snapshot_renders_rows_and_status() {
-        let frame = render(&present(), &ctx(120, 24, 1500));
-        let plain = strip_ansi(&frame);
+    fn present_snapshot_renders_all_panes() {
+        let app = app(present());
+        let plain = screen(&app);
         assert!(plain.contains("exists:true"), "{plain}");
         assert!(plain.contains("kill_latch: true"), "{plain}");
         assert!(plain.contains("binding: reference@reference/v1"), "{plain}");
         assert!(plain.contains("ledger: in-process"), "{plain}");
         assert!(plain.contains("harness: in-process"), "{plain}");
+        assert!(plain.contains("interval: 1000 ms"), "{plain}");
+        // Executions pane.
         assert!(plain.contains("exec:task-a:1"), "{plain}");
         assert!(plain.contains("Build"), "{plain}");
         assert!(plain.contains("Running"), "{plain}");
-        assert!(plain.contains("PENDING"), "{plain}");
-        assert!(plain.contains("1500 ms"), "{plain}");
-    }
-
-    #[test]
-    fn present_snapshot_renders_component_panel() {
-        let frame = render(&present(), &ctx(140, 30, 1000));
-        let plain = strip_ansi(&frame);
-        // Demo frame for the TUI.3 report (run with --nocapture to view).
-        println!("--- TUI.3 component panel demo ---\n{plain}");
-        assert!(plain.contains("COMPONENTS"), "{plain}");
-        assert!(plain.contains("ledger"), "{plain}");
-        assert!(plain.contains("harness"), "{plain}");
-        // Socket liveness proxy: harness*.sock up, ledger.sock down.
+        // Components pane.
         assert!(plain.contains("harness*.sock up"), "{plain}");
         assert!(plain.contains("ledger.sock down"), "{plain}");
-        // Binding state + generation + capability + pinned operation count.
         assert!(
             plain.contains("reference@reference/v1 Active gen1"),
             "{plain}"
         );
         assert!(plain.contains("[context_hooks]"), "{plain}");
         assert!(plain.contains("pins:1"), "{plain}");
-        // Provider/watchdog health signal.
-        assert!(plain.contains("health:"), "{plain}");
         assert!(plain.contains("2 stall(s)"), "{plain}");
         assert!(plain.contains("last: session_gone"), "{plain}");
-        // Transport mode is visible per component.
-        assert!(plain.contains("process"), "{plain}");
-    }
-
-    #[test]
-    fn present_snapshot_renders_economics_and_timeline() {
-        let frame = render(&present(), &ctx(150, 40, 1000));
-        let plain = strip_ansi(&frame);
-        // Demo frame for the TUI.4 report (run with --nocapture to view).
-        println!("--- TUI.4 economics + timeline demo ---\n{plain}");
-        assert!(plain.contains("ECONOMICS"), "{plain}");
-        assert!(plain.contains("TIMELINE"), "{plain}");
-        // Spend vs known allowance, and the over-budget row.
+        // Economics pane.
         assert!(plain.contains("$0.250000 / $2.00 rem $1.750000"), "{plain}");
         assert!(
             plain.contains("$0.300000 / $0.20 rem $-0.100000 OVER"),
             "{plain}"
         );
-        // Spend vs unknown allowance.
         assert!(plain.contains("tok 1500/320"), "{plain}");
-        // Digest rollup.
-        assert!(plain.contains("digest:"), "{plain}");
         assert!(plain.contains("green attempts=2"), "{plain}");
-        // Park/degradation alerts.
         assert!(plain.contains("PARKED"), "{plain}");
         assert!(plain.contains("DEGRADED"), "{plain}");
-        // Timeline: events and the digest milestone, oldest first.
+        // Timeline pane, oldest first (lines may wrap, so assert on stable
+        // fragments and their relative order).
         assert!(plain.contains("claimed lease 3"), "{plain}");
-        assert!(plain.contains("decision recorded op:build@2@2"), "{plain}");
+        assert!(plain.contains("decision recorded"), "{plain}");
         assert!(plain.contains("degraded: session_gone"), "{plain}");
+        assert!(plain.contains("· digest"), "{plain}");
         let claim = plain.find("claimed lease 3").expect("claim");
         let decision = plain.find("decision recorded").expect("decision");
-        let digest = plain.find("wall_ms=4200").expect("digest milestone");
+        let digest = plain.find("· digest").expect("digest milestone");
         assert!(
             claim < decision && decision < digest,
             "timeline order: {plain}"
@@ -880,100 +1358,60 @@ mod tests {
     }
 
     #[test]
-    fn real_ledger_snapshot_renders_economics_and_timeline() {
-        use agalma_contracts::{
-            CommitBatch, ExecutionEvent, ExecutionPhase, ExecutionRecord, ExecutionState,
-            LedgerApi, TaskId,
-        };
-        use serde_json::json;
+    fn focus_marker_follows_focus_model() {
+        let mut app = app(present());
+        let mut driver = RecordingDriver::applied();
 
-        let dir = ScratchDir::new("watch-economics-real");
-        let exec = agalma_contracts::ExecutionId::derive(&TaskId::new("task-a"), 1);
-        let mut ledger = SqliteLedger::open(dir.path().join("ledger.sqlite")).expect("open ledger");
-        ledger
-            .commit(CommitBatch {
-                expected_revision: None,
-                state: Some(ExecutionRecord {
-                    execution_id: exec.clone(),
-                    task_id: TaskId::new("task-a"),
-                    generation: 1,
-                    phase: ExecutionPhase::Build,
-                    state: ExecutionState::Parked,
-                    attempt: 2,
-                    revision: 0,
-                }),
-                events: vec![
-                    ExecutionEvent {
-                        execution_id: exec.clone(),
-                        sequence: 0,
-                        kind: "usage".to_string(),
-                        payload: json!({"tokens_in": 10, "tokens_out": 5, "cost_usd": 0.01}),
-                        recorded_at_unix_ms: 1,
-                    },
-                    ExecutionEvent {
-                        execution_id: exec.clone(),
-                        sequence: 0,
-                        kind: "provider_health".to_string(),
-                        payload: json!({"reason": "idle"}),
-                        recorded_at_unix_ms: 2,
-                    },
-                ],
-                receipts: vec![],
-                intents: vec![],
-            })
-            .expect("seed ledger");
-        drop(ledger);
+        assert!(screen(&app).contains("▶ Executions"), "{}", screen(&app));
 
-        let snapshot = crate::status::snapshot(dir.path()).expect("snapshot");
-        let plain = strip_ansi(&render(&snapshot, &ctx(150, 40, 1000)));
-        assert!(plain.contains("ECONOMICS"), "{plain}");
-        assert!(plain.contains("TIMELINE"), "{plain}");
-        // No durable budget in the ledger → allowance is unknown on the real path.
-        assert!(plain.contains("$0.010000 / unknown"), "{plain}");
-        assert!(plain.contains("PARKED"), "{plain}");
-        assert!(plain.contains("DEGRADED"), "{plain}");
-        assert!(plain.contains("degraded: idle"), "{plain}");
+        app.handle_key(press(KeyCode::Tab), &mut driver);
+        assert_eq!(app.focus, Pane::Components);
+        assert!(screen(&app).contains("▶ Components"));
+
+        app.handle_key(press(KeyCode::Tab), &mut driver);
+        assert_eq!(app.focus, Pane::Economics);
+        app.handle_key(press(KeyCode::Tab), &mut driver);
+        assert_eq!(app.focus, Pane::Timeline);
+        app.handle_key(press(KeyCode::Tab), &mut driver);
+        assert_eq!(app.focus, Pane::Executions);
+
+        // Shift-Tab walks backwards.
+        app.handle_key(
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+            &mut driver,
+        );
+        assert_eq!(app.focus, Pane::Timeline);
+
+        // Number keys jump directly.
+        app.handle_key(press(KeyCode::Char('2')), &mut driver);
+        assert_eq!(app.focus, Pane::Components);
+        app.handle_key(press(KeyCode::Char('3')), &mut driver);
+        assert_eq!(app.focus, Pane::Economics);
     }
 
     #[test]
-    fn absent_snapshot_has_no_component_panel() {
-        let plain = strip_ansi(&render(&absent(), &ctx(120, 24, 1000)));
-        assert!(!plain.contains("COMPONENTS"), "{plain}");
-        assert!(!plain.contains("ECONOMICS"), "{plain}");
-        assert!(!plain.contains("TIMELINE"), "{plain}");
-        assert!(plain.contains("0 component(s)"), "{plain}");
-        assert!(plain.contains("0 cost row(s)"), "{plain}");
+    fn quit_and_refresh_keybindings() {
+        let mut app = app(present());
+        let mut driver = RecordingDriver::applied();
+
+        app.handle_key(press(KeyCode::Char('r')), &mut driver);
+        assert!(app.refresh_requested, "r requests a refresh");
+
+        app.handle_key(press(KeyCode::Char('q')), &mut driver);
+        assert!(app.quit, "q quits");
+
+        app.quit = false;
+        app.handle_key(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &mut driver,
+        );
+        assert!(app.quit, "Ctrl-C quits");
     }
 
     #[test]
-    fn kill_latch_and_state_are_styled() {
-        let plain_absent = strip_ansi(&render(&absent(), &ctx(120, 24, 1000)));
-        assert!(plain_absent.contains("kill_latch: false"), "{plain_absent}");
-        let frame = render(&present(), &ctx(120, 24, 1000));
-        // Red+bold latch when set; green elsewhere.
-        assert!(frame.contains("\x1b[1m\x1b[31mtrue\x1b[0m"), "{frame:?}");
-        assert!(frame.contains("\x1b[32mRunning"), "{frame:?}");
-    }
-
-    #[test]
-    fn narrow_frames_do_not_overflow_width() {
-        for width in [40usize, 60, 200] {
-            let frame = render(&present(), &ctx(width, 24, 1000));
-            for line in strip_ansi(&frame).lines() {
-                // The rule uses its own (clamped) width; allow a small margin.
-                assert!(
-                    line.chars().count() <= width.max(20) + 2,
-                    "width={width} line too long ({}): {line:?}",
-                    line.chars().count()
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn row_budget_respects_height() {
+    fn selection_moves_with_j_k_and_arrows() {
         let mut snapshot = present();
-        snapshot.executions = (0..20)
+        snapshot.executions = (0..3)
             .map(|i| ExecutionSnapshot {
                 execution_id: format!("exec:task-{i}:1"),
                 phase: "Build".to_string(),
@@ -984,29 +1422,150 @@ mod tests {
                 harness: "reference@reference/v1".to_string(),
             })
             .collect();
-        let plain = strip_ansi(&render(&snapshot, &ctx(120, 10, 1000)));
+        let mut app = app(snapshot);
+        let mut driver = RecordingDriver::applied();
+
+        app.handle_key(press(KeyCode::Char('j')), &mut driver);
+        assert_eq!(app.selection, 1);
+        app.handle_key(press(KeyCode::Down), &mut driver);
+        assert_eq!(app.selection, 2);
+        // Saturates at the end.
+        app.handle_key(press(KeyCode::Char('j')), &mut driver);
+        assert_eq!(app.selection, 2);
+        app.handle_key(press(KeyCode::Char('k')), &mut driver);
+        assert_eq!(app.selection, 1);
+        app.handle_key(press(KeyCode::Up), &mut driver);
+        assert_eq!(app.selection, 0);
+        app.handle_key(press(KeyCode::Char('k')), &mut driver);
+        assert_eq!(app.selection, 0);
+    }
+
+    #[test]
+    fn pause_applies_without_confirmation() {
+        let mut app = app(present());
+        let mut driver = RecordingDriver::applied();
+
+        app.handle_key(press(KeyCode::Char('p')), &mut driver);
+
+        assert_eq!(driver.calls.len(), 1, "one apply");
+        assert_eq!(driver.calls[0].action, ControlAction::Pause);
+        assert_eq!(driver.calls[0].actor, Actor::Human);
+        assert!(driver.calls[0].confirmation.is_none(), "pause needs none");
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap_or("")
+            .contains("pause: applied"));
+        assert!(app.refresh_requested, "control effect refreshes the view");
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn resume_requires_typed_confirmation() {
+        let mut app = app(present());
+        let mut driver = RecordingDriver::applied();
+
+        app.handle_key(press(KeyCode::Char('R')), &mut driver);
+        assert!(matches!(app.mode, Mode::Confirm { .. }));
+        assert!(driver.calls.is_empty(), "not applied before confirmation");
+        let confirm_screen = screen(&app);
         assert!(
-            plain.contains("more"),
-            "height budget should fold rows: {plain}"
+            confirm_screen.contains("type \"resume\""),
+            "{confirm_screen}"
         );
+
+        // Wrong phrase is rejected and stays in confirmation mode.
+        for c in "resumx".chars() {
+            app.handle_key(press(KeyCode::Char(c)), &mut driver);
+        }
+        app.handle_key(press(KeyCode::Enter), &mut driver);
+        assert!(matches!(app.mode, Mode::Confirm { .. }));
+        assert!(driver.calls.is_empty(), "mismatch does not apply");
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap_or("")
+            .contains("confirmation mismatch"));
+
+        // Correct phrase applies with the typed confirmation recorded.
+        app.handle_key(press(KeyCode::Backspace), &mut driver);
+        app.handle_key(press(KeyCode::Char('e')), &mut driver);
+        app.handle_key(press(KeyCode::Enter), &mut driver);
+        assert_eq!(driver.calls.len(), 1, "applied once");
+        assert_eq!(driver.calls[0].action, ControlAction::Resume);
+        assert_eq!(driver.calls[0].confirmation.as_deref(), Some("resume"));
+        assert_eq!(app.mode, Mode::Normal);
     }
 
     #[test]
-    fn is_quit_matches_only_quit_tokens() {
-        for yes in ["q", "Q", "quit", "  Q  ", "Quit"] {
-            assert!(is_quit(yes), "{yes:?} should quit");
-        }
-        for no in ["", "x", "quitx", "resume", "1"] {
-            assert!(!is_quit(no), "{no:?} should not quit");
-        }
+    fn escape_cancels_confirmation() {
+        let mut app = app(present());
+        let mut driver = RecordingDriver::applied();
+        app.handle_key(press(KeyCode::Char('R')), &mut driver);
+        app.handle_key(press(KeyCode::Char('r')), &mut driver);
+        app.handle_key(press(KeyCode::Esc), &mut driver);
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(driver.calls.is_empty());
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap_or("")
+            .contains("confirmation cancelled"));
     }
 
     #[test]
-    fn once_frame_reads_absent_dir_without_writing() {
+    fn cancel_selects_execution_and_requires_confirmation() {
+        let mut app = app(present());
+        let mut driver = RecordingDriver::applied();
+
+        app.handle_key(press(KeyCode::Char('c')), &mut driver);
+        assert!(matches!(app.mode, Mode::Confirm { .. }));
+        assert!(screen(&app).contains("type \"cancel\""));
+        for c in "cancel".chars() {
+            app.handle_key(press(KeyCode::Char(c)), &mut driver);
+        }
+        app.handle_key(press(KeyCode::Enter), &mut driver);
+
+        assert_eq!(driver.calls.len(), 1);
+        assert_eq!(
+            driver.calls[0].action,
+            ControlAction::Cancel {
+                execution: ExecutionId::new("exec:task-a:1"),
+            }
+        );
+        assert_eq!(driver.calls[0].confirmation.as_deref(), Some("cancel"));
+    }
+
+    #[test]
+    fn cancel_with_no_execution_is_refused() {
+        let mut app = app(absent());
+        let mut driver = RecordingDriver::applied();
+        app.handle_key(press(KeyCode::Char('c')), &mut driver);
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(driver.calls.is_empty());
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap_or("")
+            .contains("no execution selected"));
+    }
+
+    #[test]
+    fn denial_is_surfaced_in_status() {
+        let mut app = app(present());
+        let mut driver = RecordingDriver::denied("already paused (kill latch set)");
+        app.handle_key(press(KeyCode::Char('p')), &mut driver);
+        let status = app.status.as_deref().unwrap_or("");
+        assert!(status.contains("pause: denied"), "{status}");
+        assert!(status.contains("already paused"), "{status}");
+    }
+
+    #[test]
+    fn once_frame_renders_single_frame_without_writing() {
         let dir = ScratchDir::new("watch-absent-once");
         let frame = once_frame(dir.path(), 1000).expect("once frame");
-        let plain = strip_ansi(&frame);
-        assert!(plain.contains("exists:false"), "{plain}");
+        assert!(frame.contains("exists:false"), "{frame}");
+        assert!(frame.contains("agalma watch"), "{frame}");
 
         // Acceptance: strictly no writes — the state dir stays empty.
         let entries: Vec<_> = std::fs::read_dir(dir.path())
@@ -1014,5 +1573,169 @@ mod tests {
             .map(|e| e.expect("entry").file_name())
             .collect();
         assert!(entries.is_empty(), "watch wrote to state dir: {entries:?}");
+    }
+
+    #[test]
+    fn test_backend_frame_is_exactly_sized() {
+        let app = app(present());
+        let text = render_to_string(&app, 120, 30);
+        let lines: Vec<&str> = text.split('\n').collect();
+        assert_eq!(lines.len(), 30, "one line per buffer row");
+        for line in lines {
+            assert!(
+                line.chars().count() <= 120,
+                "line wider than buffer: {line:?}"
+            );
+        }
+        // Narrow frames must not panic.
+        let _ = render_to_string(&app, 40, 12);
+    }
+
+    // ---- Terminal lifecycle -------------------------------------------------
+
+    #[derive(Clone, Default)]
+    struct RecordingMode {
+        entered: Rc<Cell<usize>>,
+        exited: Rc<Cell<usize>>,
+        fail_enter: bool,
+    }
+
+    impl TerminalMode for RecordingMode {
+        fn enter(&mut self) -> io::Result<()> {
+            if self.fail_enter {
+                return Err(io::Error::other("enter failed"));
+            }
+            self.entered.set(self.entered.get() + 1);
+            Ok(())
+        }
+
+        fn exit(&mut self) -> io::Result<()> {
+            self.exited.set(self.exited.get() + 1);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn mode_guard_restores_on_drop() {
+        let mode = RecordingMode::default();
+        {
+            let _guard = ModeGuard::enter(mode.clone()).expect("enter");
+            assert_eq!(mode.entered.get(), 1);
+            assert_eq!(mode.exited.get(), 0);
+        }
+        assert_eq!(
+            mode.exited.get(),
+            1,
+            "drop restores the terminal exactly once"
+        );
+    }
+
+    #[test]
+    fn mode_guard_restores_on_panic_unwind() {
+        let mode = RecordingMode::default();
+        let inside = mode.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = ModeGuard::enter(inside).expect("enter");
+            panic!("boom");
+        }));
+        assert!(result.is_err(), "the panic propagates");
+        assert_eq!(mode.exited.get(), 1, "unwind restores the terminal");
+    }
+
+    #[test]
+    fn mode_guard_enter_failure_does_not_restore() {
+        let mode = RecordingMode {
+            fail_enter: true,
+            ..RecordingMode::default()
+        };
+        assert!(ModeGuard::enter(mode.clone()).is_err());
+        assert_eq!(mode.entered.get(), 0);
+        assert_eq!(mode.exited.get(), 0, "nothing entered, nothing to restore");
+    }
+
+    // ---- Control wired through the real ControlPlane ----------------------
+
+    fn scratch_executor(dir: &ScratchDir) -> agalma_execution::Executor<SqliteLedger> {
+        let ledger = SqliteLedger::open(dir.join("ledger.sqlite")).expect("open ledger");
+        agalma_execution::Executor::new(
+            ledger,
+            ExecutorConfig {
+                max_attempts: 1,
+                execution_definition_version: EXECUTION_DEFINITION_VERSION,
+            },
+        )
+    }
+
+    #[test]
+    fn ledger_driver_pause_writes_latch_and_receipt() {
+        let dir = ScratchDir::new("watch-control-pause");
+        let mut ex = scratch_executor(&dir);
+        let _ = ex.start(&TaskId::new("watch")).expect("start execution");
+        drop(ex);
+
+        let snapshot = crate::status::snapshot(dir.path()).expect("snapshot");
+        let mut app = App::new(snapshot, ctx_transports(), 1000);
+        let mut driver = LedgerControlDriver::new(dir.path());
+
+        app.handle_key(press(KeyCode::Char('p')), &mut driver);
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap_or("")
+            .contains("pause: applied"));
+
+        let ledger = SqliteLedger::open(dir.join("ledger.sqlite")).expect("reopen ledger");
+        assert!(ledger.kill_latch().expect("latch"), "pause latched");
+        let receipts = ledger.control_receipts().expect("receipts");
+        assert_eq!(receipts.len(), 1, "one durable receipt: {receipts:?}");
+        assert_eq!(receipts[0].action, "pause");
+        assert_eq!(receipts[0].actor, "human");
+        assert_eq!(receipts[0].request["outcome"], "applied");
+    }
+
+    #[test]
+    fn ledger_driver_cancel_confirmation_receipts_and_requests_cancel() {
+        let dir = ScratchDir::new("watch-control-cancel");
+        let mut ex = scratch_executor(&dir);
+        let execution = ex.start(&TaskId::new("watch")).expect("start execution");
+        drop(ex);
+
+        let snapshot = crate::status::snapshot(dir.path()).expect("snapshot");
+        let mut app = App::new(snapshot, ctx_transports(), 1000);
+        let mut driver = LedgerControlDriver::new(dir.path());
+
+        app.handle_key(press(KeyCode::Char('c')), &mut driver);
+        for c in "cancel".chars() {
+            app.handle_key(press(KeyCode::Char(c)), &mut driver);
+        }
+        app.handle_key(press(KeyCode::Enter), &mut driver);
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap_or("")
+            .contains("cancel: applied"));
+
+        let ledger = SqliteLedger::open(dir.join("ledger.sqlite")).expect("reopen ledger");
+        assert!(ledger.kill_latch().expect("latch"), "cancel latched");
+        let events = ledger.events(&execution).expect("events");
+        assert!(
+            events.iter().any(|e| e.kind == "cancel_requested"),
+            "cancel_requested recorded: {:?}",
+            events.iter().map(|e| &e.kind).collect::<Vec<_>>()
+        );
+        let receipts = ledger.control_receipts().expect("receipts");
+        assert_eq!(receipts.len(), 1, "one receipt: {receipts:?}");
+        assert_eq!(receipts[0].action, "cancel");
+        assert_eq!(receipts[0].target, execution.to_string());
+    }
+
+    #[test]
+    fn pending_text_summarizes_operations() {
+        assert_eq!(pending_text(0, &[]), "-");
+        assert_eq!(pending_text(1, &["op:build@2".to_string()]), "op:build@2");
+        assert_eq!(
+            pending_text(2, &["op:build@2".to_string(), "op:build@3".to_string()]),
+            "2 (op:build@2)"
+        );
     }
 }

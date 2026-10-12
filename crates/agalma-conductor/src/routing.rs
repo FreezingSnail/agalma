@@ -858,7 +858,10 @@ mod tests {
     fn models_output_lists_planner_candidates_and_status() {
         let active = render_models(true, true);
         for id in candidates(RouteClass::Planner) {
-            assert!(active.contains(id), "planner candidate {id} missing:\n{active}");
+            assert!(
+                active.contains(id),
+                "planner candidate {id} missing:\n{active}"
+            );
         }
         assert!(active.contains("planner (paid-only)"), "{active}");
         assert!(

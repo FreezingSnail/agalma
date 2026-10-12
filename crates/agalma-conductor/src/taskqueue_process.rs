@@ -23,9 +23,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use agalma_contracts::harness::StopEvidence;
-use agalma_contracts::{
-    ClaimEvidence, ContractError, ReadyTasks, Task, TaskId, TaskQueueApi,
-};
+use agalma_contracts::{ClaimEvidence, ContractError, ReadyTasks, Task, TaskId, TaskQueueApi};
 use agalma_ipc::{CommandSpec, IssueProjection, TaskQueueClient, TaskQueueOps};
 use agalma_taskqueue::server::server_command;
 use agalma_taskqueue::BdTaskQueue;
@@ -86,7 +84,11 @@ pub struct TaskQueueProcess {
 impl TaskQueueProcess {
     /// Spawn a task-queue server serving `repo`'s backlog and listen on
     /// `<state_dir>/taskqueue.sock`; wait for `READY`.
-    pub fn spawn(state_dir: &Path, repo: &Path, timeout: Duration) -> Result<TaskQueueProcess, String> {
+    pub fn spawn(
+        state_dir: &Path,
+        repo: &Path,
+        timeout: Duration,
+    ) -> Result<TaskQueueProcess, String> {
         let socket = state_dir.join(TASKQUEUE_SOCKET_NAME);
         let spec = taskqueue_server_spec(&socket, repo);
         let program = resolve_server_binary(&spec.program)?;
@@ -175,9 +177,8 @@ impl TaskQueueHandle {
     /// Spawn a supervised task-queue server serving `repo`, listening on
     /// `<state_dir>/taskqueue.sock`, and connect.
     pub fn process(state_dir: &Path, repo: &Path) -> Result<TaskQueueHandle, ContractError> {
-        let process = TaskQueueProcess::spawn(state_dir, repo, READY_TIMEOUT).map_err(|e| {
-            ContractError::KnownFailure(format!("start taskqueue server: {e}"))
-        })?;
+        let process = TaskQueueProcess::spawn(state_dir, repo, READY_TIMEOUT)
+            .map_err(|e| ContractError::KnownFailure(format!("start taskqueue server: {e}")))?;
         let client = process
             .client()
             .map_err(|e| ContractError::KnownFailure(format!("connect taskqueue server: {e}")))?;

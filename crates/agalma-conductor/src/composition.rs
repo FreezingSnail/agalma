@@ -97,7 +97,8 @@ impl Composition {
             },
         );
 
-        let workspace = WorkspaceHandle::from_transport(&state_dir, WorkspaceTransport::from_env())?;
+        let workspace =
+            WorkspaceHandle::from_transport(&state_dir, WorkspaceTransport::from_env())?;
 
         // Provider egress for the confined harness (S0b profile denies
         // arbitrary network). The proxy binds a loopback port; its URL is handed

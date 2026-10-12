@@ -131,9 +131,8 @@ impl SandboxSource {
     pub fn ensure(&self) -> Result<PathBuf, ContractError> {
         if self.process.borrow().is_none() {
             let socket = self.socket();
-            let process = SandboxProcess::spawn(socket.clone(), READY_TIMEOUT).map_err(|e| {
-                ContractError::KnownFailure(format!("start sandbox server: {e}"))
-            })?;
+            let process = SandboxProcess::spawn(socket.clone(), READY_TIMEOUT)
+                .map_err(|e| ContractError::KnownFailure(format!("start sandbox server: {e}")))?;
             *self.process.borrow_mut() = Some(Rc::new(process));
         }
         Ok(self.socket())
@@ -142,9 +141,8 @@ impl SandboxSource {
     /// Ensure the server is running and connect a fresh client to it.
     pub fn client(&self) -> Result<SandboxClient, ContractError> {
         let socket = self.ensure()?;
-        SandboxClient::connect(&socket).map_err(|e| {
-            ContractError::KnownFailure(format!("connect sandbox server: {e}"))
-        })
+        SandboxClient::connect(&socket)
+            .map_err(|e| ContractError::KnownFailure(format!("connect sandbox server: {e}")))
     }
 
     /// The running server pid, if started.

@@ -23,7 +23,9 @@ use agalma_contracts::harness::StopEvidence;
 use agalma_ipc::{CommandSpec, ExecutionClient};
 use agalma_kernel::server::{LEDGER_SOCKET_ENV, SANDBOX_SOCKET_ENV};
 
-use crate::harness_process::{resolve_server_binary, spawn_supervised, stop_supervised, READY_TIMEOUT};
+use crate::harness_process::{
+    resolve_server_binary, spawn_supervised, stop_supervised, READY_TIMEOUT,
+};
 
 /// Environment variable selecting the execution transport (candidate only).
 pub const TRANSPORT_ENV: &str = "AGALMA_EXECUTION_TRANSPORT";
@@ -180,7 +182,10 @@ mod tests {
     #[test]
     fn transport_from_env_defaults_to_in_process() {
         std::env::remove_var(TRANSPORT_ENV);
-        assert_eq!(ExecutionTransport::from_env(), ExecutionTransport::InProcess);
+        assert_eq!(
+            ExecutionTransport::from_env(),
+            ExecutionTransport::InProcess
+        );
     }
 
     #[test]

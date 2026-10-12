@@ -320,7 +320,11 @@ pub fn gather_retry_context(
         rework_tasks,
         comments,
     };
-    Ok(if context.is_empty() { None } else { Some(context) })
+    Ok(if context.is_empty() {
+        None
+    } else {
+        Some(context)
+    })
 }
 
 /// What the sweep did, for logging and tests.
@@ -751,9 +755,7 @@ fn render_fix_description(epic: &str, violations: &[decomp::Violation]) -> Strin
             violation.detail
         ));
     }
-    out.push_str(
-        "\nThe epic sweep re-runs the designer once the children are revised.\n",
-    );
+    out.push_str("\nThe epic sweep re-runs the designer once the children are revised.\n");
     out
 }
 
@@ -766,7 +768,10 @@ fn write_designer_prompt(state_dir: &Path) -> Result<PathBuf, ContractError> {
     })?;
     let path = dir.join("designer.md");
     std::fs::write(&path, crate::DESIGNER_PROMPT).map_err(|e| {
-        ContractError::KnownFailure(format!("cannot write designer prompt {}: {e}", path.display()))
+        ContractError::KnownFailure(format!(
+            "cannot write designer prompt {}: {e}",
+            path.display()
+        ))
     })?;
     Ok(path)
 }

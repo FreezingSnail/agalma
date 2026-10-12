@@ -171,9 +171,8 @@ impl WorkspaceHandle {
 
     /// Spawn a supervised workspace server rooted at `base_dir` and connect.
     pub fn process(base_dir: &Path) -> Result<WorkspaceHandle, ContractError> {
-        let process = WorkspaceProcess::spawn(base_dir, READY_TIMEOUT).map_err(|e| {
-            ContractError::KnownFailure(format!("start workspace server: {e}"))
-        })?;
+        let process = WorkspaceProcess::spawn(base_dir, READY_TIMEOUT)
+            .map_err(|e| ContractError::KnownFailure(format!("start workspace server: {e}")))?;
         let client = process
             .client()
             .map_err(|e| ContractError::KnownFailure(format!("connect workspace server: {e}")))?;

@@ -19,7 +19,7 @@ use agalma_ipc::server::{Server, ServerInfo};
 use agalma_ipc::workspace_client::WorkspaceOps;
 use agalma_ipc::workspace_server::{register_workspace, serve_workspace};
 use agalma_ipc::{Wire, WorkspaceClient};
-use agalma_testkit::ScratchDir;
+use agalma_testkit::{retry_connect, ScratchDir};
 
 /// A deterministic stub workspace: fixed SHAs and paths, no clock or real repo.
 struct StubWorkspace {
@@ -253,10 +253,10 @@ fn workspace_api_over_connect_matches_framed() {
     wait_for_socket(&framed_socket);
     wait_for_socket(&connect_socket);
 
-    let framed =
-        WorkspaceClient::connect_wire(&framed_socket, Wire::Framed).expect("framed connect");
-    let connect =
-        WorkspaceClient::connect_wire(&connect_socket, Wire::Connect).expect("connect connect");
+    let framed = retry_connect(|| WorkspaceClient::connect_wire(&framed_socket, Wire::Framed))
+        .expect("framed connect");
+    let connect = retry_connect(|| WorkspaceClient::connect_wire(&connect_socket, Wire::Connect))
+        .expect("connect connect");
 
     // Every typed call produces the same transcript on both wires.
     assert_eq!(run_stub_scenario(framed), run_stub_scenario(connect),);

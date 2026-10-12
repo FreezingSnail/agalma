@@ -22,7 +22,7 @@ use agalma_contracts::ids::{ArtifactRef, AttemptId, OperationId, SessionId};
 use agalma_contracts::ContractError;
 use agalma_ipc::server::{Server, ServerInfo};
 use agalma_ipc::{register_harness, serve_harness, server_info_from, HarnessClient, Wire};
-use agalma_testkit::ScratchDir;
+use agalma_testkit::{retry_connect, ScratchDir};
 
 /// A deterministic stub harness: fixed handles/state, no clock or vendor.
 struct StubHarness;
@@ -199,9 +199,10 @@ fn harness_api_over_connect_matches_framed() {
     wait_for_socket(&framed_socket);
     wait_for_socket(&connect_socket);
 
-    let framed = HarnessClient::connect_wire(&framed_socket, Wire::Framed).expect("framed connect");
-    let connect =
-        HarnessClient::connect_wire(&connect_socket, Wire::Connect).expect("connect connect");
+    let framed = retry_connect(|| HarnessClient::connect_wire(&framed_socket, Wire::Framed))
+        .expect("framed connect");
+    let connect = retry_connect(|| HarnessClient::connect_wire(&connect_socket, Wire::Connect))
+        .expect("connect connect");
 
     // Cached identity is fetched over each wire at connect time.
     assert_eq!(framed.cached_describe(), connect.cached_describe());
@@ -218,7 +219,8 @@ fn harness_connect_live_describe_round_trips() {
     spawn_harness_server(socket.clone(), Wire::Connect);
     wait_for_socket(&socket);
 
-    let client = HarnessClient::connect_wire(&socket, Wire::Connect).expect("connect");
+    let client =
+        retry_connect(|| HarnessClient::connect_wire(&socket, Wire::Connect)).expect("connect");
     let live = client.describe_live().expect("live describe over Connect");
     assert_eq!(live, *client.cached_describe());
 }

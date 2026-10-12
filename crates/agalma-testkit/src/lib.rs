@@ -18,7 +18,37 @@
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// How long [`retry_connect`] keeps retrying before giving up: the same budget
+/// the per-test file-existence gates used (500 × 10 ms).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Retry a fallible connect attempt until it succeeds or [`CONNECT_TIMEOUT`]
+/// elapses, returning the last error on timeout.
+///
+/// A server spawned on a background thread can leave its socket file visible
+/// (created by `bind`) a beat before the listener is ready to accept, and a
+/// failed `listen` under fd pressure can even leave a stale file behind. A
+/// plain file-existence poll therefore races; retrying the real connect closes
+/// the window deterministically without sleeping longer than necessary.
+pub fn retry_connect<T, E, F>(mut attempt: F) -> Result<T, E>
+where
+    F: FnMut() -> Result<T, E>,
+{
+    let deadline = Instant::now() + CONNECT_TIMEOUT;
+    loop {
+        match attempt() {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                if Instant::now() >= deadline {
+                    return Err(err);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+}
 
 /// A process-local sequence, appended to the name so two `ScratchDir`s created
 /// in the same nanosecond (parallel tests) can never collide on one path.
@@ -157,6 +187,27 @@ mod tests {
         let path = ScratchDir::new("unit-into").into_path();
         assert!(path.is_dir(), "into_path() returns the (kept) dir");
         let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn retry_connect_retries_until_ready() {
+        let attempts = std::cell::Cell::new(0u32);
+        let value = retry_connect(|| {
+            let n = attempts.get() + 1;
+            attempts.set(n);
+            if n < 3 {
+                Err("not ready")
+            } else {
+                Ok(n)
+            }
+        });
+        assert_eq!(value, Ok(3), "returns the first successful attempt");
+    }
+
+    #[test]
+    fn retry_connect_returns_success_without_waiting() {
+        let value: Result<u8, &str> = retry_connect(|| Ok(7));
+        assert_eq!(value, Ok(7));
     }
 
     #[test]

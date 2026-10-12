@@ -29,7 +29,7 @@ use agalma_ipc::ledger_server::{
 };
 use agalma_ipc::server::{Server, ServerInfo};
 use agalma_ipc::{LedgerClient, Wire};
-use agalma_testkit::ScratchDir;
+use agalma_testkit::{retry_connect, ScratchDir};
 
 /// A deterministic in-memory ledger: fixed schema version, no clock, no SQLite.
 ///
@@ -328,9 +328,11 @@ fn ledger_api_over_connect_matches_framed() {
     wait_for_socket(&connect_socket);
 
     let mut framed =
-        LedgerClient::connect_wire(&framed_socket, &dir, Wire::Framed).expect("framed connect");
+        retry_connect(|| LedgerClient::connect_wire(&framed_socket, &dir, Wire::Framed))
+            .expect("framed connect");
     let mut connect =
-        LedgerClient::connect_wire(&connect_socket, &dir, Wire::Connect).expect("connect connect");
+        retry_connect(|| LedgerClient::connect_wire(&connect_socket, &dir, Wire::Connect))
+            .expect("connect connect");
 
     // Every typed call produces the same transcript on both wires.
     assert_eq!(

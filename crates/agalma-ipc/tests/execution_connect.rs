@@ -32,7 +32,7 @@ use agalma_ipc::{
     EffectContext, EffectDispatch, EffectProbe as IpcProbe, EffectReport, ExecutionClient,
     HandlerError, HandlerKey, StepBegin, Wire,
 };
-use agalma_testkit::ScratchDir;
+use agalma_testkit::{retry_connect, ScratchDir};
 use serde_json::{json, Value};
 
 /// A deterministic in-memory kernel: one execution, one dispatch operation, no
@@ -380,18 +380,19 @@ fn execution_api_over_connect_matches_framed() {
     wait_for_socket(&framed_socket);
     wait_for_socket(&connect_socket);
 
-    let mut framed = ExecutionClient::connect_wire(&framed_socket, Wire::Framed)
+    let mut framed = retry_connect(|| ExecutionClient::connect_wire(&framed_socket, Wire::Framed))
         .expect("framed connect")
         .with_effect_dispatch(Box::new(PresentDispatch {
             key: HandlerKey::new("stub/build", "v1"),
             outcome_ref: ArtifactRef::derive("stub-output"),
         }));
-    let mut connect = ExecutionClient::connect_wire(&connect_socket, Wire::Connect)
-        .expect("connect connect")
-        .with_effect_dispatch(Box::new(PresentDispatch {
-            key: HandlerKey::new("stub/build", "v1"),
-            outcome_ref: ArtifactRef::derive("stub-output"),
-        }));
+    let mut connect =
+        retry_connect(|| ExecutionClient::connect_wire(&connect_socket, Wire::Connect))
+            .expect("connect connect")
+            .with_effect_dispatch(Box::new(PresentDispatch {
+                key: HandlerKey::new("stub/build", "v1"),
+                outcome_ref: ArtifactRef::derive("stub-output"),
+            }));
 
     // Every typed call — including the caller-side effect-dispatch protocol —
     // produces the same transcript on both wires.

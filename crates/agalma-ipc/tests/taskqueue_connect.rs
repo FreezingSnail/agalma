@@ -21,7 +21,7 @@ use agalma_contracts::{
 use agalma_ipc::server::{Server, ServerInfo};
 use agalma_ipc::taskqueue_server::{register_taskqueue, serve_taskqueue};
 use agalma_ipc::{IssueProjection, TaskQueueClient, TaskQueueOps, Wire};
-use agalma_testkit::ScratchDir;
+use agalma_testkit::{retry_connect, ScratchDir};
 
 /// A deterministic stub task queue: no bd, no clock; operations mutate in-memory
 /// state so the projection reflects them.
@@ -211,10 +211,10 @@ fn taskqueue_api_over_connect_matches_framed() {
     wait_for_socket(&framed_socket);
     wait_for_socket(&connect_socket);
 
-    let framed =
-        TaskQueueClient::connect_wire(&framed_socket, Wire::Framed).expect("framed connect");
-    let connect =
-        TaskQueueClient::connect_wire(&connect_socket, Wire::Connect).expect("connect connect");
+    let framed = retry_connect(|| TaskQueueClient::connect_wire(&framed_socket, Wire::Framed))
+        .expect("framed connect");
+    let connect = retry_connect(|| TaskQueueClient::connect_wire(&connect_socket, Wire::Connect))
+        .expect("connect connect");
 
     // Every typed call produces the same transcript on both wires.
     assert_eq!(run_stub_scenario(framed), run_stub_scenario(connect));

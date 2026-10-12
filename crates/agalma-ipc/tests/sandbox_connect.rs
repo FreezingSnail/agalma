@@ -20,7 +20,7 @@ use agalma_contracts::ContractError;
 use agalma_ipc::sandbox_server::{register_sandbox, serve_sandbox};
 use agalma_ipc::server::{Server, ServerInfo};
 use agalma_ipc::{SandboxClient, Wire};
-use agalma_testkit::ScratchDir;
+use agalma_testkit::{retry_connect, ScratchDir};
 
 /// A deterministic stub sandbox: fixed pid sequence, no clock or real process.
 struct StubSandbox {
@@ -121,9 +121,10 @@ fn sandbox_api_over_connect_matches_framed() {
     wait_for_socket(&framed_socket);
     wait_for_socket(&connect_socket);
 
-    let framed = SandboxClient::connect_wire(&framed_socket, Wire::Framed).expect("framed connect");
-    let connect =
-        SandboxClient::connect_wire(&connect_socket, Wire::Connect).expect("connect connect");
+    let framed = retry_connect(|| SandboxClient::connect_wire(&framed_socket, Wire::Framed))
+        .expect("framed connect");
+    let connect = retry_connect(|| SandboxClient::connect_wire(&connect_socket, Wire::Connect))
+        .expect("connect connect");
 
     // Every typed call produces the same transcript on both wires.
     assert_eq!(run_stub_scenario(framed), run_stub_scenario(connect));

@@ -25,8 +25,9 @@ use std::time::Duration;
 
 use agalma_contracts::{
     BindingId, BindingRecord, BindingState, CommitBatch, CommitReceipt, ContractError,
-    DispatchIntent, ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState,
-    LedgerApi, OperationId, OperationReceipt, StateSnapshot, TaskId, TimerRecord, TimerState,
+    ControlReceipt, DispatchIntent, ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord,
+    ExecutionState, LedgerApi, OperationId, OperationReceipt, StateSnapshot, TaskId, TimerRecord,
+    TimerState,
 };
 use agalma_ipc::{Client, CommandSpec, CommitParams, IpcError, LedgerClient, LedgerOps};
 use agalma_ledger::server::SERVER_BIN;
@@ -355,9 +356,56 @@ fn shadow_parity_in_process_vs_process() {
 }
 
 // ===========================================================================
-// Case b — quiesced rebind with an in-flight pinned operation
+// Case a.1 — control receipts over the process boundary (TUI.5 agalma-3kr.6)
 // ===========================================================================
 
+/// Control receipts recorded through one client are queryable over the framed
+/// boundary; applied and denied attempts both round-trip.
+#[test]
+fn control_receipts_queryable_over_process_boundary() {
+    let dir = fresh();
+    let socket = dir.join("c.sock");
+    let mut server = spawn_server(&socket, &dir);
+    let mut client = server.client().expect("connect ledger client");
+
+    let applied = ControlReceipt {
+        action_id: "cancel-1".to_string(),
+        action: "cancel".to_string(),
+        target: exec().to_string(),
+        actor: "human".to_string(),
+        request: serde_json::json!({ "outcome": "applied" }),
+        recorded_at_unix_ms: 1,
+    };
+    client
+        .record_control_receipt(&applied)
+        .expect("record applied receipt");
+
+    let denied = ControlReceipt {
+        action_id: "pause-2".to_string(),
+        action: "pause".to_string(),
+        target: String::new(),
+        actor: "human".to_string(),
+        request: serde_json::json!({ "outcome": "denied", "reason": "already paused" }),
+        recorded_at_unix_ms: 2,
+    };
+    client
+        .record_control_receipt(&denied)
+        .expect("record denied receipt");
+
+    let receipts = client.control_receipts().expect("query receipts");
+    assert_eq!(receipts, vec![applied, denied], "ordered by recorded_at");
+
+    drop(client);
+    let evidence = server.stop();
+    assert!(
+        evidence.process_group_gone,
+        "server stop evidence: {evidence:?}"
+    );
+}
+
+// ===========================================================================
+// Case b — quiesced rebind with an in-flight pinned operation
+// ===========================================================================
 #[test]
 fn quiesced_rebind_preserves_pinned_operation() {
     let run = fresh();

@@ -27,9 +27,9 @@ use std::time::Duration;
 
 use agalma_contracts::harness::StopEvidence;
 use agalma_contracts::{
-    BindingRecord, CommitBatch, CommitReceipt, ContractError, DecisionOutcome, DecisionRequest,
-    DigestRecord, DirectiveRow, DispatchIntent, ExecutionEvent, ExecutionId, ExecutionRecord,
-    LedgerApi, OperationId, OperationReceipt, StateSnapshot, TaskId, TimerRecord,
+    BindingRecord, CommitBatch, CommitReceipt, ContractError, ControlReceipt, DecisionOutcome,
+    DecisionRequest, DigestRecord, DirectiveRow, DispatchIntent, ExecutionEvent, ExecutionId,
+    ExecutionRecord, LedgerApi, OperationId, OperationReceipt, StateSnapshot, TaskId, TimerRecord,
 };
 use agalma_ipc::{CommandSpec, LedgerClient, LedgerOps};
 use agalma_ledger::server::server_command;
@@ -451,6 +451,20 @@ impl LedgerApi for LedgerHandle {
         match &mut *self.borrow() {
             Backend::InProcess(l) => l.consume_dispatch_intent(operation_id),
             Backend::Process(c) => c.consume_dispatch_intent(operation_id),
+        }
+    }
+
+    fn record_control_receipt(&mut self, receipt: &ControlReceipt) -> Result<(), ContractError> {
+        match &mut *self.borrow() {
+            Backend::InProcess(l) => l.record_control_receipt(receipt),
+            Backend::Process(c) => c.record_control_receipt(receipt),
+        }
+    }
+
+    fn control_receipts(&self) -> Result<Vec<ControlReceipt>, ContractError> {
+        match &mut *self.borrow() {
+            Backend::InProcess(l) => l.control_receipts(),
+            Backend::Process(c) => c.control_receipts(),
         }
     }
 

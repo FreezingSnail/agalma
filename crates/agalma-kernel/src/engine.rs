@@ -43,7 +43,7 @@ pub const META_KERNEL_VERSION: &str = "kernel_version";
 /// rather than importing an implementation crate). A stored schema that differs
 /// parks the kernel: it never auto-migrates and never writes under a schema it
 /// does not understand.
-pub const EXPECTED_LEDGER_SCHEMA_VERSION: u32 = 3;
+pub const EXPECTED_LEDGER_SCHEMA_VERSION: u32 = 4;
 
 /// Outcome of applying one command.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -12,6 +12,7 @@ pub mod components;
 pub mod composition;
 pub mod concierge;
 pub mod config;
+pub mod control;
 pub mod digest;
 pub mod execution_process;
 pub mod harness_binding;
@@ -55,14 +56,17 @@ use agalma_contracts::{
     ExecutionApi, ExecutionId, ExecutionPhase, ExecutionState, ExecutionStatus, LedgerApi,
     StepOutcome, TaskId,
 };
-use agalma_execution::{Executor, LEDGER_SCHEMA_VERSION};
+use agalma_execution::{
+    Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION, LEDGER_SCHEMA_VERSION,
+};
 use agalma_ipc::LedgerClient;
 use agalma_ledger::SqliteLedger;
 use clap::Parser;
 use tokio::signal::unix::{signal, SignalKind};
 
 use crate::cli::{
-    Cli, Command, DigestArgs, GcArgs, ReconcileArgs, RunArgs, StateArgs, StatusArgs, WatchArgs,
+    CancelArgs, Cli, Command, DigestArgs, GcArgs, ReconcileArgs, RunArgs, StateArgs, StatusArgs,
+    WatchArgs,
 };
 use crate::composition::Composition;
 use crate::config::{Config, PHASE_PLAN};
@@ -77,6 +81,8 @@ pub async fn run() -> ExitCode {
         Command::Work(args) => crate::work::run_work(args),
         Command::Reconcile(args) => reconcile_command(&args),
         Command::Resume(args) => resume_command(&args),
+        Command::Pause(args) => pause_command(&args),
+        Command::Cancel(args) => cancel_command(&args),
         Command::Status(args) => status_command(&args),
         Command::Watch(args) => watch_command(&args).await,
         Command::Digest(args) => digest_command(&args),
@@ -302,6 +308,21 @@ fn report(status: &ExecutionStatus) {
 }
 
 fn resume_command(args: &StateArgs) -> ExitCode {
+    latch_command(args, crate::control::ControlAction::Resume)
+}
+
+/// `agalma pause`: set the durable kill latch (stops new claims/dispatch;
+/// in-flight work is not interrupted). Human-only; records a receipt.
+fn pause_command(args: &StateArgs) -> ExitCode {
+    latch_command(args, crate::control::ControlAction::Pause)
+}
+
+/// Pause/Resume: open the ledger, apply through the control plane (guard +
+/// durable receipt), and report the outcome.
+///
+/// The subcommand invocation is itself the human's typed confirmation for
+/// resume; pause is non-destructive and needs none.
+fn latch_command(args: &StateArgs, action: crate::control::ControlAction) -> ExitCode {
     let state_dir = match crate::config::resolve_state_dir(args.state_dir.as_deref()) {
         Ok(dir) => dir,
         Err(err) => {
@@ -310,13 +331,8 @@ fn resume_command(args: &StateArgs) -> ExitCode {
         }
     };
     let ledger_path = state_dir.join("ledger.sqlite");
-    match SqliteLedger::open(&ledger_path) {
-        Ok(mut ledger) => {
-            if let Err(err) = ledger.set_kill_latch(false) {
-                eprintln!("agalma: cannot clear kill latch: {err}");
-                return ExitCode::FAILURE;
-            }
-        }
+    let mut ledger = match SqliteLedger::open(&ledger_path) {
+        Ok(ledger) => ledger,
         Err(err) => {
             eprintln!(
                 "agalma: cannot open ledger {}: {err}",
@@ -324,10 +340,114 @@ fn resume_command(args: &StateArgs) -> ExitCode {
             );
             return ExitCode::FAILURE;
         }
+    };
+    let mut cancel = crate::control::NoCancel;
+    let mut request = human_request(action);
+    if request.action.requires_confirmation() {
+        let word = request.action.name();
+        request = request.with_confirmation(word);
     }
-    let _ = std::fs::remove_file(state_dir.join("STOP"));
-    println!("agalma: kill latch cleared; dispatch may resume");
-    ExitCode::SUCCESS
+    let outcome = {
+        let mut plane = crate::control::ControlPlane::new(&mut ledger, &mut cancel, &state_dir);
+        match plane.apply(&request) {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                eprintln!("agalma {}: {err}", request.action.name());
+                return ExitCode::FAILURE;
+            }
+        }
+    };
+    report_control(&request, &outcome)
+}
+
+/// `agalma cancel --execution <id> [--confirm cancel]`: request cancellation of
+/// one execution (human-only, typed confirmation). Records a durable receipt
+/// and, on success, the `cancel_requested` event via [`ExecutionApi::cancel`].
+fn cancel_command(args: &CancelArgs) -> ExitCode {
+    let state_dir = match crate::config::resolve_state_dir(args.state_dir.as_deref()) {
+        Ok(dir) => dir,
+        Err(err) => {
+            eprintln!("agalma: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let ledger_path = state_dir.join("ledger.sqlite");
+    if !ledger_path.exists() {
+        eprintln!("agalma: no ledger at {}", ledger_path.display());
+        return ExitCode::FAILURE;
+    }
+    // The control plane records receipts through its own connection; the
+    // executor (the cancel seam) holds a second, so both borrow `&mut` cleanly.
+    let mut plane_ledger = match SqliteLedger::open(&ledger_path) {
+        Ok(ledger) => ledger,
+        Err(err) => {
+            eprintln!("agalma: cannot open ledger: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let exec_ledger = match SqliteLedger::open(&ledger_path) {
+        Ok(ledger) => ledger,
+        Err(err) => {
+            eprintln!("agalma: cannot open ledger: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut executor = Executor::new(
+        exec_ledger,
+        ExecutorConfig {
+            max_attempts: 1,
+            execution_definition_version: EXECUTION_DEFINITION_VERSION,
+        },
+    );
+    let action = crate::control::ControlAction::Cancel {
+        execution: ExecutionId::new(args.execution.clone()),
+    };
+    let mut request = human_request(action);
+    if let Some(word) = &args.confirm {
+        request = request.with_confirmation(word.clone());
+    }
+    let outcome = {
+        let mut plane =
+            crate::control::ControlPlane::new(&mut plane_ledger, &mut executor, &state_dir);
+        match plane.apply(&request) {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                eprintln!("agalma cancel: {err}");
+                return ExitCode::FAILURE;
+            }
+        }
+    };
+    report_control(&request, &outcome)
+}
+
+/// Build a human control request with a fresh action id.
+fn human_request(action: crate::control::ControlAction) -> crate::control::ControlRequest {
+    crate::control::ControlRequest::new(
+        crate::control::new_action_id(&action),
+        action,
+        crate::control::Actor::Human,
+    )
+}
+
+/// Print the control outcome; a denial is a failure exit (nothing changed).
+fn report_control(
+    request: &crate::control::ControlRequest,
+    outcome: &crate::control::ControlOutcome,
+) -> ExitCode {
+    match outcome {
+        crate::control::ControlOutcome::Applied => {
+            println!(
+                "agalma {}: applied (receipt {})",
+                request.action.name(),
+                request.action_id
+            );
+            ExitCode::SUCCESS
+        }
+        crate::control::ControlOutcome::Denied { reason } => {
+            eprintln!("agalma {}: denied: {reason}", request.action.name());
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// `agalma reconcile`: compare the ledger against the bd projection and rewrite

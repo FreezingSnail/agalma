@@ -23,6 +23,10 @@ pub enum Command {
     Reconcile(ReconcileArgs),
     /// Clear the kill latch and resume dispatch (human-only).
     Resume(StateArgs),
+    /// Set the kill latch: stop new claims/dispatch (human-only).
+    Pause(StateArgs),
+    /// Request cancellation of one execution (human-only; typed confirmation).
+    Cancel(CancelArgs),
     /// Report ledger and execution status (TUI read-model snapshot).
     Status(StatusArgs),
     /// Live refresh loop over the TUI read model (read-only watch view).
@@ -95,6 +99,20 @@ pub struct RunArgs {
 pub struct StateArgs {
     /// Override the state directory (defaults to `AGALMA_STATE_DIR` or the
     /// platform application-support directory).
+    #[arg(long, value_name = "DIR")]
+    pub state_dir: Option<PathBuf>,
+}
+
+/// Arguments for `agalma cancel`.
+#[derive(Debug, Args)]
+pub struct CancelArgs {
+    /// Execution id (`exec:<task>:<generation>`).
+    #[arg(long, value_name = "ID")]
+    pub execution: String,
+    /// Typed confirmation; must be `cancel` for the request to apply.
+    #[arg(long, value_name = "WORD")]
+    pub confirm: Option<String>,
+    /// Override the state directory.
     #[arg(long, value_name = "DIR")]
     pub state_dir: Option<PathBuf>,
 }

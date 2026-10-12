@@ -20,9 +20,10 @@ use serde_json::Value;
 
 use crate::harness_client::{decode_params, encode_result};
 use crate::ledger_client::{
-    BindingParams, CommitParams, DecisionParams, DigestParams, DirectiveIdCall, DirectiveParams,
-    DueTimersParams, ExecutionCall, KeyCall, LatchParams, LeaseCall, LedgerOps, MetaParams,
-    OperationIdCall, OutcomeParams, PathParams, TimerIdCall, TimerParams,
+    BindingParams, CommitParams, ControlReceiptParams, DecisionParams, DigestParams,
+    DirectiveIdCall, DirectiveParams, DueTimersParams, ExecutionCall, KeyCall, LatchParams,
+    LeaseCall, LedgerOps, MetaParams, OperationIdCall, OutcomeParams, PathParams, TimerIdCall,
+    TimerParams,
 };
 use crate::server::Server;
 
@@ -264,6 +265,21 @@ where
     }
     {
         let shared = Arc::clone(&shared);
+        server.on("record_control_receipt", move |params: Value| {
+            let call: ControlReceiptParams = decode_params(params)?;
+            lock(&shared).record_control_receipt(&call.receipt)?;
+            encode_result(())
+        });
+    }
+    {
+        let shared = Arc::clone(&shared);
+        server.on("control_receipts", move |_params: Value| {
+            let result = lock(&shared).control_receipts()?;
+            encode_result(result)
+        });
+    }
+    {
+        let shared = Arc::clone(&shared);
         server.on("export_state_to", move |params: Value| {
             let call: PathParams = decode_params(params)?;
             lock(&shared).export_snapshot_to(std::path::Path::new(&call.path))?;
@@ -290,7 +306,7 @@ fn lock<S>(shared: &Arc<Mutex<S>>) -> std::sync::MutexGuard<'_, S> {
 /// `export_state`/`import_state` are client-side conveniences implemented over
 /// the two snapshot file primitives (`export_state_to`/`import_state_from`), so
 /// they are not separate wire methods.
-pub const LEDGER_METHODS: [&str; 31] = [
+pub const LEDGER_METHODS: [&str; 33] = [
     "commit",
     "execution",
     "executions",
@@ -320,6 +336,8 @@ pub const LEDGER_METHODS: [&str; 31] = [
     "upsert_directive",
     "directive",
     "consume_dispatch_intent",
+    "record_control_receipt",
+    "control_receipts",
     "export_state_to",
     "import_state_from",
 ];

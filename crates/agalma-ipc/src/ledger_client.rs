@@ -23,9 +23,9 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 use agalma_contracts::{
-    BindingRecord, CommitBatch, CommitReceipt, ContractError, DecisionOutcome, DecisionRequest,
-    DigestRecord, DirectiveRow, DispatchIntent, ExecutionEvent, ExecutionId, ExecutionRecord,
-    LedgerApi, OperationId, OperationReceipt, StateSnapshot, TaskId, TimerRecord,
+    BindingRecord, CommitBatch, CommitReceipt, ContractError, ControlReceipt, DecisionOutcome,
+    DecisionRequest, DigestRecord, DirectiveRow, DispatchIntent, ExecutionEvent, ExecutionId,
+    ExecutionRecord, LedgerApi, OperationId, OperationReceipt, StateSnapshot, TaskId, TimerRecord,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -136,6 +136,12 @@ pub struct DirectiveParams {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DirectiveIdCall {
     pub directive_id: String,
+}
+
+/// Params for `record_control_receipt`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ControlReceiptParams {
+    pub receipt: ControlReceipt,
 }
 
 /// Params for the snapshot file-transfer primitives.
@@ -451,6 +457,19 @@ impl LedgerApi for LedgerClient {
                 operation_id: operation_id.clone(),
             },
         )
+    }
+
+    fn record_control_receipt(&mut self, receipt: &ControlReceipt) -> Result<(), ContractError> {
+        self.call(
+            "record_control_receipt",
+            &ControlReceiptParams {
+                receipt: receipt.clone(),
+            },
+        )
+    }
+
+    fn control_receipts(&self) -> Result<Vec<ControlReceipt>, ContractError> {
+        self.call("control_receipts", &serde_json::json!({}))
     }
 
     fn export_state(&self) -> Result<StateSnapshot, ContractError> {

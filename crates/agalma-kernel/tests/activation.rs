@@ -403,7 +403,7 @@ fn rollback_restore_reconciles_before_dispatch() {
     // Restore: schema checked, all domains reconciled, latch cleared.
     let mut ok = ScriptedReconciler::all_reconciled();
     let restored = restore(&mut engine, &mut ok, &exec(), 12).unwrap();
-    assert_eq!(restored.schema_version, 3);
+    assert_eq!(restored.schema_version, 4);
     assert!(!restored.parked);
     assert_eq!(restored.outcomes.len(), 4);
     assert_eq!(

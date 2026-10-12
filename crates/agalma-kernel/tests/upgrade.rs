@@ -122,7 +122,7 @@ fn check_candidate_reconstructs_pending_state_without_effects() {
 
     let report = check_candidate(engine.ledger(), None).unwrap();
     assert!(report.compatible(), "report: {report:?}");
-    assert_eq!(report.schema_version, 3);
+    assert_eq!(report.schema_version, 4);
     assert_eq!(report.executions.len(), 1);
 
     // Reducer-only: reconstruction runs no external effect.

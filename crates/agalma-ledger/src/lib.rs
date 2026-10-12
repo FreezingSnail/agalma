@@ -27,6 +27,15 @@
 //! is read/written through [`LedgerApi::kernel_meta_get`] /
 //! [`LedgerApi::kernel_meta_set`]; timers and directives get methods in B0.4.
 //!
+//! ## Schema v4
+//!
+//! Schema v4 adds the additive `control_receipts` table (TUI.5, `agalma-3kr.6`):
+//! one durable receipt per interactive control action (pause/resume/cancel),
+//! applied or denied. `open()` migrates v1/v2/v3 → v4 under the same rule: only
+//! when every execution is terminal; otherwise it refuses with no in-flight
+//! migration. Receipts are written/read through
+//! [`LedgerApi::record_control_receipt`] / [`LedgerApi::control_receipts`].
+//!
 //! ## Sequence assignment
 //!
 //! `execution_events.sequence` is owned by the ledger: any sequence supplied in
@@ -41,22 +50,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::BTreeMap;
 
 use agalma_contracts::{
-    BindingRecord, BindingState, CommitBatch, CommitReceipt, ContractError, DecisionOutcome,
-    DecisionRequest, DigestRecord, DirectiveRow, DirectiveState, DispatchIntent, ExecutionEvent,
-    ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState, LedgerApi, OperationId,
-    OperationReceipt, StateSnapshot, TaskId, TimerRecord, TimerState, SNAPSHOT_FORMAT,
+    BindingRecord, BindingState, CommitBatch, CommitReceipt, ContractError, ControlReceipt,
+    DecisionOutcome, DecisionRequest, DigestRecord, DirectiveRow, DirectiveState, DispatchIntent,
+    ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState, LedgerApi,
+    OperationId, OperationReceipt, StateSnapshot, TaskId, TimerRecord, TimerState, SNAPSHOT_FORMAT,
 };
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use agalma_ipc::LedgerOps;
 
+pub mod server;
 #[cfg(test)]
 mod tests;
-pub mod server;
 
 /// Persisted physical schema version. Bump only with a migration.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// `kernel_meta` key holding the persisted execution-definition version.
 const META_EXEC_DEF_VERSION_KEY: &str = "exec_def_version";
@@ -178,6 +187,22 @@ CREATE TABLE IF NOT EXISTS directives (
 );
 "#;
 
+/// Additive schema v4: durable control-action receipts (TUI.5, `agalma-3kr.6`).
+///
+/// One row per interactive control action, applied or denied. `request_json`
+/// carries the request detail including the `outcome` field; `action_id` is the
+/// idempotency anchor. Receipts are audit-only: they gate nothing.
+const SCHEMA_V4_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS control_receipts (
+  action_id TEXT PRIMARY KEY,
+  action TEXT NOT NULL,
+  target TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  request_json TEXT NOT NULL,
+  recorded_at INTEGER NOT NULL
+);
+"#;
+
 /// SQLite-backed [`LedgerApi`].
 pub struct SqliteLedger {
     conn: Connection,
@@ -234,8 +259,8 @@ impl SqliteLedger {
         Ok(())
     }
 
-    /// Simulate a genuine v1 database: drop the additive v2/v3 tables and record
-    /// schema version 1. Test-only; used to exercise the migration path.
+    /// Simulate a genuine v1 database: drop the additive v2/v3/v4 tables and
+    /// record schema version 1. Test-only; used to exercise the migration path.
     #[cfg(test)]
     fn downgrade_to_v1(&self) -> Result<(), ContractError> {
         self.conn
@@ -246,13 +271,14 @@ impl SqliteLedger {
                  DROP TABLE IF EXISTS kernel_meta; \
                  DROP TABLE IF EXISTS timers; \
                  DROP TABLE IF EXISTS directives; \
+                 DROP TABLE IF EXISTS control_receipts; \
                  UPDATE meta SET value='1' WHERE key='schema_version';",
             )
             .map_err(db_err)?;
         Ok(())
     }
 
-    /// Simulate a genuine v2 database: drop the additive v3 tables and record
+    /// Simulate a genuine v2 database: drop the additive v3/v4 tables and record
     /// schema version 2. Test-only; used to exercise the v2 → v3 migration.
     #[cfg(test)]
     fn downgrade_to_v2(&self) -> Result<(), ContractError> {
@@ -261,7 +287,22 @@ impl SqliteLedger {
                 "DROP TABLE IF EXISTS kernel_meta; \
                  DROP TABLE IF EXISTS timers; \
                  DROP TABLE IF EXISTS directives; \
+                 DROP TABLE IF EXISTS control_receipts; \
                  UPDATE meta SET value='2' WHERE key='schema_version';",
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Simulate a genuine v3 database: drop the additive v4 `control_receipts`
+    /// table and record schema version 3. Test-only; used to exercise the
+    /// v3 → v4 migration.
+    #[cfg(test)]
+    fn downgrade_to_v3(&self) -> Result<(), ContractError> {
+        self.conn
+            .execute_batch(
+                "DROP TABLE IF EXISTS control_receipts; \
+                 UPDATE meta SET value='3' WHERE key='schema_version';",
             )
             .map_err(db_err)?;
         Ok(())
@@ -282,9 +323,10 @@ fn ensure_schema(conn: &Connection) -> Result<(), ContractError> {
     conn.execute_batch(SCHEMA_V1_SQL).map_err(db_err)?;
     match meta_value(conn, "schema_version")? {
         None => {
-            // Fresh database: create v2 + v3 and record the version.
+            // Fresh database: create v2 + v3 + v4 and record the version.
             conn.execute_batch(SCHEMA_V2_SQL).map_err(db_err)?;
             conn.execute_batch(SCHEMA_V3_SQL).map_err(db_err)?;
+            conn.execute_batch(SCHEMA_V4_SQL).map_err(db_err)?;
             let now = now_ms();
             let stmts: [(&str, String); 3] = [
                 ("schema_version", SCHEMA_VERSION.to_string()),
@@ -303,16 +345,17 @@ fn ensure_schema(conn: &Connection) -> Result<(), ContractError> {
             let version: u32 = raw.parse().unwrap_or(0);
             match version {
                 1 => {
-                    // Auto-migrate v1 → v3 only when every execution is terminal.
+                    // Auto-migrate v1 → v4 only when every execution is terminal.
                     if !all_executions_terminal(conn)? {
                         return Err(ContractError::KnownFailure(
-                            "refusing v1 -> v3 migration: in-flight executions present \
+                            "refusing v1 -> v4 migration: in-flight executions present \
                              (no in-flight migration)"
                                 .to_string(),
                         ));
                     }
                     conn.execute_batch(SCHEMA_V2_SQL).map_err(db_err)?;
                     conn.execute_batch(SCHEMA_V3_SQL).map_err(db_err)?;
+                    conn.execute_batch(SCHEMA_V4_SQL).map_err(db_err)?;
                     conn.execute(
                         "UPDATE meta SET value=?1 WHERE key='schema_version'",
                         params![SCHEMA_VERSION.to_string()],
@@ -320,22 +363,39 @@ fn ensure_schema(conn: &Connection) -> Result<(), ContractError> {
                     .map_err(db_err)?;
                 }
                 2 => {
-                    // Auto-migrate v2 → v3 only when every execution is terminal.
+                    // Auto-migrate v2 → v4 only when every execution is terminal.
                     if !all_executions_terminal(conn)? {
                         return Err(ContractError::KnownFailure(
-                            "refusing v2 -> v3 migration: in-flight executions present \
+                            "refusing v2 -> v4 migration: in-flight executions present \
                              (no in-flight migration)"
                                 .to_string(),
                         ));
                     }
                     conn.execute_batch(SCHEMA_V3_SQL).map_err(db_err)?;
+                    conn.execute_batch(SCHEMA_V4_SQL).map_err(db_err)?;
                     conn.execute(
                         "UPDATE meta SET value=?1 WHERE key='schema_version'",
                         params![SCHEMA_VERSION.to_string()],
                     )
                     .map_err(db_err)?;
                 }
-                // Version 3: tables already present. Any other version is a
+                3 => {
+                    // Auto-migrate v3 → v4 only when every execution is terminal.
+                    if !all_executions_terminal(conn)? {
+                        return Err(ContractError::KnownFailure(
+                            "refusing v3 -> v4 migration: in-flight executions present \
+                             (no in-flight migration)"
+                                .to_string(),
+                        ));
+                    }
+                    conn.execute_batch(SCHEMA_V4_SQL).map_err(db_err)?;
+                    conn.execute(
+                        "UPDATE meta SET value=?1 WHERE key='schema_version'",
+                        params![SCHEMA_VERSION.to_string()],
+                    )
+                    .map_err(db_err)?;
+                }
+                // Version 4: tables already present. Any other version is a
                 // future or unknown schema: leave it untouched; use refuses.
                 _ => {}
             }
@@ -1018,6 +1078,65 @@ impl LedgerApi for SqliteLedger {
         Ok(())
     }
 
+    fn record_control_receipt(&mut self, receipt: &ControlReceipt) -> Result<(), ContractError> {
+        self.ensure_compatible()?;
+        if let Some(existing) = read_control_receipt(&self.conn, &receipt.action_id)? {
+            // Idempotent by action_id: identical contents (ignoring the
+            // timestamp) are a harmless no-op; any other difference is a
+            // conflict (the caller must use a new action id).
+            if existing.action == receipt.action
+                && existing.target == receipt.target
+                && existing.actor == receipt.actor
+                && existing.request == receipt.request
+            {
+                return Ok(());
+            }
+            return Err(ContractError::Conflict(format!(
+                "control receipt {} reused with different contents",
+                receipt.action_id
+            )));
+        }
+        self.conn
+            .execute(
+                "INSERT INTO control_receipts(action_id,action,target,actor,request_json,recorded_at) \
+                 VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    receipt.action_id,
+                    receipt.action,
+                    receipt.target,
+                    receipt.actor,
+                    serde_json::to_string(&receipt.request).map_err(json_err)?,
+                    sql_u64(receipt.recorded_at_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    fn control_receipts(&self) -> Result<Vec<ControlReceipt>, ContractError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT action_id,action,target,actor,request_json,recorded_at \
+                 FROM control_receipts ORDER BY recorded_at, action_id",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                let request: String = row.get(4)?;
+                Ok(ControlReceipt {
+                    action_id: row.get(0)?,
+                    action: row.get(1)?,
+                    target: row.get(2)?,
+                    actor: row.get(3)?,
+                    request: serde_json::from_str(&request).map_err(|e| conversion_err(4, e))?,
+                    recorded_at_unix_ms: row.get::<_, i64>(5)? as u64,
+                })
+            })
+            .map_err(db_err)?;
+        collect_rows(rows)
+    }
+
     fn export_state(&self) -> Result<StateSnapshot, ContractError> {
         let kernel_meta = all_kernel_meta(&self.conn)?;
         let exec_def_version = kernel_meta
@@ -1325,6 +1444,30 @@ fn read_decision_hash(
         "SELECT inputs_hash FROM decisions WHERE operation_id=?1",
         params![operation_id],
         |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(db_err)
+}
+
+fn read_control_receipt(
+    conn: &Connection,
+    action_id: &str,
+) -> Result<Option<ControlReceipt>, ContractError> {
+    conn.query_row(
+        "SELECT action_id,action,target,actor,request_json,recorded_at \
+         FROM control_receipts WHERE action_id=?1",
+        params![action_id],
+        |row| {
+            let request: String = row.get(4)?;
+            Ok(ControlReceipt {
+                action_id: row.get(0)?,
+                action: row.get(1)?,
+                target: row.get(2)?,
+                actor: row.get(3)?,
+                request: serde_json::from_str(&request).map_err(|e| conversion_err(4, e))?,
+                recorded_at_unix_ms: row.get::<_, i64>(5)? as u64,
+            })
+        },
     )
     .optional()
     .map_err(db_err)

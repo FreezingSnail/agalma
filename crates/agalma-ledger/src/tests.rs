@@ -15,10 +15,11 @@ use serde_json::{json, Value};
 use agalma_testkit::ScratchDir;
 
 use agalma_contracts::{
-    ArtifactRef, BindingId, BindingRecord, BindingState, CommitBatch, ContractError, DecisionKind,
-    DecisionOutcome, DecisionPin, DecisionRequest, DigestRecord, DirectiveRow, DirectiveState,
-    DispatchIntent, ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState,
-    LedgerApi, OperationId, OperationReceipt, TaskId, TimerRecord, TimerState,
+    ArtifactRef, BindingId, BindingRecord, BindingState, CommitBatch, ContractError,
+    ControlReceipt, DecisionKind, DecisionOutcome, DecisionPin, DecisionRequest, DigestRecord,
+    DirectiveRow, DirectiveState, DispatchIntent, ExecutionEvent, ExecutionId, ExecutionPhase,
+    ExecutionRecord, ExecutionState, LedgerApi, OperationId, OperationReceipt, TaskId, TimerRecord,
+    TimerState,
 };
 
 use crate::{SqliteLedger, SCHEMA_VERSION};
@@ -874,4 +875,134 @@ fn directive_survives_reopen() {
     assert_eq!(row.version, 3);
     assert_eq!(row.source, "orch");
     assert_eq!(row.state, DirectiveState::Active);
+}
+
+// ---------------------------------------------------------------------------
+// Control receipts (schema v4, TUI.5 agalma-3kr.6)
+// ---------------------------------------------------------------------------
+
+fn control_receipt(action_id: &str, outcome: &str) -> ControlReceipt {
+    ControlReceipt {
+        action_id: action_id.to_string(),
+        action: "pause".to_string(),
+        target: String::new(),
+        actor: "human".to_string(),
+        request: json!({ "outcome": outcome }),
+        recorded_at_unix_ms: now_ms(),
+    }
+}
+
+#[test]
+fn control_receipts_round_trip_and_are_idempotent_by_action_id() {
+    let dir = run_dir("control-receipts");
+    let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
+
+    ledger
+        .record_control_receipt(&control_receipt("a1", "applied"))
+        .unwrap();
+    ledger
+        .record_control_receipt(&control_receipt("a2", "denied"))
+        .unwrap();
+    // Identical re-record (ignoring the timestamp) is a harmless no-op.
+    ledger
+        .record_control_receipt(&control_receipt("a1", "applied"))
+        .unwrap();
+    // Reusing an action id with different contents is a conflict.
+    assert!(matches!(
+        ledger.record_control_receipt(&control_receipt("a1", "denied")),
+        Err(ContractError::Conflict(_))
+    ));
+
+    let receipts = ledger.control_receipts().unwrap();
+    assert_eq!(receipts.len(), 2, "no duplicate row for a replay");
+    assert_eq!(receipts[0].action_id, "a1");
+    assert_eq!(receipts[0].request, json!({ "outcome": "applied" }));
+    assert_eq!(receipts[1].action_id, "a2");
+}
+
+#[test]
+fn control_receipts_survive_reopen() {
+    let dir = run_dir("control-reopen");
+    let path = dir.join("ledger.sqlite");
+    {
+        let mut ledger = SqliteLedger::open(&path).unwrap();
+        ledger
+            .record_control_receipt(&control_receipt("a1", "applied"))
+            .unwrap();
+    }
+    let ledger = SqliteLedger::open(&path).unwrap();
+    let receipts = ledger.control_receipts().unwrap();
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].action, "pause");
+    assert_eq!(receipts[0].actor, "human");
+}
+
+#[test]
+fn migration_v3_to_v4_when_all_executions_terminal() {
+    let dir = run_dir("migrate-v3-terminal");
+    let path = dir.join("ledger.sqlite");
+    let exec = fixture_exec();
+
+    {
+        let mut ledger = SqliteLedger::open(&path).unwrap();
+        ledger
+            .commit(CommitBatch {
+                expected_revision: None,
+                state: Some(record(
+                    &exec,
+                    ExecutionPhase::Done,
+                    ExecutionState::Completed,
+                )),
+                events: vec![],
+                receipts: vec![],
+                intents: vec![],
+            })
+            .unwrap();
+        ledger.downgrade_to_v3().unwrap();
+        assert_eq!(ledger.schema_version().unwrap(), 3);
+    }
+
+    let mut ledger = SqliteLedger::open(&path).unwrap();
+    assert_eq!(
+        ledger.schema_version().unwrap(),
+        SCHEMA_VERSION,
+        "terminal v3 database migrates to v4"
+    );
+    // v4 surface is live after migration.
+    ledger
+        .record_control_receipt(&control_receipt("a1", "applied"))
+        .unwrap();
+    assert_eq!(ledger.control_receipts().unwrap().len(), 1);
+}
+
+#[test]
+fn migration_v3_to_v4_refused_with_in_flight_execution() {
+    let dir = run_dir("migrate-v3-inflight");
+    let path = dir.join("ledger.sqlite");
+    let exec = fixture_exec();
+
+    {
+        let mut ledger = SqliteLedger::open(&path).unwrap();
+        ledger
+            .commit(CommitBatch {
+                expected_revision: None,
+                state: Some(record(
+                    &exec,
+                    ExecutionPhase::Build,
+                    ExecutionState::Running,
+                )),
+                events: vec![],
+                receipts: vec![],
+                intents: vec![],
+            })
+            .unwrap();
+        ledger.downgrade_to_v3().unwrap();
+    }
+
+    let err = SqliteLedger::open(&path).map(|_| ()).unwrap_err();
+    assert!(matches!(err, ContractError::KnownFailure(_)), "err={err:?}");
+    assert!(
+        err.to_string().contains("in-flight"),
+        "reason must name in-flight executions: {err}"
+    );
 }

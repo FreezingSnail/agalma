@@ -39,8 +39,9 @@ pub use harness::{
 };
 pub use ids::{ArtifactRef, AttemptId, BindingId, ExecutionId, OperationId, SessionId, TaskId};
 pub use ledger::{
-    CommitBatch, CommitReceipt, DigestRecord, DirectiveRow, DirectiveState, DispatchIntent,
-    ExecutionEvent, ExecutionRecord, LedgerApi, OperationReceipt, TimerRecord, TimerState,
+    CommitBatch, CommitReceipt, ControlReceipt, DigestRecord, DirectiveRow, DirectiveState,
+    DispatchIntent, ExecutionEvent, ExecutionRecord, LedgerApi, OperationReceipt, TimerRecord,
+    TimerState,
 };
 pub use sandbox::{LaunchSpec, SandboxApi, SandboxChild};
 pub use snapshot::{StateSnapshot, SNAPSHOT_FORMAT};

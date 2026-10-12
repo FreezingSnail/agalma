@@ -148,6 +148,31 @@ pub struct DirectiveRow {
     pub received_at_unix_ms: u64,
 }
 
+/// One durable control-action receipt (schema v4 `control_receipts`).
+///
+/// Every interactive control action (pause/resume/cancel) records exactly one
+/// receipt, applied or denied. `action_id` is the idempotency anchor: replaying
+/// the same action is a no-op, and reusing an `action_id` with different
+/// contents is a [`ContractError::Conflict`]. `target` names the acted-on
+/// subject (an execution id for cancel; empty for the global latch). `request`
+/// carries the request detail, including the `outcome` field for denied
+/// attempts. Receipts are audit records only: they gate nothing and never
+/// rewind Git or the ledger.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ControlReceipt {
+    /// Idempotency anchor (primary key).
+    pub action_id: String,
+    /// Action name: `pause` / `resume` / `cancel`.
+    pub action: String,
+    /// Acted-on subject: execution id for `cancel`, empty for latch actions.
+    pub target: String,
+    /// Who requested the action (e.g. `human`).
+    pub actor: String,
+    /// Request detail, including the `outcome` (`applied`/`denied`) field.
+    pub request: Value,
+    pub recorded_at_unix_ms: u64,
+}
+
 /// Ledger contract. SQL, transactions, and the physical schema stay private.
 pub trait LedgerApi {
     /// Atomically commit a batch, or return a conflict/failure.
@@ -299,6 +324,20 @@ pub trait LedgerApi {
     /// Used when the owning operation is cancelled: queued work must be
     /// released rather than left pending for recovery.
     fn consume_dispatch_intent(&mut self, operation_id: &OperationId) -> Result<(), ContractError>;
+
+    /// Record a control-action receipt (schema v4 `control_receipts`).
+    ///
+    /// Idempotent by `action_id`: re-recording identical contents (ignoring the
+    /// timestamp) is a no-op; reusing an `action_id` with different contents is
+    /// a [`ContractError::Conflict`]. Applied *and* denied attempts are
+    /// receipted; the caller records the outcome in `request`.
+    fn record_control_receipt(
+        &mut self,
+        receipt: &ControlReceipt,
+    ) -> Result<(), ContractError>;
+
+    /// All recorded control receipts, ordered by `recorded_at` then `action_id`.
+    fn control_receipts(&self) -> Result<Vec<ControlReceipt>, ContractError>;
 
     /// Export the complete canonical state as a versioned [`StateSnapshot`].
     ///

@@ -47,3 +47,19 @@ clap = { version = "=4.6.7", features = ["derive"] }
 rustls = { version = "=0.23.43", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12", "logging"] }
 webpki-roots = "=1.0.9"
+# IPC v2 ConnectRPC transport (approved 2026-10-11; design:
+# docs/ipc-connect-design.md D2). `agalma-ipc` only. No TLS/compression/
+# protobuf-JSON features.
+connectrpc = { version = "=0.9.1", default-features = false, features = ["server", "client"] }
+buffa = "=0.9.2"
+connectrpc-build = "=0.9.0"
+# Build-only helper used by agalma-ipc/build.rs to assemble the ipc.proto
+# descriptor set in-process (protoc/buf are not available offline). Already a
+# transitive dependency of connectrpc-build; no new download.
+buffa-codegen = "=0.9.2"
+# HTTP/2 plumbing for the UDS accept loop. All arrivals through the approved
+# connectrpc closure (design D2); `agalma-ipc` only.
+hyper = { version = "=1.12.0", features = ["server", "http1", "http2"] }
+hyper-util = { version = "=0.1.21", features = ["server-auto", "tokio", "http1", "http2"] }
+tower = { version = "=0.5.3", features = ["util"] }
+http = "=1.5.0"

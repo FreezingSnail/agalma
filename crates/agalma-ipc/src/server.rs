@@ -183,11 +183,15 @@ impl Server {
 
     /// Dispatch one request, recording and replaying receipts by id.
     ///
+    /// Public so the ConnectRPC transport (see [`crate::connect`]) can reuse
+    /// the exact envelope semantics — receipt replay, unknown-method refusal,
+    /// contract-error mapping — over a different wire.
+    ///
     /// Receipts are global (keyed by request id only) and intentionally outlive
     /// connections: explicit-id replay must survive a reconnect. Auto ids are
     /// connection-unique on the client side (see [`crate::client`] module docs),
     /// so a fresh connection never collides with a prior one's recorded ids.
-    fn dispatch(&mut self, request: &Request) -> Response {
+    pub fn dispatch(&mut self, request: &Request) -> Response {
         if let Some(recorded) = self.receipts.get(&request.id) {
             return recorded.clone();
         }

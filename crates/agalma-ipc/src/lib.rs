@@ -31,6 +31,7 @@
 
 pub mod client;
 pub mod command;
+pub mod connect;
 pub mod envelope;
 pub mod error;
 pub mod execution_client;
@@ -49,8 +50,18 @@ pub mod taskqueue_server;
 pub mod workspace_client;
 pub mod workspace_server;
 
+/// Generated ConnectRPC envelope types for `proto/ipc.proto` (design D1/D2).
+///
+/// `connectrpc-build` runs in `build.rs` and emits the `agalma.ipc.v1` module
+/// tree (`IpcRequest`/`IpcResponse`/`IpcError`, the `IpcService` trait, and the
+/// `IpcServiceClient`); mounted here as `crate::proto::agalma::ipc::v1`.
+pub mod proto {
+    connectrpc::include_generated!();
+}
+
 pub use client::Client;
 pub use command::CommandSpec;
+pub use connect::{ConnectClient, IpcDispatcher};
 pub use envelope::{Request, Response, ResponseError, PROTOCOL_VERSION};
 pub use error::{IpcError, CODE_PROTOCOL, CODE_UNAVAILABLE};
 pub use execution_client::{

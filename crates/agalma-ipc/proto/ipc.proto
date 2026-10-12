@@ -1,0 +1,36 @@
+// Agalma IPC v2 envelope (design D1, docs/ipc-connect-design.md).
+//
+// The wire contract: an HTTP/2 ConnectRPC `Call` RPC whose request/response
+// payloads are these three messages. Payloads stay serde JSON: `params_json`
+// and `result_json` are UTF-8 JSON bytes. `result_json` is `optional` so a
+// present field carrying JSON `null` stays distinct from an error response
+// (which omits it). Envelope semantics (v/id/method, duplicate-id replay,
+// UnknownOutcome mapping) are implemented by `agalma-ipc`.
+syntax = "proto3";
+package agalma.ipc.v1;
+
+message IpcError {
+  string code = 1;
+  string message = 2;
+}
+
+message IpcRequest {
+  uint32 v = 1;            // protocol version (1)
+  uint64 id = 2;           // client-assigned; replay key
+  string method = 3;       // snake_case method name
+  bytes params_json = 4;   // serde_json encoding of params
+}
+
+message IpcResponse {
+  uint32 v = 1;
+  uint64 id = 2;                   // echo
+  optional bytes result_json = 3;  // present even for JSON null
+  optional IpcError error = 4;
+}
+
+service Ipc {
+  rpc Call(IpcRequest) returns (IpcResponse);
+  // Reserved for later event push (server streaming); no Tier-1 seam needs it
+  // for parity:
+  // rpc Stream(IpcRequest) returns (stream IpcResponse);
+}

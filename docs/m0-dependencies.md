@@ -62,6 +62,28 @@ tokio-util, tracing, async-trait, base64, percent-encoding, pin-project,
 sync_wrapper, libc) arrive through these approved crates and stay inside the
 approval by the rule above. No TLS, compression, or protobuf-JSON features.
 
+IPCX.1 (`agalma-ebg.2`) also uses a few of those transitives **directly** from
+`agalma-ipc` for the UDS transport, plus one build-only helper:
+
+| Crate | Version | Purpose | Where |
+|---|---|---|---|
+| `hyper` | 1.12.0 | HTTP/1+HTTP/2 connection driver | `agalma-ipc` (normal) |
+| `hyper-util` | 0.1.21 | `auto::Builder` + `TokioIo`/`TokioExecutor`/`TokioTimer` for the UDS accept loop | `agalma-ipc` (normal) |
+| `tower` | 0.5.3 | `Service` trait for `ConnectRpcService` | `agalma-ipc` (normal) |
+| `http` | 1.5.0 | `Uri` for the HTTP/2 authority | `agalma-ipc` (normal) |
+| `buffa-codegen` | 0.9.2 | build.rs builds the `ipc.proto` descriptor set in-process (protoc/buf unavailable offline) | `agalma-ipc` (build) |
+
+All arrive through the approved connectrpc/buffa closure; no new download.
+The IPC-registered pin table's exact `=` rule applies to each.
+
+**Codegen note (deviation from D2's "no extra binaries").** `connectrpc-build`
+0.9.0 obtains descriptors by running `protoc` or `buf`; neither binary exists in
+this offline workspace and neither may be downloaded. `agalma-ipc/build.rs`
+therefore reads `proto/ipc.proto` with a small proto3 reader and hands
+`connectrpc-build` a `FileDescriptorSet` via `Config::descriptor_set`. The
+`.proto` stays the source of truth, codegen runs at build time, and builds stay
+offline.
+
 ## Excluded on purpose
 
 - No HTTP client crate (reqwest/ureq/hyper): the OpenCode adapter's hand-rolled

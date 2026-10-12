@@ -23,6 +23,10 @@
 //! sandbox in-process. B1.3 extracted `SandboxApi` and switched the harness
 //! server to the sandbox client, so the carve-out is removed and both checks are
 //! strict again.
+//!
+//! IPCX.1 (`agalma-ebg.2`) adds two more checks: the ConnectRPC stack
+//! (`connectrpc`/`buffa`) may be a normal dependency only of `agalma-ipc`, and
+//! extracted implementation crates must not import conductor internals.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -264,6 +268,72 @@ fn implementation_crates_do_not_reference_each_other() {
     assert!(
         violations.is_empty(),
         "cross-implementation references are forbidden:\n{}",
+        violations.join("\n")
+    );
+}
+
+/// The ConnectRPC transport stack (`connectrpc` / `buffa`) is confined to
+/// `agalma-ipc` (design D6): implementation crates reach it only through the
+/// transport-agnostic `agalma-ipc` boundary.
+#[test]
+fn connect_stack_is_confined_to_agalma_ipc() {
+    let crates_dir = workspace_root().join("crates");
+    let mut violations = Vec::new();
+
+    let entries = fs::read_dir(&crates_dir).expect("crates dir");
+    for entry in entries.flatten() {
+        let manifest = entry.path().join("Cargo.toml");
+        if !manifest.is_file() {
+            continue;
+        }
+        let crate_name = match entry.file_name().to_str() {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+        let text = fs::read_to_string(&manifest).unwrap_or_default();
+        for dep in normal_dependency_names(&text) {
+            if (dep == "connectrpc" || dep == "buffa") && crate_name != "agalma-ipc" {
+                violations.push(format!(
+                    "{crate_name} declares a normal dependency on the Connect stack ({dep})"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "the ConnectRPC stack must stay confined to agalma-ipc:\n{}",
+        violations.join("\n")
+    );
+
+    // And the infrastructure crate does own it.
+    let ipc = fs::read_to_string(crates_dir.join("agalma-ipc/Cargo.toml")).unwrap_or_default();
+    let deps = normal_dependency_names(&ipc);
+    assert!(deps.contains(&"connectrpc".to_string()));
+    assert!(deps.contains(&"buffa".to_string()));
+}
+
+/// Extracted implementation (server) crates must not import conductor
+/// internals: the conductor composes them, never the reverse (design D6).
+#[test]
+fn implementation_crates_do_not_reference_conductor() {
+    let root = workspace_root();
+    let mut violations = Vec::new();
+
+    for crate_name in IMPL_CRATES {
+        let src = root.join("crates").join(crate_name).join("src");
+        for file in rust_files(&src) {
+            let text = fs::read_to_string(&file).unwrap_or_default();
+            let code = strip_comments(&text);
+            if contains_ident(&code, "agalma_conductor") {
+                violations.push(format!("{} references agalma_conductor", file.display()));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "implementation crates must not import conductor internals:\n{}",
         violations.join("\n")
     );
 }

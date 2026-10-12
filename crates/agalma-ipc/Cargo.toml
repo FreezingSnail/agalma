@@ -10,6 +10,19 @@ publish = false
 agalma-contracts = { path = "../agalma-contracts" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# IPC v2 ConnectRPC transport (design D2; pins in the workspace manifest).
+connectrpc = { workspace = true }
+buffa = { workspace = true }
+tokio = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+tower = { workspace = true }
+http = { workspace = true }
+
+[build-dependencies]
+connectrpc-build = { workspace = true }
+buffa = { workspace = true }
+buffa-codegen = { workspace = true }
 
 [dev-dependencies]
 agalma-testkit = { path = "../agalma-testkit" }

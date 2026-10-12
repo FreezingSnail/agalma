@@ -48,7 +48,7 @@ const BAND_BITS: u32 = 20;
 /// nanoseconds (extra entropy across process restarts), and a process-global
 /// connection counter (distinguishes connections within a process). Because the
 /// slot is unique per connection, so is its id block.
-fn seed_next_id() -> u64 {
+pub(crate) fn seed_next_id() -> u64 {
     let pid = u64::from(std::process::id()) & 0x003F_FFFF; // 22 bits
     let seq = CONNECTION_SEQ.fetch_add(1, Ordering::Relaxed) & 0x0003_FFFF; // 18 bits
     let nanos = SystemTime::now()

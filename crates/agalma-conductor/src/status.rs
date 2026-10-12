@@ -12,6 +12,8 @@ use agalma_contracts::{ExecutionRecord, LedgerApi};
 use agalma_ledger::SqliteLedger;
 use serde::Serialize;
 
+use crate::components::{ComponentSnapshot, Transports};
+
 /// Top-level read-model document emitted by `agalma status --json`.
 ///
 /// Stable and additive only: bump `schema_version` to match the ledger when the
@@ -30,6 +32,8 @@ pub struct Snapshot {
     pub binding: Option<String>,
     /// One entry per durable execution, ordered by execution id.
     pub executions: Vec<ExecutionSnapshot>,
+    /// Per-component vision: bindings, transports, socket liveness, health.
+    pub components: Vec<ComponentSnapshot>,
 }
 
 /// One execution row in the read model.
@@ -55,6 +59,18 @@ pub struct ExecutionSnapshot {
 /// `null` fields. Any ledger read failure after the file is present is an error
 /// (the caller reports it and exits non-zero).
 pub fn snapshot(state_dir: &Path) -> Result<Snapshot, String> {
+    snapshot_with_transports(state_dir, &Transports::from_env())
+}
+
+/// Build the read model with explicit boundary transports.
+///
+/// The transport selectors are process-global (env-derived); passing them in
+/// keeps the snapshot deterministic for tests and callers that already resolved
+/// them. The per-component panel carries them so the TUI never re-derives them.
+pub fn snapshot_with_transports(
+    state_dir: &Path,
+    transports: &Transports,
+) -> Result<Snapshot, String> {
     let ledger_path = state_dir.join("ledger.sqlite");
     if !ledger_path.exists() {
         return Ok(Snapshot {
@@ -64,6 +80,7 @@ pub fn snapshot(state_dir: &Path) -> Result<Snapshot, String> {
             schema_version: None,
             binding: None,
             executions: Vec::new(),
+            components: crate::components::derive::<SqliteLedger>(state_dir, None, &[], transports),
         });
     }
 
@@ -109,6 +126,7 @@ pub fn snapshot(state_dir: &Path) -> Result<Snapshot, String> {
         schema_version: Some(schema_version),
         binding: overall_binding(&ledger, &records),
         executions,
+        components: crate::components::derive(state_dir, Some(&ledger), &records, transports),
     })
 }
 

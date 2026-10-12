@@ -8,6 +8,7 @@
 //! `tests/architecture.rs` enforces impl-to-impl isolation.
 
 pub mod cli;
+pub mod components;
 pub mod composition;
 pub mod concierge;
 pub mod config;

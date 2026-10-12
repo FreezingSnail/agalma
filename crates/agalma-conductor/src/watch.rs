@@ -80,14 +80,15 @@ pub async fn run(args: &WatchArgs) -> ExitCode {
 /// Build one frame for `state_dir` (read model + render). Pure apart from the
 /// read-only snapshot; used by both the loop and the `--once` path.
 pub fn once_frame(state_dir: &Path, interval_ms: u64) -> Result<String, String> {
-    let snapshot = crate::status::snapshot(state_dir)?;
+    let transports = crate::components::Transports::from_env();
+    let snapshot = crate::status::snapshot_with_transports(state_dir, &transports)?;
     let (width, height) = terminal_size();
     let ctx = FrameContext {
         width,
         height,
         interval_ms,
-        ledger_transport: crate::ledger_process::LedgerTransport::from_env().as_str(),
-        harness_transport: crate::harness_process::HarnessTransport::from_env().as_str(),
+        ledger_transport: transports.ledger,
+        harness_transport: transports.harness,
     };
     Ok(render(&snapshot, &ctx))
 }
@@ -188,9 +189,12 @@ pub fn render(snapshot: &Snapshot, ctx: &FrameContext<'_>) -> String {
     }
 
     out.push_str(&format!("{DIM}{}{RESET}\n", rule(width)));
+    out.push_str(&render_components(snapshot));
+    out.push_str(&format!("{DIM}{}{RESET}\n", rule(width)));
     out.push_str(&format!(
-        "{DIM}{} execution(s) · {} ms · q + Enter quits · Ctrl-C exits{RESET}",
+        "{DIM}{} execution(s) · {} component(s) · {} ms · q + Enter quits · Ctrl-C exits{RESET}",
         snapshot.executions.len(),
+        snapshot.components.len(),
         ctx.interval_ms
     ));
 
@@ -258,7 +262,8 @@ async fn run_loop(state_dir: &Path, interval_ms: u64) -> ExitCode {
     let _ = stdout.flush();
 
     loop {
-        let frame = match crate::status::snapshot(state_dir) {
+        let transports = crate::components::Transports::from_env();
+        let frame = match crate::status::snapshot_with_transports(state_dir, &transports) {
             Ok(snapshot) => {
                 let (width, height) = terminal_size();
                 render(
@@ -267,10 +272,8 @@ async fn run_loop(state_dir: &Path, interval_ms: u64) -> ExitCode {
                         width,
                         height,
                         interval_ms,
-                        ledger_transport: crate::ledger_process::LedgerTransport::from_env()
-                            .as_str(),
-                        harness_transport: crate::harness_process::HarnessTransport::from_env()
-                            .as_str(),
+                        ledger_transport: transports.ledger,
+                        harness_transport: transports.harness,
                     },
                 )
             }
@@ -317,6 +320,80 @@ fn pending_text(count: usize, operations: &[String]) -> String {
         Some(first) => format!("{count} ({first})"),
         None => "-".to_string(),
     }
+}
+
+/// The per-component panel: transport, API version, socket liveness, bindings,
+/// and watchdog/provider-health signals (TUI.3).
+fn render_components(snapshot: &Snapshot) -> String {
+    if snapshot.components.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{BOLD}COMPONENTS{RESET}  {DIM}transport · api@version · socket(up|down) · bindings · health{RESET}\n"
+    ));
+    for component in &snapshot.components {
+        let version = component
+            .api_version
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let api = format!("{}@{}", component.api, version);
+        let socket = match &component.socket {
+            Some(name) if component.socket_present => format!("{name} up"),
+            Some(name) => format!("{name} down"),
+            None => "-".to_string(),
+        };
+        let socket_style = if component.socket_present { GREEN } else { DIM };
+        out.push_str(&format!(
+            "  {CYAN}{:<10}{RESET} {:<10} {:<16} {socket_style}{:<20}{RESET} {}\n",
+            clip(&component.component, 10),
+            component.transport,
+            clip(&api, 16),
+            clip(&socket, 20),
+            component_binding_text(component),
+        ));
+        if component.stalls > 0 {
+            let reason = component.last_health_reason.as_deref().unwrap_or("-");
+            out.push_str(&format!(
+                "    {YELLOW}health:{RESET} {} stall(s) · last: {reason}\n",
+                component.stalls
+            ));
+        }
+    }
+    out
+}
+
+/// One-line binding summary for a component (`impl@ver State genN [caps] pins:N`).
+fn component_binding_text(component: &crate::components::ComponentSnapshot) -> String {
+    if component.bindings.is_empty() {
+        return "-".to_string();
+    }
+    component
+        .bindings
+        .iter()
+        .map(|binding| {
+            let caps = if binding.capabilities.is_empty() {
+                "-".to_string()
+            } else {
+                binding.capabilities.join(",")
+            };
+            let pins = if binding.pinned_operations.is_empty() {
+                String::new()
+            } else {
+                format!(" pins:{}", binding.pinned_operations.len())
+            };
+            format!(
+                "{}@{} {} gen{} [{}]{}",
+                binding.implementation,
+                binding.implementation_version,
+                binding.state,
+                binding.generation,
+                caps,
+                pins
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// A padded, clipped cell carrying a fixed style.
@@ -422,6 +499,7 @@ fn terminal_size() -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::{BindingView, ComponentSnapshot};
     use crate::status::{ExecutionSnapshot, Snapshot};
     use agalma_testkit::ScratchDir;
 
@@ -444,7 +522,45 @@ mod tests {
             schema_version: None,
             binding: None,
             executions: Vec::new(),
+            components: Vec::new(),
         }
+    }
+
+    /// Two components: a bound harness (with health signals) and a bare ledger.
+    fn components() -> Vec<ComponentSnapshot> {
+        vec![
+            ComponentSnapshot {
+                component: "ledger".to_string(),
+                api: "LedgerApi".to_string(),
+                api_version: Some(4),
+                transport: "in-process".to_string(),
+                socket: Some("ledger.sock".to_string()),
+                socket_present: false,
+                bindings: Vec::new(),
+                stalls: 0,
+                last_health_reason: None,
+            },
+            ComponentSnapshot {
+                component: "harness".to_string(),
+                api: "HarnessApi".to_string(),
+                api_version: Some(0),
+                transport: "process".to_string(),
+                socket: Some("harness*.sock".to_string()),
+                socket_present: true,
+                bindings: vec![BindingView {
+                    binding_id: "binding:reference:1".to_string(),
+                    implementation: "reference".to_string(),
+                    implementation_version: "reference/v1".to_string(),
+                    api_version: 0,
+                    generation: 1,
+                    state: "Active".to_string(),
+                    capabilities: vec!["context_hooks".to_string()],
+                    pinned_operations: vec!["op:build@2".to_string()],
+                }],
+                stalls: 2,
+                last_health_reason: Some("session_gone".to_string()),
+            },
+        ]
     }
 
     /// One running execution with two pending operations and a binding.
@@ -467,6 +583,7 @@ mod tests {
                 parked_reason: None,
                 harness: "reference@reference/v1".to_string(),
             }],
+            components: components(),
         }
     }
 
@@ -515,6 +632,40 @@ mod tests {
         assert!(plain.contains("Running"), "{plain}");
         assert!(plain.contains("PENDING"), "{plain}");
         assert!(plain.contains("1500 ms"), "{plain}");
+    }
+
+    #[test]
+    fn present_snapshot_renders_component_panel() {
+        let frame = render(&present(), &ctx(140, 30, 1000));
+        let plain = strip_ansi(&frame);
+        // Demo frame for the TUI.3 report (run with --nocapture to view).
+        println!("--- TUI.3 component panel demo ---\n{plain}");
+        assert!(plain.contains("COMPONENTS"), "{plain}");
+        assert!(plain.contains("ledger"), "{plain}");
+        assert!(plain.contains("harness"), "{plain}");
+        // Socket liveness proxy: harness*.sock up, ledger.sock down.
+        assert!(plain.contains("harness*.sock up"), "{plain}");
+        assert!(plain.contains("ledger.sock down"), "{plain}");
+        // Binding state + generation + capability + pinned operation count.
+        assert!(
+            plain.contains("reference@reference/v1 Active gen1"),
+            "{plain}"
+        );
+        assert!(plain.contains("[context_hooks]"), "{plain}");
+        assert!(plain.contains("pins:1"), "{plain}");
+        // Provider/watchdog health signal.
+        assert!(plain.contains("health:"), "{plain}");
+        assert!(plain.contains("2 stall(s)"), "{plain}");
+        assert!(plain.contains("last: session_gone"), "{plain}");
+        // Transport mode is visible per component.
+        assert!(plain.contains("process"), "{plain}");
+    }
+
+    #[test]
+    fn absent_snapshot_has_no_component_panel() {
+        let plain = strip_ansi(&render(&absent(), &ctx(120, 24, 1000)));
+        assert!(!plain.contains("COMPONENTS"), "{plain}");
+        assert!(plain.contains("0 component(s)"), "{plain}");
     }
 
     #[test]

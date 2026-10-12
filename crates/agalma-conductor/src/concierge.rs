@@ -401,6 +401,7 @@ fn intake_prompt(goal_path: &Path, output_path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agalma_testkit::ScratchDir;
 
     #[test]
     fn parse_contract_collects_epic_and_handoff_lines() {
@@ -420,5 +421,20 @@ mod tests {
     fn run_key_is_stable_and_distinct() {
         assert_eq!(run_key("stand up a TUI"), run_key("stand up a TUI"));
         assert_ne!(run_key("a"), run_key("b"));
+    }
+
+    #[test]
+    fn live_concierge_session_builds_fresh_nested_state_dir() {
+        // agalma-lmo: `agalma concierge --state-dir <fresh>` must not fail on
+        // the profile write; the state dir is created before `worker.sb`.
+        let dir = ScratchDir::new("concierge-nested-state");
+        let nested = dir.join("a").join("b").join("c");
+        assert!(!nested.exists(), "nested state dir must start absent");
+        let _session =
+            LiveConciergeSession::build(&nested, None, false).expect("build fresh state dir");
+        assert!(
+            nested.join("worker.sb").exists(),
+            "sandbox profile materialized under the created state dir"
+        );
     }
 }

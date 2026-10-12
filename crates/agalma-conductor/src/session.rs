@@ -57,6 +57,15 @@ impl LiveSession {
         proxy_url: Option<String>,
         paid_available: bool,
     ) -> Result<Self, ContractError> {
+        // The state dir may not exist yet on a fresh `--state-dir` (e.g. a
+        // nested path): the session path owns materializing it before any
+        // profile/scratch write (agalma-lmo).
+        std::fs::create_dir_all(state_dir).map_err(|e| {
+            ContractError::KnownFailure(format!(
+                "cannot create state dir {}: {e}",
+                state_dir.display()
+            ))
+        })?;
         let profile_path = state_dir.join("worker.sb");
         std::fs::write(&profile_path, agalma_sandbox::PRODUCT_PROFILE).map_err(|e| {
             ContractError::KnownFailure(format!(
@@ -336,6 +345,21 @@ mod tests {
         assert_eq!(root, Path::new("/state/concierge/abc/attempt"));
         assert!(root.starts_with(state));
         assert!(!root.starts_with("/repo"));
+    }
+
+    #[test]
+    fn live_session_creates_fresh_nested_state_dir() {
+        // agalma-lmo: a `--state-dir` that does not yet exist (even nested)
+        // must be materialized before the sandbox profile is written.
+        let dir = scratch_dir("nested-state");
+        let nested = dir.join("a").join("b").join("c");
+        assert!(!nested.exists(), "nested state dir must start absent");
+        let live = LiveSession::build(&nested, None, false).expect("build with fresh state dir");
+        assert!(
+            nested.join("worker.sb").exists(),
+            "sandbox profile materialized under the created state dir"
+        );
+        drop(live);
     }
 
     #[test]

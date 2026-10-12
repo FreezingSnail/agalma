@@ -194,3 +194,126 @@ no file under `crates/agalma-kernel/**` changed. The B1.2 architecture carve-out
 (`SERVER_HOST_EDGES` + `is_server_host_edge`) is removed, so both the Cargo.toml
 edge check and the source-token check are strict again (verified by
 `cargo test -p agalma-conductor --test architecture`: `4 passed`).
+
+# IPCX.3 — sandbox boundary on the Connect transport
+
+Bead: `agalma-ebg.4`. Design: `docs/ipc-connect-design.md` (D1–D7). Foundation:
+`agalma-ebg.2` (`ipc.proto`, Connect stack + pins, UDS accept loop, client core,
+Connect-level conformance harness). Depends on `agalma-ebg.3` (IPCX.2 harness
+boundary, the migration pattern). HEAD at start: `e76fbca`.
+
+Goal: move the already-extracted `SandboxApi` process boundary onto the Connect
+transport (IPCX D7, boundary #2) **without changing the envelope semantics or any
+consumer logic**, and prove it with the B1 recipe — dual-binding parity, staged
+rebind, rollback, IPC conformance — extended to the Connect wire. As in IPCX.2,
+the per-boundary evidence named by D4 (`docs/ipcx-<boundary>-evidence.md`) is
+folded into this file so the sandbox boundary's B1 and IPCX evidence stay
+together.
+
+## What migrated
+
+The typed sandbox client and its method-registration helper stay the entry
+points; only the byte transport under them changed.
+
+| Concern | Where |
+|---|---|
+| `SandboxClient` speaks either wire (`connect_wire`); `connect` stays framed | `crates/agalma-ipc/src/sandbox_client.rs` |
+| `serve_sandbox(server, socket, wire)` sandbox serve entry point | `crates/agalma-ipc/src/sandbox_server.rs` |
+| Sandbox server serves the selected wire (`serve` reads `AGALMA_IPC_WIRE`) | `crates/agalma-sandbox/src/server.rs` |
+| `SandboxProcess` selects the wire, exports it to the child, connects matching client | `crates/agalma-conductor/src/sandbox_process.rs` |
+
+- The sandbox process wire **defaults to `Connect`** (`sandbox_wire()`); a parity
+  run sets `AGALMA_IPC_WIRE=framed` to compare the two against the same scenario.
+  The selected wire is exported to the child in the same variable, so the server
+  serves the matching transport. Both wires announce the identical `READY {json}`
+  line, so the supervisor handshake is unchanged; `SandboxApi` has no binding
+  gate (`Describe`-free), so there is nothing else to keep wire-agnostic.
+- Envelope semantics are preserved verbatim on both wires: `v`/`id`/`method`/
+  `params_json`; duplicate-id receipt replay; `UnknownOutcome`/contract errors
+  in-band; version refusal; unknown-method `UnsupportedCapability`. The Connect
+  path reuses `Server::dispatch`, so no envelope code was forked.
+- No new dependency. `connectrpc`/`buffa` stay confined to `agalma-ipc`
+  (architecture test unchanged and green); no `Cargo.toml`/`Cargo.lock` change.
+
+### New interfaces
+
+- `agalma_ipc`: `sandbox_client::SandboxClient::connect_wire` (framed `connect`/
+  `from_client` retained); `sandbox_server::serve_sandbox`.
+- `agalma_sandbox::server`: `serve_wire`; `serve` now reads `AGALMA_IPC_WIRE`
+  (`connect` default, `framed` optional).
+- `agalma_conductor::sandbox_process`: `sandbox_wire`,
+  `SandboxProcess::wire`, `SandboxProcess::spawn_with_spec_wire(.., wire, ..)`
+  (`spawn`/`spawn_with_spec` retained, defaulting to `sandbox_wire`).
+
+## Results
+
+All commands from the repo root, `--offline`.
+
+| Command | Observed |
+|---|---|
+| `cargo build --offline --workspace` | exit 0 |
+| `cargo test --offline -p agalma-ipc` | 48 unit + 14 conformance + 9 connect-conformance + 4 harness-connect + **2 sandbox-connect** (new) + doc-tests; 0 failures |
+| `cargo test --offline -p agalma-conductor --test sandbox_process` | **7 passed; 0 failed** |
+| `cargo test --offline -p agalma-conductor --lib sandbox_process` | 3 passed; 0 failed |
+| `cargo test --offline -p agalma-conductor --test architecture` | 6 passed; 0 failed |
+| `cargo test --offline -p agalma-conductor --test harness_process` | 14 passed; 0 failed (shared supervision unaffected) |
+| `cargo test --offline -p agalma-sandbox` | 17 unit + 4 integration; 0 failures |
+
+`tests/sandbox_connect.rs` (new, `agalma-ipc`):
+
+| Test | What it proves |
+|---|---|
+| `sandbox_api_over_connect_matches_framed` | The typed `SandboxClient` drives all three `SandboxApi` methods (`launch`/`alive`/`terminate`) over a `register_sandbox` server; a framed and a Connect server produce an **identical typed transcript** (child handle, liveness, termination evidence). |
+| `sandbox_connect_missing_socket_is_unavailable` | A missing Connect socket surfaces as `Unavailable`. |
+
+`tests/sandbox_process.rs` (conductor):
+
+| Test | What it proves |
+|---|---|
+| `wire_parity_framed_vs_connect_matches_in_process` (new) | The same `LaunchSpec` scenario (`/bin/sh` writes a marker, sleeps; `alive`; `terminate`) yields an identical normalized transcript in-process, over the **framed** process wire, and over the **Connect** process wire. This is the dual-binding parity proof for the migrated boundary. |
+| `shadow_parity_in_process_vs_process_sandbox` | In-process vs process parity, now over **Connect** (`process.client()` over the stored wire). |
+| `staged_rebind_keeps_inflight_child_alive` | An in-flight confined child launched on server A stays alive across a swap to candidate server B; both children distinct and terminable — over **Connect**. |
+| `rollback_keeps_prior_child_and_server` | Candidate retired (pid gone); prior server and its child survive and remain terminable — no state loss. |
+| `sandbox_client_duplicate_id_replay_and_connection_loss` | Raw framed `Client`: duplicate-id `launch` receipt replay, fresh id advances, post-death `Unavailable`/`UnknownOutcome`, missing socket `Unavailable` (framed path still proven; the server is spawned explicitly framed). |
+| `sandbox_server_child` | Child entry point serving the env-selected wire (no-op under a normal run). |
+| `ready_marker_is_parsed` | The `READY {json}` handshake marker is recognized when libtest prefixes the line. |
+
+## Consumer-invariance proof
+
+Phase/activity logic is unchanged: `SandboxSource` keeps its signatures
+(`new`/`socket`/`ensure`/`client`/`pid`); only the private wire selection and the
+client construction sites changed. The injected `Box<dyn SandboxApi + Send>`
+(OpenCode harness) is unchanged; `SandboxClient` still satisfies it. No contract
+schema changed. `git diff --name-only` (tracked) plus the new file, all within
+the allowed set:
+
+```
+crates/agalma-conductor/src/sandbox_process.rs
+crates/agalma-conductor/tests/sandbox_process.rs
+crates/agalma-ipc/src/sandbox_client.rs
+crates/agalma-ipc/src/sandbox_server.rs
+crates/agalma-ipc/tests/sandbox_connect.rs               # new
+crates/agalma-sandbox/src/server.rs
+docs/b1-sandbox-evidence.md                              # this file
+```
+
+No file under `crates/agalma-contracts/**` changed; no contract schema changed.
+`harness_process.rs`, the harness client/server, `cli.rs`, `lib.rs`, and
+`phases.rs` are untouched.
+
+## Deviations and notes
+
+1. The IPCX design D4 names a per-boundary `docs/ipcx-<boundary>-evidence.md`;
+   this bead's scope extends the existing B1 sandbox evidence instead, keeping
+   the framed and Connect proofs side by side (matching IPCX.2's choice).
+2. The sandbox process wire defaults to `Connect`. `SandboxApi` is
+   `Describe`-free, so the "staged rebind" remains a supervised-server swap
+   (B1.3 note 2), now over the Connect wire.
+3. `SandboxProcess::spawn`/`spawn_with_spec` keep their signatures (defaulting
+   to `sandbox_wire()`), so the shared-boundary startup-cleanup test in
+   `tests/harness_process.rs` (`SandboxProcess::spawn_with_spec`, which never
+   reaches `serve`) is unchanged; `spawn_with_spec_wire` is the explicit-wire
+   entry point the sandbox parity test uses.
+4. `serve_wire` installs a multithread Tokio runtime for both wires (the framed
+   branch runs the serial accept loop under `block_on`), so sandbox methods that
+   create processes through `tokio::process` keep working on both.

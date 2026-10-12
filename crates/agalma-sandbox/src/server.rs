@@ -1,18 +1,19 @@
 //! Seatbelt `SandboxApi` component server (B1.3).
 //!
-//! Hosts [`SeatbeltSandbox`] behind the framed transport so other components
+//! Hosts [`SeatbeltSandbox`] behind the selected transport so other components
 //! (the conductor, and the OpenCode harness server) can drive confined process
 //! lifecycle across a process boundary instead of embedding the backend.
 //!
-//! Sandbox-backed methods create processes through `tokio::process`, so the
-//! serial serve loop runs inside a multithread Tokio runtime (mirroring the
-//! OpenCode harness server).
+//! Sandbox-backed methods create processes through `tokio::process`, so
+//! `serve_wire` installs a multithread Tokio runtime for both wires (mirroring
+//! the OpenCode harness server). Since IPCX.3 the server serves `Connect` by
+//! default; `AGALMA_IPC_WIRE=framed` restores the B1 length-prefixed transport.
 
 use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use agalma_ipc::{register_sandbox, CommandSpec, Server, ServerInfo};
+use agalma_ipc::{register_sandbox, CommandSpec, Server, ServerInfo, Wire};
 
 use crate::seatbelt::SeatbeltSandbox;
 
@@ -50,14 +51,16 @@ pub fn build_server() -> Server {
     server
 }
 
-/// Bind `socket` and serve until stopped.
+/// Bind `socket` and serve over the wire selected by `AGALMA_IPC_WIRE`
+/// (`connect` default, `framed` optional; IPCX.3) until stopped.
 pub fn serve(socket: &Path) -> io::Result<()> {
-    let mut server = build_server();
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(io::Error::other)?;
-    runtime.block_on(async move { server.serve(socket) })
+    serve_wire(socket, Wire::from_env(Wire::Connect))
+}
+
+/// Bind `socket` and serve over `wire` until stopped.
+pub fn serve_wire(socket: &Path, wire: Wire) -> io::Result<()> {
+    let server = build_server();
+    agalma_ipc::sandbox_server::serve_sandbox(server, socket, wire)
 }
 
 /// Full argv/env entry point used by the server binary.

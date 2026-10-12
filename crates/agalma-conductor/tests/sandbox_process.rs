@@ -22,11 +22,11 @@ use std::time::{Duration, Instant};
 
 use agalma_contracts::ids::AttemptId;
 use agalma_contracts::sandbox::{LaunchSpec, SandboxApi};
-use agalma_ipc::{Client, CommandSpec, SandboxClient};
+use agalma_ipc::{Client, CommandSpec, SandboxClient, Wire};
 use agalma_sandbox::{SeatbeltSandbox, PRODUCT_PROFILE, SERVER_BIN};
 
 use agalma_conductor::harness_process::{ready_json, resolve_server_binary};
-use agalma_conductor::sandbox_process::{sandbox_server_spec, SandboxProcess};
+use agalma_conductor::sandbox_process::{sandbox_server_spec, sandbox_wire, SandboxProcess};
 use agalma_testkit::ScratchDir;
 
 const CHILD_SOCKET_ENV: &str = "AGALMA_TEST_SANDBOX_SOCKET";
@@ -179,8 +179,12 @@ fn server_spec(socket: &Path) -> (CommandSpec, PathBuf) {
 }
 
 fn spawn_server(socket: &Path) -> SandboxProcess {
+    spawn_server_wire(socket, sandbox_wire())
+}
+
+fn spawn_server_wire(socket: &Path, wire: Wire) -> SandboxProcess {
     let (spec, program) = server_spec(socket);
-    SandboxProcess::spawn_with_spec(spec, program, socket.to_path_buf(), READY_TIMEOUT)
+    SandboxProcess::spawn_with_spec_wire(spec, program, socket.to_path_buf(), wire, READY_TIMEOUT)
         .unwrap_or_else(|e| panic!("spawn sandbox server: {e}"))
 }
 
@@ -212,11 +216,12 @@ fn shadow_parity_in_process_vs_process_sandbox() {
     let mut inproc = SeatbeltSandbox::new();
     let in_process = runtime.block_on(async { drive(&mut inproc, &run_in) });
 
-    // Process: a supervised sandbox component server plus a SandboxClient.
+    // Process: a supervised sandbox component server (default Connect wire)
+    // plus a client connected over that same wire.
     let run_proc = Run::new(&dir, "process");
     let socket = dir.join("a.sock");
     let process = spawn_server(&socket);
-    let mut client = SandboxClient::connect(&socket).expect("connect sandbox client");
+    let mut client = process.client().expect("connect sandbox client");
     let via_process = drive(&mut client, &run_proc);
 
     assert_eq!(in_process, via_process, "sandbox transcript parity");
@@ -240,6 +245,57 @@ fn shadow_parity_in_process_vs_process_sandbox() {
         evidence.process_group_gone,
         "server stop evidence: {evidence:?}"
     );
+}
+
+// ===========================================================================
+// Case a' — wire parity: in-process vs framed vs Connect (IPCX.3)
+// ===========================================================================
+
+/// The sandbox boundary over Connect (IPCX.3): the same `LaunchSpec` scenario
+/// produces an identical normalized transcript in-process, over the framed
+/// process wire, and over the Connect process wire. This is the dual-binding
+/// parity proof for the migrated boundary.
+#[test]
+fn wire_parity_framed_vs_connect_matches_in_process() {
+    let dir = fresh();
+
+    // In-process baseline.
+    let run_in = Run::new(&dir, "wire-in-process");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let mut inproc = SeatbeltSandbox::new();
+    let in_process = runtime.block_on(async { drive(&mut inproc, &run_in) });
+
+    // Framed process wire.
+    let run_framed = Run::new(&dir, "wire-framed");
+    let socket_framed = dir.join("wf.sock");
+    let process_framed = spawn_server_wire(&socket_framed, Wire::Framed);
+    assert_eq!(process_framed.wire(), Wire::Framed);
+    let mut client_framed = process_framed.client().expect("framed client");
+    let framed = drive(&mut client_framed, &run_framed);
+    drop(client_framed);
+    let _ = {
+        let mut process = process_framed;
+        process.stop()
+    };
+
+    // Connect process wire.
+    let run_connect = Run::new(&dir, "wire-connect");
+    let socket_connect = dir.join("wc.sock");
+    let process_connect = spawn_server_wire(&socket_connect, Wire::Connect);
+    assert_eq!(process_connect.wire(), Wire::Connect);
+    let mut client_connect = process_connect.client().expect("connect client");
+    let connect = drive(&mut client_connect, &run_connect);
+    drop(client_connect);
+    let _ = {
+        let mut process = process_connect;
+        process.stop()
+    };
+
+    assert_eq!(in_process, framed, "framed sandbox transcript parity");
+    assert_eq!(in_process, connect, "connect sandbox transcript parity");
 }
 
 // ===========================================================================
@@ -352,7 +408,8 @@ fn sandbox_client_duplicate_id_replay_and_connection_loss() {
     let dir = fresh();
     let run = Run::new(&dir, "conformance");
     let socket = dir.join("d.sock");
-    let mut server = spawn_server(&socket);
+    // Raw framed `Client` conformance: the server must serve the framed wire.
+    let mut server = spawn_server_wire(&socket, Wire::Framed);
 
     let mut client = Client::connect(&socket).expect("connect");
     let spec_params = serde_json::to_value(run.spec()).expect("spec params");

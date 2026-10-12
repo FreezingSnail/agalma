@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use agalma_contracts::harness::StopEvidence;
 use agalma_contracts::ContractError;
-use agalma_ipc::{CommandSpec, SandboxClient};
+use agalma_ipc::{CommandSpec, SandboxClient, Wire, WIRE_ENV};
 use agalma_sandbox::server_command;
 
 use crate::harness_process::{
@@ -29,6 +29,17 @@ use crate::harness_process::{
 
 /// Socket file name under the run state dir.
 pub const SANDBOX_SOCKET_NAME: &str = "sandbox.sock";
+
+/// The wire transport the sandbox process boundary uses (IPCX.3).
+///
+/// The sandbox boundary migrated to [`Wire::Connect`]; a parity run may set
+/// [`agalma_ipc::WIRE_ENV`] to `framed` to compare the two wires against the
+/// same scenario. The selected wire is also exported to the child process (see
+/// [`SandboxProcess::spawn_with_spec_wire`]) so its server serves the matching
+/// transport.
+pub fn sandbox_wire() -> Wire {
+    Wire::from_env(Wire::Connect)
+}
 
 /// Launch spec for the sandbox server bound to `socket`.
 pub fn sandbox_server_spec(socket: &Path) -> CommandSpec {
@@ -41,29 +52,47 @@ pub fn sandbox_server_spec(socket: &Path) -> CommandSpec {
 pub struct SandboxProcess {
     socket: PathBuf,
     child: Child,
+    wire: Wire,
     stopped: bool,
 }
 
 impl SandboxProcess {
-    /// Spawn the sandbox server listening on `socket` and wait for `READY`.
+    /// Spawn the sandbox server listening on `socket` (over [`sandbox_wire`])
+    /// and wait for `READY`.
     pub fn spawn(socket: PathBuf, timeout: Duration) -> Result<SandboxProcess, String> {
         let spec = sandbox_server_spec(&socket);
         let program = resolve_server_binary(&spec.program)?;
-        SandboxProcess::spawn_with_spec(spec, program, socket, timeout)
+        SandboxProcess::spawn_with_spec_wire(spec, program, socket, sandbox_wire(), timeout)
     }
 
-    /// Spawn a sandbox server from an explicit spec/program (used by tests that
-    /// re-exec the test binary as the server when the real binary is absent).
+    /// Spawn a sandbox server from an explicit spec/program over
+    /// [`sandbox_wire`] (used by tests that re-exec the test binary as the
+    /// server when the real binary is absent).
     pub fn spawn_with_spec(
         spec: CommandSpec,
         program: PathBuf,
         socket: PathBuf,
         timeout: Duration,
     ) -> Result<SandboxProcess, String> {
+        SandboxProcess::spawn_with_spec_wire(spec, program, socket, sandbox_wire(), timeout)
+    }
+
+    /// Spawn a sandbox server from an explicit spec/program over `wire`. The
+    /// selected wire is exported to the child in [`WIRE_ENV`], so its server
+    /// serves the matching transport.
+    pub fn spawn_with_spec_wire(
+        spec: CommandSpec,
+        program: PathBuf,
+        socket: PathBuf,
+        wire: Wire,
+        timeout: Duration,
+    ) -> Result<SandboxProcess, String> {
+        let spec = spec.env(WIRE_ENV, wire.as_str());
         let (guard, _info) = spawn_supervised(&spec, &program, &socket, timeout)?;
         Ok(SandboxProcess {
             socket,
             child: guard.into_child(),
+            wire,
             stopped: false,
         })
     }
@@ -78,9 +107,14 @@ impl SandboxProcess {
         self.child.id()
     }
 
-    /// Connect a fresh client to the running server.
+    /// The wire transport this process (and its server) uses.
+    pub fn wire(&self) -> Wire {
+        self.wire
+    }
+
+    /// Connect a fresh client to the running server over its wire.
     pub fn client(&self) -> Result<SandboxClient, String> {
-        SandboxClient::connect(&self.socket).map_err(|e| e.to_string())
+        SandboxClient::connect_wire(&self.socket, self.wire).map_err(|e| e.to_string())
     }
 
     /// Stop the server with `SIGTERM`/`SIGKILL` evidence. Idempotent.
@@ -138,10 +172,11 @@ impl SandboxSource {
         Ok(self.socket())
     }
 
-    /// Ensure the server is running and connect a fresh client to it.
+    /// Ensure the server is running and connect a fresh client to it over
+    /// [`sandbox_wire`].
     pub fn client(&self) -> Result<SandboxClient, ContractError> {
         let socket = self.ensure()?;
-        SandboxClient::connect(&socket)
+        SandboxClient::connect_wire(&socket, sandbox_wire())
             .map_err(|e| ContractError::KnownFailure(format!("connect sandbox server: {e}")))
     }
 
@@ -167,5 +202,17 @@ mod tests {
         let source = SandboxSource::new(PathBuf::from("/state"));
         assert_eq!(source.socket(), PathBuf::from("/state/sandbox.sock"));
         assert!(source.pid().is_none(), "not started until ensure()");
+    }
+
+    #[test]
+    fn wire_defaults_to_connect_and_env_restores_framed() {
+        // Absent -> Connect (IPCX.3 migration default); `framed` for parity.
+        std::env::remove_var(WIRE_ENV);
+        assert_eq!(sandbox_wire(), Wire::Connect);
+        std::env::set_var(WIRE_ENV, "framed");
+        assert_eq!(sandbox_wire(), Wire::Framed);
+        std::env::set_var(WIRE_ENV, "connect");
+        assert_eq!(sandbox_wire(), Wire::Connect);
+        std::env::remove_var(WIRE_ENV);
     }
 }

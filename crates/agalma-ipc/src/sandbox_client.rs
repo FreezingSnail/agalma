@@ -1,10 +1,15 @@
-//! `SandboxClient` (decision D2): a typed [`SandboxApi`] over the framed client.
+//! `SandboxClient` (decisions D2, IPCX.3): a typed [`SandboxApi`] over the
+//! sandbox boundary, on either wire transport.
 //!
 //! Method names are the trait method snake-case (`launch`/`alive`/`terminate`);
 //! each call carries one JSON params object and decodes a typed result.
 //! Transport failures map onto the frozen [`ContractError`] surface exactly as
 //! for the harness client: a mid-call connection loss is already classified by
-//! [`Client`] as `UnknownOutcome`; a pre-send loss becomes `KnownFailure`.
+//! the transport as `UnknownOutcome`; a pre-send loss becomes `KnownFailure`.
+//!
+//! Since IPCX.3 the client can speak either [`Wire::Framed`] (B1 length-prefixed
+//! JSON) or [`Wire::Connect`] (ConnectRPC over HTTP/2 on a Unix socket). The
+//! envelope semantics are identical on both; only the byte transport differs.
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -16,26 +21,59 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::client::Client;
+use crate::connect::{ConnectClient, Wire};
 use crate::error::IpcError;
+
+/// The transport backing a [`SandboxClient`].
+enum Backend {
+    /// B1 framed-JSON client ([`Client`]).
+    Framed(Client),
+    /// IPCX Connect client plus the runtime it is driven on.
+    Connect(ConnectBackend),
+}
+
+/// Connect transport state: the async client and the runtime that drives it.
+struct ConnectBackend {
+    runtime: tokio::runtime::Runtime,
+    client: ConnectClient,
+}
 
 /// A [`SandboxApi`] implementation backed by a sandbox component server.
 pub struct SandboxClient {
-    client: RefCell<Client>,
+    backend: RefCell<Backend>,
 }
 
 impl SandboxClient {
-    /// Connect to the sandbox server listening on `socket`.
+    /// Connect to `socket` over the framed transport.
     pub fn connect(socket: &Path) -> Result<SandboxClient, IpcError> {
-        Ok(SandboxClient {
-            client: RefCell::new(Client::connect(socket)?),
-        })
+        SandboxClient::connect_wire(socket, Wire::Framed)
+    }
+
+    /// Connect to the sandbox server listening on `socket` over `wire`. Both
+    /// wires preserve the envelope semantics.
+    pub fn connect_wire(socket: &Path, wire: Wire) -> Result<SandboxClient, IpcError> {
+        match wire {
+            Wire::Framed => Ok(SandboxClient {
+                backend: RefCell::new(Backend::Framed(Client::connect(socket)?)),
+            }),
+            Wire::Connect => {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| IpcError::unavailable(format!("tokio runtime: {e}")))?;
+                let client = runtime.block_on(ConnectClient::connect(socket))?;
+                Ok(SandboxClient {
+                    backend: RefCell::new(Backend::Connect(ConnectBackend { runtime, client })),
+                })
+            }
+        }
     }
 
     /// Build a client from an already-connected transport (used by the process
     /// supervisor after the `READY` handshake).
     pub fn from_client(client: Client) -> SandboxClient {
         SandboxClient {
-            client: RefCell::new(client),
+            backend: RefCell::new(Backend::Framed(client)),
         }
     }
 
@@ -44,8 +82,13 @@ impl SandboxClient {
         method: &str,
         params: &impl Serialize,
     ) -> Result<R, ContractError> {
-        let mut client = self.client.borrow_mut();
-        client.call_typed(method, params).map_err(map_ipc_error)
+        match &mut *self.backend.borrow_mut() {
+            Backend::Framed(client) => client.call_typed(method, params).map_err(map_ipc_error),
+            Backend::Connect(backend) => backend
+                .runtime
+                .block_on(backend.client.call_typed(method, params))
+                .map_err(map_ipc_error),
+        }
     }
 }
 

@@ -27,6 +27,12 @@
 //! IPCX.1 (`agalma-ebg.2`) adds two more checks: the ConnectRPC stack
 //! (`connectrpc`/`buffa`) may be a normal dependency only of `agalma-ipc`, and
 //! extracted implementation crates must not import conductor internals.
+//!
+//! IPCX.8 (`agalma-ebg.9`) strengthens the Connect confinement to the full
+//! stack (`connectrpc`/`buffa` plus the build-time `connectrpc-build`/
+//! `buffa-codegen`), pins that no crate but `agalma-ipc` *uses* the stack in
+//! source (not just in the manifest), and pins that no implementation crate
+//! declares a Cargo dependency on `agalma-conductor`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -167,22 +173,23 @@ fn strip_comments(src: &str) -> String {
     out
 }
 
-/// Normal (`[dependencies]`) dependency names declared in a Cargo.toml.
+/// Dependency names declared in one `table` (e.g. `[dependencies]`,
+/// `[build-dependencies]`) of a Cargo.toml.
 ///
-/// Only the plain `[dependencies]` table is parsed; `[dev-dependencies]`,
-/// `[build-dependencies]`, and feature tables are ignored. Dependency keys are
-/// taken verbatim (renames via `package = "..."` are not expected in this
-/// workspace).
-fn normal_dependency_names(manifest: &str) -> Vec<String> {
+/// Only the named table is parsed; feature tables and other tables are ignored.
+/// Dependency keys are taken verbatim (renames via `package = "..."` are not
+/// expected in this workspace).
+fn dependency_table_names(manifest: &str, table: &str) -> Vec<String> {
+    let header = format!("[{table}]");
     let mut deps = Vec::new();
-    let mut in_deps = false;
+    let mut in_table = false;
     for raw in manifest.lines() {
         let line = raw.trim();
         if line.starts_with('[') {
-            in_deps = line == "[dependencies]";
+            in_table = line == header;
             continue;
         }
-        if !in_deps || line.is_empty() || line.starts_with('#') {
+        if !in_table || line.is_empty() || line.starts_with('#') {
             continue;
         }
         let key = line
@@ -196,6 +203,20 @@ fn normal_dependency_names(manifest: &str) -> Vec<String> {
         }
     }
     deps
+}
+
+/// Normal (`[dependencies]`) dependency names declared in a Cargo.toml.
+///
+/// `[dev-dependencies]` and `[build-dependencies]` are ignored (tests
+/// legitimately wire implementations together; build scripts are not runtime
+/// edges). See [`dependency_table_names`].
+fn normal_dependency_names(manifest: &str) -> Vec<String> {
+    dependency_table_names(manifest, "dependencies")
+}
+
+/// Build (`[build-dependencies]`) dependency names declared in a Cargo.toml.
+fn build_dependency_names(manifest: &str) -> Vec<String> {
+    dependency_table_names(manifest, "build-dependencies")
 }
 
 #[test]
@@ -272,9 +293,13 @@ fn implementation_crates_do_not_reference_each_other() {
     );
 }
 
-/// The ConnectRPC transport stack (`connectrpc` / `buffa`) is confined to
-/// `agalma-ipc` (design D6): implementation crates reach it only through the
+/// The ConnectRPC stack — the client/server crates `connectrpc`/`buffa` and the
+/// build-time `connectrpc-build`/`buffa-codegen` — appears in dependency tables
+/// (normal *and* build) only in `agalma-ipc` (design D6, strengthened by
+/// IPCX.8): implementation crates reach the transport only through the
 /// transport-agnostic `agalma-ipc` boundary.
+const CONNECT_STACK: &[&str] = &["connectrpc", "buffa", "connectrpc-build", "buffa-codegen"];
+
 #[test]
 fn connect_stack_is_confined_to_agalma_ipc() {
     let crates_dir = workspace_root().join("crates");
@@ -291,11 +316,13 @@ fn connect_stack_is_confined_to_agalma_ipc() {
             None => continue,
         };
         let text = fs::read_to_string(&manifest).unwrap_or_default();
-        for dep in normal_dependency_names(&text) {
-            if (dep == "connectrpc" || dep == "buffa") && crate_name != "agalma-ipc" {
-                violations.push(format!(
-                    "{crate_name} declares a normal dependency on the Connect stack ({dep})"
-                ));
+        for table in ["dependencies", "build-dependencies"] {
+            for dep in dependency_table_names(&text, table) {
+                if CONNECT_STACK.contains(&dep.as_str()) && crate_name != "agalma-ipc" {
+                    violations.push(format!(
+                        "{crate_name} declares a {table} entry on the Connect stack ({dep})"
+                    ));
+                }
             }
         }
     }
@@ -306,11 +333,59 @@ fn connect_stack_is_confined_to_agalma_ipc() {
         violations.join("\n")
     );
 
-    // And the infrastructure crate does own it.
+    // And the infrastructure crate does own it (normal + build).
     let ipc = fs::read_to_string(crates_dir.join("agalma-ipc/Cargo.toml")).unwrap_or_default();
-    let deps = normal_dependency_names(&ipc);
-    assert!(deps.contains(&"connectrpc".to_string()));
-    assert!(deps.contains(&"buffa".to_string()));
+    let normal = normal_dependency_names(&ipc);
+    for dep in ["connectrpc", "buffa"] {
+        assert!(normal.contains(&dep.to_string()), "agalma-ipc must own {dep}");
+    }
+    let build = build_dependency_names(&ipc);
+    for dep in ["connectrpc-build", "buffa-codegen"] {
+        assert!(
+            build.contains(&dep.to_string()),
+            "agalma-ipc must own build dependency {dep}"
+        );
+    }
+}
+
+/// The Connect stack must not even be *named* in another crate's source: reaching
+/// it through `agalma-ipc` means implementations never spell `connectrpc` /
+/// `buffa`, so the manifest-only check above is backed by a source scan (IPCX.8).
+#[test]
+fn connect_stack_source_is_confined_to_agalma_ipc() {
+    let crates_dir = workspace_root().join("crates");
+    let mut violations = Vec::new();
+
+    let entries = fs::read_dir(&crates_dir).expect("crates dir");
+    for entry in entries.flatten() {
+        let src = entry.path().join("src");
+        if !src.is_dir() {
+            continue;
+        }
+        let crate_name = match entry.file_name().to_str() {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+        if crate_name == "agalma-ipc" {
+            continue;
+        }
+        for file in rust_files(&src) {
+            let text = fs::read_to_string(&file).unwrap_or_default();
+            let code = strip_comments(&text);
+            for dep in CONNECT_STACK {
+                let ident = dep.replace('-', "_");
+                if contains_ident(&code, dep) || contains_ident(&code, &ident) {
+                    violations.push(format!("{} references the Connect stack ({dep})", file.display()));
+                }
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "only agalma-ipc may name the Connect stack in source:\n{}",
+        violations.join("\n")
+    );
 }
 
 /// Extracted implementation (server) crates must not import conductor
@@ -336,6 +411,50 @@ fn implementation_crates_do_not_reference_conductor() {
         "implementation crates must not import conductor internals:\n{}",
         violations.join("\n")
     );
+}
+
+/// Implementation crates must not declare a Cargo dependency on the conductor
+/// either: direction is `conductor -> implementations -> contracts` (IPCX.8
+/// pins the manifest half of the same rule the source scan enforces).
+#[test]
+fn implementation_crates_do_not_depend_on_conductor_in_cargo_toml() {
+    let root = workspace_root();
+    let mut violations = Vec::new();
+
+    for crate_name in IMPL_CRATES {
+        let manifest = root.join("crates").join(crate_name).join("Cargo.toml");
+        let text = fs::read_to_string(&manifest).unwrap_or_default();
+        for table in ["dependencies", "build-dependencies", "dev-dependencies"] {
+            if dependency_table_names(&text, table).iter().any(|d| d == "agalma-conductor") {
+                violations.push(format!(
+                    "{crate_name} declares a {table} dependency on agalma-conductor"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "implementation crates must not depend on conductor:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn build_dependency_parser_reads_only_build_table() {
+    let manifest = "\
+[dependencies]
+agalma-ipc = { path = \"../agalma-ipc\" }
+
+[build-dependencies]
+connectrpc-build = { workspace = true }
+serde = { workspace = true }
+";
+    assert_eq!(
+        build_dependency_names(manifest),
+        vec!["connectrpc-build", "serde"]
+    );
+    assert_eq!(normal_dependency_names(manifest), vec!["agalma-ipc"]);
 }
 
 #[test]

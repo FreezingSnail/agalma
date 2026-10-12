@@ -337,14 +337,12 @@ impl OpenCodeHarness {
             .map(|dir| canonical_dir(dir))
             .collect::<Result<Vec<_>, _>>()?;
 
-        // Allocate a loopback port, then refuse to launch if something already
-        // owns it: connecting to a stale server would silently break isolation.
+        // Allocate a loopback port for the child. `allocate_port` probes the
+        // port after releasing it and retries if a concurrent process grabbed
+        // it, so a launch never targets an already-owned port and a transient
+        // sibling listener cannot flip this call's error classification
+        // (agalma-9me).
         let port = allocate_port()?;
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            return Err(ContractError::KnownFailure(format!(
-                "127.0.0.1:{port} already in use; refusing to bind to a foreign server"
-            )));
-        }
         let password = random_password();
 
         let mut env = BTreeMap::new();
@@ -981,16 +979,40 @@ fn canonical_dir(path: &Path) -> Result<PathBuf, ContractError> {
         .map_err(|e| ContractError::KnownFailure(format!("resolve {}: {e}", path.display())))
 }
 
-/// Bind an ephemeral loopback port and release it for the child to take.
+/// Bind an ephemeral loopback port, release it, and confirm the child can take
+/// it: the port is re-probed after release and skipped when a concurrent
+/// process grabbed it.
+///
+/// Under parallel test load a sibling process can bind a just-released
+/// ephemeral port in the window between `bind` and the liveness probe; the old
+/// single-shot probe surfaced that as a spurious "already in use" start
+/// failure (agalma-9me). Retrying a bounded number of times keeps a transient
+/// occupant from flipping the caller's error classification.
 fn allocate_port() -> Result<u16, ContractError> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))
-        .map_err(|e| ContractError::KnownFailure(format!("allocate port: {e}")))?;
-    let port = listener
-        .local_addr()
-        .map_err(|e| ContractError::KnownFailure(format!("local_addr: {e}")))?
-        .port();
-    drop(listener);
-    Ok(port)
+    allocate_port_with(|port| TcpStream::connect(("127.0.0.1", port)).is_ok())
+}
+
+/// `allocate_port` with an injectable occupancy probe so tests can drive the
+/// retry path deterministically instead of racing a real listener.
+fn allocate_port_with<F>(mut occupied: F) -> Result<u16, ContractError>
+where
+    F: FnMut(u16) -> bool,
+{
+    for _ in 0..64 {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|e| ContractError::KnownFailure(format!("allocate port: {e}")))?;
+        let port = listener
+            .local_addr()
+            .map_err(|e| ContractError::KnownFailure(format!("local_addr: {e}")))?
+            .port();
+        drop(listener);
+        if !occupied(port) {
+            return Ok(port);
+        }
+    }
+    Err(ContractError::KnownFailure(
+        "no free loopback port after 64 attempts".to_string(),
+    ))
 }
 
 /// A per-attempt `OPENCODE_PASSWORD`, from `/dev/urandom` (fallback: time+pid).
@@ -1618,6 +1640,33 @@ mod tests {
         assert_eq!(a.len(), 48);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn allocate_port_skips_a_transiently_occupied_port() {
+        // Regression for agalma-9me: a sibling test can hold a just-released
+        // ephemeral port, which used to surface as a spurious
+        // "127.0.0.1:<port> already in use" start failure under parallel
+        // workspace load (the never-ready test's message then lacked
+        // "readiness"). The allocator must skip an occupied candidate instead
+        // of failing, so the caller's readiness classification stays stable.
+        let mut first: Option<u16> = None;
+        let mut probes = 0;
+        let port = allocate_port_with(|candidate| {
+            probes += 1;
+            if first.is_none() {
+                first = Some(candidate);
+                true // pretend a sibling grabbed the first candidate
+            } else {
+                false
+            }
+        })
+        .expect("allocator must find a free port");
+        assert_eq!(probes, 2, "occupied candidate is re-probed then skipped");
+        // The returned port is the one the probe reported free (the second
+        // candidate). Comparing port numbers to `first` would be flaky: the
+        // kernel may hand back the same ephemeral port after release.
+        assert!(port > 0, "a concrete port is returned");
     }
 
     /// Drive one launch through the adapter and capture the sandbox `LaunchSpec`

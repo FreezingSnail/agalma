@@ -22,14 +22,14 @@ use std::time::Duration;
 
 use agalma_contracts::{ContractError, TaskId, TaskQueueApi};
 use agalma_ipc::{
-    Client, CloseParams, CommandSpec, IpcError, TaskCall, TaskQueueClient, TaskQueueOps,
+    Client, CloseParams, CommandSpec, IpcError, TaskCall, TaskQueueClient, TaskQueueOps, Wire,
 };
 use agalma_taskqueue::server::SERVER_BIN;
 use agalma_testkit::ScratchDir;
 
 use agalma_conductor::harness_process::resolve_server_binary;
 use agalma_conductor::taskqueue_process::{
-    taskqueue_server_spec, TaskQueueHandle, TaskQueueProcess,
+    taskqueue_server_spec, taskqueue_wire, TaskQueueHandle, TaskQueueProcess,
 };
 
 const CHILD_SOCKET_ENV: &str = "AGALMA_TEST_TASKQUEUE_SOCKET";
@@ -230,8 +230,12 @@ fn server_spec(socket: &Path, repo: &Path) -> (CommandSpec, PathBuf) {
 }
 
 fn spawn_server(socket: &Path, repo: &Path) -> TaskQueueProcess {
+    spawn_server_wire(socket, repo, taskqueue_wire())
+}
+
+fn spawn_server_wire(socket: &Path, repo: &Path, wire: Wire) -> TaskQueueProcess {
     let (spec, program) = server_spec(socket, repo);
-    TaskQueueProcess::spawn_with_spec(spec, program, socket.to_path_buf(), READY_TIMEOUT)
+    TaskQueueProcess::spawn_with_spec_wire(spec, program, socket.to_path_buf(), wire, READY_TIMEOUT)
         .unwrap_or_else(|e| panic!("spawn taskqueue server: {e}"))
 }
 
@@ -407,6 +411,46 @@ fn shadow_parity_in_process_vs_process() {
         evidence.process_group_gone,
         "server stop evidence: {evidence:?}"
     );
+}
+
+// ===========================================================================
+// Case a' — wire parity: in-process vs framed vs Connect (IPCX.5)
+// ===========================================================================
+
+/// The task-queue boundary over Connect (IPCX.5): the same bd scenario produces
+/// an identical normalized transcript in-process, over the framed process wire,
+/// and over the Connect process wire. This is the dual-binding parity proof for
+/// the migrated boundary.
+#[test]
+fn wire_parity_framed_vs_connect_matches_in_process() {
+    // In-process baseline.
+    let scratch_in = Scratch::new(fresh());
+    let mut inproc = TaskQueueHandle::in_process(scratch_in.repo());
+    let in_process = run_scenario(&mut inproc, &scratch_in);
+
+    // Framed process wire.
+    let scratch_framed = Scratch::new(fresh());
+    let socket_framed = scratch_framed.repo().join("wf.sock");
+    let mut process_framed = spawn_server_wire(&socket_framed, scratch_framed.repo(), Wire::Framed);
+    assert_eq!(process_framed.wire(), Wire::Framed);
+    let mut client_framed = process_framed.client().expect("framed client");
+    let framed = run_scenario(&mut client_framed, &scratch_framed);
+    drop(client_framed);
+    let _ = process_framed.stop();
+
+    // Connect process wire.
+    let scratch_connect = Scratch::new(fresh());
+    let socket_connect = scratch_connect.repo().join("wc.sock");
+    let mut process_connect =
+        spawn_server_wire(&socket_connect, scratch_connect.repo(), Wire::Connect);
+    assert_eq!(process_connect.wire(), Wire::Connect);
+    let mut client_connect = process_connect.client().expect("connect client");
+    let connect = run_scenario(&mut client_connect, &scratch_connect);
+    drop(client_connect);
+    let _ = process_connect.stop();
+
+    assert_eq!(in_process, framed, "framed taskqueue transcript parity");
+    assert_eq!(in_process, connect, "connect taskqueue transcript parity");
 }
 
 /// Readiness parity across the process boundary with a blocking dependency: a
@@ -615,7 +659,8 @@ fn taskqueue_client_duplicate_id_replay_and_connection_loss() {
     let task = TaskId::new(&id);
 
     let socket = scratch.repo().join("d.sock");
-    let mut server = spawn_server(&socket, scratch.repo());
+    // Raw framed `Client` conformance: the server must serve the framed wire.
+    let mut server = spawn_server_wire(&socket, scratch.repo(), Wire::Framed);
     let mut client = Client::connect(&socket).expect("connect");
 
     // Duplicate request id: the recorded `claim` receipt is replayed, not re-run.

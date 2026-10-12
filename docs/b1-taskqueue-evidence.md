@@ -182,3 +182,100 @@ no `docs/b1-extraction.md` edit. The architecture lint is strict and green
 implementation crate depends on another, and no implementation source references
 another implementation crate (`agalma-ipc` is infrastructure and may be depended
 on).
+
+# IPCX.5 — task-queue boundary migration to Connect (`agalma-ebg.6`)
+
+Status: green (offline workspace build, ipc tests incl. new taskqueue Connect
+conformance, conductor taskqueue-boundary tests over both wires, architecture).
+Not committed (per worker instruction; peers active in tree, no git writes).
+
+Design: `docs/ipc-connect-design.md` (D1–D7, D7 boundary #4). Pattern:
+`agalma-ebg.3`/`agalma-ebg.4` (harness/sandbox boundaries).
+
+## What changed
+
+`TaskQueueApi`/`TaskQueueOps` typed client/server moved onto the Connect
+transport; envelope semantics and consumer logic unchanged. Per-boundary wire
+selector reused from `agalma-ipc::connect` (`Wire`, `WIRE_ENV`). The task-queue
+process wire defaults to `Connect`; `AGALMA_IPC_WIRE=framed` restores framed for
+parity runs.
+
+| Concern | Where |
+|---|---|
+| `TaskQueueClient::connect_wire(socket, wire)` (+ framed `connect`/`from_client` retained) | `crates/agalma-ipc/src/taskqueue_client.rs` |
+| `serve_taskqueue(server, socket, wire)` | `crates/agalma-ipc/src/taskqueue_server.rs` |
+| `serve` reads `AGALMA_IPC_WIRE` (Connect default); `serve_wire` | `crates/agalma-taskqueue/src/server.rs` |
+| `taskqueue_wire`, `TaskQueueProcess::wire`, `spawn_with_spec_wire`, child `WIRE_ENV` export, matching client | `crates/agalma-conductor/src/taskqueue_process.rs` |
+| Wire parity + framed replay evidence | `crates/agalma-conductor/tests/taskqueue_process.rs` |
+| Task-queue Connect conformance (new) | `crates/agalma-ipc/tests/taskqueue_connect.rs` |
+| IPCX.5 evidence (this section) | `docs/b1-taskqueue-evidence.md` |
+
+## Interfaces
+
+- `agalma_ipc`: `TaskQueueClient::connect_wire`; `taskqueue_server::serve_taskqueue`.
+- `agalma_taskqueue::server`: `serve_wire`; `serve` env-selects wire.
+- `agalma_conductor::taskqueue_process`: `taskqueue_wire`,
+  `TaskQueueProcess::wire`, `TaskQueueProcess::spawn_with_spec_wire`.
+
+## Pins / deps
+
+No new dependency. `connectrpc`/`buffa` stay confined to `agalma-ipc`
+(architecture test green). No `Cargo.toml`/`Cargo.lock` change; builds `--offline`.
+
+## Commands + results
+
+| Command | Observed |
+|---|---|
+| `cargo build --offline --workspace` | exit 0 |
+| `cargo test --offline -p agalma-ipc` | 48 + 14 + 9 + 4 + 3 + 2 + 2 (new `taskqueue_connect`) + 2 + 0 doc; 0 failures |
+| `cargo test --offline -p agalma-taskqueue` | 25 unit + 0 bin + 21 integration; 0 failures |
+| `cargo test --offline -p agalma-conductor --test taskqueue_process` | 8 passed, 0 failed |
+| `cargo test --offline -p agalma-conductor --lib taskqueue_process` | 4 passed, 0 failed |
+| `cargo test --offline -p agalma-conductor --test architecture` | 6 passed, 0 failed |
+
+New/changed evidence tests:
+
+- `taskqueue_api_over_connect_matches_framed` — the full operation surface
+  (`ready_tasks`/`get`/`claim`/`comment`/`add_label`/`close_task` plus
+  `projection`/`set_status`/`remove_label`) over a `register_taskqueue` server;
+  framed and Connect produce an identical typed transcript.
+- `taskqueue_connect_missing_socket_is_unavailable`.
+- `wire_parity_framed_vs_connect_matches_in_process` — in-process vs framed vs
+  Connect identical transcript for the same bd scenario.
+- `shadow_parity_in_process_vs_process`, `staged_rebind_keeps_pinned_claim`,
+  `rollback_keeps_prior_claim_and_server`,
+  `undefer_release_survives_restart_and_matches_process_binding`,
+  `process_binding_withholds_blocked_children` now run over Connect
+  (`process.client()` on the stored wire).
+- `taskqueue_client_duplicate_id_replay_and_connection_loss` stays framed and now
+  spawns the server explicitly framed (raw `Client` conformance preserved).
+- `taskqueue_process::tests::wire_defaults_to_connect_and_env_restores_framed`.
+
+## Files (git diff --name-only, plus new)
+
+```
+crates/agalma-conductor/src/taskqueue_process.rs
+crates/agalma-conductor/tests/taskqueue_process.rs
+crates/agalma-ipc/src/taskqueue_client.rs
+crates/agalma-ipc/src/taskqueue_server.rs
+crates/agalma-ipc/tests/taskqueue_connect.rs            # new
+crates/agalma-taskqueue/src/server.rs
+docs/b1-taskqueue-evidence.md
+```
+
+`crates/agalma-contracts/**` unchanged; no contract schema changed. Untouched:
+`work.rs`, `reconcile.rs`, `lib.rs` queue construction sites, `cli.rs`. Other
+working-tree changes (`Cargo.toml`, `Cargo.lock`, `crates/agalma-conductor/Cargo.toml`,
+`src/watch.rs`, `docs/tui.md`, workspace/ledger boundary files) belong to other
+workers.
+
+## Notes / deviations
+
+1. `TaskQueueProcess::spawn`/`spawn_with_spec` keep their signatures (default to
+   `taskqueue_wire()`), so existing callers are unedited;
+   `spawn_with_spec_wire` is the explicit-wire entry point.
+2. `TaskQueueApi` is `Describe`-free, so the "staged rebind" stays a
+   supervised-server swap (B1.5 note 3), now over Connect.
+3. The task-queue server still shells out to `bd` through `std::process`; the
+   Connect branch's Tokio runtime is installed by `agalma-ipc::serve_wire`, so the
+   impl crate needs no async runtime (unlike the sandbox boundary).

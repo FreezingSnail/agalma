@@ -1,5 +1,6 @@
-//! `TaskQueueClient` (decision D2): a typed [`TaskQueueApi`] over the framed
-//! client, plus the projection operations the conductor's reconcile drives.
+//! `TaskQueueClient` (decisions D2, IPCX.5): a typed [`TaskQueueApi`] over the
+//! task-queue boundary, on either wire transport, plus the projection
+//! operations the conductor's reconcile drives.
 //!
 //! Method names are the existing method snake-case
 //! (`ready_tasks`/`get`/`claim`/`comment`/`close_task`/`add_label` plus the
@@ -7,8 +8,12 @@
 //! one JSON params object and decodes a typed result. Transport failures map
 //! onto the frozen [`ContractError`] surface exactly as for the
 //! harness/sandbox/workspace clients: a mid-call connection loss is already
-//! classified by [`Client`] as `UnknownOutcome`; a pre-send loss becomes
+//! classified by the transport as `UnknownOutcome`; a pre-send loss becomes
 //! `KnownFailure`.
+//!
+//! Since IPCX.5 the client can speak either [`Wire::Framed`] (B1 length-prefixed
+//! JSON) or [`Wire::Connect`] (ConnectRPC over HTTP/2 on a Unix socket). The
+//! envelope semantics are identical on both; only the byte transport differs.
 //!
 //! [`TaskQueueOps`] is the full operation surface a task-queue server hosts: the
 //! frozen [`TaskQueueApi`] trait plus the projection operations the ledger-vs-bd
@@ -24,6 +29,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::client::Client;
+use crate::connect::{ConnectClient, Wire};
 use crate::error::IpcError;
 
 /// A task's current bd projection (status, assignee, labels, comment bodies),
@@ -103,25 +109,58 @@ pub trait TaskQueueOps: TaskQueueApi {
     fn remove_label(&mut self, id: &TaskId, label: &str) -> Result<(), ContractError>;
 }
 
+/// The transport backing a [`TaskQueueClient`].
+enum Backend {
+    /// B1 framed-JSON client ([`Client`]).
+    Framed(Client),
+    /// IPCX Connect client plus the runtime it is driven on.
+    Connect(ConnectBackend),
+}
+
+/// Connect transport state: the async client and the runtime that drives it.
+struct ConnectBackend {
+    runtime: tokio::runtime::Runtime,
+    client: ConnectClient,
+}
+
 /// A [`TaskQueueApi`]/[`TaskQueueOps`] implementation backed by a task-queue
 /// component server.
 pub struct TaskQueueClient {
-    client: RefCell<Client>,
+    backend: RefCell<Backend>,
 }
 
 impl TaskQueueClient {
-    /// Connect to the task-queue server listening on `socket`.
+    /// Connect to the task-queue server listening on `socket` over the framed
+    /// transport.
     pub fn connect(socket: &Path) -> Result<TaskQueueClient, IpcError> {
-        Ok(TaskQueueClient {
-            client: RefCell::new(Client::connect(socket)?),
-        })
+        TaskQueueClient::connect_wire(socket, Wire::Framed)
+    }
+
+    /// Connect to the task-queue server listening on `socket` over `wire`. Both
+    /// wires preserve the envelope semantics.
+    pub fn connect_wire(socket: &Path, wire: Wire) -> Result<TaskQueueClient, IpcError> {
+        match wire {
+            Wire::Framed => Ok(TaskQueueClient {
+                backend: RefCell::new(Backend::Framed(Client::connect(socket)?)),
+            }),
+            Wire::Connect => {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| IpcError::unavailable(format!("tokio runtime: {e}")))?;
+                let client = runtime.block_on(ConnectClient::connect(socket))?;
+                Ok(TaskQueueClient {
+                    backend: RefCell::new(Backend::Connect(ConnectBackend { runtime, client })),
+                })
+            }
+        }
     }
 
     /// Build a client from an already-connected transport (used by the process
     /// supervisor after the `READY` handshake).
     pub fn from_client(client: Client) -> TaskQueueClient {
         TaskQueueClient {
-            client: RefCell::new(client),
+            backend: RefCell::new(Backend::Framed(client)),
         }
     }
 
@@ -130,8 +169,13 @@ impl TaskQueueClient {
         method: &str,
         params: &impl Serialize,
     ) -> Result<R, ContractError> {
-        let mut client = self.client.borrow_mut();
-        client.call_typed(method, params).map_err(map_ipc_error)
+        match &mut *self.backend.borrow_mut() {
+            Backend::Framed(client) => client.call_typed(method, params).map_err(map_ipc_error),
+            Backend::Connect(backend) => backend
+                .runtime
+                .block_on(backend.client.call_typed(method, params))
+                .map_err(map_ipc_error),
+        }
     }
 }
 

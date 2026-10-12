@@ -1,10 +1,13 @@
 //! `bd`-backed `TaskQueueApi` component server (B1.5).
 //!
-//! Hosts [`BdTaskQueue`] behind the framed transport so the conductor can drive
+//! Hosts [`BdTaskQueue`] behind the selected transport so the conductor can drive
 //! backlog intake, atomic claims, and status projection across a process
 //! boundary instead of embedding the `bd` CLI adapter. The server is rooted at
 //! the repository owning the backlog (`--repo <path>`): the adapter targets
 //! `<repo>/.beads` with `bd --db`, exactly as in-process.
+//!
+//! Since IPCX.5 the server serves `Connect` by default;
+//! `AGALMA_IPC_WIRE=framed` restores the B1 length-prefixed transport.
 //!
 //! The backend shells out to the `bd` CLI through `std::process`, so the serial
 //! serve loop needs no async runtime (mirroring the reference harness and
@@ -14,7 +17,7 @@ use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use agalma_ipc::{register_taskqueue, CommandSpec, Server, ServerInfo};
+use agalma_ipc::{register_taskqueue, CommandSpec, Server, ServerInfo, Wire};
 
 use crate::BdTaskQueue;
 
@@ -62,11 +65,18 @@ pub fn build_server_with(queue: BdTaskQueue) -> Server {
     server
 }
 
-/// Bind `socket` and serve until stopped, hosting a `BdTaskQueue` rooted at
-/// `repo`.
+/// Bind `socket` and serve over the wire selected by `AGALMA_IPC_WIRE`
+/// (`connect` default, `framed` optional; IPCX.5), hosting a `BdTaskQueue`
+/// rooted at `repo`.
 pub fn serve(socket: &Path, repo: &Path) -> io::Result<()> {
-    let mut server = build_server(repo);
-    server.serve(socket)
+    serve_wire(socket, repo, Wire::from_env(Wire::Connect))
+}
+
+/// Bind `socket` and serve over `wire` until stopped, hosting a `BdTaskQueue`
+/// rooted at `repo`.
+pub fn serve_wire(socket: &Path, repo: &Path, wire: Wire) -> io::Result<()> {
+    let server = build_server(repo);
+    agalma_ipc::taskqueue_server::serve_taskqueue(server, socket, wire)
 }
 
 /// Full argv/env entry point used by the server binary.
@@ -90,9 +100,8 @@ where
     if let Some(program) = program {
         queue = queue.with_program(program);
     }
-    let mut server = build_server_with(queue);
-    server
-        .serve(&socket)
+    let server = build_server_with(queue);
+    agalma_ipc::taskqueue_server::serve_taskqueue(server, &socket, Wire::from_env(Wire::Connect))
         .map_err(|e| format!("serve {}: {e}", socket.display()))
 }
 

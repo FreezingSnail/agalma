@@ -5,18 +5,34 @@
 //! handlers and their params-decoding boilerplate in one place, mirroring
 //! [`crate::harness_server::register_harness`],
 //! [`crate::sandbox_server::register_sandbox`], and
-//! [`crate::workspace_server::register_workspace`].
+//! [`crate::workspace_server::register_workspace`]. [`serve_taskqueue`] serves a
+//! built server over the selected wire transport (IPCX.5).
 
 use std::sync::{Arc, Mutex, PoisonError};
 
 use agalma_contracts::ContractError;
 use serde_json::Value;
 
+use crate::connect::{serve_wire, Wire};
 use crate::harness_client::{decode_params, encode_result};
 use crate::server::Server;
 use crate::taskqueue_client::{
     CloseParams, CommentParams, LabelParams, StatusParams, TaskCall, TaskQueueOps,
 };
+
+/// Serve a task-queue [`Server`] over the selected wire transport (IPCX.5).
+///
+/// `Framed` runs the B1 serial accept loop; `Connect` runs the IPCX Connect/UDS
+/// accept loop. Both announce the same `READY {json}` line and preserve every
+/// envelope guarantee (receipt replay, version refusal, in-band error codes), so
+/// the supervisor and its bind gate are wire-agnostic.
+pub fn serve_taskqueue(
+    server: Server,
+    socket: &std::path::Path,
+    wire: Wire,
+) -> std::io::Result<()> {
+    serve_wire(server, socket, wire)
+}
 
 /// Register every task-queue operation on `server`, hosting `queue`.
 ///

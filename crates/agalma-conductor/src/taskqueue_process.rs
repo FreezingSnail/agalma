@@ -12,7 +12,9 @@
 //! `in-process` (default) or `process`. [`TaskQueueHandle`] exposes the full
 //! task-queue operation surface ([`TaskQueueOps`] + `TaskQueueApi`) by delegating
 //! to whichever backend is bound, so work/reconcile logic is unchanged (D5) —
-//! only the construction sites change.
+//! only the construction sites change. The process wire defaults to
+//! [`Wire::Connect`] (IPCX.5); `AGALMA_IPC_WIRE=framed` restores framed for
+//! parity runs.
 //!
 //! The socket lives directly under the run state dir (`taskqueue.sock`) to stay
 //! within `SUN_LEN`.
@@ -24,7 +26,7 @@ use std::time::Duration;
 
 use agalma_contracts::harness::StopEvidence;
 use agalma_contracts::{ClaimEvidence, ContractError, ReadyTasks, Task, TaskId, TaskQueueApi};
-use agalma_ipc::{CommandSpec, IssueProjection, TaskQueueClient, TaskQueueOps};
+use agalma_ipc::{CommandSpec, IssueProjection, TaskQueueClient, TaskQueueOps, Wire, WIRE_ENV};
 use agalma_taskqueue::server::server_command;
 use agalma_taskqueue::BdTaskQueue;
 
@@ -37,12 +39,23 @@ pub const TRANSPORT_ENV: &str = "AGALMA_TASKQUEUE_TRANSPORT";
 /// Socket file name under the run state dir.
 pub const TASKQUEUE_SOCKET_NAME: &str = "taskqueue.sock";
 
+/// The wire transport the task-queue process boundary uses (IPCX.5).
+///
+/// The task-queue boundary migrated to [`Wire::Connect`]; a parity run may set
+/// [`agalma_ipc::WIRE_ENV`] to `framed` to compare the two wires against the
+/// same scenario. The selected wire is also exported to the child process (see
+/// [`TaskQueueProcess::spawn_with_spec_wire`]) so its server serves the matching
+/// transport.
+pub fn taskqueue_wire() -> Wire {
+    Wire::from_env(Wire::Connect)
+}
+
 /// How the conductor reaches a task-queue implementation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TaskQueueTransport {
     /// Direct in-process trait call (unchanged work/reconcile logic).
     InProcess,
-    /// Supervised component server over the framed transport.
+    /// Supervised component server over the selected wire transport.
     Process,
 }
 
@@ -78,12 +91,13 @@ pub fn taskqueue_server_spec(socket: &Path, repo: &Path) -> CommandSpec {
 pub struct TaskQueueProcess {
     socket: PathBuf,
     child: Child,
+    wire: Wire,
     stopped: bool,
 }
 
 impl TaskQueueProcess {
     /// Spawn a task-queue server serving `repo`'s backlog and listen on
-    /// `<state_dir>/taskqueue.sock`; wait for `READY`.
+    /// `<state_dir>/taskqueue.sock` (over [`taskqueue_wire`]); wait for `READY`.
     pub fn spawn(
         state_dir: &Path,
         repo: &Path,
@@ -92,22 +106,37 @@ impl TaskQueueProcess {
         let socket = state_dir.join(TASKQUEUE_SOCKET_NAME);
         let spec = taskqueue_server_spec(&socket, repo);
         let program = resolve_server_binary(&spec.program)?;
-        TaskQueueProcess::spawn_with_spec(spec, program, socket, timeout)
+        TaskQueueProcess::spawn_with_spec_wire(spec, program, socket, taskqueue_wire(), timeout)
     }
 
-    /// Spawn a task-queue server from an explicit spec/program (used by tests
-    /// that re-exec the test binary as the server when the real binary is
-    /// absent).
+    /// Spawn a task-queue server from an explicit spec/program over
+    /// [`taskqueue_wire`] (used by tests that re-exec the test binary as the
+    /// server when the real binary is absent).
     pub fn spawn_with_spec(
         spec: CommandSpec,
         program: PathBuf,
         socket: PathBuf,
         timeout: Duration,
     ) -> Result<TaskQueueProcess, String> {
+        TaskQueueProcess::spawn_with_spec_wire(spec, program, socket, taskqueue_wire(), timeout)
+    }
+
+    /// Spawn a task-queue server from an explicit spec/program over `wire`. The
+    /// selected wire is exported to the child in [`WIRE_ENV`], so its server
+    /// serves the matching transport.
+    pub fn spawn_with_spec_wire(
+        spec: CommandSpec,
+        program: PathBuf,
+        socket: PathBuf,
+        wire: Wire,
+        timeout: Duration,
+    ) -> Result<TaskQueueProcess, String> {
+        let spec = spec.env(WIRE_ENV, wire.as_str());
         let (guard, _info) = spawn_supervised(&spec, &program, &socket, timeout)?;
         Ok(TaskQueueProcess {
             socket,
             child: guard.into_child(),
+            wire,
             stopped: false,
         })
     }
@@ -122,9 +151,14 @@ impl TaskQueueProcess {
         self.child.id()
     }
 
-    /// Connect a fresh client to the running server.
+    /// The wire transport this process (and its server) uses.
+    pub fn wire(&self) -> Wire {
+        self.wire
+    }
+
+    /// Connect a fresh client to the running server over its wire.
     pub fn client(&self) -> Result<TaskQueueClient, String> {
-        TaskQueueClient::connect(&self.socket).map_err(|e| e.to_string())
+        TaskQueueClient::connect_wire(&self.socket, self.wire).map_err(|e| e.to_string())
     }
 
     /// Stop the server with `SIGTERM`/`SIGKILL` evidence. Idempotent.
@@ -282,5 +316,17 @@ mod tests {
     fn in_process_handle_is_constructed_without_a_server() {
         let handle = TaskQueueHandle::in_process(Path::new("/run/repo"));
         assert!(handle._process.is_none());
+    }
+
+    #[test]
+    fn wire_defaults_to_connect_and_env_restores_framed() {
+        // Absent -> Connect (IPCX.5 migration default); `framed` for parity.
+        std::env::remove_var(WIRE_ENV);
+        assert_eq!(taskqueue_wire(), Wire::Connect);
+        std::env::set_var(WIRE_ENV, "framed");
+        assert_eq!(taskqueue_wire(), Wire::Framed);
+        std::env::set_var(WIRE_ENV, "connect");
+        assert_eq!(taskqueue_wire(), Wire::Connect);
+        std::env::remove_var(WIRE_ENV);
     }
 }

@@ -705,7 +705,9 @@ impl HarnessApi for OpenCodeHarness {
             .ok_or_else(|| ContractError::KnownFailure("start_attempt first".to_string()))?;
         self.turn_seq += 1;
         let prompt = posted_prompt(
-            self.session_prompts.get(session.id.as_str()).map(String::as_str),
+            self.session_prompts
+                .get(session.id.as_str())
+                .map(String::as_str),
             &req.input_ref,
         );
         let body = json!({ "text": prompt }).to_string();
@@ -1022,6 +1024,10 @@ fn detect_version(program: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{build_config, OpenCodeConfigInit};
+    use crate::server::{config_from_lookup, LaunchConfig, LAUNCH_CONFIG_ENV};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn cancel_404_is_already_gone_not_an_error() {
@@ -1092,8 +1098,7 @@ mod tests {
         // A composed per-task prompt (epic id + repository) is posted verbatim;
         // only a missing session prompt falls back to the canned text.
         let input = ArtifactRef::derive("designer-turn");
-        let composed =
-            "## Input (this epic)\n\nepic: agalma-aaa\nrepository: /repos/alpha\n";
+        let composed = "## Input (this epic)\n\nepic: agalma-aaa\nrepository: /repos/alpha\n";
         assert_eq!(posted_prompt(Some(composed), &input), composed);
         assert_eq!(posted_prompt(None, &input), PROMPT_TURN);
         assert_eq!(
@@ -1613,5 +1618,160 @@ mod tests {
         assert_eq!(a.len(), 48);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
+    }
+
+    /// Drive one launch through the adapter and capture the sandbox `LaunchSpec`
+    /// it produced (the fake child is never ready, so `start_attempt` fails after
+    /// recording the launch).
+    fn launch_spec_of(config: OpenCodeHarnessConfig, workspace: &Path) -> LaunchSpec {
+        let sandbox = RecordingSandbox::default();
+        let mut harness = OpenCodeHarness::new(Box::new(sandbox.clone()), config);
+        let err = start(&mut harness, workspace);
+        assert!(
+            err.to_string().contains("readiness"),
+            "expected a recorded launch then a readiness failure: {err}"
+        );
+        drop(harness);
+        sandbox
+            .launches()
+            .into_iter()
+            .next()
+            .expect("exactly one recorded launch")
+    }
+
+    /// Resolve `bin` on a `PATH` value, mimicking the conductor's `bd_bin_dir`.
+    fn find_on_path(path: &str, bin: &str) -> Option<PathBuf> {
+        std::env::split_paths(path)
+            .map(|dir| dir.join(bin))
+            .find(|candidate| candidate.is_file())
+    }
+
+    /// agalma-tqf: the in-process and process transports must produce the same
+    /// sandbox `LaunchSpec` for the same explicit launch config — the custom `bd`
+    /// PATH addition, toolchain homes, `CARGO_HOME`, and read roots included — and
+    /// a worker must be able to locate and execute `bd` and the toolchain from
+    /// the transmitted PATH. Paths contain spaces to match real host layouts.
+    #[test]
+    fn process_transport_preserves_bd_toolchain_env_and_read_roots() {
+        let (root, workspace) = layout("launch-parity");
+
+        // A toolchain/bd bin directory whose name contains a space.
+        let bin_dir = root.join("tool chain/bin");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        for (name, out) in [("bd", "bd-mock-ok"), ("cargo", "cargo-mock-ok")] {
+            let path = bin_dir.join(name);
+            fs::write(&path, format!("#!/bin/sh\necho {out}\n")).expect("write mock");
+            let mut perms = fs::metadata(&path).expect("metadata").permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&path, perms).expect("chmod");
+        }
+        let cargo_home = root.join("cargo home");
+        fs::create_dir_all(&cargo_home).expect("cargo home");
+
+        let path_value = format!(
+            "{}:/usr/bin:/bin:/opt/homebrew/bin",
+            bin_dir.to_string_lossy()
+        );
+        let mut extra_env = BTreeMap::new();
+        extra_env.insert("PATH".to_string(), path_value.clone());
+        extra_env.insert(
+            "CARGO_HOME".to_string(),
+            cargo_home.to_string_lossy().into_owned(),
+        );
+        extra_env.insert(
+            "RUSTUP_HOME".to_string(),
+            root.join("rustup home").to_string_lossy().into_owned(),
+        );
+
+        let mut in_config = build_config(OpenCodeConfigInit {
+            profile_path: root.join("worker.sb"),
+            attempt_dir: root.join("attempt"),
+            protected_dir: root.join("protected"),
+            sock_dir: root.join("sock"),
+            model: "opencode-go/deepseek".to_string(),
+            proxy_url: Some("http://127.0.0.1:41234".to_string()),
+            paid_proxy: true,
+            extra_ro_roots: vec![bin_dir.clone()],
+            extra_rw_roots: vec![workspace.clone()],
+            extra_env,
+        });
+        in_config.program = Some(PathBuf::from("/usr/bin/true"));
+        let in_spec = launch_spec_of(in_config.clone(), &workspace);
+
+        // The conductor's process transport serializes exactly these fields; the
+        // server reconstructs its config from them.
+        let launch = LaunchConfig {
+            profile_path: in_config.profile_path.clone(),
+            attempt_dir: in_config.attempt_dir.clone(),
+            protected_dir: in_config.protected_dir.clone(),
+            sock_dir: in_config.sock_dir.clone(),
+            model: in_config.model.clone().expect("model"),
+            proxy_url: in_config.proxy_url.clone(),
+            paid_proxy: in_config.provider_base_url.is_some(),
+            program: in_config.program.clone(),
+            extra_ro: in_config.extra_ro.clone(),
+            extra_ro_roots: in_config.extra_ro_roots.clone(),
+            extra_rw_roots: in_config.extra_rw_roots.clone(),
+            extra_env: in_config.extra_env.clone(),
+        };
+        let lookup = |key: &str| -> Option<String> {
+            match key {
+                LAUNCH_CONFIG_ENV => Some(launch.to_json()),
+                // Parent secrets must never be consulted for the child env.
+                "AWS_SECRET_ACCESS_KEY" => Some("parent-secret".to_string()),
+                _ => None,
+            }
+        };
+        let proc_config = config_from_lookup(root.clone(), lookup);
+        let proc_spec = launch_spec_of(proc_config, &workspace);
+
+        // LaunchSpec parity (modulo the per-attempt random password).
+        let mut in_env = in_spec.env.clone();
+        let mut proc_env = proc_spec.env.clone();
+        in_env.remove("OPENCODE_PASSWORD");
+        proc_env.remove("OPENCODE_PASSWORD");
+        assert_eq!(in_env, proc_env, "child environment parity");
+        assert_eq!(
+            in_spec.extra_ro_roots, proc_spec.extra_ro_roots,
+            "read-root parity"
+        );
+        assert_eq!(
+            in_spec.extra_rw_roots, proc_spec.extra_rw_roots,
+            "read/write-root parity"
+        );
+        assert_eq!(in_spec.profile, proc_spec.profile, "profile parity");
+        assert_eq!(
+            in_spec.attempt_dir, proc_spec.attempt_dir,
+            "attempt-root parity"
+        );
+
+        // The custom bd/toolchain PATH, CARGO_HOME, and read root survived.
+        assert_eq!(proc_env["PATH"], path_value);
+        assert!(proc_env["PATH"].contains(&bin_dir.to_string_lossy().to_string()));
+        assert_eq!(proc_env["CARGO_HOME"], cargo_home.to_string_lossy());
+        assert!(
+            proc_spec
+                .extra_ro_roots
+                .iter()
+                .any(|r| r == &bin_dir.to_string_lossy().to_string()),
+            "bd root must travel as a read-only root: {:?}",
+            proc_spec.extra_ro_roots
+        );
+        assert!(!proc_env.contains_key("AWS_SECRET_ACCESS_KEY"));
+
+        // A sandboxed worker can locate and execute bd and the toolchain.
+        let bd = find_on_path(&proc_env["PATH"], "bd").expect("bd on transmitted PATH");
+        assert_eq!(
+            String::from_utf8_lossy(&Command::new(&bd).output().expect("run bd").stdout).trim(),
+            "bd-mock-ok"
+        );
+        let cargo = find_on_path(&proc_env["PATH"], "cargo").expect("cargo on transmitted PATH");
+        assert_eq!(
+            String::from_utf8_lossy(&Command::new(&cargo).output().expect("run cargo").stdout)
+                .trim(),
+            "cargo-mock-ok"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

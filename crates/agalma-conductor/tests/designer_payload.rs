@@ -28,7 +28,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agalma_conductor::harness_process::{resolve_server_binary, ProcessBinding, READY_TIMEOUT};
-use agalma_ipc::Wire;
 use agalma_conductor::sweep::{designer_prompt, RetryContext};
 use agalma_contracts::harness::{
     CreateSessionRequest, HarnessApi, Limits, RunTurnRequest, StartAttemptRequest, StopEvidence,
@@ -40,6 +39,7 @@ use agalma_harness_opencode::{
     server_command, OpenCodeHarness, OpenCodeHarnessConfig, PROFILE_PATH_ENV, ROOT_ENV,
     SANDBOX_SOCKET_ENV,
 };
+use agalma_ipc::Wire;
 use agalma_ipc::{register_sandbox, SandboxClient, Server, ServerInfo};
 use agalma_testkit::ScratchDir;
 use serde_json::Value;

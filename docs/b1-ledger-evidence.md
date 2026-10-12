@@ -143,17 +143,53 @@ the same host and (de)serializes.
    `&SqliteLedger`, so the same call accepts either the in-process ledger or the
    transport handle. The comparison/rewrite logic is unchanged (the call bodies
    are byte-for-byte the same methods).
-4. **Auxiliary direct connections remain.** The executor's ledger — the
-   extracted boundary — is bound through `LedgerHandle`. A few short-lived
-   conductor helpers (`digest::record`, `provider_auth::record_audit`,
-   `routing::resolve_route`'s decider, the `phases.rs` activity event writers,
-   and the read-only `status`/`digest`/`reconcile`/`resume` CLI subcommands)
-   still open their own `SqliteLedger` connection for a single operation. Under
-   `process` transport these are secondary SQLite (WAL) connections to the same
-   file; the durable-state owner and the export/import generation are still the
-   server (guarded by the lock), and the rebind test quiesces the conductor
-   before exporting. Routing every auxiliary access through the boundary is
-   deferred to keep the diff at the construction sites (D5).
+4. **Auxiliary direct connections remain (accepted deviation; B1-F2
+   `agalma-1o3`).** The executor's ledger — the extracted boundary — is bound
+   through `LedgerHandle`. A few short-lived conductor helpers
+   (`digest::record`, `provider_auth::record_audit`, `routing::resolve_route`'s
+   decider, the `phases.rs` activity event writers, and the read-only
+   `status`/`digest`/`reconcile`/`resume` CLI subcommands) still open their own
+   `SqliteLedger` connection for a single operation. Under `process` transport
+   these are secondary SQLite (WAL) connections to the same file; the
+   durable-state owner and the export/import generation are still the server
+   (guarded by the lock), and the rebind test quiesces the conductor before
+   exporting.
+
+   B1-F2 revisited this and converged what is reachable, with the remainder
+   accepted deliberately because routing them through the boundary is impossible
+   **without a redesign** that is out of this task's scope:
+
+   - **Why a fresh process connection cannot be used.** The ledger server serves
+     **one connection at a time** — `Server::accept_loop` accepts a connection and
+     runs `serve_connection` to completion (until the peer disconnects) before it
+     returns to `accept`. The conductor's bound `LedgerHandle` holds its client
+     connection open for the whole run, so any auxiliary helper that opened its
+     *own* `LedgerClient` would queue in the listener backlog and **block
+     forever**. This is pinned by
+     `tests/ledger_process.rs::second_connection_is_not_served_while_the_primary_is_held`.
+   - **Why the shared handle is not reachable.** The only correct route is to
+     reuse the *same* `LedgerHandle` (shared `Rc` backend, single connection).
+     That handle is owned by the executor (`work.rs`) and by the activity set
+     (`phases.rs`), neither of which passes it to the auxiliary helpers: the
+     `Activity` trait (`agalma_execution`) receives only the
+     `OperationContext`, and threading the handle through the executor/activity
+     seam, the `activities(...)` constructor, and the `work.rs` call sites is a
+     kernel/execution + `work.rs` change outside this bead's file scope.
+   - **Why the read-only CLI subcommands stay direct.** They run as standalone
+     processes; under `process` transport the conductor (and its `ledger-server`
+     lock) is usually live, so spawning a server fails and a client connection
+     would deadlock. A WAL read is the correct, non-blocking access there.
+   - **Converged in B1-F2.** `provider_auth::record_audit_via` takes a bound
+     ledger (no state-dir argument, so it structurally cannot open a secondary
+     connection) and the in-scope `Composition::build` call site now passes its
+     already-bound `LedgerHandle`. The `record_audit(state_dir, …)` wrapper is
+     retained only for the off-limits `work.rs` call site. A bound-handle routing
+     proof lives in `provider_auth::tests::record_audit_via_routes_through_the_bound_ledger`.
+
+   Net: one fewer secondary connection on the M0 (`run`) path; the work-loop and
+   CLI accesses remain documented, secondary WAL reads/writes with the accepted
+   rationale above. The goal here is single-writer *clarity* (each access is now
+   either on the handle or explicitly named here), not correctness today.
 5. **`LedgerApi` has no `Describe`/binding record.** As for the sandbox/workspace/
    task-queue boundaries, the "staged rebind" is a supervised-server swap with
    the in-flight pinned dispatch intent preserved across a snapshot
@@ -216,3 +252,51 @@ no `docs/b1-extraction.md` edit. The architecture lint is strict and green
 implementation crate depends on another, and no implementation source references
 another implementation crate (`agalma-ipc` is infrastructure and may be depended
 on).
+
+## B1-F2 — auxiliary ledger connections (`agalma-1o3`)
+
+Follow-up to deviation 4. Scope: `crates/agalma-conductor` only
+(`digest.rs`, `provider_auth.rs`, `routing.rs`, `phases.rs`,
+`ledger_process.rs`, minimal `lib.rs` wiring, co-located tests). The work loop
+(`work.rs`), the read-only TUI (`watch.rs`, `status.rs`), and the review/sandbox
+modules are owned by other workers and were not touched.
+
+### Converged
+- `provider_auth::record_audit_via(ledger: &mut dyn LedgerApi, audit)` — the audit
+  writer now takes the bound ledger and has **no state-dir argument**, so it
+  cannot open a secondary connection. `record_audit(state_dir, …)` remains as a
+  thin wrapper for callers that do not hold the handle.
+- `Composition::build` (`composition.rs`) passes its already-bound `LedgerHandle`
+  to `record_audit_via`, so the M0 `run` path records the provider-auth audit on
+  the conductor's single ledger connection. In-process behaviour is unchanged
+  (same backend, one fewer connection); under `process` transport the audit no
+  longer opens a second SQLite connection to the server's database.
+
+### Documented deviation (rationale in deviation 4 above)
+- `digest::record` (caller: `work.rs`), `routing::resolve_route`'s decider
+  (callers: `work.rs`, `review.rs`, `sweep.rs`, `concierge.rs`), the `phases.rs`
+  activity event writers, and the read-only `digest`/`reconcile`/`resume` CLI
+  subcommands keep direct secondary WAL connections. Routing them through the
+  boundary needs the shared `LedgerHandle`, which is not threaded to these
+  helpers, and a fresh process connection would deadlock against the serial
+  ledger server. Both facts are structural; removing them is a redesign
+  (executor/activity seam + `work.rs` + CLI), out of scope here.
+
+### Tests
+- `provider_auth::tests::record_audit_via_routes_through_the_bound_ledger` — the
+  audit writer records through the passed handle (no path ⇒ no secondary
+  connection).
+- `tests/ledger_process.rs::process_transport_routes_provider_auth_audit_through_the_handle`
+  — under the real process boundary, `record_audit_via` writes through the bound
+  `LedgerHandle`/ledger server and reads the event back through the same handle.
+- `tests/ledger_process.rs::second_connection_is_not_served_while_the_primary_is_held`
+  — pins the serial single-connection server behaviour that makes a
+  fresh-connection route impossible (the deviation rationale).
+
+### Results
+
+| Command | Observed |
+|---|---|
+| `cargo build --offline --workspace` | exit 0 |
+| `cargo test --offline -p agalma-conductor` | exit 0, all green (incl. the two tests above) |
+

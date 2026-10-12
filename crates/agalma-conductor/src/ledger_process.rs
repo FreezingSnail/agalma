@@ -205,6 +205,19 @@ impl LedgerHandle {
         })
     }
 
+    /// Bind the process backend to an already-spawned supervised server (used by
+    /// callers/tests that spawn the server through the re-exec fallback rather
+    /// than [`LedgerHandle::process`]'s binary lookup).
+    pub fn from_process(process: LedgerProcess) -> Result<LedgerHandle, ContractError> {
+        let client = process
+            .client()
+            .map_err(|e| ContractError::KnownFailure(format!("connect ledger server: {e}")))?;
+        Ok(LedgerHandle {
+            backend: Rc::new(RefCell::new(Backend::Process(client))),
+            _process: Some(Rc::new(process)),
+        })
+    }
+
     /// Build a handle for the selected `transport`.
     pub fn from_transport(
         state_dir: &Path,

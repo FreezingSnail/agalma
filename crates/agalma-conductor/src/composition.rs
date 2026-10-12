@@ -84,13 +84,13 @@ impl Composition {
             std::fs::canonicalize(&config.fixture).unwrap_or_else(|_| config.fixture.clone());
 
         let ledger_path = state_dir.join("ledger.sqlite");
-        let ledger = LedgerHandle::from_transport(&state_dir, LedgerTransport::from_env())?;
+        let mut ledger = LedgerHandle::from_transport(&state_dir, LedgerTransport::from_env())?;
 
         let task = task::load_task_descriptor(&fixture)
             .map_err(|e| ContractError::KnownFailure(e.to_string()))?;
 
         let mut executor = Executor::new(
-            ledger,
+            ledger.clone(),
             ExecutorConfig {
                 max_attempts: task.max_attempts,
                 execution_definition_version: EXECUTION_DEFINITION_VERSION,
@@ -105,8 +105,10 @@ impl Composition {
         // to the harness via `OpenCodeHarnessConfig::proxy_url`.
         let proxy = ProviderProxy::start(ProxyConfig::from_env())
             .map_err(|e| ContractError::KnownFailure(format!("provider proxy: {e}")))?;
-        // Record the token-free provider credential audit (best effort).
-        if let Err(err) = crate::provider_auth::record_audit(&state_dir, &proxy.auth_state()) {
+        // Record the token-free provider credential audit (best effort) through
+        // the bound handle, so under `process` transport it rides the conductor's
+        // single ledger connection instead of opening a secondary WAL connection.
+        if let Err(err) = crate::provider_auth::record_audit_via(&mut ledger, &proxy.auth_state()) {
             eprintln!("agalma: provider_auth audit: {err}");
         }
 

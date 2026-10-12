@@ -17,6 +17,8 @@
 //! `cargo test -p agalma-conductor` run still exercises the real process
 //! boundary. Scratch dirs auto-remove on success (kept on failure).
 
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -32,7 +34,8 @@ use agalma_ledger::SqliteLedger;
 use agalma_testkit::ScratchDir;
 
 use agalma_conductor::harness_process::resolve_server_binary;
-use agalma_conductor::ledger_process::{LedgerProcess, LedgerTransport};
+use agalma_conductor::ledger_process::{LedgerHandle, LedgerProcess, LedgerTransport};
+use agalma_conductor::provider_auth::{AuthState, PROVIDER_AUTH_EXECUTION};
 
 const CHILD_SOCKET_ENV: &str = "AGALMA_TEST_LEDGER_SOCKET";
 const CHILD_STATE_DIR_ENV: &str = "AGALMA_TEST_LEDGER_STATE_DIR";
@@ -599,4 +602,102 @@ fn transport_defaults_to_in_process() {
     assert_eq!(LedgerTransport::from_env(), LedgerTransport::InProcess);
     assert_eq!(LedgerTransport::InProcess.as_str(), "in-process");
     assert_eq!(LedgerTransport::Process.as_str(), "process");
+}
+
+// ===========================================================================
+// Case e — deviation rationale (B1-F2, `agalma-1o3`)
+// ===========================================================================
+
+/// Pins the rationale for the B1-F2 accepted deviation (`docs/b1-ledger-evidence.md`
+/// deviation 4): the ledger server serves **one connection at a time**
+/// (`Server::accept_loop` → `serve_connection`), so an auxiliary conductor helper
+/// cannot reach the boundary by opening its *own* `LedgerClient` while the bound
+/// `LedgerHandle` holds the primary connection — it would block forever. That is
+/// why `digest::record`, `routing::resolve_route`'s decider, the `phases.rs`
+/// activity writers, and the read-only CLI subcommands keep direct (secondary
+/// WAL) connections instead of routing over a fresh process connection.
+#[test]
+fn second_connection_is_not_served_while_the_primary_is_held() {
+    let dir = fresh();
+    let socket = dir.join("e.sock");
+    let mut server = spawn_server(&socket, &dir);
+
+    // The conductor's bound handle keeps its client connection open for the
+    // whole run; here the primary connection stands in for it.
+    let primary = UnixStream::connect(&socket).expect("connect primary");
+    std::thread::sleep(Duration::from_millis(150));
+
+    // A second connection is queued in the listener backlog. A valid request
+    // sent on it gets no response while the primary is still held.
+    let mut second = UnixStream::connect(&socket).expect("connect second");
+    let payload = agalma_ipc::frame::encode_json(&agalma_ipc::Request::new(
+        1,
+        "schema_version",
+        serde_json::json!({}),
+    ))
+    .expect("encode request");
+    let framed = agalma_ipc::frame::frame_payload(&payload).expect("frame request");
+    second.write_all(&framed).expect("send request");
+    second.flush().expect("flush");
+
+    second
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .expect("set read timeout");
+    let mut probe = [0u8; LENGTH_PREFIX];
+    let blocked = second.read_exact(&mut probe);
+    assert!(
+        matches!(
+            blocked,
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut
+        ),
+        "second connection must not be served while the primary is held: {blocked:?}"
+    );
+
+    // Releasing the primary lets the serial accept loop reach the queued second
+    // connection and serve the pending request.
+    drop(primary);
+    second
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("reset read timeout");
+    let mut len = [0u8; LENGTH_PREFIX];
+    second
+        .read_exact(&mut len)
+        .expect("response length after the primary released");
+    let n = u32::from_be_bytes(len) as usize;
+    assert!(
+        n > 0 && n <= agalma_ipc::MAX_FRAME,
+        "server replied after the primary connection released (len={n})"
+    );
+
+    drop(second);
+    let _ = server.stop();
+}
+
+const LENGTH_PREFIX: usize = 4;
+
+/// B1-F2 (`agalma-1o3`): under `process` transport the converged provider-auth
+/// audit writer records through the bound `LedgerHandle` (the supervised ledger
+/// server), not a secondary SQLite connection. The event is read back through the
+/// very same handle.
+#[test]
+fn process_transport_routes_provider_auth_audit_through_the_handle() {
+    let dir = fresh();
+    let socket = dir.join("f.sock");
+    let server = spawn_server(&socket, &dir);
+    let mut handle = LedgerHandle::from_process(server).expect("bind handle to the server");
+
+    let state = AuthState::enabled("opencode.ai", "process-secret-token");
+    agalma_conductor::provider_auth::record_audit_via(&mut handle, &state)
+        .expect("record audit via the process handle");
+
+    let events = handle
+        .events(&ExecutionId::new(PROVIDER_AUTH_EXECUTION))
+        .expect("events through the handle");
+    let event = events
+        .iter()
+        .find(|e| e.kind == "provider_auth")
+        .expect("provider_auth event recorded through the process handle");
+    assert_eq!(event.payload["host"], "opencode.ai");
 }

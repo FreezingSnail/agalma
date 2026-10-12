@@ -173,11 +173,18 @@ impl AuthState {
     }
 }
 
-/// Persist a `provider_auth` audit event to the ledger (append-only). Contains
-/// the fingerprint, host, timestamp, and (when disabled) the reason — never the
-/// token.
-pub fn record_audit(state_dir: &Path, audit: &AuthState) -> Result<(), ContractError> {
-    let mut ledger = SqliteLedger::open(state_dir.join("ledger.sqlite"))?;
+/// Persist the token-free `provider_auth` audit event through `ledger`
+/// (append-only). Contains the fingerprint, host, timestamp, and (when disabled)
+/// the reason — never the token.
+///
+/// Single-writer-correct form (B1-F2, `agalma-1o3`): it takes a *bound* ledger —
+/// the conductor's [`crate::ledger_process::LedgerHandle`] under `process`
+/// transport — and, having no state-dir argument, cannot open a secondary
+/// SQLite connection. Callers that only hold a state dir use [`record_audit`].
+pub fn record_audit_via(
+    ledger: &mut dyn LedgerApi,
+    audit: &AuthState,
+) -> Result<(), ContractError> {
     let event = ExecutionEvent {
         execution_id: ExecutionId::new(PROVIDER_AUTH_EXECUTION),
         sequence: 0,
@@ -193,6 +200,14 @@ pub fn record_audit(state_dir: &Path, audit: &AuthState) -> Result<(), ContractE
         intents: vec![],
     })?;
     Ok(())
+}
+
+/// Persist a `provider_auth` audit event by opening `state_dir/ledger.sqlite`
+/// directly (a secondary WAL connection; the documented B1-F2 deviation retained
+/// for callers that do not hold the bound handle). Prefer [`record_audit_via`].
+pub fn record_audit(state_dir: &Path, audit: &AuthState) -> Result<(), ContractError> {
+    let mut ledger = SqliteLedger::open(state_dir.join("ledger.sqlite"))?;
+    record_audit_via(&mut ledger, audit)
 }
 
 /// Extract the host from a URL (`https://host:port/path` → `host`).
@@ -298,6 +313,27 @@ mod tests {
                 .contains("audit-secret-token"),
             "token must not be persisted"
         );
+    }
+
+    #[test]
+    fn record_audit_via_routes_through_the_bound_ledger() {
+        use agalma_contracts::LedgerApi;
+        // B1-F2 (`agalma-1o3`): the audit writer takes a bound ledger and has no
+        // state-dir argument, so it cannot open a secondary connection. The event
+        // is readable through the very same handle that recorded it.
+        let dir = ScratchDir::new("provider-auth-via");
+        let mut handle =
+            crate::ledger_process::LedgerHandle::in_process(&dir).expect("open bound handle");
+        let state = AuthState::enabled("opencode.ai", "via-secret-token");
+        record_audit_via(&mut handle, &state).expect("record via handle");
+        let events = handle
+            .events(&ExecutionId::new(PROVIDER_AUTH_EXECUTION))
+            .expect("events");
+        let event = events
+            .iter()
+            .find(|e| e.kind == "provider_auth")
+            .expect("provider_auth event through the handle");
+        assert_eq!(event.payload["host"], "opencode.ai");
     }
 
     #[test]

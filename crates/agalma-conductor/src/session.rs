@@ -8,10 +8,13 @@
 //! [`crate::concierge::LiveConciergeSession`] differ only in the
 //! [`SessionSpec`] they hand in.
 //!
-//! [`run_session`] returns the optional session output captured from an
-//! attempt-root handoff file ([`SessionSpec::output_path`]): the designer
-//! ignores it and relies on the `bd` side effects; the concierge reads its
-//! output contract from it.
+//! [`run_session_end`] is the seam that returns the terminal classification
+//! (`Completed` / `TimedOut`) and, on completion, the optional session output
+//! captured from an attempt-root handoff file ([`SessionSpec::output_path`]).
+//! The designer commits `bd` children before the wall bound, so it uses that
+//! classification to reconcile a timed-out decomposition; the concierge reads
+//! its output contract through [`run_session`], the thin wrapper that turns a
+//! timeout back into the historical `ended without completion: TimedOut` error.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -92,6 +95,15 @@ impl LiveSession {
         self.stop = stop;
         self
     }
+
+    /// Override the per-turn wall bound (default [`crate::composition::DEFAULT_TURN_TIMEOUT`]).
+    /// The designer raises it per host via
+    /// [`crate::composition::resolve_designer_timeout`]; worker/concierge/reviewer
+    /// sessions keep the default.
+    pub fn with_turn_timeout(mut self, timeout: Duration) -> Self {
+        self.turn_timeout = timeout;
+        self
+    }
 }
 
 /// One confined session to run through the shared harness seam.
@@ -126,12 +138,38 @@ pub struct SessionSpec {
     pub error_label: String,
 }
 
-/// Run one confined OpenCode session over `spec`, returning the optional output
-/// captured from [`SessionSpec::output_path`] on a completed turn.
-pub fn run_session(
+/// Terminal classification of a bounded session turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionTerminal {
+    /// The turn reached the terminal `Completed` state.
+    Completed,
+    /// The turn hit the wall bound before completing.
+    TimedOut,
+}
+
+/// Outcome of [`run_session_end`]: the terminal classification plus the optional
+/// output captured from [`SessionSpec::output_path`] on completion.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionEnd {
+    pub terminal: SessionTerminal,
+    pub output: Option<String>,
+}
+
+/// Run one confined OpenCode session over `spec`, returning its terminal
+/// classification and (on completion) the optional output captured from
+/// [`SessionSpec::output_path`].
+///
+/// This is the seam callers that must distinguish a wall-bound timeout from
+/// completion use: the designer authors `bd` children before the bound, so the
+/// sweep reconciles a timed-out-but-committed decomposition in the same pass.
+/// [`run_session`] keeps the older error-based contract for concierge/reviewer.
+///
+/// A `Stopped` outcome and every other non-terminal outcome keep the exact error
+/// message/formatting of the historical [`run_session`].
+pub fn run_session_end(
     live: &LiveSession,
     spec: &SessionSpec,
-) -> Result<Option<String>, ContractError> {
+) -> Result<SessionEnd, ContractError> {
     // Dispatch gate (`agalma-r2l`): never start a session under an active stop.
     // This is the innermost admission check behind the sweep/intake gates; it
     // closes the window where a stop arrives between candidacy and dispatch.
@@ -248,15 +286,46 @@ pub fn run_session(
     let _ = harness.stop_attempt(&attempt);
 
     match outcome {
-        PollOutcome::Terminal(OperationState::Completed { .. }) => {
-            Ok(capture_output(spec.output_path.as_deref()))
-        }
+        PollOutcome::Terminal(OperationState::Completed { .. }) => Ok(SessionEnd {
+            terminal: SessionTerminal::Completed,
+            output: capture_output(spec.output_path.as_deref()),
+        }),
+        PollOutcome::TimedOut => Ok(SessionEnd {
+            terminal: SessionTerminal::TimedOut,
+            output: None,
+        }),
         PollOutcome::Stopped => Err(ContractError::KnownFailure(format!(
             "{} cancelled: stop requested (STOP sentinel or kill latch set)",
             spec.error_label
         ))),
         other => Err(ContractError::KnownFailure(format!(
             "{} ended without completion: {other:?}",
+            spec.error_label
+        ))),
+    }
+}
+
+/// Run one confined OpenCode session over `spec`, returning the optional output
+/// captured from [`SessionSpec::output_path`] on a completed turn.
+///
+/// Thin wrapper over [`run_session_end`] preserving the historical error
+/// contract: a completed turn yields its captured output, and a wall-bound
+/// timeout is a `... ended without completion: TimedOut` error. Concierge and
+/// reviewer observe byte-identical behavior.
+pub fn run_session(
+    live: &LiveSession,
+    spec: &SessionSpec,
+) -> Result<Option<String>, ContractError> {
+    match run_session_end(live, spec)? {
+        SessionEnd {
+            terminal: SessionTerminal::Completed,
+            output,
+        } => Ok(output),
+        SessionEnd {
+            terminal: SessionTerminal::TimedOut,
+            ..
+        } => Err(ContractError::KnownFailure(format!(
+            "{} ended without completion: TimedOut",
             spec.error_label
         ))),
     }

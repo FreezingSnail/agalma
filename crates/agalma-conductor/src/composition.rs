@@ -37,16 +37,42 @@ pub const DEFAULT_VERIFY_TIMEOUT: Duration = Duration::from_secs(900);
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Environment variable overriding [`DEFAULT_IDLE_TIMEOUT`] (whole seconds).
 pub const IDLE_TIMEOUT_ENV: &str = "AGALMA_IDLE_TIMEOUT_SECS";
+/// Environment variable overriding the designer session turn bound (whole
+/// seconds).
+///
+/// The designer default stays [`DEFAULT_TURN_TIMEOUT`] (600 s): the pilot
+/// `agalma-i5h.7` authored 10 children plus edges and crossed 600 s on a slow
+/// paid model, so operators raise this per host for large decompositions
+/// without touching the worker/concierge/reviewer bounds.
+pub const DESIGNER_TIMEOUT_ENV: &str = "AGALMA_DESIGNER_TIMEOUT_SECS";
 
 /// Resolve the idle watchdog bound from [`IDLE_TIMEOUT_ENV`] or the default.
 /// A non-numeric or zero value falls back to the default.
 pub fn resolve_idle_timeout() -> Duration {
-    std::env::var(IDLE_TIMEOUT_ENV)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
+    timeout_from_secs(
+        std::env::var(IDLE_TIMEOUT_ENV).ok().as_deref(),
+        DEFAULT_IDLE_TIMEOUT,
+    )
+}
+
+/// Resolve the designer session turn bound from [`DESIGNER_TIMEOUT_ENV`] or the
+/// default. A non-numeric or zero value falls back to [`DEFAULT_TURN_TIMEOUT`].
+pub fn resolve_designer_timeout() -> Duration {
+    timeout_from_secs(
+        std::env::var(DESIGNER_TIMEOUT_ENV).ok().as_deref(),
+        DEFAULT_TURN_TIMEOUT,
+    )
+}
+
+/// Pure whole-seconds parser shared by the idle and designer resolvers: a
+/// trimmed positive integer wins, anything else (absent, zero, negative,
+/// garbage) falls back to `default`. Kept free of process-env access so it is
+/// unit-testable without mutating the environment.
+fn timeout_from_secs(raw: Option<&str>, default: Duration) -> Duration {
+    raw.and_then(|raw| raw.trim().parse::<u64>().ok())
         .filter(|secs| *secs > 0)
         .map(Duration::from_secs)
-        .unwrap_or(DEFAULT_IDLE_TIMEOUT)
+        .unwrap_or(default)
 }
 
 /// The wired service graph for one conductor process.
@@ -231,4 +257,41 @@ pub(crate) fn toolchain() -> Result<(Vec<PathBuf>, BTreeMap<String, String>), Co
     );
     env.insert("PATH".to_string(), path);
     Ok((roots, env))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeout_from_secs_parses_positive_and_falls_back_otherwise() {
+        let default = Duration::from_secs(600);
+        // A positive whole-second value wins (and is trimmed).
+        assert_eq!(
+            timeout_from_secs(Some("1800"), default),
+            Duration::from_secs(1800)
+        );
+        assert_eq!(
+            timeout_from_secs(Some(" 42 "), default),
+            Duration::from_secs(42)
+        );
+        // Absent, zero, negative, and garbage all fall back to the default.
+        assert_eq!(timeout_from_secs(None, default), default);
+        assert_eq!(timeout_from_secs(Some("0"), default), default);
+        assert_eq!(timeout_from_secs(Some("-5"), default), default);
+        assert_eq!(timeout_from_secs(Some("soon"), default), default);
+        assert_eq!(timeout_from_secs(Some(""), default), default);
+    }
+
+    #[test]
+    fn timeout_from_secs_defaults_to_the_turn_bound() {
+        assert_eq!(
+            timeout_from_secs(None, DEFAULT_TURN_TIMEOUT),
+            DEFAULT_TURN_TIMEOUT
+        );
+        assert_eq!(
+            timeout_from_secs(Some("garbage"), DEFAULT_TURN_TIMEOUT),
+            DEFAULT_TURN_TIMEOUT
+        );
+    }
 }

@@ -29,6 +29,18 @@
 //! reaches the bound also adds the `human` label and stops the epic from being
 //! re-swept.
 //!
+//! ## Timeout after commit
+//!
+//! A designer that hits the wall turn bound ([`DesignerOutcome::TimedOut`])
+//! still persists the `bd` children and edges it committed before the bound. The
+//! sweep reconciles that committed decomposition with the gate in this *same*
+//! pass — never deferring to a later sweep (the work loop sweeps once per boot,
+//! so deferral would strand the epic until restart) and never paying for a
+//! second session for the same attempt. The timed-out attempt counts against the
+//! retry budget exactly like any other (`decomp-attempts` / the `decomp-fix`
+//! rework task), so a partial decomposition that cannot pass the gate is
+//! retried and, at the bound, escalated by the existing retry policy.
+//!
 //! ## Durable per-epic planning outcome (recovery)
 //!
 //! Candidacy and retry counting read durable state on the epic, never only the
@@ -192,11 +204,22 @@ pub struct DesignerRequest {
     pub prompt_path: PathBuf,
 }
 
+/// Terminal outcome of one designer attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DesignerOutcome {
+    /// The session reached the terminal `Completed` state.
+    Completed,
+    /// The session hit the wall turn bound before completing. Any `bd` children
+    /// it committed before the bound persist and are reconciled by the gate in
+    /// this same pass.
+    TimedOut,
+}
+
 /// The designer-session seam: production runs the OpenCode adapter; tests script
 /// it. The designer authors children via `bd` itself.
 pub trait DesignerSession {
-    /// Run one designer session for `request`.
-    fn run(&self, request: &DesignerRequest) -> Result<(), ContractError>;
+    /// Run one designer session for `request`, returning its terminal outcome.
+    fn run(&self, request: &DesignerRequest) -> Result<DesignerOutcome, ContractError>;
 }
 
 /// Prior-decomposition feedback woven into a re-run designer prompt.
@@ -347,6 +370,9 @@ pub struct SweepReport {
     pub escalated: Vec<String>,
     /// Epics whose interrupted (in-flight) attempt was finalized on restart.
     pub recovered: Vec<String>,
+    /// Epics whose designer attempt hit the turn bound; the committed
+    /// decomposition was reconciled by the gate in this same pass.
+    pub timed_out: Vec<String>,
 }
 
 /// Run one serial sweep over the open epics in `repo`.
@@ -486,7 +512,14 @@ pub fn sweep_epics_with_stop(
             epic.id, route.model
         );
         match designer.run(&request) {
-            Ok(()) => report.epics_swept.push(epic.id.clone()),
+            Ok(DesignerOutcome::Completed) => report.epics_swept.push(epic.id.clone()),
+            Ok(DesignerOutcome::TimedOut) => {
+                eprintln!(
+                    "agalma: epic sweep: designer for {} hit the turn bound; reconciling committed decomposition",
+                    epic.id
+                );
+                report.timed_out.push(epic.id.clone());
+            }
             Err(err) => {
                 if stop.stopped() {
                     eprintln!(
@@ -797,13 +830,14 @@ impl LiveDesignerSession {
         paid_available: bool,
     ) -> Result<Self, ContractError> {
         Ok(LiveDesignerSession {
-            live: LiveSession::build(state_dir, proxy_url, paid_available)?,
+            live: LiveSession::build(state_dir, proxy_url, paid_available)?
+                .with_turn_timeout(crate::composition::resolve_designer_timeout()),
         })
     }
 }
 
 impl DesignerSession for LiveDesignerSession {
-    fn run(&self, request: &DesignerRequest) -> Result<(), ContractError> {
+    fn run(&self, request: &DesignerRequest) -> Result<DesignerOutcome, ContractError> {
         let key = sanitize(&request.epic);
         let prompt_path = write_live_designer_prompt(request)?;
         let spec = SessionSpec {
@@ -821,7 +855,11 @@ impl DesignerSession for LiveDesignerSession {
             output_path: None,
             error_label: format!("designer session for {}", request.epic),
         };
-        crate::session::run_session(&self.live, &spec).map(|_| ())
+        let end = crate::session::run_session_end(&self.live, &spec)?;
+        Ok(match end.terminal {
+            crate::session::SessionTerminal::Completed => DesignerOutcome::Completed,
+            crate::session::SessionTerminal::TimedOut => DesignerOutcome::TimedOut,
+        })
     }
 }
 

@@ -200,11 +200,12 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
         override_model.as_deref(),
     ) {
         Ok(report) if report.skipped_reason.is_none() => eprintln!(
-            "agalma: epic sweep: {} candidate(s), {} approved, {} rejected, {} escalated",
+            "agalma: epic sweep: {} candidate(s), {} approved, {} rejected, {} escalated, {} timed out",
             report.epics_seen.len(),
             report.approved.len(),
             report.rejected.len(),
-            report.escalated.len()
+            report.escalated.len(),
+            report.timed_out.len()
         ),
         Ok(_) => {}
         Err(err) => eprintln!("agalma: epic sweep failed: {err}"),

@@ -13,7 +13,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use agalma_conductor::sweep::{sweep_epics, DesignerRequest, DesignerSession, PlannerGate};
+use agalma_conductor::sweep::{
+    sweep_epics, DesignerOutcome, DesignerRequest, DesignerSession, PlannerGate,
+};
 use agalma_contracts::{ContractError, LedgerApi};
 use agalma_testkit::ScratchDir;
 use serde_json::Value;
@@ -211,14 +213,17 @@ impl ScriptedDesigner {
 }
 
 impl DesignerSession for ScriptedDesigner {
-    fn run(&self, request: &DesignerRequest) -> Result<(), ContractError> {
+    fn run(
+        &self,
+        request: &DesignerRequest,
+    ) -> Result<DesignerOutcome, ContractError> {
         self.called.borrow_mut().push(request.epic.clone());
         if !self.stop_on_first {
-            return Ok(());
+            return Ok(DesignerOutcome::Completed);
         }
         let mut stopped = self.stopped.borrow_mut();
         if *stopped {
-            return Ok(());
+            return Ok(DesignerOutcome::Completed);
         }
         *stopped = true;
         // One partial child, then a stop arrives mid-session.
@@ -249,7 +254,7 @@ impl DesignerSession for ScriptedDesigner {
             .expect("spawn bd in designer");
         assert!(out.status.success(), "designer child: {}", stderr_of(&out));
         fs::write(request.state_dir.join("STOP"), b"stop").expect("write STOP in-session");
-        Ok(())
+        Ok(DesignerOutcome::Completed)
     }
 }
 

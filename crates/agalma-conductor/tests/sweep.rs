@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use agalma_conductor::sweep::{
-    sweep_epics, write_live_designer_prompt, DesignerRequest, DesignerSession, PlannerGate,
+    sweep_epics, write_live_designer_prompt, DesignerOutcome, DesignerRequest, DesignerSession,
+    PlannerGate,
 };
 use agalma_contracts::TaskQueueApi;
 use agalma_taskqueue::BdTaskQueue;
@@ -227,6 +228,8 @@ struct ScriptedDesigner {
     called: RefCell<Vec<String>>,
     /// Whether a `FailAfterOne` designer has already emitted its partial child.
     emitted_partial: RefCell<bool>,
+    /// Number of `TimeoutAfterPartial` runs completed (drives first-run vs retry).
+    runs: RefCell<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -237,6 +240,13 @@ enum Mode {
     /// Create exactly one staged child on the first run, then fail the session
     /// (an interrupted designer that dies mid-decomposition).
     FailAfterOne,
+    /// Commit a complete valid decomposition, then hit the turn bound.
+    TimeoutAfterValid,
+    /// Commit two valid staged children on the first run then hit the bound;
+    /// commit six more (a complete eight) on the retry.
+    TimeoutAfterPartial,
+    /// Hit the turn bound without committing anything.
+    TimeoutNoop,
 }
 
 impl ScriptedDesigner {
@@ -245,6 +255,7 @@ impl ScriptedDesigner {
             mode,
             called: RefCell::new(Vec::new()),
             emitted_partial: RefCell::new(false),
+            runs: RefCell::new(0),
         }
     }
 
@@ -254,7 +265,10 @@ impl ScriptedDesigner {
 }
 
 impl DesignerSession for ScriptedDesigner {
-    fn run(&self, request: &DesignerRequest) -> Result<(), agalma_contracts::ContractError> {
+    fn run(
+        &self,
+        request: &DesignerRequest,
+    ) -> Result<DesignerOutcome, agalma_contracts::ContractError> {
         self.called.borrow_mut().push(request.epic.clone());
         let repo = &request.repo;
         let bd = |args: &[&str]| {
@@ -293,7 +307,7 @@ impl DesignerSession for ScriptedDesigner {
                 "2099-01-01",
             ]);
         };
-        match self.mode {
+        let outcome = match self.mode {
             Mode::Valid => {
                 for i in 0..8 {
                     create(
@@ -302,6 +316,7 @@ impl DesignerSession for ScriptedDesigner {
                         "staged,difficulty:low",
                     );
                 }
+                DesignerOutcome::Completed
             }
             Mode::Invalid => {
                 // A low shape labelled high (tier-mismatch) and a child missing a
@@ -309,8 +324,9 @@ impl DesignerSession for ScriptedDesigner {
                 create("A", &low_desc("a"), "staged,difficulty:high");
                 let missing = low_desc("b").replace("# Non-goals\n", "");
                 create("B", &missing, "staged,difficulty:low");
+                DesignerOutcome::Completed
             }
-            Mode::Noop => {}
+            Mode::Noop => DesignerOutcome::Completed,
             Mode::FailAfterOne => {
                 // The first run leaves one staged child behind and then dies;
                 // later runs fail without creating anything new, so any
@@ -324,8 +340,46 @@ impl DesignerSession for ScriptedDesigner {
                     "scripted designer failure after one child".to_string(),
                 ));
             }
-        }
-        Ok(())
+            Mode::TimeoutAfterValid => {
+                // Commit a complete valid decomposition, then cross the bound.
+                for i in 0..8 {
+                    create(
+                        &format!("child {i}"),
+                        &low_desc(&format!("c{i}")),
+                        "staged,difficulty:low",
+                    );
+                }
+                DesignerOutcome::TimedOut
+            }
+            Mode::TimeoutAfterPartial => {
+                let mut runs = self.runs.borrow_mut();
+                *runs += 1;
+                let run = *runs;
+                if run == 1 {
+                    // Commit two valid staged children then hit the bound.
+                    for i in 0..2 {
+                        create(
+                            &format!("child {i}"),
+                            &low_desc(&format!("c{i}")),
+                            "staged,difficulty:low",
+                        );
+                    }
+                    DesignerOutcome::TimedOut
+                } else {
+                    // Retry: complete the decomposition (six more children).
+                    for i in 2..8 {
+                        create(
+                            &format!("child {i}"),
+                            &low_desc(&format!("c{i}")),
+                            "staged,difficulty:low",
+                        );
+                    }
+                    DesignerOutcome::Completed
+                }
+            }
+            Mode::TimeoutNoop => DesignerOutcome::TimedOut,
+        };
+        Ok(outcome)
     }
 }
 
@@ -1021,4 +1075,258 @@ fn approved_epic_is_not_redispatched() {
         1,
         "no re-dispatch of an approved epic"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Timeout after commit (agalma-cmq): a designer that hits the wall bound after
+// committing children must be reconciled by the gate in the same pass — never a
+// second paid session for the same attempt, never a deferred re-sweep.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn designer_timeout_after_full_commit_finalizes_in_place_without_second_session() {
+    let scratch = Scratch::new("timeout-full");
+    let epic = scratch.create_epic("Timed-out full epic");
+    let designer = ScriptedDesigner::new(Mode::TimeoutAfterValid);
+
+    // Sweep 1: the designer commits a complete valid decomposition, then hits
+    // the turn bound. The same pass reconciles it: approved in place, no second
+    // session, and the timeout is recorded.
+    let first = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
+    assert_eq!(first.timed_out, vec![epic.clone()], "{first:?}");
+    assert_eq!(first.approved, vec![epic.clone()], "{first:?}");
+    assert!(
+        first.epics_swept.is_empty(),
+        "a timed-out session is not 'swept' as completed: {first:?}"
+    );
+    assert_eq!(designer.called().len(), 1, "exactly one designer session");
+
+    let children = scratch.children(&epic);
+    assert_eq!(children.len(), 8, "eight staged children: {children:?}");
+    for child in &children {
+        let labels = Scratch::labels(child);
+        assert!(
+            labels.contains(&"decomp-approved".to_string()),
+            "child approved by same-pass reconciliation: {labels:?}"
+        );
+        assert_eq!(child["status"], "deferred", "child stays deferred");
+    }
+    let epic_issue = scratch.show(&epic);
+    assert!(
+        !has_label(&epic_issue, "decomp-inflight"),
+        "in-flight marker cleared: {epic_issue}"
+    );
+    let comments: String = epic_issue["comments"]
+        .as_array()
+        .map(|c| {
+            c.iter()
+                .filter_map(|v| v["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    assert!(
+        comments.contains("decomp-approved"),
+        "epic carries the approval comment: {comments}"
+    );
+    assert!(
+        ready_ids(&scratch.repo).is_empty(),
+        "approved children stay deferred pending `bd undefer`"
+    );
+
+    // Sweep 2: the approved epic is untouched and no further session runs.
+    let second = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
+    assert!(second.epics_seen.is_empty(), "{second:?}");
+    assert_eq!(designer.called().len(), 1, "no second paid session");
+}
+
+#[test]
+fn designer_timeout_after_partial_commit_rejects_then_retry_completes() {
+    let scratch = Scratch::new("timeout-partial");
+    let epic = scratch.create_epic("Timed-out partial epic");
+    let designer = ScriptedDesigner::new(Mode::TimeoutAfterPartial);
+
+    // Sweep 1: two valid children committed, then the bound. The incomplete set
+    // fails the gate and is rejected; the attempt is recorded and the in-flight
+    // marker cleared.
+    let first = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
+    assert_eq!(first.timed_out, vec![epic.clone()], "{first:?}");
+    assert_eq!(first.rejected, vec![epic.clone()], "{first:?}");
+    assert_eq!(fix_count(&scratch, &epic), 1, "attempt 1 recorded");
+    let original = staged_ids(&scratch, &epic);
+    assert_eq!(original.len(), 2, "two partial children: {original:?}");
+    for id in &original {
+        assert!(
+            has_label(&scratch.show(id), "decomp-rejected"),
+            "partial child rejected: {id}"
+        );
+    }
+    assert!(
+        !has_label(&scratch.show(&epic), "decomp-inflight"),
+        "in-flight marker cleared after reconciliation"
+    );
+
+    // Sweep 2: the retry completes the decomposition. The original children keep
+    // their identity (no duplicates), the stale rejections are cleared, and the
+    // repaired set is approved.
+    let second = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
+    assert_eq!(designer.called().len(), 2, "retry ran the designer again");
+    assert_eq!(second.approved, vec![epic.clone()], "{second:?}");
+
+    let staged = staged_ids(&scratch, &epic);
+    assert_eq!(staged.len(), 8, "eight staged children after retry: {staged:?}");
+    for id in &original {
+        assert_eq!(
+            staged.iter().filter(|s| *s == id).count(),
+            1,
+            "original child {id} present exactly once: {staged:?}"
+        );
+    }
+    for id in &staged {
+        let issue = scratch.show(id);
+        assert!(
+            has_label(&issue, "decomp-approved"),
+            "child {id} approved by the passing gate"
+        );
+        assert!(
+            !has_label(&issue, "decomp-rejected"),
+            "child {id} stale rejection cleared"
+        );
+    }
+
+    // Sweep 3: the approved epic is untouched.
+    let third = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
+    assert!(third.epics_seen.is_empty(), "{third:?}");
+}
+
+#[test]
+fn designer_timeout_with_no_commits_counts_toward_retry_budget() {
+    let scratch = Scratch::new("timeout-noop");
+    let epic = scratch.create_epic("Timed-out empty epic");
+    let designer = ScriptedDesigner::new(Mode::TimeoutNoop);
+
+    // Sweeps 1 and 2: a timeout with no committed children is a failed
+    // decomposition, retried like any other attempt.
+    for expected in 1..=2 {
+        let report = sweep_epics(
+            &scratch.repo,
+            &scratch.state_dir,
+            &gate(true, true),
+            &designer,
+        )
+        .expect("sweep");
+        assert_eq!(report.timed_out, vec![epic.clone()], "{report:?}");
+        assert_eq!(report.rejected, vec![epic.clone()], "{report:?}");
+        assert!(report.escalated.is_empty(), "{report:?}");
+        assert_eq!(fix_count(&scratch, &epic), expected, "attempt recorded");
+    }
+
+    // Sweep 3: the retry bound is reached and the epic escalates to a human.
+    let third = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
+    assert_eq!(third.escalated, vec![epic.clone()], "{third:?}");
+    assert_eq!(fix_count(&scratch, &epic), 3, "three attempts recorded");
+    assert!(
+        has_label(&scratch.show(&epic), "human"),
+        "epic escalated to a human"
+    );
+
+    // Sweep 4: an escalated epic is never re-dispatched.
+    let fourth = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
+    assert!(fourth.epics_seen.is_empty(), "{fourth:?}");
+    assert_eq!(designer.called().len(), 3, "no further designer session");
+}
+
+#[test]
+fn crash_after_complete_commit_without_projection_is_recovered() {
+    let scratch = Scratch::new("crash-after-commit");
+    let epic = scratch.create_epic("Crashed epic");
+
+    // Simulate a crash right after a complete valid decomposition was committed
+    // but before any gate verdict was projected: eight staged children, the
+    // attempt counter, and the durable in-flight marker, no child verdicts.
+    let ids: Vec<String> = (0..8)
+        .map(|i| {
+            scratch.create_child(
+                &epic,
+                &format!("child {i}"),
+                &low_desc(&format!("c{i}")),
+                "staged,difficulty:low",
+            )
+        })
+        .collect();
+    scratch.bd_ok(&["update", &epic, "--add-label", "decomp-attempts:1"]);
+    scratch.bd_ok(&["update", &epic, "--add-label", "decomp-inflight"]);
+
+    let designer = ScriptedDesigner::new(Mode::Valid);
+    let report = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
+
+    // The interrupted attempt is finalized in place: no new designer session,
+    // and the complete decomposition passes the gate.
+    assert_eq!(report.recovered, vec![epic.clone()], "{report:?}");
+    assert!(report.epics_swept.is_empty(), "no new session: {report:?}");
+    assert!(designer.called().is_empty(), "designer never re-run");
+    assert_eq!(report.approved, vec![epic.clone()], "{report:?}");
+    assert!(
+        !has_label(&scratch.show(&epic), "decomp-inflight"),
+        "in-flight marker cleared"
+    );
+    for id in &ids {
+        assert!(
+            has_label(&scratch.show(id), "decomp-approved"),
+            "child {id} approved by recovery"
+        );
+    }
+    assert_eq!(staged_ids(&scratch, &epic), {
+        let mut sorted = ids.clone();
+        sorted.sort();
+        sorted
+    });
 }

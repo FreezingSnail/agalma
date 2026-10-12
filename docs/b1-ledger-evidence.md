@@ -300,3 +300,117 @@ modules are owned by other workers and were not touched.
 | `cargo build --offline --workspace` | exit 0 |
 | `cargo test --offline -p agalma-conductor` | exit 0, all green (incl. the two tests above) |
 
+## IPCX.6 — ledger boundary migration to Connect (`agalma-ebg.7`)
+
+Design: `docs/ipc-connect-design.md` (IPCX.6, D7 boundary #5). Pattern:
+`agalma-ebg.4` (sandbox boundary, commit `dd18375`) and `agalma-ebg.3` (harness
+boundary, commit `1c1d89c`). HEAD at start: `4628801`.
+
+The typed `LedgerApi`/`LedgerOps` client and the SQLite server moved onto the
+Connect transport; envelope semantics and consumer logic are unchanged. The
+ledger process wire defaults to `Connect`; `AGALMA_IPC_WIRE=framed` restores the
+B1 framed transport for parity runs. **Snapshot transfer stays file-based on
+both wires (D3): no behaviour change there** — only the path crosses the wire,
+never the payload.
+
+| Concern | Where |
+|---|---|
+| `LedgerClient::connect_wire(socket, snapshot_dir, wire)` (+ framed `connect`/`from_client` retained); `Backend::{Framed,Connect}` | `crates/agalma-ipc/src/ledger_client.rs` |
+| `serve_ledger(server, socket, wire)` | `crates/agalma-ipc/src/ledger_server.rs` |
+| `LEDGER_METHODS` unchanged (33, incl. `record_control_receipt`/`control_receipts` from `agalma-3kr.6`) | `crates/agalma-ipc/src/ledger_server.rs` |
+| `serve` reads `AGALMA_IPC_WIRE` (Connect default); `serve_wire` | `crates/agalma-ledger/src/server.rs` |
+| `ledger_wire`, `LedgerProcess::wire`, `spawn_with_spec_wire`, child `WIRE_ENV` export, matching client | `crates/agalma-conductor/src/ledger_process.rs` |
+| Wire parity + framed replay evidence | `crates/agalma-conductor/tests/ledger_process.rs` |
+| Ledger Connect conformance (new) | `crates/agalma-ipc/tests/ledger_connect.rs` |
+| IPCX.6 evidence section (this) | `docs/b1-ledger-evidence.md` |
+
+### Interfaces
+
+- `agalma_ipc`: `LedgerClient::connect_wire`; `ledger_server::serve_ledger`.
+- `agalma_ledger::server`: `serve_wire`; `serve` env-selects wire.
+- `agalma_conductor::ledger_process`: `ledger_wire`, `LedgerProcess::wire`,
+  `LedgerProcess::spawn_with_spec_wire`.
+
+### Pins / deps
+
+No new dependency. `connectrpc`/`buffa` stay confined to `agalma-ipc`
+(architecture test green, `connect_stack_is_confined_to_agalma_ipc`). No
+`Cargo.toml`/`Cargo.lock` change; builds `--offline`.
+
+### Commands + results
+
+| Command | Observed |
+|---|---|
+| `cargo build --offline --workspace` | exit 0 |
+| `cargo test --offline -p agalma-ipc -p agalma-ledger` | 48 + 14 + 9 + 4 + 3 (new `ledger_connect`) + 2 + 2 + 0 doc (ipc); 30 + 0 (ledger); 0 failures |
+| `cargo test --offline -p agalma-conductor --test ledger_process` | 10 passed, 0 failed |
+| `cargo test --offline -p agalma-conductor --lib ledger_process` | 4 passed, 0 failed |
+| `cargo test --offline -p agalma-conductor --test architecture` | 6 passed, 0 failed |
+
+New/changed evidence tests:
+
+- `ledger_api_over_connect_matches_framed` (new, `crates/agalma-ipc/tests/ledger_connect.rs`)
+  — a `register_ledger` server hosting a deterministic stub is driven through
+  lease / kernel-meta / schema-version / control-receipt / file-based snapshot
+  export over both wires; framed and Connect produce an identical typed
+  transcript.
+- `ledger_connect_missing_socket_is_unavailable` (new) — a missing socket maps to
+  `Unavailable` on the Connect client.
+- `ledger_methods_include_control_receipt_ops` (new) — `LEDGER_METHODS` stays at
+  33 and includes the `agalma-3kr.6` `record_control_receipt`/`control_receipts`
+  ops and the two snapshot file primitives.
+- `wire_parity_framed_vs_connect_matches_in_process`
+  (`tests/ledger_process.rs`) — in-process `SqliteLedger` vs framed process vs
+  Connect process produce an identical durable-state transcript (lease, commit
+  revisions, pending work, receipts, kernel meta, timers, schema version, and the
+  normalized exported snapshot).
+- `quiesced_rebind_preserves_pinned_operation`, `rollback_keeps_prior_state_and_server`,
+  `shadow_parity_in_process_vs_process`, `control_receipts_queryable_over_process_boundary`,
+  `process_transport_routes_provider_auth_audit_through_the_handle` now run over
+  Connect by default (`spawn_server` → `ledger_wire()`).
+- `ledger_client_duplicate_id_replay_and_connection_loss` and
+  `second_connection_is_not_served_while_the_primary_is_held` stay framed (raw
+  `Client`/`UnixStream` conformance; the latter pins the framed serial
+  single-connection server — the B1-F2 deviation rationale).
+- `ledger_process::tests::wire_defaults_to_connect_and_env_restores_framed`.
+
+### Notes / deviations
+
+1. Snapshot paths are unchanged: `SNAPSHOT_EXPORT_FILE`/`SNAPSHOT_IMPORT_FILE`
+   under the run state dir, written server-side / read client-side. The `D3`
+   file-transfer contract is wire-independent.
+2. The `agalma-3kr.6` control-receipt ops (`record_control_receipt`,
+   `control_receipts`) are part of the frozen 33-method surface and are proven
+   over both wires by the conformance + parity tests; no `LEDGER_METHODS` change.
+3. `serve_wire` installs a multithread Tokio runtime for both wires (the framed
+   branch runs the serial accept loop under `block_on`); the `rusqlite` backend
+   stays synchronous. This supersedes the B1.6 note "no Tokio runtime in the
+   ledger server" — the runtime is a transport host, not a backend change.
+4. The B1-F2 auxiliary-connection deviation (deviation 4 above) is a *framed*
+   server property; Connect multiplexes, but the auxiliary helpers
+   (`digest::record`, `routing::resolve_route`, `phases.rs` writers, read-only CLI
+   subcommands) are unchanged — IPCX.6 is a transport migration, not a
+   convergence pass. `second_connection_is_not_served_while_the_primary_is_held`
+   is pinned to the framed wire accordingly.
+5. The `LedgerOps` split (`export_state_to`/`import_state_from`) is unchanged;
+   `export_state`/`import_state` on the client remain thin wrappers over the two
+   file primitives.
+
+### Files (git diff --name-only, plus new)
+
+```
+crates/agalma-conductor/src/ledger_process.rs
+crates/agalma-conductor/tests/ledger_process.rs
+crates/agalma-ipc/src/ledger_client.rs
+crates/agalma-ipc/src/ledger_server.rs
+crates/agalma-ipc/src/lib.rs                                # + serve_ledger re-export
+crates/agalma-ipc/tests/ledger_connect.rs                    # new
+crates/agalma-ledger/src/server.rs
+docs/b1-ledger-evidence.md                                   # this section
+```
+
+`crates/agalma-contracts/**` unchanged; no contract schema changed. Untouched:
+`composition.rs`, `work.rs`, `lib.rs` (conductor), harness/workspace/taskqueue
+boundary files.
+
+

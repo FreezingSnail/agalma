@@ -9,7 +9,9 @@
 //! pair), not duplicated.
 //!
 //! Transport selection is [`LedgerTransport`] (`AGALMA_LEDGER_TRANSPORT`):
-//! `in-process` (default) or `process`. [`LedgerHandle`] exposes the full
+//! `in-process` (default) or `process`. When a process binding is selected, its
+//! wire is [`ledger_wire`] (`AGALMA_IPC_WIRE`): `Connect` (default, IPCX.6) or
+//! `framed` for parity runs. [`LedgerHandle`] exposes the full
 //! durable-state surface ([`LedgerApi`] + [`LedgerOps`]) by delegating to
 //! whichever backend is bound, so executor/kernel construction is unchanged (D5)
 //! — only the construction sites change. The handle is cheaply cloneable and
@@ -31,7 +33,7 @@ use agalma_contracts::{
     DecisionRequest, DigestRecord, DirectiveRow, DispatchIntent, ExecutionEvent, ExecutionId,
     ExecutionRecord, LedgerApi, OperationId, OperationReceipt, StateSnapshot, TaskId, TimerRecord,
 };
-use agalma_ipc::{CommandSpec, LedgerClient, LedgerOps};
+use agalma_ipc::{CommandSpec, LedgerClient, LedgerOps, Wire, WIRE_ENV};
 use agalma_ledger::server::server_command;
 use agalma_ledger::SqliteLedger;
 
@@ -49,7 +51,7 @@ pub const LEDGER_SOCKET_NAME: &str = "ledger.sock";
 pub enum LedgerTransport {
     /// Direct in-process trait call (unchanged executor/kernel logic).
     InProcess,
-    /// Supervised component server over the framed transport.
+    /// Supervised component server over the selected wire transport.
     Process,
 }
 
@@ -76,6 +78,17 @@ pub fn ledger_socket(state_dir: &Path) -> PathBuf {
     state_dir.join(LEDGER_SOCKET_NAME)
 }
 
+/// The wire transport the ledger process boundary uses (IPCX.6).
+///
+/// The ledger boundary migrated to [`Wire::Connect`]; a parity run may set
+/// [`agalma_ipc::WIRE_ENV`] to `framed` to compare the two wires against the
+/// same scenario. The selected wire is also exported to the child process (see
+/// [`LedgerProcess::spawn_with_spec_wire`]) so its server serves the matching
+/// transport.
+pub fn ledger_wire() -> Wire {
+    Wire::from_env(Wire::Connect)
+}
+
 /// Launch spec for the ledger server bound to `socket`, owning `state_dir`.
 pub fn ledger_server_spec(socket: &Path, state_dir: &Path) -> CommandSpec {
     server_command()
@@ -90,21 +103,30 @@ pub struct LedgerProcess {
     socket: PathBuf,
     state_dir: PathBuf,
     child: Child,
+    wire: Wire,
     stopped: bool,
 }
 
 impl LedgerProcess {
     /// Spawn a ledger server owning `state_dir`, listening on
-    /// `<state_dir>/ledger.sock`; wait for `READY`.
+    /// `<state_dir>/ledger.sock` over [`ledger_wire`]; wait for `READY`.
     pub fn spawn(state_dir: &Path, timeout: Duration) -> Result<LedgerProcess, String> {
         let socket = ledger_socket(state_dir);
         let spec = ledger_server_spec(&socket, state_dir);
         let program = resolve_server_binary(&spec.program)?;
-        LedgerProcess::spawn_with_spec(spec, program, socket, state_dir.to_path_buf(), timeout)
+        LedgerProcess::spawn_with_spec_wire(
+            spec,
+            program,
+            socket,
+            state_dir.to_path_buf(),
+            ledger_wire(),
+            timeout,
+        )
     }
 
-    /// Spawn a ledger server from an explicit spec/program (used by tests that
-    /// re-exec the test binary as the server when the real binary is absent).
+    /// Spawn a ledger server from an explicit spec/program over [`ledger_wire`]
+    /// (used by tests that re-exec the test binary as the server when the real
+    /// binary is absent).
     pub fn spawn_with_spec(
         spec: CommandSpec,
         program: PathBuf,
@@ -112,11 +134,34 @@ impl LedgerProcess {
         state_dir: PathBuf,
         timeout: Duration,
     ) -> Result<LedgerProcess, String> {
+        LedgerProcess::spawn_with_spec_wire(
+            spec,
+            program,
+            socket,
+            state_dir,
+            ledger_wire(),
+            timeout,
+        )
+    }
+
+    /// Spawn a ledger server from an explicit spec/program over `wire`. The
+    /// selected wire is exported to the child in [`WIRE_ENV`], so its server
+    /// serves the matching transport.
+    pub fn spawn_with_spec_wire(
+        spec: CommandSpec,
+        program: PathBuf,
+        socket: PathBuf,
+        state_dir: PathBuf,
+        wire: Wire,
+        timeout: Duration,
+    ) -> Result<LedgerProcess, String> {
+        let spec = spec.env(WIRE_ENV, wire.as_str());
         let (guard, _info) = spawn_supervised(&spec, &program, &socket, timeout)?;
         Ok(LedgerProcess {
             socket,
             state_dir,
             child: guard.into_child(),
+            wire,
             stopped: false,
         })
     }
@@ -136,9 +181,15 @@ impl LedgerProcess {
         self.child.id()
     }
 
-    /// Connect a fresh client to the running server.
+    /// The wire transport this process (and its server) uses.
+    pub fn wire(&self) -> Wire {
+        self.wire
+    }
+
+    /// Connect a fresh client to the running server over its wire.
     pub fn client(&self) -> Result<LedgerClient, String> {
-        LedgerClient::connect(&self.socket, &self.state_dir).map_err(|e| e.to_string())
+        LedgerClient::connect_wire(&self.socket, &self.state_dir, self.wire)
+            .map_err(|e| e.to_string())
     }
 
     /// Stop the server with `SIGTERM`/`SIGKILL` evidence. Idempotent.
@@ -525,5 +576,17 @@ mod tests {
         let dir = ScratchDir::new("ledger-handle");
         let handle = LedgerHandle::in_process(&dir).expect("open ledger");
         assert!(handle._process.is_none());
+    }
+
+    #[test]
+    fn wire_defaults_to_connect_and_env_restores_framed() {
+        // Absent -> Connect (IPCX.6 migration default); `framed` for parity.
+        std::env::remove_var(WIRE_ENV);
+        assert_eq!(ledger_wire(), Wire::Connect);
+        std::env::set_var(WIRE_ENV, "framed");
+        assert_eq!(ledger_wire(), Wire::Framed);
+        std::env::set_var(WIRE_ENV, "connect");
+        assert_eq!(ledger_wire(), Wire::Connect);
+        std::env::remove_var(WIRE_ENV);
     }
 }

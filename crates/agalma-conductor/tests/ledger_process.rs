@@ -29,13 +29,13 @@ use agalma_contracts::{
     ExecutionState, LedgerApi, OperationId, OperationReceipt, StateSnapshot, TaskId, TimerRecord,
     TimerState,
 };
-use agalma_ipc::{Client, CommandSpec, CommitParams, IpcError, LedgerClient, LedgerOps};
+use agalma_ipc::{Client, CommandSpec, CommitParams, IpcError, LedgerClient, LedgerOps, Wire};
 use agalma_ledger::server::SERVER_BIN;
 use agalma_ledger::SqliteLedger;
 use agalma_testkit::ScratchDir;
 
 use agalma_conductor::harness_process::resolve_server_binary;
-use agalma_conductor::ledger_process::{LedgerHandle, LedgerProcess, LedgerTransport};
+use agalma_conductor::ledger_process::{ledger_wire, LedgerHandle, LedgerProcess, LedgerTransport};
 use agalma_conductor::provider_auth::{AuthState, PROVIDER_AUTH_EXECUTION};
 
 const CHILD_SOCKET_ENV: &str = "AGALMA_TEST_LEDGER_SOCKET";
@@ -293,12 +293,17 @@ fn server_spec(socket: &Path, state_dir: &Path) -> (CommandSpec, PathBuf) {
 }
 
 fn spawn_server(socket: &Path, state_dir: &Path) -> LedgerProcess {
+    spawn_server_wire(socket, state_dir, ledger_wire())
+}
+
+fn spawn_server_wire(socket: &Path, state_dir: &Path, wire: Wire) -> LedgerProcess {
     let (spec, program) = server_spec(socket, state_dir);
-    LedgerProcess::spawn_with_spec(
+    LedgerProcess::spawn_with_spec_wire(
         spec,
         program,
         socket.to_path_buf(),
         state_dir.to_path_buf(),
+        wire,
         READY_TIMEOUT,
     )
     .unwrap_or_else(|e| panic!("spawn ledger server: {e}"))
@@ -356,11 +361,51 @@ fn shadow_parity_in_process_vs_process() {
 }
 
 // ===========================================================================
+// Case a.0 — wire parity: in-process vs framed vs Connect (IPCX.6)
+// ===========================================================================
+
+/// The ledger boundary over Connect (IPCX.6): the same durable-state scenario
+/// produces an identical normalized transcript in-process, over the framed
+/// process wire, and over the Connect process wire. This is the dual-binding
+/// parity proof for the migrated boundary.
+#[test]
+fn wire_parity_framed_vs_connect_matches_in_process() {
+    // In-process baseline.
+    let dir_in = fresh();
+    let mut inproc =
+        SqliteLedger::open(dir_in.join("ledger.sqlite")).expect("open in-process ledger");
+    let in_process = run_scenario(&mut inproc);
+
+    // Framed process wire.
+    let dir_framed = fresh();
+    let socket_framed = dir_framed.join("wf.sock");
+    let mut server_framed = spawn_server_wire(&socket_framed, &dir_framed, Wire::Framed);
+    assert_eq!(server_framed.wire(), Wire::Framed);
+    let mut client_framed = server_framed.client().expect("framed ledger client");
+    let framed = run_scenario(&mut client_framed);
+    drop(client_framed);
+    let _ = server_framed.stop();
+
+    // Connect process wire.
+    let dir_connect = fresh();
+    let socket_connect = dir_connect.join("wc.sock");
+    let mut server_connect = spawn_server_wire(&socket_connect, &dir_connect, Wire::Connect);
+    assert_eq!(server_connect.wire(), Wire::Connect);
+    let mut client_connect = server_connect.client().expect("connect ledger client");
+    let connect = run_scenario(&mut client_connect);
+    drop(client_connect);
+    let _ = server_connect.stop();
+
+    assert_eq!(in_process, framed, "framed ledger transcript parity");
+    assert_eq!(in_process, connect, "connect ledger transcript parity");
+}
+
+// ===========================================================================
 // Case a.1 — control receipts over the process boundary (TUI.5 agalma-3kr.6)
 // ===========================================================================
 
-/// Control receipts recorded through one client are queryable over the framed
-/// boundary; applied and denied attempts both round-trip.
+/// Control receipts recorded through one client are queryable over the process
+/// boundary (default Connect wire); applied and denied attempts both round-trip.
 #[test]
 fn control_receipts_queryable_over_process_boundary() {
     let dir = fresh();
@@ -543,7 +588,8 @@ fn rollback_keeps_prior_state_and_server() {
 fn ledger_client_duplicate_id_replay_and_connection_loss() {
     let dir = fresh();
     let socket = dir.join("d.sock");
-    let mut server = spawn_server(&socket, &dir);
+    // Raw framed `Client` conformance: the server must serve the framed wire.
+    let mut server = spawn_server_wire(&socket, &dir, Wire::Framed);
 
     // Duplicate request id: the recorded `commit` receipt is replayed, not
     // re-run (no double effect). One connection at a time (the server is
@@ -594,7 +640,7 @@ fn ledger_client_duplicate_id_replay_and_connection_loss() {
     // Reconcile through the inspection APIs: restart the server on the same
     // state dir and confirm the recorded state is what was committed.
     let socket2 = dir.join("d2.sock");
-    let mut server2 = spawn_server(&socket2, &dir);
+    let mut server2 = spawn_server_wire(&socket2, &dir, Wire::Framed);
     let mut reconciled = LedgerClient::connect(&socket2, &dir).expect("reconnect");
     assert_eq!(
         reconciled
@@ -657,18 +703,20 @@ fn transport_defaults_to_in_process() {
 // ===========================================================================
 
 /// Pins the rationale for the B1-F2 accepted deviation (`docs/b1-ledger-evidence.md`
-/// deviation 4): the ledger server serves **one connection at a time**
+/// deviation 4): the **framed** ledger server serves one connection at a time
 /// (`Server::accept_loop` → `serve_connection`), so an auxiliary conductor helper
 /// cannot reach the boundary by opening its *own* `LedgerClient` while the bound
 /// `LedgerHandle` holds the primary connection — it would block forever. That is
 /// why `digest::record`, `routing::resolve_route`'s decider, the `phases.rs`
 /// activity writers, and the read-only CLI subcommands keep direct (secondary
-/// WAL) connections instead of routing over a fresh process connection.
+/// WAL) connections instead of routing over a fresh process connection. (The
+/// historical deviation rationale; the Connect transport multiplexes, but the
+/// auxiliary helpers are unchanged — IPCX.6 is a transport migration.)
 #[test]
 fn second_connection_is_not_served_while_the_primary_is_held() {
     let dir = fresh();
     let socket = dir.join("e.sock");
-    let mut server = spawn_server(&socket, &dir);
+    let mut server = spawn_server_wire(&socket, &dir, Wire::Framed);
 
     // The conductor's bound handle keeps its client connection open for the
     // whole run; here the primary connection stands in for it.

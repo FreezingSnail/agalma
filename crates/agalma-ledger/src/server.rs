@@ -11,16 +11,18 @@
 //! `export_state_to`/`import_state_from` handlers write/read the canonical JSON
 //! snapshot and only the path crosses the wire.
 //!
-//! The backend is `rusqlite` (synchronous), so the serial serve loop needs no
-//! async runtime (mirroring the reference harness, workspace, and task-queue
-//! servers, not the Tokio-based sandbox/OpenCode servers).
+//! Since IPCX.6 the server serves the Connect transport by default
+//! (`AGALMA_IPC_WIRE=framed` restores the B1 length-prefixed transport). The
+//! backend is `rusqlite` (synchronous); `serve_wire` installs a multithread
+//! Tokio runtime for both branches so server-hosted transports share one code
+//! path (mirroring the sandbox server).
 
 use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use agalma_ipc::{register_ledger, CommandSpec, Server, ServerInfo};
+use agalma_ipc::{register_ledger, CommandSpec, Server, ServerInfo, Wire};
 
 use crate::SqliteLedger;
 
@@ -66,17 +68,28 @@ pub fn build_server(ledger: SqliteLedger) -> Server {
 }
 
 /// Acquire the single-writer lock for `state_dir`, open the ledger at
-/// `<state_dir>/ledger.sqlite`, and bind `socket`; serve until stopped.
+/// `<state_dir>/ledger.sqlite`, and bind `socket`; serve over the wire selected
+/// by `AGALMA_IPC_WIRE` (`connect` default, `framed` optional; IPCX.6) until
+/// stopped.
 ///
 /// Refuses to start when another live server holds the state dir.
 pub fn serve(socket: &Path, state_dir: &Path) -> io::Result<()> {
+    serve_wire(socket, state_dir, Wire::from_env(Wire::Connect))
+}
+
+/// Acquire the single-writer lock for `state_dir`, open the ledger at
+/// `<state_dir>/ledger.sqlite`, and bind `socket`; serve over `wire` until
+/// stopped.
+///
+/// Refuses to start when another live server holds the state dir.
+pub fn serve_wire(socket: &Path, state_dir: &Path, wire: Wire) -> io::Result<()> {
     let lock = StateLock::acquire(state_dir).map_err(io::Error::other)?;
     let ledger = SqliteLedger::open(state_dir.join(DB_NAME))
         .map_err(|e| io::Error::other(format!("open ledger: {e}")))?;
-    let mut server = build_server(ledger);
+    let server = build_server(ledger);
     // Keep the lock alive for the whole serve loop; it is released on process
     // exit (server killed) and removed by Drop on a clean return.
-    let result = server.serve(socket);
+    let result = agalma_ipc::ledger_server::serve_ledger(server, socket, wire);
     drop(lock);
     result
 }

@@ -1,6 +1,6 @@
-//! `LedgerClient` (decision D2/D3): the durable-state [`LedgerApi`] over the
-//! framed client, plus the versioned snapshot file transfer the durable-state
-//! boundary requires.
+//! `LedgerClient` (decision D2/D3): the durable-state [`LedgerApi`] over either
+//! wire transport (B1 framed JSON or IPCX Connect), plus the versioned snapshot
+//! file transfer the durable-state boundary requires.
 //!
 //! Method names are the existing method snake-case. Each call carries one JSON
 //! params object and decodes a typed result. Transport failures map onto the
@@ -31,6 +31,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::client::Client;
+use crate::connect::{ConnectClient, Wire};
 use crate::error::IpcError;
 
 /// Snapshot file written by the server for `LedgerApi::export_state`.
@@ -166,30 +167,71 @@ pub trait LedgerOps: LedgerApi {
     fn import_snapshot_from(&mut self, path: &Path) -> Result<(), ContractError>;
 }
 
+/// The transport backing a [`LedgerClient`] (IPCX.6).
+enum Backend {
+    /// B1 framed-JSON client ([`Client`]).
+    Framed(Client),
+    /// IPCX Connect client plus the runtime it is driven on.
+    Connect(ConnectBackend),
+}
+
+/// Connect transport state: the async client and the runtime that drives it.
+struct ConnectBackend {
+    runtime: tokio::runtime::Runtime,
+    client: ConnectClient,
+}
+
 /// A [`LedgerApi`]/[`LedgerOps`] implementation backed by a ledger component
 /// server.
+///
+/// Since IPCX.6 the client can speak either [`Wire::Framed`] (B1 length-prefixed
+/// JSON) or [`Wire::Connect`] (ConnectRPC over HTTP/2 on a Unix socket). The
+/// envelope semantics are identical on both; only the byte transport differs.
+/// Snapshot transfer stays file-based on both wires (D3, unchanged).
 pub struct LedgerClient {
-    client: RefCell<Client>,
+    backend: RefCell<Backend>,
     /// Directory the snapshot files are written to/read from (the run state
     /// dir shared with the server).
     snapshot_dir: PathBuf,
 }
 
 impl LedgerClient {
-    /// Connect to the ledger server listening on `socket`; snapshot files live
-    /// under `snapshot_dir` (the run state dir shared with the server).
+    /// Connect to the ledger server listening on `socket` over the framed
+    /// transport; snapshot files live under `snapshot_dir` (the run state dir
+    /// shared with the server).
     pub fn connect(socket: &Path, snapshot_dir: &Path) -> Result<LedgerClient, IpcError> {
+        LedgerClient::connect_wire(socket, snapshot_dir, Wire::Framed)
+    }
+
+    /// Connect to the ledger server listening on `socket` over `wire`; snapshot
+    /// files live under `snapshot_dir` (the run state dir shared with the
+    /// server). Both wires preserve the envelope semantics.
+    pub fn connect_wire(
+        socket: &Path,
+        snapshot_dir: &Path,
+        wire: Wire,
+    ) -> Result<LedgerClient, IpcError> {
+        let backend = match wire {
+            Wire::Framed => Backend::Framed(Client::connect(socket)?),
+            Wire::Connect => {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| IpcError::unavailable(format!("tokio runtime: {e}")))?;
+                let client = runtime.block_on(ConnectClient::connect(socket))?;
+                Backend::Connect(ConnectBackend { runtime, client })
+            }
+        };
         Ok(LedgerClient {
-            client: RefCell::new(Client::connect(socket)?),
+            backend: RefCell::new(backend),
             snapshot_dir: snapshot_dir.to_path_buf(),
         })
     }
 
-    /// Build a client from an already-connected transport (used by the process
-    /// supervisor after the `READY` handshake).
+    /// Build a framed client from an already-connected transport.
     pub fn from_client(client: Client, snapshot_dir: &Path) -> LedgerClient {
         LedgerClient {
-            client: RefCell::new(client),
+            backend: RefCell::new(Backend::Framed(client)),
             snapshot_dir: snapshot_dir.to_path_buf(),
         }
     }
@@ -204,8 +246,13 @@ impl LedgerClient {
         method: &str,
         params: &impl Serialize,
     ) -> Result<R, ContractError> {
-        let mut client = self.client.borrow_mut();
-        client.call_typed(method, params).map_err(map_ipc_error)
+        match &mut *self.backend.borrow_mut() {
+            Backend::Framed(client) => client.call_typed(method, params).map_err(map_ipc_error),
+            Backend::Connect(backend) => backend
+                .runtime
+                .block_on(backend.client.call_typed(method, params))
+                .map_err(map_ipc_error),
+        }
     }
 
     fn read_snapshot(&self, file: &str) -> Result<StateSnapshot, ContractError> {

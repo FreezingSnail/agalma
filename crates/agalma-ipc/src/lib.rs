@@ -85,7 +85,7 @@ pub use ledger_client::{
     MetaParams, OperationIdCall, OutcomeParams, PathParams, TimerIdCall, TimerParams,
     SNAPSHOT_EXPORT_FILE, SNAPSHOT_IMPORT_FILE,
 };
-pub use ledger_server::{register_ledger, LEDGER_METHODS};
+pub use ledger_server::{register_ledger, serve_ledger, LEDGER_METHODS};
 pub use sandbox_client::SandboxClient;
 pub use sandbox_server::{register_sandbox, SANDBOX_METHODS};
 pub use server::{socket_from_args, Handler, Server, ServerInfo};

@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use agalma_contracts::{Checkout, ContractError, ExecutionId};
 use agalma_ipc::{
-    CheckoutCall, Client, CommandSpec, IntegrateOriginParams, IpcError, PrepareRepoParams,
+    CheckoutCall, Client, CommandSpec, IntegrateOriginParams, IpcError, PrepareRepoParams, Wire,
     WorkspaceClient, WorkspaceOps,
 };
 use agalma_testkit::ScratchDir;
@@ -29,7 +29,9 @@ use agalma_workspace::server::SERVER_BIN;
 use agalma_workspace::Workspace;
 
 use agalma_conductor::harness_process::resolve_server_binary;
-use agalma_conductor::workspace_process::{workspace_server_spec, WorkspaceProcess};
+use agalma_conductor::workspace_process::{
+    workspace_server_spec, workspace_wire, WorkspaceProcess,
+};
 
 const CHILD_SOCKET_ENV: &str = "AGALMA_TEST_WORKSPACE_SOCKET";
 const CHILD_BASE_ENV: &str = "AGALMA_TEST_WORKSPACE_BASE_DIR";
@@ -124,8 +126,12 @@ fn server_spec(socket: &Path, base_dir: &Path) -> (CommandSpec, PathBuf) {
 }
 
 fn spawn_server(socket: &Path, base_dir: &Path) -> WorkspaceProcess {
+    spawn_server_wire(socket, base_dir, workspace_wire())
+}
+
+fn spawn_server_wire(socket: &Path, base_dir: &Path, wire: Wire) -> WorkspaceProcess {
     let (spec, program) = server_spec(socket, base_dir);
-    WorkspaceProcess::spawn_with_spec(spec, program, socket.to_path_buf(), READY_TIMEOUT)
+    WorkspaceProcess::spawn_with_spec_wire(spec, program, socket.to_path_buf(), wire, READY_TIMEOUT)
         .unwrap_or_else(|e| panic!("spawn workspace server: {e}"))
 }
 
@@ -370,6 +376,52 @@ fn shadow_parity_repo_ops() {
 }
 
 // ===========================================================================
+// Case a' — wire parity: in-process vs framed vs Connect (IPCX.4)
+// ===========================================================================
+
+/// The workspace boundary over Connect (IPCX.4): the same template-mode scenario
+/// produces an identical normalized transcript in-process, over the framed
+/// process wire, and over the Connect process wire. This is the dual-binding
+/// parity proof for the migrated boundary.
+#[test]
+fn wire_parity_framed_vs_connect_matches_in_process() {
+    // In-process baseline.
+    let dir_in = fresh();
+    let mut inproc = Workspace::new(dir_in.join("state"));
+    let in_process = drive_template(&mut inproc, &dir_in);
+
+    // Framed process wire.
+    let dir_framed = fresh();
+    let socket_framed = dir_framed.join("wf.sock");
+    let process_framed = spawn_server_wire(&socket_framed, &dir_framed.join("state"), Wire::Framed);
+    assert_eq!(process_framed.wire(), Wire::Framed);
+    let mut client_framed = process_framed.client().expect("framed client");
+    let framed = drive_template(&mut client_framed, &dir_framed);
+    drop(client_framed);
+    let _ = {
+        let mut process = process_framed;
+        process.stop()
+    };
+
+    // Connect process wire.
+    let dir_connect = fresh();
+    let socket_connect = dir_connect.join("wc.sock");
+    let process_connect =
+        spawn_server_wire(&socket_connect, &dir_connect.join("state"), Wire::Connect);
+    assert_eq!(process_connect.wire(), Wire::Connect);
+    let mut client_connect = process_connect.client().expect("connect client");
+    let connect = drive_template(&mut client_connect, &dir_connect);
+    drop(client_connect);
+    let _ = {
+        let mut process = process_connect;
+        process.stop()
+    };
+
+    assert_eq!(in_process, framed, "framed workspace transcript parity");
+    assert_eq!(in_process, connect, "connect workspace transcript parity");
+}
+
+// ===========================================================================
 // Case b — staged rebind with an in-flight checkout pinned
 // ===========================================================================
 
@@ -492,7 +544,8 @@ fn workspace_client_duplicate_id_replay_and_connection_loss() {
     let exec = ExecutionId::new("exec:wp-conformance:1");
 
     let socket = dir.join("d.sock");
-    let mut server = spawn_server(&socket, &state);
+    // Raw framed `Client` conformance: the server must serve the framed wire.
+    let mut server = spawn_server_wire(&socket, &state, Wire::Framed);
     let mut client = Client::connect(&socket).expect("connect");
 
     // Duplicate request id: the recorded `prepare_repo` receipt is replayed, not

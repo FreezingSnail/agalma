@@ -175,3 +175,130 @@ no `docs/b1-extraction.md` edit. The architecture lint is strict and green
 (`cargo test -p agalma-conductor --test architecture`: `4 passed`): no
 implementation crate depends on another, and no implementation source references
 another implementation crate.
+
+# IPCX.4 — workspace boundary on the Connect transport
+
+Bead: `agalma-ebg.5`. Design: `docs/ipc-connect-design.md` (D1–D7). Foundation:
+`agalma-ebg.2` (`ipc.proto`, Connect stack + pins, UDS accept loop, client core,
+Connect-level conformance harness). Depends on `agalma-ebg.4` (IPCX.3 sandbox
+boundary, the migration pattern). HEAD at start: `4628801`.
+
+Goal: move the already-extracted `WorkspaceApi` (+ the `WorkspaceOps` repo-mode
+surface) process boundary onto the Connect transport (IPCX D7, boundary #3)
+**without changing the envelope semantics or any consumer logic**, and prove it
+with the B1 recipe — dual-binding parity, staged rebind, rollback, IPC
+conformance — extended to the Connect wire. As in IPCX.2/IPCX.3, the
+per-boundary evidence named by D4 (`docs/ipcx-<boundary>-evidence.md`) is folded
+into this file so the workspace boundary's B1 and IPCX evidence stay together.
+
+## What migrated
+
+The typed workspace client and its method-registration helper stay the entry
+points; only the byte transport under them changed.
+
+| Concern | Where |
+|---|---|
+| `WorkspaceClient` speaks either wire (`connect_wire`); `connect` stays framed | `crates/agalma-ipc/src/workspace_client.rs` |
+| `serve_workspace(server, socket, wire)` workspace serve entry point | `crates/agalma-ipc/src/workspace_server.rs` |
+| Workspace server serves the selected wire (`serve` reads `AGALMA_IPC_WIRE`) | `crates/agalma-workspace/src/server.rs` |
+| `WorkspaceProcess` selects the wire, exports it to the child, connects matching client | `crates/agalma-conductor/src/workspace_process.rs` |
+
+- The workspace process wire **defaults to `Connect`** (`workspace_wire()`); a
+  parity run sets `AGALMA_IPC_WIRE=framed` to compare the two against the same
+  scenario. The selected wire is exported to the child in the same variable, so
+  the server serves the matching transport. Both wires announce the identical
+  `READY {json}` line, so the supervisor handshake is unchanged; `WorkspaceApi`
+  is `Describe`-free, so there is no binding gate to keep wire-agnostic.
+- Envelope semantics are preserved verbatim on both wires: `v`/`id`/`method`/
+  `params_json`; duplicate-id receipt replay; `UnknownOutcome`/contract errors
+  in-band; version refusal; unknown-method `UnsupportedCapability`. The Connect
+  path reuses `Server::dispatch`, so no envelope code was forked.
+- `WorkspaceOps` (the frozen `WorkspaceApi` plus the M1 repo-mode operations) is
+  unchanged; only the transport beneath it differs.
+- No new dependency. `connectrpc`/`buffa` stay confined to `agalma-ipc`
+  (architecture test green); no `Cargo.toml`/`Cargo.lock` change.
+
+### New interfaces
+
+- `agalma_ipc`: `workspace_client::WorkspaceClient::connect_wire` (framed
+  `connect`/`from_client` retained); `workspace_server::serve_workspace`.
+- `agalma_workspace::server`: `serve_wire`; `serve` now reads `AGALMA_IPC_WIRE`
+  (`connect` default, `framed` optional).
+- `agalma_conductor::workspace_process`: `workspace_wire`,
+  `WorkspaceProcess::wire`, `WorkspaceProcess::spawn_with_spec_wire(.., wire, ..)`
+  (`spawn`/`spawn_with_spec` retained, defaulting to `workspace_wire`).
+
+## Results
+
+All commands from the repo root, `--offline`.
+
+| Command | Observed |
+|---|---|
+| `cargo build --offline --workspace` | exit 0 |
+| `cargo test --offline -p agalma-ipc -p agalma-workspace` | ipc: 48 unit + 14 conformance + 9 connect-conformance + 4 harness-connect + 2 sandbox-connect + 2 taskqueue-connect + 2 ledger-connect + **2 workspace-connect** (new) + doc-tests; workspace: 3 unit + 11 integration; 0 failures |
+| `cargo test --offline -p agalma-conductor --test workspace_process` | **7 passed; 0 failed** |
+| `cargo test --offline -p agalma-conductor --lib` | 143 passed; 0 failed |
+| `cargo test --offline -p agalma-conductor --test architecture` | 6 passed; 0 failed |
+
+`tests/workspace_connect.rs` (new, `agalma-ipc`):
+
+| Test | What it proves |
+|---|---|
+| `workspace_api_over_connect_matches_framed` | The typed `WorkspaceClient` drives the full `WorkspaceOps` surface (all six `WorkspaceApi` methods plus the eight repo-mode operations) over a `register_workspace` server; a framed and a Connect server produce an **identical typed transcript**. A deterministic stub workspace keeps the transcript clock/disk-free. |
+| `workspace_connect_missing_socket_is_unavailable` | A missing Connect socket surfaces as `Unavailable`. |
+
+`tests/workspace_process.rs` (conductor):
+
+| Test | What it proves |
+|---|---|
+| `wire_parity_framed_vs_connect_matches_in_process` (new) | The same template-mode scenario yields an identical normalized transcript in-process, over the **framed** process wire, and over the **Connect** process wire. This is the dual-binding parity proof for the migrated boundary. |
+| `shadow_parity_template_ops` | In-process vs process parity (`prepare`/`diff`/`integrate`/`tag`/`revert`), now over **Connect** (`process.client()` over the stored wire). |
+| `shadow_parity_repo_ops` | Repo-mode parity (`prepare_repo`/`commit_candidate`/`prepare_verify_checkout`/`origin_receipt`/`integrate_origin`/`revert_origin`), now over **Connect**. |
+| `staged_rebind_keeps_pinned_checkout_usable` | An in-flight checkout (prepared + committed on server A) stays pinned across a swap: candidate server B integrates A's committed SHA, and A stays alive and reports the same candidate — over **Connect**. |
+| `rollback_keeps_prior_checkout_and_server` | Candidate retired (pid gone); prior server and its committed checkout survive and still land the candidate — no state loss. |
+| `workspace_client_duplicate_id_replay_and_connection_loss` | Raw framed `Client`: duplicate-id `prepare_repo` receipt replay, duplicate `integrate_origin` id replays while a fresh id re-runs and returns `Conflict`, post-death `Unavailable`/`UnknownOutcome`, missing socket `Unavailable` (framed path still proven; the server is spawned explicitly framed). |
+| `workspace_server_child` | Child entry point serving the env-selected wire (no-op under a normal run). |
+
+## Consumer-invariance proof
+
+Phase/work logic is unchanged: `WorkspaceHandle` keeps its surface
+(`in_process`/`process`/`from_transport`) and delegates to whichever backend is
+bound; only the private wire selection and the client-construction sites changed.
+No contract schema changed. `git diff --name-only` (tracked) plus the new file,
+all within the allowed set:
+
+```
+crates/agalma-conductor/src/workspace_process.rs
+crates/agalma-conductor/tests/workspace_process.rs
+crates/agalma-ipc/src/workspace_client.rs
+crates/agalma-ipc/src/workspace_server.rs
+crates/agalma-ipc/tests/workspace_connect.rs            # new
+crates/agalma-workspace/src/server.rs
+docs/b1-workspace-evidence.md                           # this file
+```
+
+No file under `crates/agalma-contracts/**` changed; no contract schema changed.
+`crates/agalma-ipc/src/lib.rs` is untouched (the new entry points are reached
+through their module paths). The harness/sandbox/taskqueue/ledger boundary files
+are untouched.
+
+## Deviations and notes
+
+1. The IPCX design D4 names a per-boundary `docs/ipcx-<boundary>-evidence.md`;
+   this bead's scope extends the existing B1 workspace evidence instead, keeping
+   the framed and Connect proofs side by side (matching IPCX.2/IPCX.3).
+2. The workspace process wire defaults to `Connect`. `WorkspaceApi` is
+   `Describe`-free, so the "staged rebind" remains a supervised-server swap with
+   the in-flight checkout pinned to its preparing server (B1.4 note 2), now over
+   the Connect wire.
+3. `WorkspaceProcess::spawn`/`spawn_with_spec` keep their signatures (defaulting
+   to `workspace_wire()`); `spawn_with_spec_wire` is the explicit-wire entry
+   point the parity test uses. The re-exec'd child serves the env-selected wire
+   because `spawn_with_spec_wire` exports `AGALMA_IPC_WIRE` to it.
+4. `serve_wire` installs a multithread Tokio runtime for both wires. The git
+   backend still shells out through `std::process` and needs no reactor itself,
+   but the Connect accept loop does, so (unlike B1.4) the server now hosts one.
+5. The Connect accept loop logs peer resets (`connect connection error`) at most;
+   the workspace scenario's heavier disconnect/stopping sequence surfaces these
+   benign lines in test output without affecting the transcripts.
+

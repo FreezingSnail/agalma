@@ -12,7 +12,8 @@
 //! `in-process` (default) or `process`. [`WorkspaceHandle`] exposes the full
 //! workspace operation surface ([`WorkspaceOps`] + `WorkspaceApi`) by
 //! delegating to whichever backend is bound, so phase/work logic is unchanged
-//! (D5) — only the construction sites change.
+//! (D5) — only the construction sites change. When bound to a process, the
+//! boundary speaks [`workspace_wire`] (Connect by default; IPCX.4).
 //!
 //! The socket lives directly under the run state dir (`workspace.sock`) to stay
 //! within `SUN_LEN`.
@@ -24,7 +25,7 @@ use std::time::Duration;
 
 use agalma_contracts::harness::StopEvidence;
 use agalma_contracts::{Checkout, ContractError, ExecutionId, MergeReceipt, WorkspaceApi};
-use agalma_ipc::{CommandSpec, WorkspaceClient, WorkspaceOps};
+use agalma_ipc::{CommandSpec, Wire, WorkspaceClient, WorkspaceOps, WIRE_ENV};
 use agalma_workspace::server::server_command;
 use agalma_workspace::Workspace;
 
@@ -37,12 +38,24 @@ pub const TRANSPORT_ENV: &str = "AGALMA_WORKSPACE_TRANSPORT";
 /// Socket file name under the run state dir.
 pub const WORKSPACE_SOCKET_NAME: &str = "workspace.sock";
 
+/// The wire transport the workspace process boundary uses (IPCX.4).
+///
+/// The workspace boundary migrated to [`Wire::Connect`]; a parity run may set
+/// [`agalma_ipc::WIRE_ENV`] to `framed` to compare the two wires against the
+/// same scenario. The selected wire is also exported to the child process (see
+/// [`WorkspaceProcess::spawn_with_spec_wire`]) so its server serves the matching
+/// transport.
+pub fn workspace_wire() -> Wire {
+    Wire::from_env(Wire::Connect)
+}
+
 /// How the conductor reaches a workspace implementation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkspaceTransport {
     /// Direct in-process trait call (unchanged phase logic).
     InProcess,
-    /// Supervised component server over the framed transport.
+    /// Supervised component server over the selected wire transport
+    /// ([`workspace_wire`], Connect by default since IPCX.4).
     Process,
 }
 
@@ -77,32 +90,48 @@ pub fn workspace_server_spec(socket: &Path, base_dir: &Path) -> CommandSpec {
 pub struct WorkspaceProcess {
     socket: PathBuf,
     child: Child,
+    wire: Wire,
     stopped: bool,
 }
 
 impl WorkspaceProcess {
     /// Spawn a workspace server rooted at `base_dir` and listen on
-    /// `<base_dir>/workspace.sock`; wait for `READY`.
+    /// `<base_dir>/workspace.sock` (over [`workspace_wire`]); wait for `READY`.
     pub fn spawn(base_dir: &Path, timeout: Duration) -> Result<WorkspaceProcess, String> {
         let socket = base_dir.join(WORKSPACE_SOCKET_NAME);
         let spec = workspace_server_spec(&socket, base_dir);
         let program = resolve_server_binary(&spec.program)?;
-        WorkspaceProcess::spawn_with_spec(spec, program, socket, timeout)
+        WorkspaceProcess::spawn_with_spec_wire(spec, program, socket, workspace_wire(), timeout)
     }
 
-    /// Spawn a workspace server from an explicit spec/program (used by tests
-    /// that re-exec the test binary as the server when the real binary is
-    /// absent).
+    /// Spawn a workspace server from an explicit spec/program over
+    /// [`workspace_wire`] (used by tests that re-exec the test binary as the
+    /// server when the real binary is absent).
     pub fn spawn_with_spec(
         spec: CommandSpec,
         program: PathBuf,
         socket: PathBuf,
         timeout: Duration,
     ) -> Result<WorkspaceProcess, String> {
+        WorkspaceProcess::spawn_with_spec_wire(spec, program, socket, workspace_wire(), timeout)
+    }
+
+    /// Spawn a workspace server from an explicit spec/program over `wire`. The
+    /// selected wire is exported to the child in [`WIRE_ENV`], so its server
+    /// serves the matching transport.
+    pub fn spawn_with_spec_wire(
+        spec: CommandSpec,
+        program: PathBuf,
+        socket: PathBuf,
+        wire: Wire,
+        timeout: Duration,
+    ) -> Result<WorkspaceProcess, String> {
+        let spec = spec.env(WIRE_ENV, wire.as_str());
         let (guard, _info) = spawn_supervised(&spec, &program, &socket, timeout)?;
         Ok(WorkspaceProcess {
             socket,
             child: guard.into_child(),
+            wire,
             stopped: false,
         })
     }
@@ -117,9 +146,14 @@ impl WorkspaceProcess {
         self.child.id()
     }
 
-    /// Connect a fresh client to the running server.
+    /// The wire transport this process (and its server) uses.
+    pub fn wire(&self) -> Wire {
+        self.wire
+    }
+
+    /// Connect a fresh client to the running server over its wire.
     pub fn client(&self) -> Result<WorkspaceClient, String> {
-        WorkspaceClient::connect(&self.socket).map_err(|e| e.to_string())
+        WorkspaceClient::connect_wire(&self.socket, self.wire).map_err(|e| e.to_string())
     }
 
     /// Stop the server with `SIGTERM`/`SIGKILL` evidence. Idempotent.
@@ -335,5 +369,17 @@ mod tests {
     fn in_process_handle_is_constructed_without_a_server() {
         let handle = WorkspaceHandle::in_process(Path::new("/run/state"));
         assert!(handle._process.is_none());
+    }
+
+    #[test]
+    fn wire_defaults_to_connect_and_env_restores_framed() {
+        // Absent -> Connect (IPCX.4 migration default); `framed` for parity.
+        std::env::remove_var(WIRE_ENV);
+        assert_eq!(workspace_wire(), Wire::Connect);
+        std::env::set_var(WIRE_ENV, "framed");
+        assert_eq!(workspace_wire(), Wire::Framed);
+        std::env::set_var(WIRE_ENV, "connect");
+        assert_eq!(workspace_wire(), Wire::Connect);
+        std::env::remove_var(WIRE_ENV);
     }
 }

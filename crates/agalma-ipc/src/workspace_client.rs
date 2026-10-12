@@ -1,5 +1,6 @@
-//! `WorkspaceClient` (decision D2): a typed [`WorkspaceApi`] over the framed
-//! client, plus the M1 repo-mode operations the conductor drives.
+//! `WorkspaceClient` (decisions D2, IPCX.4): a typed [`WorkspaceApi`] over the
+//! workspace boundary, on either wire transport, plus the M1 repo-mode
+//! operations the conductor drives.
 //!
 //! Method names are the existing method snake-case
 //! (`prepare`/`diff`/`integrate`/`tag`/`reconcile`/`revert` plus the repo-mode
@@ -8,8 +9,12 @@
 //! `integrated_receipt`). Each call carries one JSON params object and decodes a
 //! typed result. Transport failures map onto the frozen [`ContractError`]
 //! surface exactly as for the harness/sandbox clients: a mid-call connection
-//! loss is already classified by [`Client`] as `UnknownOutcome`; a pre-send loss
-//! becomes `KnownFailure`.
+//! loss is already classified by the transport as `UnknownOutcome`; a pre-send
+//! loss becomes `KnownFailure`.
+//!
+//! Since IPCX.4 the client can speak either [`Wire::Framed`] (B1 length-prefixed
+//! JSON) or [`Wire::Connect`] (ConnectRPC over HTTP/2 on a Unix socket). The
+//! envelope semantics are identical on both; only the byte transport differs.
 //!
 //! [`WorkspaceOps`] is the full operation surface a workspace server hosts: the
 //! frozen [`WorkspaceApi`] trait plus the repo-mode inherent operations. It lets
@@ -25,6 +30,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::client::Client;
+use crate::connect::{ConnectClient, Wire};
 use crate::error::IpcError;
 
 /// Params for `prepare` (template mode).
@@ -165,25 +171,57 @@ pub trait WorkspaceOps: WorkspaceApi {
     ) -> Result<Option<MergeReceipt>, ContractError>;
 }
 
+/// The transport backing a [`WorkspaceClient`].
+enum Backend {
+    /// B1 framed-JSON client ([`Client`]).
+    Framed(Client),
+    /// IPCX Connect client plus the runtime it is driven on.
+    Connect(ConnectBackend),
+}
+
+/// Connect transport state: the async client and the runtime that drives it.
+struct ConnectBackend {
+    runtime: tokio::runtime::Runtime,
+    client: ConnectClient,
+}
+
 /// A [`WorkspaceApi`]/[`WorkspaceOps`] implementation backed by a workspace
 /// component server.
 pub struct WorkspaceClient {
-    client: RefCell<Client>,
+    backend: RefCell<Backend>,
 }
 
 impl WorkspaceClient {
-    /// Connect to the workspace server listening on `socket`.
+    /// Connect to `socket` over the framed transport.
     pub fn connect(socket: &Path) -> Result<WorkspaceClient, IpcError> {
-        Ok(WorkspaceClient {
-            client: RefCell::new(Client::connect(socket)?),
-        })
+        WorkspaceClient::connect_wire(socket, Wire::Framed)
+    }
+
+    /// Connect to the workspace server listening on `socket` over `wire`. Both
+    /// wires preserve the envelope semantics.
+    pub fn connect_wire(socket: &Path, wire: Wire) -> Result<WorkspaceClient, IpcError> {
+        match wire {
+            Wire::Framed => Ok(WorkspaceClient {
+                backend: RefCell::new(Backend::Framed(Client::connect(socket)?)),
+            }),
+            Wire::Connect => {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| IpcError::unavailable(format!("tokio runtime: {e}")))?;
+                let client = runtime.block_on(ConnectClient::connect(socket))?;
+                Ok(WorkspaceClient {
+                    backend: RefCell::new(Backend::Connect(ConnectBackend { runtime, client })),
+                })
+            }
+        }
     }
 
     /// Build a client from an already-connected transport (used by the process
     /// supervisor after the `READY` handshake).
     pub fn from_client(client: Client) -> WorkspaceClient {
         WorkspaceClient {
-            client: RefCell::new(client),
+            backend: RefCell::new(Backend::Framed(client)),
         }
     }
 
@@ -192,8 +230,13 @@ impl WorkspaceClient {
         method: &str,
         params: &impl Serialize,
     ) -> Result<R, ContractError> {
-        let mut client = self.client.borrow_mut();
-        client.call_typed(method, params).map_err(map_ipc_error)
+        match &mut *self.backend.borrow_mut() {
+            Backend::Framed(client) => client.call_typed(method, params).map_err(map_ipc_error),
+            Backend::Connect(backend) => backend
+                .runtime
+                .block_on(backend.client.call_typed(method, params))
+                .map_err(map_ipc_error),
+        }
     }
 }
 

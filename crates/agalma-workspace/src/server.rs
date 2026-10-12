@@ -1,20 +1,22 @@
 //! Git-backed `WorkspaceApi` component server (B1.4).
 //!
-//! Hosts [`Workspace`] behind the framed transport so the conductor can drive
+//! Hosts [`Workspace`] behind the selected transport so the conductor can drive
 //! isolated checkout, integration, tagging, and reconciliation across a process
 //! boundary instead of embedding the git backend. The server is rooted at a base
 //! directory (`--base-dir <path>`): each execution gets `<base_dir>/runs/<exec>`
 //! just as in-process.
 //!
-//! The backend shells out to the `git` CLI through `std::process`, so the serial
-//! serve loop needs no async runtime (mirroring the reference harness server, not
-//! the Tokio-based sandbox/OpenCode servers).
+//! The backend shells out to the `git` CLI through `std::process`, so the
+//! handlers themselves need no async runtime; [`serve_wire`] installs one for
+//! both wires (the Connect accept loop needs a reactor, mirroring the sandbox
+//! server). Since IPCX.4 the server serves `Connect` by default;
+//! `AGALMA_IPC_WIRE=framed` restores the B1 length-prefixed transport.
 
 use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use agalma_ipc::{register_workspace, CommandSpec, Server, ServerInfo};
+use agalma_ipc::{register_workspace, CommandSpec, Server, ServerInfo, Wire};
 
 use crate::Workspace;
 
@@ -54,11 +56,18 @@ pub fn build_server(base_dir: &Path) -> Server {
     server
 }
 
-/// Bind `socket` and serve until stopped, hosting a `Workspace` rooted at
-/// `base_dir`.
+/// Bind `socket` and serve over the wire selected by `AGALMA_IPC_WIRE`
+/// (`connect` default, `framed` optional; IPCX.4) until stopped, hosting a
+/// `Workspace` rooted at `base_dir`.
 pub fn serve(socket: &Path, base_dir: &Path) -> io::Result<()> {
-    let mut server = build_server(base_dir);
-    server.serve(socket)
+    serve_wire(socket, base_dir, Wire::from_env(Wire::Connect))
+}
+
+/// Bind `socket` and serve over `wire` until stopped, hosting a `Workspace`
+/// rooted at `base_dir`.
+pub fn serve_wire(socket: &Path, base_dir: &Path, wire: Wire) -> io::Result<()> {
+    let server = build_server(base_dir);
+    agalma_ipc::workspace_server::serve_workspace(server, socket, wire)
 }
 
 /// Full argv/env entry point used by the server binary.
@@ -113,7 +122,8 @@ mod tests {
     fn server_announces_the_workspace_identity_for_each_method() {
         let server = build_server(Path::new("/run/agalma-state"));
         assert_eq!(server.info().impl_name, IMPL_NAME);
-        agalma_ipc::workspace_server::ensure_all_handlers(&server).expect("all handlers registered");
+        agalma_ipc::workspace_server::ensure_all_handlers(&server)
+            .expect("all handlers registered");
     }
 
     #[test]

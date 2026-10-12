@@ -30,6 +30,7 @@ pub mod stop;
 pub mod sweep;
 pub mod task;
 pub mod taskqueue_process;
+pub mod watch;
 pub mod work;
 pub mod workers;
 pub mod workspace_process;
@@ -55,7 +56,9 @@ use agalma_ledger::SqliteLedger;
 use clap::Parser;
 use tokio::signal::unix::{signal, SignalKind};
 
-use crate::cli::{Cli, Command, DigestArgs, GcArgs, ReconcileArgs, RunArgs, StateArgs, StatusArgs};
+use crate::cli::{
+    Cli, Command, DigestArgs, GcArgs, ReconcileArgs, RunArgs, StateArgs, StatusArgs, WatchArgs,
+};
 use crate::composition::Composition;
 use crate::config::{Config, PHASE_PLAN};
 use crate::ledger_process::{ledger_socket, LedgerHandle, LedgerTransport};
@@ -70,6 +73,7 @@ pub async fn run() -> ExitCode {
         Command::Reconcile(args) => reconcile_command(&args),
         Command::Resume(args) => resume_command(&args),
         Command::Status(args) => status_command(&args),
+        Command::Watch(args) => watch_command(&args).await,
         Command::Digest(args) => digest_command(&args),
         Command::Models => models_command(),
         Command::PlanCheck(args) => crate::plan_check::run_plan_check(&args),
@@ -489,6 +493,15 @@ fn status_command(args: &StatusArgs) -> ExitCode {
     }
     println!("kill_latch={}", snapshot.kill_latch);
     ExitCode::SUCCESS
+}
+
+/// `agalma watch`: live refresh loop over the TUI read model (read-only).
+///
+/// Delegates to [`crate::watch::run`]: `--once` (or a non-TTY stdout) renders a
+/// single frame; otherwise an alternate-screen loop refreshes until `q` +
+/// Enter, Ctrl-C/SIGTERM, or stdin EOF. Never writes.
+async fn watch_command(args: &WatchArgs) -> ExitCode {
+    crate::watch::run(args).await
 }
 
 /// `agalma digest --execution <id>`: print the latest recorded digest (JSON,

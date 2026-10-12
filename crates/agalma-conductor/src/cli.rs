@@ -25,6 +25,8 @@ pub enum Command {
     Resume(StateArgs),
     /// Report ledger and execution status (TUI read-model snapshot).
     Status(StatusArgs),
+    /// Live refresh loop over the TUI read model (read-only watch view).
+    Watch(WatchArgs),
     /// Print the recorded digest for an execution (JSON + one-line summary).
     Digest(DigestArgs),
     /// Print the model routing table and the active routes (H3).
@@ -107,6 +109,22 @@ pub struct StatusArgs {
     /// Emit the read-model snapshot as JSON (TUI contract).
     #[arg(long)]
     pub json: bool,
+}
+
+/// Arguments for `agalma watch`.
+#[derive(Debug, Args)]
+pub struct WatchArgs {
+    /// Override the state directory (defaults to `AGALMA_STATE_DIR` or the
+    /// platform application-support directory).
+    #[arg(long, value_name = "DIR")]
+    pub state_dir: Option<PathBuf>,
+    /// Refresh interval in milliseconds (default 1000).
+    #[arg(long, value_name = "MS", default_value_t = 1000)]
+    pub interval_ms: u64,
+    /// Render a single frame and exit (non-interactive; never enters the
+    /// alternate screen).
+    #[arg(long)]
+    pub once: bool,
 }
 
 /// Arguments for `agalma digest`.

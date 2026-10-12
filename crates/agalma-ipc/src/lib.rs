@@ -34,6 +34,7 @@ pub mod command;
 pub mod envelope;
 pub mod error;
 pub mod execution_client;
+pub mod execution_handler;
 pub mod execution_server;
 pub mod frame;
 pub mod harness_client;
@@ -53,8 +54,13 @@ pub use command::CommandSpec;
 pub use envelope::{Request, Response, ResponseError, PROTOCOL_VERSION};
 pub use error::{IpcError, CODE_PROTOCOL, CODE_UNAVAILABLE};
 pub use execution_client::{
-    DirectiveExecCall, ExecIdCall, ExecutionClient, ExecutionOps, KernelCall, LeaseExecCall,
-    NowCall, ReceiptCall, ReclaimCall, SnapshotPathCall, StartCall, TimerExecParams,
+    BeginStepCall, CompleteStepCall, DirectiveExecCall, ExecIdCall, ExecutionClient, ExecutionOps,
+    KernelCall, LeaseExecCall, NowCall, PendingStepCall, ReceiptCall, ReclaimCall, SnapshotPathCall,
+    StartCall, TimerExecParams,
+};
+pub use execution_handler::{
+    EffectContext, EffectDispatch, EffectMode, EffectProbe, EffectReport, HandlerError, HandlerKey,
+    StepBegin,
 };
 pub use execution_server::{register_execution, EXECUTION_METHODS};
 pub use frame::{FrameError, MAX_FRAME};

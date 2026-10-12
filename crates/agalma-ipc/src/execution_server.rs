@@ -13,8 +13,9 @@ use agalma_contracts::ContractError;
 use serde_json::Value;
 
 use crate::execution_client::{
-    DirectiveExecCall, ExecIdCall, ExecutionOps, KernelCall, LeaseExecCall, NowCall, ReceiptCall,
-    ReclaimCall, SnapshotPathCall, StartCall, TimerExecParams,
+    BeginStepCall, CompleteStepCall, DirectiveExecCall, ExecIdCall, ExecutionOps, KernelCall,
+    LeaseExecCall, NowCall, PendingStepCall, ReceiptCall, ReclaimCall, SnapshotPathCall, StartCall,
+    TimerExecParams,
 };
 use crate::harness_client::{decode_params, encode_result};
 use crate::server::Server;
@@ -175,6 +176,37 @@ where
             encode_result(())
         });
     }
+
+    // ---- handler-registry protocol (caller-side effect dispatch) ----------
+    {
+        let shared = Arc::clone(&shared);
+        server.on("begin_step", move |params: Value| {
+            let call: BeginStepCall = decode_params(params)?;
+            let result = lock(&shared).begin_step(&call.execution_id, call.request)?;
+            encode_result(result)
+        });
+    }
+    {
+        let shared = Arc::clone(&shared);
+        server.on("begin_pending_step", move |params: Value| {
+            let call: PendingStepCall = decode_params(params)?;
+            let result = lock(&shared).begin_pending_step(&call.execution_id, &call.operation_id)?;
+            encode_result(result)
+        });
+    }
+    {
+        let shared = Arc::clone(&shared);
+        server.on("complete_step", move |params: Value| {
+            let call: CompleteStepCall = decode_params(params)?;
+            let result = lock(&shared).complete_step(
+                &call.execution_id,
+                &call.operation_id,
+                call.report,
+                call.now_unix_ms,
+            )?;
+            encode_result(result)
+        });
+    }
 }
 
 /// Lock the shared engine, recovering a poisoned mutex into its inner value.
@@ -183,7 +215,7 @@ fn lock<S>(shared: &Arc<Mutex<S>>) -> std::sync::MutexGuard<'_, S> {
 }
 
 /// The kernel wire method names, in the order the server registers them.
-pub const EXECUTION_METHODS: [&str; 18] = [
+pub const EXECUTION_METHODS: [&str; 21] = [
     "start",
     "step",
     "recover",
@@ -202,6 +234,9 @@ pub const EXECUTION_METHODS: [&str; 18] = [
     "submit_directive",
     "export_snapshot_to",
     "import_snapshot_from",
+    "begin_step",
+    "begin_pending_step",
+    "complete_step",
 ];
 
 /// Assert the server has a handler for every execution/kernel operation.

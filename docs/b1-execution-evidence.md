@@ -46,13 +46,16 @@ cannot be hosted generically behind the boundary, so:
 | `start(task)` | derive next free `ExecutionId::derive(task, n)`; `apply(Command::Start)` | faithful |
 | `cancel(exec)` | `KernelEngine::cancel` (`Command::Cancel`) | faithful |
 | `status(exec)` | project `KernelEngine::load` + `pending_dispatch` onto `ExecutionStatus` | faithful |
-| `step(exec)` | needs effect dispatch through a handler registry | `UnsupportedCapability` |
-| `recover()` | needs handler-driven effect reconciliation | `UnsupportedCapability` |
+| `step(exec)` | needs effect dispatch through a handler registry | `UnsupportedCapability` (bare adapter) / **faithful via handler-registry protocol (B1-F1)** |
+| `recover()` | needs handler-driven effect reconciliation | `UnsupportedCapability` (bare adapter) / **faithful via handler-registry protocol (B1-F1)** |
 
 Flattened cases (dispatch/recovery) are covered at the engine-op level through
 `ExecutionOps` (the same shape as the `LedgerOps`/`TaskQueueOps` precedent), and
 the adapter gap is asserted directly
-(`execution_api_adapter_reports_unsupported_capability`).
+(`execution_api_adapter_reports_unsupported_capability`). B1-F1 (`agalma-5de`)
+closes the gap for callers that attach a handler registry (see below); the bare
+`KernelEngine` adapter still reports `UnsupportedCapability` because it hosts no
+handlers.
 
 ## Deliverables
 
@@ -212,3 +215,90 @@ crates/agalma-kernel/src/state.rs                        # serde derives on Kern
 crates/agalma-kernel/tests/exec_api.rs                   # new
 docs/b1-execution-evidence.md                            # this file
 ```
+
+## B1-F1 — handler-registry protocol (`agalma-5de`)
+
+B1.7 left `ExecutionApi::step`/`recover` returning `UnsupportedCapability`
+because the kernel separates the pure transition from handler-driven effect
+dispatch and handlers are consumer-built Rust closures that cannot cross a
+process boundary. B1-F1 defines the **handler-registry protocol**: the engine
+(durable owner) *begins* an operation and hands the caller a serializable
+`EffectContext`; the caller performs the effect through a caller-hosted
+`EffectDispatch` registry; the engine *completes* the operation from a
+serializable `EffectReport`. Only the nondeterministic effect half crosses the
+boundary — exactly the split the kernel already draws between transition and
+handler — while every durable step (duplicate/conflict/park/block checks, the
+announce-before-effect commit, and the completion receipt) stays server-side.
+
+The protocol is transport-agnostic: `KernelEngine<L>` implements the same three
+operations in-process (`begin_step` / `begin_pending_step` / `complete_step`),
+so an in-process binding and a process binding expose one surface.
+
+### New interfaces
+
+- `agalma_ipc::execution_handler`: `HandlerKey` (`name@version`), `EffectMode`
+  (`Dispatch`/`Reconcile`), `EffectContext`, `EffectProbe`
+  (`Present`/`Absent`/`Ambiguous`), `HandlerError`, `EffectReport`
+  (`Present`/`Executed`/`Ambiguous`/`KnownFailure`/`UnknownOutcome`),
+  `EffectDispatch` (caller-hosted registry), `StepBegin`
+  (`Effect`/`Done`).
+- `agalma_ipc::ExecutionOps` additions: `begin_step` (explicit
+  `OperationRequest`), `begin_pending_step` (the durable pending operation),
+  `complete_step`. Params `PendingStepCall`/`BeginStepCall`/`CompleteStepCall`.
+  `EXECUTION_METHODS` grows 18 → 21.
+- `agalma_ipc::ExecutionClient`: `with_effect_dispatch` / `has_effect_dispatch`.
+  With a registry attached, `ExecutionApi::step`/`recover` drive the protocol;
+  without one they forward to the server adapter and keep reporting
+  `UnsupportedCapability` (the bare-engine gap).
+- `agalma_kernel::activity`: `begin_activity` / `finish_activity` split
+  `run_activity` into the durable begin (announce) and the commit (complete/park);
+  `EffectMode`, `ActivityBegin`, `BeginOutcome`, `EffectReply`. `run_activity`
+  itself is unchanged.
+
+### Semantics
+
+- `recover` mirrors `recover_pending`: reconcile each durable pending intent;
+  `Present` completes it (reconciled), `Absent` leaves it pending, `Ambiguous`
+  parks; a park/block halts further recovery for that execution.
+- `step` drives the single pending operation of the execution; with no pending
+  intent it projects `Idle`/`Parked` from `status`. `begin_step` additionally
+  supports fresh dispatch: the intent is durable before the effect runs.
+- Handler errors propagate faithfully (`KnownFailure`/`UnknownOutcome`), exactly
+  as `run_activity` does.
+
+### Files (B1-F1 delta, all in scope)
+
+```
+crates/agalma-ipc/src/execution_handler.rs    # new protocol types + EffectDispatch
+crates/agalma-ipc/src/execution_client.rs     # registry field; step/recover; begin/complete ops
+crates/agalma-ipc/src/execution_server.rs     # + begin_step/begin_pending_step/complete_step
+crates/agalma-ipc/src/lib.rs                  # module + re-exports
+crates/agalma-kernel/src/activity.rs          # begin_activity/finish_activity + EffectMode/EffectReply
+crates/agalma-kernel/src/exec_api.rs          # ExecutionOps begin/complete + wire projections
+crates/agalma-kernel/tests/exec_api.rs        # + 3 protocol tests
+crates/agalma-conductor/tests/execution_process.rs  # + step parity + recover-after-rebind
+docs/b1-execution-evidence.md                 # this section
+```
+
+### Results (B1-F1)
+
+| Command | Observed |
+|---|---|
+| `cargo build --offline --workspace` | exit 0, clean |
+| `cargo test --offline -p agalma-kernel -p agalma-execution` | exit 0, 0 failures (exec_api: 7 passed) |
+| `cargo test --offline -p agalma-ipc` | exit 0, 48 + 14 passed |
+| `cargo test --offline -p agalma-conductor --test execution_process --test architecture` | exit 0, execution_process 10 passed, architecture 4 passed |
+
+- `handler_registry_step_parity_in_process_vs_process`: a durable pending
+  operation reconciled in-process (`run_activity`) vs through the boundary
+  (`ExecutionClient` + caller `EffectDispatch` → `begin_pending_step` /
+  `complete_step`) produces the same receipt, zero pending work, and an identical
+  normalized snapshot.
+- `handler_registry_recover_after_rebind`: a pinned pending operation exported
+  from binding A and imported into binding B is reconciled over the boundary by
+  `recover()`, settling it on the new binding.
+- Kernel `exec_api` additions: pending reconcile, fresh `begin_step` dispatch
+  (announce durable before effect), duplicate-begin replay, and ambiguous park.
+
+No contract schema changed; no production conductor path switched. `run_activity`
+and the B1.7 adapters are behavior-preserving (all prior tests green).

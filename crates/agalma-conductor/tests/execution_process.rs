@@ -38,10 +38,15 @@ use agalma_contracts::{
     ArtifactRef, BindingId, ContractError, ExecutionApi, ExecutionId, ExecutionPhase,
     ExecutionState, OperationId, StateSnapshot, TaskId, TimerRecord, TimerState,
 };
-use agalma_ipc::{Client, CommandSpec, ExecutionClient, ExecutionOps, IpcError};
+use agalma_ipc::{
+    Client, CommandSpec, EffectContext, EffectDispatch, EffectProbe as IpcProbe, ExecutionClient,
+    ExecutionOps, HandlerError, HandlerKey, IpcError,
+};
 use agalma_kernel::{
-    ActivityDef, ApplyOutcome, BindingPin, Command as KernelCommand, DirectivePlan, DirectiveStep,
-    ExecState, Inputs, KernelEngine, Probe, TimerFire,
+    operation_input_hash, run_activity, ActivityContext, ActivityDef, ActivityError,
+    ActivityHandler, ActivityOutcome, ActivityRegistry, ApplyOutcome, BindingPin,
+    Command as KernelCommand, DirectivePlan, DirectiveStep, EffectProbe as KernelProbe, ExecState,
+    Inputs, KernelEngine, OperationRequest, Probe, TimerFire,
 };
 use agalma_ledger::SqliteLedger;
 use agalma_testkit::ScratchDir;
@@ -760,4 +765,240 @@ fn execution_api_adapter_reports_unsupported_capability() {
     drop(client);
     let _ = kernel_server.stop();
     let _ = ledger_server.stop();
+}
+
+// ===========================================================================
+// Case e — handler-registry protocol (B1-F1): faithful step/recover across the
+// boundary via caller-side effect dispatch
+// ===========================================================================
+
+/// In-process handler that reports a fixed present effect.
+struct PresentHandler {
+    def: ActivityDef,
+    outcome_ref: ArtifactRef,
+}
+
+impl ActivityHandler for PresentHandler {
+    fn def(&self) -> ActivityDef {
+        self.def.clone()
+    }
+
+    fn execute(&mut self, _ctx: &ActivityContext) -> Result<ActivityOutcome, ActivityError> {
+        Ok(ActivityOutcome::new(self.outcome_ref.clone()))
+    }
+
+    fn reconcile(&mut self, _ctx: &ActivityContext) -> Result<KernelProbe, ActivityError> {
+        Ok(KernelProbe::Present(ActivityOutcome::new(
+            self.outcome_ref.clone(),
+        )))
+    }
+}
+
+/// Caller-side dispatch double: the half of the handler-registry protocol that
+/// runs in the caller's process.
+struct PresentDispatch {
+    key: HandlerKey,
+    outcome_ref: ArtifactRef,
+}
+
+impl EffectDispatch for PresentDispatch {
+    fn contains(&self, key: &HandlerKey) -> bool {
+        key == &self.key
+    }
+
+    fn probe(&mut self, _ctx: &EffectContext) -> Result<IpcProbe, HandlerError> {
+        Ok(IpcProbe::Present(self.outcome_ref.clone()))
+    }
+
+    fn execute(&mut self, _ctx: &EffectContext) -> Result<ArtifactRef, HandlerError> {
+        Ok(self.outcome_ref.clone())
+    }
+}
+
+/// The announce inputs for a pending registry operation (`Probe::Absent`).
+fn registry_announce_inputs(def: &ActivityDef, inputs: &serde_json::Value) -> Inputs {
+    Inputs {
+        probe: Probe::Absent,
+        activity: Some(def.clone()),
+        operation_inputs: Some(inputs.clone()),
+        phase: Some(ExecutionPhase::Build),
+        now_unix_ms: 2,
+        ..Inputs::default()
+    }
+}
+
+fn export_normalized(ops: &dyn ExecutionOps, path: &Path) -> String {
+    ops.export_snapshot_to(path).expect("export snapshot");
+    let text = std::fs::read_to_string(path).expect("read snapshot");
+    normalize(StateSnapshot::from_json(&text).expect("parse snapshot"))
+        .to_canonical_json()
+        .expect("canonical snapshot")
+}
+
+/// The handler-registry protocol must reproduce the in-process `run_activity`
+/// reconcile outcome and durable state through the process boundary.
+#[test]
+fn handler_registry_step_parity_in_process_vs_process() {
+    let def = ActivityDef::new("fake/build", "v1");
+    let inputs = json!({ "task": "fix-parity" });
+    let op = OperationId::derive(&exec(), "build");
+    let hash = operation_input_hash(&def, &inputs);
+    let outcome_ref = ArtifactRef::derive("build-output");
+
+    // In-process: KernelEngine + ActivityRegistry + run_activity.
+    let dir_in = fresh();
+    let ledger = SqliteLedger::open(dir_in.join("ledger.sqlite")).expect("open ledger");
+    let mut engine = KernelEngine::open(ledger).expect("open kernel");
+    ExecutionApi::start(&mut engine, &task()).expect("in-process start");
+    engine
+        .apply(
+            &exec(),
+            &KernelCommand::Deliver {
+                operation_id: op.clone(),
+                inputs_hash: hash.clone(),
+            },
+            &registry_announce_inputs(&def, &inputs),
+        )
+        .expect("announce in-process");
+    let mut registry = ActivityRegistry::new();
+    registry
+        .register(Box::new(PresentHandler {
+            def: def.clone(),
+            outcome_ref: outcome_ref.clone(),
+        }))
+        .expect("register handler");
+    let request = OperationRequest {
+        activity: def.clone(),
+        step: "build".to_string(),
+        phase: ExecutionPhase::Build,
+        component_api: "harness".to_string(),
+        inputs: inputs.clone(),
+        now_unix_ms: 3,
+    };
+    let result = run_activity(&mut engine, &mut registry, &exec(), &request).expect("run_activity");
+    assert!(
+        matches!(
+            result,
+            agalma_kernel::OperationResult::Completed {
+                reconciled: true,
+                duplicate: false,
+                ..
+            }
+        ),
+        "in-process reconcile: {result:?}"
+    );
+    let in_receipt = engine.receipt(&op).expect("receipt").expect("recorded");
+    let in_pending = engine.pending_dispatch().expect("pending").len();
+    let in_snapshot = export_normalized(&engine, &dir_in.join("in.json"));
+
+    // Process: ExecutionClient + caller-side dispatch.
+    let dir_proc = fresh();
+    let ledger_socket = dir_proc.join("ledger.sock");
+    let mut ledger_server = spawn_ledger(&dir_proc, &ledger_socket);
+    let mut kernel_server = spawn_kernel(&dir_proc, &ledger_socket);
+    let client = kernel_server.client().expect("connect");
+    let mut client = client.with_effect_dispatch(Box::new(PresentDispatch {
+        key: HandlerKey::new("fake/build", "v1"),
+        outcome_ref: outcome_ref.clone(),
+    }));
+    ExecutionApi::start(&mut client, &task()).expect("process start");
+    apply(
+        &mut client,
+        &exec(),
+        &KernelCommand::Deliver {
+            operation_id: op.clone(),
+            inputs_hash: hash,
+        },
+        &registry_announce_inputs(&def, &inputs),
+    );
+    let step = ExecutionApi::step(&mut client, &exec()).expect("step");
+    assert_eq!(
+        step,
+        agalma_contracts::StepOutcome::Dispatched {
+            operation: op.clone(),
+            reconciled: true,
+            duplicate: false,
+        },
+        "process reconcile outcome"
+    );
+    let proc_receipt = client.receipt(&op).expect("receipt").expect("recorded");
+    let proc_pending = client.pending_dispatch().expect("pending").len();
+    let proc_snapshot = export_normalized(&client, &dir_proc.join("proc.json"));
+
+    // Parity: same receipt, no pending work, identical normalized state.
+    assert_eq!(in_receipt.inputs_hash, proc_receipt.inputs_hash);
+    assert_eq!(in_receipt.kind, proc_receipt.kind);
+    assert_eq!(in_receipt.result, proc_receipt.result);
+    assert_eq!(in_pending, 0);
+    assert_eq!(proc_pending, 0);
+    assert_eq!(in_snapshot, proc_snapshot, "handler-protocol snapshot parity");
+
+    drop(client);
+    let _ = kernel_server.stop();
+    let _ = ledger_server.stop();
+}
+
+/// A pinned pending operation survives a rebind and is reconciled through the
+/// boundary by the caller-side registry (`recover`).
+#[test]
+fn handler_registry_recover_after_rebind() {
+    let run = fresh();
+    let a_dir = run.join("a");
+    let b_dir = run.join("b");
+    std::fs::create_dir_all(&a_dir).unwrap();
+    std::fs::create_dir_all(&b_dir).unwrap();
+    let snapshot_path = run.join("snapshot.json");
+    let def = ActivityDef::new("fake/build", "v1");
+    let inputs = json!({ "task": "fix-parity" });
+    let op = OperationId::derive(&exec(), "build");
+    let hash = operation_input_hash(&def, &inputs);
+
+    // Generation 1: binding A announces a pinned (unconsumed) intent.
+    let a_ledger = a_dir.join("ledger.sock");
+    let mut ledger_a = spawn_ledger(&a_dir, &a_ledger);
+    let mut kernel_a = spawn_kernel(&a_dir, &a_ledger);
+    let a_pid = kernel_a.pid();
+    let mut a = kernel_a.client().expect("client a");
+    ExecutionApi::start(&mut a, &task()).expect("start a");
+    apply(
+        &mut a,
+        &exec(),
+        &KernelCommand::Deliver {
+            operation_id: op.clone(),
+            inputs_hash: hash.clone(),
+        },
+        &registry_announce_inputs(&def, &inputs),
+    );
+    assert_eq!(a.pending_dispatch().expect("pending a").len(), 1);
+    a.export_snapshot_to(&snapshot_path).expect("export");
+    drop(a);
+    assert!(kernel_a.stop().process_group_gone, "binding A drained");
+    assert!(!pid_alive(a_pid), "binding A is gone");
+    let _ = ledger_a.stop();
+
+    // Generation 2: binding B imports the snapshot and recovers through the
+    // caller-side registry — the pinned operation settles there.
+    let b_ledger = b_dir.join("ledger.sock");
+    let mut ledger_b = spawn_ledger(&b_dir, &b_ledger);
+    let mut kernel_b = spawn_kernel(&b_dir, &b_ledger);
+    let client = kernel_b.client().expect("client b");
+    let mut b = client.with_effect_dispatch(Box::new(PresentDispatch {
+        key: HandlerKey::new("fake/build", "v1"),
+        outcome_ref: ArtifactRef::derive("build-output"),
+    }));
+    b.import_snapshot_from(&snapshot_path).expect("import");
+    assert_eq!(b.pending_dispatch().expect("pending b").len(), 1);
+    b.recover().expect("recover through boundary");
+    assert_eq!(
+        b.pending_dispatch().expect("pending after recover").len(),
+        0,
+        "recovered operation settled"
+    );
+    let receipt = b.receipt(&op).expect("receipt").expect("recorded");
+    assert_eq!(receipt.kind, "operation");
+    assert_eq!(receipt.inputs_hash, hash);
+
+    drop(b);
+    let _ = kernel_b.stop();
+    let _ = ledger_b.stop();
 }

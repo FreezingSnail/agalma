@@ -198,7 +198,7 @@ impl ActivityRegistry {
 }
 
 /// A request to run one activity operation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OperationRequest {
     pub activity: ActivityDef,
     /// Operation-id step (`op:<execution>:<step>`).
@@ -249,16 +249,16 @@ pub fn operation_input_hash(activity: &ActivityDef, inputs: &Value) -> String {
 /// Durable metadata for one operation, sourced from the request or a recovered
 /// dispatch intent.
 #[derive(Clone, Debug)]
-struct PendingMeta {
-    execution_id: ExecutionId,
-    operation_id: OperationId,
-    activity: ActivityDef,
-    phase: ExecutionPhase,
-    attempt: u32,
-    inputs: Value,
-    inputs_hash: String,
-    binding: Option<BindingPin>,
-    now_unix_ms: u64,
+pub(crate) struct PendingMeta {
+    pub(crate) execution_id: ExecutionId,
+    pub(crate) operation_id: OperationId,
+    pub(crate) activity: ActivityDef,
+    pub(crate) phase: ExecutionPhase,
+    pub(crate) attempt: u32,
+    pub(crate) inputs: Value,
+    pub(crate) inputs_hash: String,
+    pub(crate) binding: Option<BindingPin>,
+    pub(crate) now_unix_ms: u64,
 }
 
 impl PendingMeta {
@@ -295,7 +295,7 @@ impl PendingMeta {
         })
     }
 
-    fn context<L: LedgerApi>(
+    pub(crate) fn context<L: LedgerApi>(
         &self,
         engine: &KernelEngine<L>,
     ) -> Result<ActivityContext, ContractError> {
@@ -503,7 +503,7 @@ pub fn settle_pending<L: LedgerApi>(
     Ok(results)
 }
 
-fn pending_meta<L: LedgerApi>(
+pub(crate) fn pending_meta<L: LedgerApi>(
     engine: &KernelEngine<L>,
     operation_id: &OperationId,
 ) -> Result<Option<PendingMeta>, ContractError> {
@@ -599,7 +599,7 @@ fn reconcile_pending<L: LedgerApi>(
 }
 
 /// Commit the completion receipt for `meta` and return the recorded result.
-fn complete<L: LedgerApi>(
+pub(crate) fn complete<L: LedgerApi>(
     engine: &mut KernelEngine<L>,
     meta: &PendingMeta,
     outcome: ActivityOutcome,
@@ -622,6 +622,213 @@ fn complete<L: LedgerApi>(
         receipt,
         reconciled,
         duplicate: false,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Handler-registry protocol (B1-F1): caller-side dispatch over the boundary
+// ---------------------------------------------------------------------------
+
+/// Where an operation stands when it is handed to a caller-side handler.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EffectMode {
+    /// A brand-new operation: its dispatch intent is durable; the caller executes.
+    Dispatch,
+    /// A pending (in-flight) operation: the caller probes, then executes if absent.
+    Reconcile,
+}
+
+/// An operation handed to a caller-side handler.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActivityBegin {
+    /// Everything the handler needs (operation id, activity, phase, inputs,
+    /// pinned binding, context clock).
+    pub context: ActivityContext,
+    /// Whether the caller executes straight away or probes first.
+    pub mode: EffectMode,
+}
+
+/// The result of beginning an operation over the boundary.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BeginOutcome {
+    /// The caller must perform this effect, then call [`finish_activity`].
+    Effect(ActivityBegin),
+    /// No effect is needed; this is the settled result.
+    Terminal(OperationResult),
+}
+
+/// The caller's report after performing (or probing) an operation's effect.
+///
+/// Mirrors the wire [`agalma_ipc::EffectReport`] without depending on it, so the
+/// kernel's activity module stays free of the transport types.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EffectReply {
+    /// The reconcile probe found the effect already present.
+    Present(ActivityOutcome),
+    /// The effect was executed now.
+    Executed(ActivityOutcome),
+    /// Ambiguous effect; the execution parks.
+    Ambiguous,
+    /// The handler failed for a known reason.
+    KnownFailure(String),
+    /// The handler's outcome is unknown; the execution parks.
+    UnknownOutcome(String),
+}
+
+/// Begin an activity operation without running the handler: perform the durable
+/// checks and, for a fresh operation, announce its intent.
+///
+/// This is the caller-side-dispatch half of [`run_activity`]: the engine owns
+/// every durable step (duplicate/conflict/park/blocked checks and the announce),
+/// while the nondeterministic effect is deferred to the caller through the
+/// handler-registry protocol. `run_activity` remains the in-process composition
+/// of this and [`finish_activity`] with a local registry.
+pub fn begin_activity<L: LedgerApi>(
+    engine: &mut KernelEngine<L>,
+    execution_id: &ExecutionId,
+    request: &OperationRequest,
+) -> Result<BeginOutcome, ContractError> {
+    let operation_id = OperationId::derive(execution_id, &request.step);
+    let inputs_hash = operation_input_hash(&request.activity, &request.inputs);
+
+    // Duplicate delivery / conflict against the recorded receipt.
+    if let Some(receipt) = engine.receipt(&operation_id)? {
+        if receipt.inputs_hash != inputs_hash {
+            return Ok(BeginOutcome::Terminal(OperationResult::Conflict(Conflict {
+                id: operation_id.to_string(),
+                reason: format!(
+                    "operation reused with different inputs (existing={}, new={inputs_hash})",
+                    receipt.inputs_hash
+                ),
+            })));
+        }
+        return Ok(BeginOutcome::Terminal(OperationResult::Completed {
+            operation_id,
+            receipt,
+            reconciled: false,
+            duplicate: true,
+        }));
+    }
+
+    let state = engine.load(execution_id)?;
+    if state.state == ExecState::Parked {
+        return Ok(BeginOutcome::Terminal(OperationResult::Parked {
+            operation_id,
+            reason: state.parked_reason.clone().unwrap_or_default(),
+        }));
+    }
+    if state.kill_latched {
+        return Ok(BeginOutcome::Terminal(OperationResult::Blocked { operation_id }));
+    }
+    if let Some(record) = state.operations.get(&operation_id) {
+        if record.inputs_hash != inputs_hash {
+            return Ok(BeginOutcome::Terminal(OperationResult::Conflict(Conflict {
+                id: operation_id.to_string(),
+                reason: format!(
+                    "operation reused with different inputs (existing={}, new={inputs_hash})",
+                    record.inputs_hash
+                ),
+            })));
+        }
+    }
+
+    // A pending intent keeps its pinned binding; a new operation pins the
+    // component's current active binding.
+    let binding = match pending_meta(engine, &operation_id)? {
+        Some(meta) => meta.binding,
+        None => active_binding(engine.ledger(), &request.component_api)?,
+    };
+    let meta = PendingMeta {
+        execution_id: execution_id.clone(),
+        operation_id: operation_id.clone(),
+        activity: request.activity.clone(),
+        phase: request.phase,
+        attempt: state.attempt,
+        inputs: request.inputs.clone(),
+        inputs_hash,
+        binding,
+        now_unix_ms: request.now_unix_ms,
+    };
+
+    let pending = state.operations.get(&operation_id).map(|record| record.state)
+        == Some(OperationState::Dispatched);
+    if pending {
+        let context = meta.context(engine)?;
+        return Ok(BeginOutcome::Effect(ActivityBegin {
+            context,
+            mode: EffectMode::Reconcile,
+        }));
+    }
+
+    // Announce (durable) *before* the caller runs the effect: a crash after the
+    // effect but before completion is recovered from the intent.
+    let announce = engine.apply(
+        &meta.execution_id,
+        &meta.command(),
+        &meta.inputs(Probe::Absent),
+    )?;
+    if let Some(conflict) = announce.conflict {
+        return Ok(BeginOutcome::Terminal(OperationResult::Conflict(conflict)));
+    }
+    let context = meta.context(engine)?;
+    Ok(BeginOutcome::Effect(ActivityBegin {
+        context,
+        mode: EffectMode::Dispatch,
+    }))
+}
+
+/// Finish an operation begun by [`begin_activity`], committing the caller's
+/// effect report (or parking on an ambiguous/unknown outcome).
+pub fn finish_activity<L: LedgerApi>(
+    engine: &mut KernelEngine<L>,
+    execution_id: &ExecutionId,
+    operation_id: &OperationId,
+    reply: EffectReply,
+    now_unix_ms: u64,
+) -> Result<OperationResult, ContractError> {
+    let Some(mut meta) = pending_meta(engine, operation_id)? else {
+        return Err(ContractError::KnownFailure(format!(
+            "no pending operation {operation_id} to complete"
+        )));
+    };
+    if &meta.execution_id != execution_id {
+        return Err(ContractError::KnownFailure(format!(
+            "operation {operation_id} does not belong to {execution_id}"
+        )));
+    }
+    meta.now_unix_ms = now_unix_ms;
+    // Idempotent: a duplicate completion returns the recorded receipt.
+    if let Some(receipt) = engine.receipt(operation_id)? {
+        return Ok(OperationResult::Completed {
+            operation_id: operation_id.clone(),
+            receipt,
+            reconciled: false,
+            duplicate: true,
+        });
+    }
+    match reply {
+        EffectReply::Present(outcome) => complete(engine, &meta, outcome, true),
+        EffectReply::Executed(outcome) => complete(engine, &meta, outcome, false),
+        EffectReply::Ambiguous => park_ambiguous(engine, &meta),
+        EffectReply::KnownFailure(message) => Err(ContractError::KnownFailure(message)),
+        EffectReply::UnknownOutcome(message) => Err(ContractError::UnknownOutcome(message)),
+    }
+}
+
+/// Park an execution via the ambiguous-effect path (no probe evidence), so the
+/// durable projection and history stay in agreement.
+fn park_ambiguous<L: LedgerApi>(
+    engine: &mut KernelEngine<L>,
+    meta: &PendingMeta,
+) -> Result<OperationResult, ContractError> {
+    let apply = engine.apply(
+        &meta.execution_id,
+        &meta.command(),
+        &meta.inputs(Probe::Unknown),
+    )?;
+    Ok(OperationResult::Parked {
+        operation_id: meta.operation_id.clone(),
+        reason: apply.state.parked_reason.unwrap_or_default(),
     })
 }
 

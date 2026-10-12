@@ -62,8 +62,21 @@ enum Backend {
 
 /// Connect transport state: the async client and the runtime that drives it.
 struct ConnectBackend {
-    runtime: tokio::runtime::Runtime,
+    /// The runtime driving `client`; `None` after [`Drop`] tears it down.
+    runtime: Option<tokio::runtime::Runtime>,
     client: ConnectClient,
+}
+
+impl Drop for ConnectBackend {
+    fn drop(&mut self) {
+        // The conductor builds and drops harness clients from within its own
+        // Tokio runtime (the async `agalma` binary). A blocking runtime drop is
+        // forbidden in an async context, so shut the runtime down without
+        // blocking; its transport tasks are abandoned with it.
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 /// A [`HarnessApi`] implementation backed by a component server process.
@@ -98,10 +111,13 @@ impl HarnessClient {
                     .enable_all()
                     .build()
                     .map_err(|e| IpcError::unavailable(format!("tokio runtime: {e}")))?;
-                let mut client = runtime.block_on(ConnectClient::connect(socket))?;
-                let describe = runtime.block_on(describe_connect(&mut client))?;
+                let mut client = crate::block_on_nested(&runtime, ConnectClient::connect(socket))?;
+                let describe = crate::block_on_nested(&runtime, describe_connect(&mut client))?;
                 Ok(HarnessClient {
-                    backend: RefCell::new(Backend::Connect(ConnectBackend { runtime, client })),
+                    backend: RefCell::new(Backend::Connect(ConnectBackend {
+                        runtime: Some(runtime),
+                        client,
+                    })),
                     describe,
                 })
             }
@@ -128,9 +144,13 @@ impl HarnessClient {
     pub fn describe_live(&self) -> Result<Describe, IpcError> {
         match &mut *self.backend.borrow_mut() {
             Backend::Framed(client) => describe_framed(client),
-            Backend::Connect(backend) => backend
-                .runtime
-                .block_on(describe_connect(&mut backend.client)),
+            Backend::Connect(backend) => crate::block_on_nested(
+                backend
+                    .runtime
+                    .as_ref()
+                    .expect("runtime present until drop"),
+                describe_connect(&mut backend.client),
+            ),
         }
     }
 
@@ -141,10 +161,14 @@ impl HarnessClient {
     ) -> Result<R, ContractError> {
         match &mut *self.backend.borrow_mut() {
             Backend::Framed(client) => client.call_typed(method, params).map_err(map_ipc_error),
-            Backend::Connect(backend) => backend
-                .runtime
-                .block_on(backend.client.call_typed(method, params))
-                .map_err(map_ipc_error),
+            Backend::Connect(backend) => crate::block_on_nested(
+                backend
+                    .runtime
+                    .as_ref()
+                    .expect("runtime present until drop"),
+                backend.client.call_typed(method, params),
+            )
+            .map_err(map_ipc_error),
         }
     }
 }

@@ -299,6 +299,72 @@ fn canonical_dir(path: &Path) -> Result<PathBuf, ActivityError> {
         .map_err(|e| ActivityError::KnownFailure(format!("resolve {}: {e}", path.display())))
 }
 
+/// Maximum Unix socket path length (`SUN_LEN`) we will address directly. The
+/// platform limit is 104 bytes on macOS; a path must be strictly shorter.
+const SUN_LEN_LIMIT: usize = 104;
+
+/// A harness server socket path for `state_dir` that always fits `SUN_LEN`.
+///
+/// Unix socket `bind`/`connect` paths are capped at `SUN_LEN` (~104 bytes).
+/// `state_dir` can be arbitrarily long (test scratch dirs especially), so the
+/// historical `<state_dir>/harness-*.sock` path could overflow and the server
+/// failed to bind. When a direct path fits we keep it (no behavior change).
+/// When it does not, the socket is addressed through a short symlink alias of
+/// the state dir under a bounded directory: the socket file still lands in the
+/// state dir (so discovery and cleanup are unchanged), but the path stays
+/// within the limit. `InProcess` never binds, so it keeps the direct path.
+fn harness_socket_path(state_dir: &Path, transport: HarnessTransport, name: &str) -> PathBuf {
+    let direct = state_dir.join(name);
+    if transport == HarnessTransport::InProcess || direct.as_os_str().len() < SUN_LEN_LIMIT {
+        return direct;
+    }
+    match bounded_socket_alias(state_dir) {
+        Ok(alias) => alias.join(name),
+        // Fall back to the direct path: the caller reports the bind error.
+        Err(_) => direct,
+    }
+}
+
+/// A short, bounded symlink alias to `state_dir` for socket addressing.
+///
+/// The alias lives at `<temp>/agalma-sock/<hash>` where `hash` is a stable
+/// digest of the state dir, so its length is independent of how long
+/// `state_dir` is and every run gets a distinct bounded base. Binding through
+/// the alias creates the socket in `state_dir`, so the on-disk layout is
+/// unchanged.
+fn bounded_socket_alias(state_dir: &Path) -> std::io::Result<PathBuf> {
+    let root = std::env::temp_dir().join("agalma-sock");
+    std::fs::create_dir_all(&root)?;
+    let alias = root.join(short_hash(&state_dir.to_string_lossy()));
+    match std::fs::symlink_metadata(&alias) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            if std::fs::read_link(&alias)
+                .map(|target| target == state_dir)
+                .unwrap_or(false)
+            {
+                return Ok(alias);
+            }
+            std::fs::remove_file(&alias)?;
+        }
+        Ok(_) => {
+            std::fs::remove_file(&alias)?;
+        }
+        Err(_) => {}
+    }
+    std::os::unix::fs::symlink(state_dir, &alias)?;
+    Ok(alias)
+}
+
+/// FNV-1a 8-hex digest, used for bounded directory names.
+fn short_hash(text: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{:08x}", hash & 0xffff_ffff)
+}
+
 fn contract_err(err: ContractError) -> ActivityError {
     match err {
         ContractError::UnknownOutcome(message) => ActivityError::UnknownOutcome(message),
@@ -579,12 +645,14 @@ impl BuildActivity {
         });
 
         let sandbox_socket = self.sandbox.ensure().map_err(contract_err)?;
-        let harness_socket = self
-            .deps
-            .state_dir
-            .join(format!("harness-build-{}.sock", ctx.attempt));
+        let transport = HarnessTransport::from_env();
+        let harness_socket = harness_socket_path(
+            &self.deps.state_dir,
+            transport,
+            &format!("harness-build-{}.sock", ctx.attempt),
+        );
         let mut harness = harness_process::open_opencode_harness(OpenCodeHarnessInit {
-            transport: HarnessTransport::from_env(),
+            transport,
             config,
             root: root.clone(),
             model: self.deps.model.clone(),
@@ -961,13 +1029,15 @@ impl BuildActivity {
         let scenario_dir =
             root.join("reference")
                 .join(format!("{}-attempt-{}", kind.as_str(), ctx.attempt));
-        let socket = self
-            .deps
-            .state_dir
-            .join(format!("harness-ref-{}.sock", ctx.attempt));
+        let transport = HarnessTransport::from_env();
+        let socket = harness_socket_path(
+            &self.deps.state_dir,
+            transport,
+            &format!("harness-ref-{}.sock", ctx.attempt),
+        );
         let mut harness = harness_process::open_reference_harness(
             kind,
-            HarnessTransport::from_env(),
+            transport,
             scenario_dir,
             socket,
             1,
@@ -1544,12 +1614,14 @@ impl VerifyActivity {
         });
 
         let sandbox_socket = self.sandbox.ensure().map_err(contract_err)?;
-        let harness_socket = self
-            .deps
-            .state_dir
-            .join(format!("harness-verify-{}.sock", ctx.attempt));
+        let transport = HarnessTransport::from_env();
+        let harness_socket = harness_socket_path(
+            &self.deps.state_dir,
+            transport,
+            &format!("harness-verify-{}.sock", ctx.attempt),
+        );
         let mut harness = harness_process::open_opencode_harness(OpenCodeHarnessInit {
-            transport: HarnessTransport::from_env(),
+            transport,
             config,
             root: root.to_path_buf(),
             model: self.deps.verifier_model.clone(),
@@ -2922,6 +2994,49 @@ mod tests {
         let dir = ScratchDir::new(&format!("phases-{name}"));
         dir.child("artifacts");
         dir
+    }
+
+    /// A long state dir must not push a process-transport harness socket past
+    /// `SUN_LEN`; the bounded alias keeps the path short while the socket still
+    /// resolves into the state dir.
+    #[test]
+    fn process_harness_socket_path_is_bounded_for_long_state_dirs() {
+        let dir = ScratchDir::new("phases-bounded-sock");
+        // A state dir that is, on its own, well past the socket-path limit.
+        let long = dir.join("s").join("t".repeat(180));
+        std::fs::create_dir_all(&long).expect("long state dir");
+
+        for name in [
+            "harness-ref-1.sock",
+            "harness-build-2.sock",
+            "harness-verify-3.sock",
+        ] {
+            let path = harness_socket_path(&long, HarnessTransport::Process, name);
+            assert!(
+                path.as_os_str().len() < SUN_LEN_LIMIT,
+                "{name}: {} bytes ({})",
+                path.as_os_str().len(),
+                path.display()
+            );
+            assert_eq!(path.file_name().unwrap().to_string_lossy(), name);
+            // The real socket file still lands under the state dir.
+            assert_eq!(
+                std::fs::canonicalize(path.parent().unwrap()).unwrap(),
+                std::fs::canonicalize(&long).unwrap(),
+                "alias resolves into the state dir"
+            );
+        }
+
+        // In-process never binds: the direct path is kept.
+        let direct = harness_socket_path(&long, HarnessTransport::InProcess, "harness-ref-1.sock");
+        assert_eq!(direct, long.join("harness-ref-1.sock"));
+
+        // A short state dir is untouched (no alias, no behavior change).
+        let short = Path::new("/agalma/state");
+        assert_eq!(
+            harness_socket_path(short, HarnessTransport::Process, "harness-ref-1.sock"),
+            short.join("harness-ref-1.sock")
+        );
     }
 
     #[test]

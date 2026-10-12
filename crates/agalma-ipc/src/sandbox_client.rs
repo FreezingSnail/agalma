@@ -61,7 +61,7 @@ impl SandboxClient {
                     .enable_all()
                     .build()
                     .map_err(|e| IpcError::unavailable(format!("tokio runtime: {e}")))?;
-                let client = runtime.block_on(ConnectClient::connect(socket))?;
+                let client = crate::block_on_nested(&runtime, ConnectClient::connect(socket))?;
                 Ok(SandboxClient {
                     backend: RefCell::new(Backend::Connect(ConnectBackend { runtime, client })),
                 })
@@ -84,10 +84,14 @@ impl SandboxClient {
     ) -> Result<R, ContractError> {
         match &mut *self.backend.borrow_mut() {
             Backend::Framed(client) => client.call_typed(method, params).map_err(map_ipc_error),
-            Backend::Connect(backend) => backend
-                .runtime
-                .block_on(backend.client.call_typed(method, params))
-                .map_err(map_ipc_error),
+            // The OpenCode harness server both *serves* over Connect and drives
+            // this outbound sandbox client from inside its async handler, so the
+            // per-call block must tolerate an enclosing runtime (`agalma-3ej`).
+            Backend::Connect(backend) => crate::block_on_nested(
+                &backend.runtime,
+                backend.client.call_typed(method, params),
+            )
+            .map_err(map_ipc_error),
         }
     }
 }

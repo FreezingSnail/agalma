@@ -9,7 +9,7 @@
 //! id/generation (an in-flight operation is never rebound).
 //!
 //! Transport selection is [`HarnessTransport`] (`AGALMA_HARNESS_TRANSPORT`):
-//! `in-process` (default) or `process`. The process wire is selected by
+//! `process` (default) or `in-process`. The process wire is selected by
 //! [`harness_wire`] (`AGALMA_IPC_WIRE`): `connect` (default, IPCX.2) or
 //! `framed`, so a parity run can compare both against the same scenario. The
 //! build/verify phase logic is unchanged (D5); the transport is exercised
@@ -50,11 +50,18 @@ pub enum HarnessTransport {
 }
 
 impl HarnessTransport {
-    /// Read the transport from [`TRANSPORT_ENV`]; unknown/empty is `InProcess`.
+    /// Read the transport from [`TRANSPORT_ENV`]; default `Process`, with an
+    /// explicit `in-process` override (unknown/empty keeps the default).
+    ///
+    /// The default flipped to `Process` once the live OpenCode process-transport
+    /// route was proven (B1-F3), the `SUN_LEN` reference/opencode socket-path
+    /// bound fixed (`agalma-acs`), and the harness server's outbound sandbox
+    /// client aligned onto the env-selected Connect wire (`agalma-3ej`).
+    /// `in-process` remains the opt-out for tests and direct in-process embedding.
     pub fn from_env() -> Self {
         match std::env::var(TRANSPORT_ENV).ok().as_deref() {
-            Some("process") => HarnessTransport::Process,
-            _ => HarnessTransport::InProcess,
+            Some("in-process") => HarnessTransport::InProcess,
+            _ => HarnessTransport::Process,
         }
     }
 
@@ -372,7 +379,7 @@ pub fn reference_profile(kind: HarnessKind) -> ReferenceProfile {
 /// Inputs for [`open_opencode_harness`]: the attempt-scoped OpenCode config plus
 /// the transport and boundary socket paths.
 pub struct OpenCodeHarnessInit {
-    /// Transport selected by `AGALMA_HARNESS_TRANSPORT` (default in-process).
+    /// Transport selected by `AGALMA_HARNESS_TRANSPORT` (default process).
     pub transport: HarnessTransport,
     /// Attempt-scoped OpenCode harness config (in-process branch).
     pub config: OpenCodeHarnessConfig,
@@ -392,9 +399,9 @@ pub struct OpenCodeHarnessInit {
 /// boundary. The phase path stays unchanged because both variants expose the
 /// same `HarnessApi` surface plus [`LiveHarness::attempt_pid`].
 pub enum LiveHarness {
-    /// Direct in-process trait calls (default; unchanged phase logic).
+    /// Direct in-process trait calls (`AGALMA_HARNESS_TRANSPORT=in-process`).
     InProcess(OpenCodeHarness),
-    /// Supervised OpenCode component server over the framed transport.
+    /// Supervised OpenCode component server over the framed transport (default).
     Process(ProcessBinding),
 }
 
@@ -769,10 +776,13 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn transport_from_env_defaults_to_in_process() {
-        // Absent -> InProcess; explicit `process` -> Process.
+    fn transport_from_env_defaults_to_process() {
+        // Absent -> Process (post-B1-F3 default); explicit `in-process` overrides.
         std::env::remove_var(TRANSPORT_ENV);
+        assert_eq!(HarnessTransport::from_env(), HarnessTransport::Process);
+        std::env::set_var(TRANSPORT_ENV, "in-process");
         assert_eq!(HarnessTransport::from_env(), HarnessTransport::InProcess);
+        std::env::remove_var(TRANSPORT_ENV);
     }
 
     #[test]

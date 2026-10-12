@@ -41,7 +41,7 @@ use agalma_harness_opencode::{
 };
 use agalma_ipc::Wire;
 use agalma_ipc::{register_sandbox, SandboxClient, Server, ServerInfo};
-use agalma_testkit::ScratchDir;
+use agalma_testkit::{retry_connect, ScratchDir};
 use serde_json::Value;
 
 const MODEL: &str = "role-default";
@@ -125,9 +125,14 @@ struct Posted {
 
 static SESSION_SEQ: AtomicU32 = AtomicU32::new(0);
 
-/// Start the mock sandbox component server on `socket`; it returns the shared
-/// record log the mock vendor appends posted bodies to.
-fn start_mock_sandbox(socket: &Path) -> Arc<Mutex<Vec<Posted>>> {
+/// Start the mock sandbox component server on `socket` over `wire`; it returns
+/// the shared record log the mock vendor appends posted bodies to.
+///
+/// The wire must match the client the harness under test uses: the in-process
+/// harness connects with the legacy `SandboxClient::connect` (framed), while the
+/// supervised OpenCode server env-selects the wire (`Connect` by default since
+/// `agalma-3ej`) for its outbound sandbox client.
+fn start_mock_sandbox(socket: &Path, wire: Wire) -> Arc<Mutex<Vec<Posted>>> {
     let records: Arc<Mutex<Vec<Posted>>> = Arc::new(Mutex::new(Vec::new()));
     let mut server = Server::new(ServerInfo {
         api: "SandboxApi".to_string(),
@@ -142,10 +147,14 @@ fn start_mock_sandbox(socket: &Path) -> Arc<Mutex<Vec<Posted>>> {
             records: Arc::clone(&records),
         },
     );
-    let listener = server.bind(socket).expect("bind mock sandbox");
+    let serve_socket = socket.to_path_buf();
     std::thread::spawn(move || {
-        let _ = server.accept_loop(listener);
+        let _ = agalma_ipc::serve_wire(server, &serve_socket, wire);
     });
+    // Wait until the server accepts on `wire` before returning, so the caller's
+    // immediate connect cannot race the asynchronous bind.
+    retry_connect(|| SandboxClient::connect_wire(socket, wire).map(|_| ()))
+        .expect("mock sandbox ready");
     records
 }
 
@@ -423,7 +432,7 @@ fn harness_config(dir: &Path, attempt: &Path) -> OpenCodeHarnessConfig {
 fn in_process_vendor_payload_identifies_epic_and_repo() {
     let (_guard, dir) = fresh("in-process");
     let sandbox_socket = dir.join("sandbox.sock");
-    let records = start_mock_sandbox(&sandbox_socket);
+    let records = start_mock_sandbox(&sandbox_socket, Wire::Framed);
 
     let sandbox = SandboxClient::connect(&sandbox_socket).expect("connect mock sandbox");
     let config = harness_config(&dir, &dir.join("attempt"));
@@ -450,7 +459,7 @@ fn in_process_vendor_payload_identifies_epic_and_repo() {
 fn process_vendor_payload_identifies_epic_and_repo() {
     let (_guard, dir) = fresh("process");
     let sandbox_socket = dir.join("sandbox.sock");
-    let records = start_mock_sandbox(&sandbox_socket);
+    let records = start_mock_sandbox(&sandbox_socket, Wire::Connect);
 
     let harness_socket = dir.join("harness.sock");
     let harness_root = dir.join("harness-root");

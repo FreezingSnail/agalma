@@ -166,3 +166,88 @@ a bounded per-run directory, then flip `HarnessTransport::from_env`'s default to
 
 No commit/push was performed in the live repo; all bd, merge, and tag activity
 happened in the clone.
+
+## 5. agalma-ud1 — default flip to `process` + live Connect-wire smoke (GREEN)
+
+Date 2026-10-12, base HEAD `69db198` (agalma-3ej; on top of agalma-acs). Full
+detail: `target/worker-output/agalma-ud1.md`.
+
+The B1-F3 default flip is **applied and proven live** on the Connect wire. Both
+prior blockers are cleared: agalma-acs bounded the harness socket paths under
+`SUN_LEN`, and agalma-3ej aligned the harness server's outbound sandbox client
+onto the env-selected Connect wire.
+
+### 5.1 Result
+
+The conductor ran against a scratch clone with **default transport** (no
+`AGALMA_HARNESS_TRANSPORT`) and **default wire** (no `AGALMA_IPC_WIRE`),
+drove the OpenCode harness across the process boundary, and **merged on `main`
+with real cash cost**:
+
+| Field | Value |
+|---|---|
+| Scratch clone | `target/test-runs/ud1/run-2/target` (`git clone --no-hardlinks`, `69db198`) |
+| bd store | isolated `.beads` (`bd init --prefix ud1`); live store never written |
+| Seed task | `ud1-7re` (docs; `directive/v0`; budget $2.00; max_attempts 2) |
+| Harness transport | `process` (**default — env unset**) |
+| Wire | `connect` (**default — `AGALMA_IPC_WIRE` unset**) |
+| Model / route | `opencode-go/deepseek-v4.1-flash` / `builder:feature` |
+| Execution | `exec:ud1-7re:1` |
+| Attempts | 2 (1 idle stall on attempt 1, attempt 2 green) |
+| Verdict | **green / done** (bd `closed`, `close_reason = done: green`) |
+| Acceptance | 2/2 exit 0 (marker grep + scope guard) |
+| Tokens | 33 030 in / 3 371 out |
+| `cash_usd` | **0.011532468** (`quota_usd` 0.0069771) |
+| Wall | 669.1 s |
+| Candidate = result | `669dccd` = `main`, tag `m1/exec-ud1-7re-1` |
+| Files touched | `docs/ud1-smoke.md` (added) |
+
+### 5.2 Command
+
+```text
+AGALMA_ALLOW_PAID=1 AGALMA_PROXY_LOG=1 AGALMA_IDLE_TIMEOUT_SECS=420 \
+  cargo run --offline -p agalma-conductor -- work \
+    --repo …/ud1/run-2/target --state-dir ../state \
+    --model opencode-go/deepseek-v4.1-flash \
+    --harness opencode --max-tasks 1 --once
+```
+
+Process-boundary evidence: `state/harness-build-1.sock` and
+`…-2.sock` (created only by the process branch), `state/sandbox.sock`, and the
+paid proxy path (`provider-proxy: allow POST opencode.ai:443` × many turns).
+
+### 5.3 Flip + follow-on fixes
+
+The flip is a single site (`HarnessTransport::from_env`: default `Process`,
+explicit `in-process` override preserved; doc comments and the unit test
+updated).
+
+Completing the flip's production path also required two fixes that agalma-3ej
+left out (both exercised by the live smoke):
+
+1. `crates/agalma-ipc/src/sandbox_client.rs` — the Connect backend called a raw
+   `Runtime::block_on` per request. The harness server both *serves* over
+   Connect and drives the sandbox client from inside its async handler, so the
+   call panicked with "Cannot start a runtime from within a runtime" (the live
+   run failed `h2 send failed: http2 error`). Routed through the existing
+   `block_on_nested` helper the harness/ledger/execution clients already use.
+2. `crates/agalma-conductor/tests/designer_payload.rs` — the process-transport
+   mock sandbox served legacy framed JSON; with 3ej's Connect client the mock
+   now serves the matching wire per test (`serve_wire` + a readiness probe).
+
+### 5.4 Gate status (default = process)
+
+- `cargo build --offline --workspace` — clean.
+- `cargo test --offline -p agalma-conductor` — **305 passed; 0 failed**
+  (includes `rebind` 5/0 and the process-transport `designer_payload`).
+- `cargo test --offline -p agalma-ipc -p agalma-harness-opencode -p agalma-sandbox`
+  — 165 passed; 0 failed.
+
+### 5.5 Peer boundaries (deferred)
+
+`AGALMA_{LEDGER,WORKSPACE,TASKQUEUE,EXECUTION}_TRANSPORT` remain `in-process`
+default. Deferred to **`agalma-fez`**: their sockets still use the raw unbounded
+`<state_dir>/<name>.sock` shape (only the harness socket was bounded by
+agalma-acs — the always-process sandbox socket is also unbounded), and none has
+a live process smoke. Flip each only after the bounded-socket scheme is
+generalised and a live smoke per boundary proves the production path.

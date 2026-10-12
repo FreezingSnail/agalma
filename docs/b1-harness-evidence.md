@@ -188,6 +188,11 @@ points; only the byte transport under them changed.
   `params_json`; duplicate-id receipt replay; `UnknownOutcome`/contract errors
   in-band; version refusal; unknown-method `UnsupportedCapability`. The Connect
   path reuses `Server::dispatch`, so no envelope code was forked.
+- Process-transport test call sites were adapted to the new
+  `ProcessBinding::spawn(.., wire, ..)` signature with no consumer-logic change:
+  `crates/agalma-conductor/tests/harness_process.rs` (parity/rebind) and
+  `crates/agalma-conductor/tests/designer_payload.rs` (real OpenCode server,
+  `Wire::Connect`).
 - No new dependency. `connectrpc`/`buffa` stay confined to `agalma-ipc`
   (architecture test unchanged and green); no `Cargo.toml`/`Cargo.lock` change.
 

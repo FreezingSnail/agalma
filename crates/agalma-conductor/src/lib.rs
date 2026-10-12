@@ -25,6 +25,7 @@ pub mod reconcile;
 pub mod routing;
 pub mod sandbox_process;
 pub mod session;
+pub mod status;
 pub mod stop;
 pub mod sweep;
 pub mod task;
@@ -436,25 +437,13 @@ pub fn gc_command(args: &GcArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// One-line harness binding label for an execution (latest recorded pin).
-fn binding_label<L: LedgerApi + ?Sized>(
-    ledger: &L,
-    record: &agalma_contracts::ExecutionRecord,
-) -> String {
-    match crate::harness_binding::latest_binding(ledger, &record.execution_id) {
-        Ok(Some(binding)) => format!(
-            "{}@{}",
-            binding.implementation, binding.implementation_version
-        ),
-        _ => "none".to_string(),
-    }
-}
-
 /// `agalma status [--json]`: report ledger and execution status.
 ///
 /// Without `--json`, prints the human-oriented report. With `--json`, emits the
-/// TUI read-model snapshot: a single JSON document carrying the state-dir
-/// presence (`exists`), the kill latch, and one entry per execution.
+/// TUI read-model snapshot ([`crate::status`]): a single JSON document carrying
+/// the state-dir presence (`exists`), the kill latch, the ledger schema version,
+/// the current harness binding, and one entry per execution. Both renderings
+/// come from the one snapshot, so the derivation lives in exactly one place.
 fn status_command(args: &StatusArgs) -> ExitCode {
     let state_dir = match crate::config::resolve_state_dir(args.state_dir.as_deref()) {
         Ok(dir) => dir,
@@ -463,119 +452,42 @@ fn status_command(args: &StatusArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let ledger_path = state_dir.join("ledger.sqlite");
-    let exists = ledger_path.exists();
-    let mut kill_latch = false;
-    let mut executions: Vec<serde_json::Value> = Vec::new();
-    if exists {
-        let ledger = match SqliteLedger::open(&ledger_path) {
-            Ok(ledger) => ledger,
-            Err(err) => {
-                eprintln!(
-                    "agalma: cannot open ledger {}: {err}",
-                    ledger_path.display()
-                );
-                return ExitCode::FAILURE;
-            }
-        };
-        let records = match ledger.executions() {
-            Ok(records) => records,
-            Err(err) => {
-                eprintln!("agalma: cannot read executions: {err}");
-                return ExitCode::FAILURE;
-            }
-        };
-        for record in &records {
-            let parked = ledger.events(&record.execution_id).ok().and_then(|events| {
-                events
-                    .iter()
-                    .rev()
-                    .find(|e| e.kind == "parked")
-                    .and_then(|e| e.payload.get("reason"))
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string)
-            });
-            executions.push(serde_json::json!({
-                "execution_id": record.execution_id.to_string(),
-                "phase": format!("{:?}", record.phase),
-                "state": format!("{:?}", record.state),
-                "attempt": record.attempt,
-                "parked_reason": parked,
-                "harness": binding_label(&ledger, record),
-            }));
+    let snapshot = match crate::status::snapshot(&state_dir) {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            eprintln!("agalma: {err}");
+            return ExitCode::FAILURE;
         }
-        kill_latch = match ledger.kill_latch() {
-            Ok(latched) => latched,
-            Err(err) => {
-                eprintln!("agalma: cannot read kill latch: {err}");
-                false
-            }
-        };
-    }
+    };
     if args.json {
-        let snapshot = serde_json::json!({
-            "state_dir": state_dir.display().to_string(),
-            "exists": exists,
-            "kill_latch": kill_latch,
-            "executions": executions,
-        });
-        match serde_json::to_string(&snapshot) {
-            Ok(text) => println!("{text}"),
-            Err(err) => {
-                eprintln!("agalma: cannot serialize status snapshot: {err}");
-                return ExitCode::FAILURE;
+        return match crate::status::to_json(&snapshot) {
+            Ok(text) => {
+                println!("{text}");
+                ExitCode::SUCCESS
             }
-        }
+            Err(err) => {
+                eprintln!("agalma: {err}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if !snapshot.exists {
+        println!(
+            "agalma: no ledger at {}",
+            state_dir.join("ledger.sqlite").display()
+        );
         return ExitCode::SUCCESS;
     }
-    if !exists {
-        println!("agalma: no ledger at {}", ledger_path.display());
-        return ExitCode::SUCCESS;
-    }
-    let ledger = match SqliteLedger::open(&ledger_path) {
-        Ok(ledger) => ledger,
-        Err(err) => {
-            eprintln!(
-                "agalma: cannot open ledger {}: {err}",
-                ledger_path.display()
-            );
-            return ExitCode::FAILURE;
-        }
-    };
-    let records = match ledger.executions() {
-        Ok(records) => records,
-        Err(err) => {
-            eprintln!("agalma: cannot read executions: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-    if records.is_empty() {
+    if snapshot.executions.is_empty() {
         println!("no executions");
     }
-    for record in &records {
-        let parked = ledger.events(&record.execution_id).ok().and_then(|events| {
-            events
-                .iter()
-                .rev()
-                .find(|e| e.kind == "parked")
-                .and_then(|e| e.payload.get("reason"))
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-        });
+    for row in &snapshot.executions {
         println!(
-            "{} phase={:?} state={:?} attempt={} parked_reason={:?} harness={}",
-            record.execution_id,
-            record.phase,
-            record.state,
-            record.attempt,
-            parked,
-            binding_label(&ledger, record)
+            "{} phase={} state={} attempt={} parked_reason={:?} harness={}",
+            row.execution_id, row.phase, row.state, row.attempt, row.parked_reason, row.harness
         );
     }
-    match ledger.kill_latch() {
-        Ok(latched) => println!("kill_latch={latched}"),
-        Err(err) => eprintln!("agalma: cannot read kill latch: {err}"),
-    }
+    println!("kill_latch={}", snapshot.kill_latch);
     ExitCode::SUCCESS
 }
 

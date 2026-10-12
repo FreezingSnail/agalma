@@ -16,12 +16,14 @@
 //! - **parked / degradation alerts** — a parked execution row, or an execution
 //!   with recorded `provider_health` signals;
 //! - a curated **timeline** of `execution_events` (lifecycle/decision kinds plus
-//!   digest milestones), ordered oldest-first.
+//!   digest milestones) and durable control receipts (`pause`/`resume`/`cancel`,
+//!   `docs/tui-design.md` "Control policy"), ordered oldest-first.
 
 use std::collections::BTreeMap;
 
 use agalma_contracts::{
-    ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState, LedgerApi,
+    ControlReceipt, ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState,
+    LedgerApi,
 };
 use serde::Serialize;
 
@@ -31,6 +33,8 @@ use crate::digest::{cost_from_events, Digest};
 pub const PROVIDER_HEALTH_KIND: &str = "provider_health";
 /// Event kind recording a parked execution.
 pub const PARKED_KIND: &str = "parked";
+/// Timeline kind carrying a durable control receipt (`pause`/`resume`/`cancel`).
+pub const CONTROL_KIND: &str = "control";
 
 /// Derived economics + timeline section of the read model.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -280,6 +284,13 @@ pub fn derive<L: LedgerApi + ?Sized>(
         });
     }
 
+    // Durable control receipts (pause/resume/cancel, applied or denied) join
+    // the curated timeline (`docs/tui-design.md` L101); a ledger read error
+    // degrades to no receipt entries.
+    for receipt in ledger.control_receipts().unwrap_or_default() {
+        timeline.push(control_entry(&receipt));
+    }
+
     // Deterministic oldest-first order: timestamp, then execution, then the
     // per-execution sequence (digest milestones carry sequence 0).
     timeline.sort_by(|a, b| {
@@ -293,6 +304,25 @@ pub fn derive<L: LedgerApi + ?Sized>(
         rows,
         timeline,
         alerts,
+    }
+}
+
+/// Map one durable control receipt to a timeline entry (`pause applied by human`).
+///
+/// Latch actions (pause/resume) carry an empty `target`; cancel receipts carry
+/// the cancelled execution id.
+fn control_entry(receipt: &ControlReceipt) -> TimelineEntry {
+    let outcome = receipt
+        .request
+        .get("outcome")
+        .and_then(|v| v.as_str())
+        .unwrap_or("recorded");
+    TimelineEntry {
+        execution_id: receipt.target.clone(),
+        sequence: 0,
+        kind: CONTROL_KIND.to_string(),
+        summary: format!("{} {} by {}", receipt.action, outcome, receipt.actor),
+        recorded_at_unix_ms: receipt.recorded_at_unix_ms,
     }
 }
 
@@ -588,6 +618,70 @@ mod tests {
         assert_eq!(kinds, vec!["decision", "operation", "claim"]);
         assert!(snapshot.timeline[0].summary.contains("op:build@2@2"));
         assert_eq!(snapshot.timeline[2].summary, "claimed lease 3");
+    }
+
+    #[test]
+    fn control_receipts_appear_in_the_timeline() {
+        let dir = ScratchDir::new("economics-control-receipts");
+        let exec = seed_execution(&dir, "task-a", ExecutionState::Running);
+        append_event(&dir, &exec, "start", json!({}), 100);
+
+        // Pause then resume (latch actions: empty target), each receipted with
+        // an explicit timestamp; both must surface as `control` entries.
+        let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).expect("open ledger");
+        ledger
+            .record_control_receipt(&ControlReceipt {
+                action_id: "pause-1".to_string(),
+                action: "pause".to_string(),
+                target: String::new(),
+                actor: "human".to_string(),
+                request: json!({"outcome": "applied"}),
+                recorded_at_unix_ms: 200,
+            })
+            .expect("record pause receipt");
+        ledger
+            .record_control_receipt(&ControlReceipt {
+                action_id: "resume-1".to_string(),
+                action: "resume".to_string(),
+                target: String::new(),
+                actor: "human".to_string(),
+                request: json!({"outcome": "applied"}),
+                recorded_at_unix_ms: 300,
+            })
+            .expect("record resume receipt");
+
+        let records = ledger.executions().expect("executions");
+        let snapshot = derive(&ledger, &records, &BTreeMap::new());
+
+        let controls: Vec<&TimelineEntry> = snapshot
+            .timeline
+            .iter()
+            .filter(|entry| entry.kind == CONTROL_KIND)
+            .collect();
+        assert_eq!(
+            controls.len(),
+            2,
+            "receipts visible: {:?}",
+            snapshot.timeline
+        );
+        assert_eq!(controls[0].summary, "pause applied by human");
+        assert_eq!(controls[0].recorded_at_unix_ms, 200);
+        assert_eq!(controls[1].summary, "resume applied by human");
+        assert_eq!(controls[1].recorded_at_unix_ms, 300);
+        // Oldest-first across sources: the `start` event, then pause, then resume.
+        let summaries: Vec<&str> = snapshot
+            .timeline
+            .iter()
+            .map(|entry| entry.summary.as_str())
+            .collect();
+        assert_eq!(
+            summaries,
+            vec![
+                "started",
+                "pause applied by human",
+                "resume applied by human"
+            ]
+        );
     }
 
     #[test]

@@ -59,6 +59,27 @@ pub mod proto {
     connectrpc::include_generated!();
 }
 
+/// Drive `future` to completion on `runtime`, tolerating a caller that is
+/// already running inside a Tokio runtime.
+///
+/// The Connect client backends own a dedicated runtime and block on it per call
+/// (the framed client is synchronous). An implementation server that both
+/// *serves* over Connect and talks to a peer over Connect — the kernel server
+/// hosts its `LedgerClient` this way (IPCX.7) — invokes that blocking call from
+/// inside its own async handler. A raw [`Runtime::block_on`] would panic
+/// ("Cannot start a runtime from within a runtime"); [`tokio::task::block_in_place`]
+/// steps the current worker aside so the peer runtime's reactor can progress.
+pub(crate) fn block_on_nested<F>(runtime: &tokio::runtime::Runtime, future: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tokio::task::block_in_place(|| runtime.block_on(future))
+    } else {
+        runtime.block_on(future)
+    }
+}
+
 pub use client::Client;
 pub use command::CommandSpec;
 pub use connect::{serve_wire, ConnectClient, IpcDispatcher, Wire, WIRE_ENV};
@@ -73,7 +94,7 @@ pub use execution_handler::{
     EffectContext, EffectDispatch, EffectMode, EffectProbe, EffectReport, HandlerError, HandlerKey,
     StepBegin,
 };
-pub use execution_server::{register_execution, EXECUTION_METHODS};
+pub use execution_server::{register_execution, serve_execution, EXECUTION_METHODS};
 pub use frame::{FrameError, MAX_FRAME};
 pub use harness_client::{AttemptCall, HarnessClient, OperationCall, RunTurnCall, SessionCall};
 pub use harness_server::{

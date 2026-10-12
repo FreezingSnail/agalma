@@ -20,7 +20,7 @@ use std::process::Child;
 use std::time::Duration;
 
 use agalma_contracts::harness::StopEvidence;
-use agalma_ipc::{CommandSpec, ExecutionClient};
+use agalma_ipc::{CommandSpec, ExecutionClient, Wire, WIRE_ENV};
 use agalma_kernel::server::{LEDGER_SOCKET_ENV, SANDBOX_SOCKET_ENV};
 
 use crate::harness_process::{
@@ -64,6 +64,18 @@ pub fn execution_socket(state_dir: &Path) -> PathBuf {
     state_dir.join(EXECUTION_SOCKET_NAME)
 }
 
+/// The wire transport the execution/kernel process boundary uses (IPCX.7).
+///
+/// The kernel boundary migrated to [`Wire::Connect`]; a parity run may set
+/// [`agalma_ipc::WIRE_ENV`] to `framed` to compare the two wires against the
+/// same scenario. The selected wire is exported to the child process (see
+/// [`ExecutionProcess::spawn_with_spec_wire`]) so its server serves the matching
+/// transport, and it is used for the kernel's own `LedgerClient` connection so
+/// the nested kernel→ledger edge speaks the same wire.
+pub fn execution_wire() -> Wire {
+    Wire::from_env(Wire::Connect)
+}
+
 /// Launch spec for the kernel server bound to `socket`, hosted under `state_dir`,
 /// reaching the ledger server at `ledger_socket` and (optionally) the sandbox
 /// server at `sandbox_socket`.
@@ -96,12 +108,13 @@ pub struct ExecutionProcess {
     socket: PathBuf,
     state_dir: PathBuf,
     child: Child,
+    wire: Wire,
     stopped: bool,
 }
 
 impl ExecutionProcess {
-    /// Spawn a kernel server listening on `<state_dir>/execution.sock`; wait for
-    /// `READY`.
+    /// Spawn a kernel server listening on `<state_dir>/execution.sock` over
+    /// [`execution_wire`]; wait for `READY`.
     pub fn spawn(
         state_dir: &Path,
         ledger_socket: &Path,
@@ -111,11 +124,19 @@ impl ExecutionProcess {
         let socket = execution_socket(state_dir);
         let spec = execution_server_spec(&socket, state_dir, ledger_socket, sandbox_socket);
         let program = resolve_server_binary(&spec.program)?;
-        ExecutionProcess::spawn_with_spec(spec, program, socket, state_dir.to_path_buf(), timeout)
+        ExecutionProcess::spawn_with_spec_wire(
+            spec,
+            program,
+            socket,
+            state_dir.to_path_buf(),
+            execution_wire(),
+            timeout,
+        )
     }
 
-    /// Spawn a kernel server from an explicit spec/program (used by tests that
-    /// re-exec the test binary as the server when the real binary is absent).
+    /// Spawn a kernel server from an explicit spec/program over [`execution_wire`]
+    /// (used by tests that re-exec the test binary as the server when the real
+    /// binary is absent).
     pub fn spawn_with_spec(
         spec: CommandSpec,
         program: PathBuf,
@@ -123,11 +144,35 @@ impl ExecutionProcess {
         state_dir: PathBuf,
         timeout: Duration,
     ) -> Result<ExecutionProcess, String> {
+        ExecutionProcess::spawn_with_spec_wire(
+            spec,
+            program,
+            socket,
+            state_dir,
+            execution_wire(),
+            timeout,
+        )
+    }
+
+    /// Spawn a kernel server from an explicit spec/program over `wire`. The
+    /// selected wire is exported to the child in [`WIRE_ENV`], so its server
+    /// serves the matching transport (and connects its ledger client over it).
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_spec_wire(
+        spec: CommandSpec,
+        program: PathBuf,
+        socket: PathBuf,
+        state_dir: PathBuf,
+        wire: Wire,
+        timeout: Duration,
+    ) -> Result<ExecutionProcess, String> {
+        let spec = spec.env(WIRE_ENV, wire.as_str());
         let (guard, _info) = spawn_supervised(&spec, &program, &socket, timeout)?;
         Ok(ExecutionProcess {
             socket,
             state_dir,
             child: guard.into_child(),
+            wire,
             stopped: false,
         })
     }
@@ -147,9 +192,14 @@ impl ExecutionProcess {
         self.child.id()
     }
 
-    /// Connect a fresh execution client to the running server.
+    /// The wire transport this process (and its server) uses.
+    pub fn wire(&self) -> Wire {
+        self.wire
+    }
+
+    /// Connect a fresh execution client to the running server over its wire.
     pub fn client(&self) -> Result<ExecutionClient, String> {
-        ExecutionClient::connect(&self.socket).map_err(|e| e.to_string())
+        ExecutionClient::connect_wire(&self.socket, self.wire).map_err(|e| e.to_string())
     }
 
     /// Stop the server with `SIGTERM`/`SIGKILL` evidence. Idempotent.
@@ -228,5 +278,17 @@ mod tests {
             execution_socket(Path::new("/run/state")),
             PathBuf::from("/run/state/execution.sock")
         );
+    }
+
+    #[test]
+    fn wire_defaults_to_connect_and_env_restores_framed() {
+        // Absent -> Connect (IPCX.7 migration default); `framed` for parity.
+        std::env::remove_var(WIRE_ENV);
+        assert_eq!(execution_wire(), Wire::Connect);
+        std::env::set_var(WIRE_ENV, "framed");
+        assert_eq!(execution_wire(), Wire::Framed);
+        std::env::set_var(WIRE_ENV, "connect");
+        assert_eq!(execution_wire(), Wire::Connect);
+        std::env::remove_var(WIRE_ENV);
     }
 }

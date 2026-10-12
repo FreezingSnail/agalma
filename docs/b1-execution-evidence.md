@@ -302,3 +302,106 @@ docs/b1-execution-evidence.md                 # this section
 
 No contract schema changed; no production conductor path switched. `run_activity`
 and the B1.7 adapters are behavior-preserving (all prior tests green).
+
+## IPCX.7 — execution/kernel boundary on Connect (`agalma-ebg.8`)
+
+Status: green. Design `docs/ipc-connect-design.md` (D1–D7, D7 boundary #6).
+Pattern: `agalma-ebg.4` (sandbox, `dd18375`) / `agalma-ebg.7` (ledger,
+`062a9b4`). The largest boundary now speaks the Connect transport; the frozen
+`ExecutionApi` contract, the envelope semantics, the caller-side effect-dispatch
+protocol (`agalma-5de`/B1-F1), and the snapshot-file transfer are unchanged.
+
+### What changed
+
+The typed `ExecutionApi`/`ExecutionOps` client and the kernel server moved onto
+the per-boundary wire selector (`agalma_ipc::{Wire, WIRE_ENV}`, reused from
+`agalma-ipc::connect`). The execution/kernel process wire defaults to `Connect`;
+`AGALMA_IPC_WIRE=framed` restores framed for parity runs. The kernel server's own
+`LedgerClient` connection uses the same wire, so the nested kernel→ledger edge
+speaks the transport the supervisor selected for this boundary.
+
+| Concern | Where |
+|---|---|
+| `ExecutionClient::connect_wire(socket, wire)` + `Backend::{Framed,Connect}` (framed `connect`/`from_client` retained) | `crates/agalma-ipc/src/execution_client.rs` |
+| `serve_execution(server, socket, wire)` (`serve_wire` alias) | `crates/agalma-ipc/src/execution_server.rs` |
+| `block_on_nested` — nested-safe `block_on` for a Connect client invoked from inside an async server handler | `crates/agalma-ipc/src/lib.rs` |
+| `LedgerClient::call` uses `block_on_nested` (kernel server hosts it inside its Connect handler) | `crates/agalma-ipc/src/ledger_client.rs` |
+| `serve` env-selects wire (Connect default); `serve_wire`; ledger/sandbox clients on the same wire | `crates/agalma-kernel/src/server.rs` |
+| `execution_wire`, `ExecutionProcess::wire`, `spawn_with_spec_wire`, child `WIRE_ENV` export, matching client | `crates/agalma-conductor/src/execution_process.rs` |
+| Wire parity + rebind evidence over both wires | `crates/agalma-conductor/tests/execution_process.rs` |
+| Execution Connect conformance (new) | `crates/agalma-ipc/tests/execution_connect.rs` |
+
+### New interfaces
+
+- `agalma_ipc`: `ExecutionClient::connect_wire`; `execution_server::serve_execution`.
+- `agalma_kernel::server`: `serve_wire`; `serve` env-selects wire (Connect
+  default) and connects its ledger/sandbox clients over it.
+- `agalma_conductor::execution_process`: `execution_wire`, `ExecutionProcess::wire`,
+  `ExecutionProcess::spawn_with_spec_wire`.
+
+### Nesting fix (scope note)
+
+The kernel server is the first component that both *serves* over Connect and
+talks to a peer over Connect: its `LedgerClient` is called synchronously from
+inside the async Connect handler. The framed client is synchronous, so this was
+latent; on Connect the client's blocking call (`Runtime::block_on`) would panic
+("cannot start a runtime from within a runtime"). `block_on_nested` steps the
+worker aside with `tokio::task::block_in_place` so the peer runtime's reactor
+progresses. This is a one-file `ledger_client` change (the boundary the kernel
+hosts, not a schema/behaviour change); the same latent hazard is fixed
+defensively in the execution client. The other Connect clients are not nested
+today and were left untouched.
+
+### Results (IPCX.7)
+
+| Command | Observed |
+|---|---|
+| `cargo build --offline --workspace` | exit 0, clean |
+| `cargo test --offline -p agalma-ipc -p agalma-execution -p agalma-kernel` | exit 0, 0 failures (ipc 49 + 14 + 9 + 3 new + 4 + 3 + 2 + 2 + 2; execution 11; kernel 77) |
+| `cargo test --offline -p agalma-conductor --test execution_process` | 10 passed, 0 failed |
+| `cargo test --offline -p agalma-conductor --test architecture` | 6 passed, 0 failed |
+
+New/changed evidence tests:
+
+- `execution_api_over_connect_matches_framed` (new, `execution_connect`): a
+  deterministic stub kernel over a `register_execution` server; the full typed
+  surface — `start`/`status`/`cancel`, lease, `receipt`/`pending_dispatch`, and
+  the caller-side handler-registry protocol (`begin_pending_step`/`complete_step`
+  driving `step`, plus `recover`) — produces an identical transcript framed vs
+  Connect.
+- `execution_methods_include_handler_registry_ops`: `EXECUTION_METHODS` stays 21
+  incl. `begin_step`/`begin_pending_step`/`complete_step`.
+- `execution_connect_missing_socket_is_unavailable`.
+- `shadow_parity_in_process_vs_process`: in-process vs framed vs Connect
+  bindings produce an identical normalized engine-op transcript (lease → start →
+  announce/dispatch → complete → timer → directive → cancel).
+- `handler_registry_step_parity_in_process_vs_process`: the in-process
+  `run_activity` reconcile outcome is reproduced over **both** wires (framed and
+  Connect) by `ExecutionClient` + the caller `EffectDispatch` — same receipt,
+  zero pending work, identical normalized snapshot.
+- `handler_registry_recover_after_rebind`: a pinned pending operation exported
+  from binding A and imported into binding B is reconciled by `recover()` over
+  **both** wires.
+- `execution_client_duplicate_id_replay_and_connection_loss` stays framed
+  explicitly (raw `Client`/`UnixStream` conformance).
+- `execution_process::tests::wire_defaults_to_connect_and_env_restores_framed`.
+
+### Files (IPCX.7 delta)
+
+```
+crates/agalma-ipc/src/execution_client.rs     # connect_wire + Backend; nested-safe block_on
+crates/agalma-ipc/src/execution_server.rs     # serve_execution
+crates/agalma-ipc/src/ledger_client.rs        # nested-safe block_on
+crates/agalma-ipc/src/lib.rs                  # block_on_nested + re-export
+crates/agalma-ipc/tests/execution_connect.rs  # new
+crates/agalma-kernel/src/server.rs            # serve_wire; serve env-selects wire
+crates/agalma-conductor/src/execution_process.rs    # execution_wire + wire-aware spawn
+crates/agalma-conductor/tests/execution_process.rs   # both-wire parity + rebind
+docs/b1-execution-evidence.md                 # this section
+```
+
+No new dependency. `connectrpc`/`buffa` stay confined to `agalma-ipc`
+(architecture test green). No `Cargo.toml`/`Cargo.lock` change; builds `--offline`.
+`crates/agalma-contracts/**` unchanged; no contract schema changed. The
+`agalma-5de` handler-registry resolution (caller-side effect dispatch) remains
+faithful over both wires.

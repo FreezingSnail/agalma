@@ -248,10 +248,10 @@ impl LedgerClient {
     ) -> Result<R, ContractError> {
         match &mut *self.backend.borrow_mut() {
             Backend::Framed(client) => client.call_typed(method, params).map_err(map_ipc_error),
-            Backend::Connect(backend) => backend
-                .runtime
-                .block_on(backend.client.call_typed(method, params))
-                .map_err(map_ipc_error),
+            Backend::Connect(backend) => {
+                crate::block_on_nested(&backend.runtime, backend.client.call_typed(method, params))
+                    .map_err(map_ipc_error)
+            }
         }
     }
 

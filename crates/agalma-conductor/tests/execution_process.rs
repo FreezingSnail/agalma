@@ -40,7 +40,7 @@ use agalma_contracts::{
 };
 use agalma_ipc::{
     Client, CommandSpec, EffectContext, EffectDispatch, EffectProbe as IpcProbe, ExecutionClient,
-    ExecutionOps, HandlerError, HandlerKey, IpcError,
+    ExecutionOps, HandlerError, HandlerKey, IpcError, Wire,
 };
 use agalma_kernel::{
     operation_input_hash, run_activity, ActivityContext, ActivityDef, ActivityError,
@@ -53,7 +53,7 @@ use agalma_testkit::ScratchDir;
 use serde_json::json;
 
 use agalma_conductor::execution_process::{
-    execution_server_spec, execution_socket, ExecutionProcess, ExecutionTransport,
+    execution_server_spec, execution_socket, execution_wire, ExecutionProcess, ExecutionTransport,
 };
 use agalma_conductor::harness_process::resolve_server_binary;
 use agalma_conductor::ledger_process::{ledger_server_spec, LedgerProcess};
@@ -138,13 +138,14 @@ fn ledger_spec(socket: &Path, state_dir: &Path) -> (CommandSpec, PathBuf) {
     }
 }
 
-fn spawn_ledger(state_dir: &Path, socket: &Path) -> LedgerProcess {
+fn spawn_ledger_wire(state_dir: &Path, socket: &Path, wire: Wire) -> LedgerProcess {
     let (spec, program) = ledger_spec(socket, state_dir);
-    LedgerProcess::spawn_with_spec(
+    LedgerProcess::spawn_with_spec_wire(
         spec,
         program,
         socket.to_path_buf(),
         state_dir.to_path_buf(),
+        wire,
         READY_TIMEOUT,
     )
     .unwrap_or_else(|e| panic!("spawn ledger server: {e}"))
@@ -183,13 +184,18 @@ fn kernel_spec(socket: &Path, state_dir: &Path, ledger_socket: &Path) -> (Comman
 }
 
 fn spawn_kernel(state_dir: &Path, ledger_socket: &Path) -> ExecutionProcess {
+    spawn_kernel_wire(state_dir, ledger_socket, execution_wire())
+}
+
+fn spawn_kernel_wire(state_dir: &Path, ledger_socket: &Path, wire: Wire) -> ExecutionProcess {
     let socket = execution_socket(state_dir);
     let (spec, program) = kernel_spec(&socket, state_dir, ledger_socket);
-    ExecutionProcess::spawn_with_spec(
+    ExecutionProcess::spawn_with_spec_wire(
         spec,
         program,
         socket,
         state_dir.to_path_buf(),
+        wire,
         READY_TIMEOUT,
     )
     .unwrap_or_else(|e| panic!("spawn kernel server: {e}"))
@@ -421,9 +427,13 @@ fn run_scenario(ops: &mut dyn ExecutionOps, snapshot_path: &Path) -> Transcript 
 }
 
 // ===========================================================================
-// Case a — shadow parity: in-process vs process binding
+// Case a — shadow parity: in-process vs framed vs Connect process binding
 // ===========================================================================
 
+/// The kernel boundary over both process wires (IPCX.7): the same engine-op
+/// scenario produces an identical normalized transcript in-process, over the
+/// framed process wire, and over the Connect process wire. This is the
+/// dual-binding parity proof for the migrated boundary.
 #[test]
 fn shadow_parity_in_process_vs_process() {
     // In-process binding: KernelEngine<SqliteLedger>.
@@ -433,16 +443,28 @@ fn shadow_parity_in_process_vs_process() {
     let in_snapshot = dir_in.join("in-snapshot.json");
     let in_process = run_scenario(&mut inproc, &in_snapshot);
 
-    // Process binding: ExecutionClient → KernelEngine<LedgerClient> → ledger server.
-    let dir_proc = fresh();
-    let ledger_socket = dir_proc.join("ledger.sock");
-    let mut ledger_server = spawn_ledger(&dir_proc, &ledger_socket);
-    let mut kernel_server = spawn_kernel(&dir_proc, &ledger_socket);
-    let mut client = kernel_server.client().expect("connect execution client");
-    let proc_snapshot = dir_proc.join("proc-snapshot.json");
-    let via_process = run_scenario(&mut client, &proc_snapshot);
+    // Process binding over the framed wire.
+    let dir_framed = fresh();
+    let framed_ledger = dir_framed.join("ledger.sock");
+    let mut ledger_framed = spawn_ledger_wire(&dir_framed, &framed_ledger, Wire::Framed);
+    let mut kernel_framed = spawn_kernel_wire(&dir_framed, &framed_ledger, Wire::Framed);
+    assert_eq!(kernel_framed.wire(), Wire::Framed);
+    let mut framed_client = kernel_framed.client().expect("connect framed client");
+    let framed_snapshot = dir_framed.join("framed-snapshot.json");
+    let via_framed = run_scenario(&mut framed_client, &framed_snapshot);
 
-    assert_eq!(in_process, via_process, "kernel transcript parity");
+    // Process binding over the Connect wire.
+    let dir_connect = fresh();
+    let connect_ledger = dir_connect.join("ledger.sock");
+    let mut ledger_connect = spawn_ledger_wire(&dir_connect, &connect_ledger, Wire::Connect);
+    let mut kernel_connect = spawn_kernel_wire(&dir_connect, &connect_ledger, Wire::Connect);
+    assert_eq!(kernel_connect.wire(), Wire::Connect);
+    let mut connect_client = kernel_connect.client().expect("connect connect client");
+    let connect_snapshot = dir_connect.join("connect-snapshot.json");
+    let via_connect = run_scenario(&mut connect_client, &connect_snapshot);
+
+    assert_eq!(in_process, via_framed, "framed kernel transcript parity");
+    assert_eq!(in_process, via_connect, "connect kernel transcript parity");
 
     // Spot-check the scenario itself.
     assert_eq!(in_process.lease, 1, "first claim cycle");
@@ -472,9 +494,12 @@ fn shadow_parity_in_process_vs_process() {
         "Cancelled coarsens to Failed"
     );
 
-    drop(client);
-    let _ = kernel_server.stop();
-    let _ = ledger_server.stop();
+    drop(framed_client);
+    let _ = kernel_framed.stop();
+    let _ = ledger_framed.stop();
+    drop(connect_client);
+    let _ = kernel_connect.stop();
+    let _ = ledger_connect.stop();
 }
 
 /// The transport selector used by a caller defaults to in-process and maps
@@ -504,7 +529,7 @@ fn rebind_preserves_in_flight_pinned_operation() {
 
     // Generation 1: binding A holds a pinned (unconsumed) dispatch intent.
     let a_ledger = a_dir.join("ledger.sock");
-    let mut ledger_a = spawn_ledger(&a_dir, &a_ledger);
+    let mut ledger_a = spawn_ledger_wire(&a_dir, &a_ledger, execution_wire());
     let mut kernel_a = spawn_kernel(&a_dir, &a_ledger);
     let a_pid = kernel_a.pid();
     let mut a = kernel_a.client().expect("client a");
@@ -551,7 +576,7 @@ fn rebind_preserves_in_flight_pinned_operation() {
 
     // Generation 2: a fresh process binding imports the snapshot.
     let b_ledger = b_dir.join("ledger.sock");
-    let mut ledger_b = spawn_ledger(&b_dir, &b_ledger);
+    let mut ledger_b = spawn_ledger_wire(&b_dir, &b_ledger, execution_wire());
     let mut kernel_b = spawn_kernel(&b_dir, &b_ledger);
     let mut b = kernel_b.client().expect("client b");
     b.import_snapshot_from(&snapshot_path)
@@ -609,7 +634,7 @@ fn rollback_keeps_prior_binding_and_state() {
 
     // Prior active binding A with committed durable state.
     let a_ledger = a_dir.join("ledger.sock");
-    let mut ledger_a = spawn_ledger(&a_dir, &a_ledger);
+    let mut ledger_a = spawn_ledger_wire(&a_dir, &a_ledger, execution_wire());
     let mut kernel_a = spawn_kernel(&a_dir, &a_ledger);
     let mut a = kernel_a.client().expect("client a");
     let lease = a.begin_lease(&task()).expect("begin lease");
@@ -642,7 +667,7 @@ fn rollback_keeps_prior_binding_and_state() {
 
     // Candidate binding B is staged on its own state dir, then rolled back.
     let b_ledger = b_dir.join("ledger.sock");
-    let mut ledger_b = spawn_ledger(&b_dir, &b_ledger);
+    let mut ledger_b = spawn_ledger_wire(&b_dir, &b_ledger, execution_wire());
     let mut kernel_b = spawn_kernel(&b_dir, &b_ledger);
     let b_pid = kernel_b.pid();
     let stopped = kernel_b.stop();
@@ -691,8 +716,10 @@ fn rollback_keeps_prior_binding_and_state() {
 fn execution_client_duplicate_id_replay_and_connection_loss() {
     let dir = fresh();
     let ledger_socket = dir.join("ledger.sock");
-    let mut ledger_server = spawn_ledger(&dir, &ledger_socket);
-    let mut kernel_server = spawn_kernel(&dir, &ledger_socket);
+    let mut ledger_server = spawn_ledger_wire(&dir, &ledger_socket, Wire::Framed);
+    // Raw framed `Client` conformance: the kernel server must serve the framed
+    // wire explicitly.
+    let mut kernel_server = spawn_kernel_wire(&dir, &ledger_socket, Wire::Framed);
     let kernel_socket = execution_socket(&dir);
 
     // Duplicate request id: the recorded `begin_lease` result is replayed, not
@@ -734,7 +761,7 @@ fn execution_client_duplicate_id_replay_and_connection_loss() {
 fn execution_api_adapter_reports_unsupported_capability() {
     let dir = fresh();
     let ledger_socket = dir.join("ledger.sock");
-    let mut ledger_server = spawn_ledger(&dir, &ledger_socket);
+    let mut ledger_server = spawn_ledger_wire(&dir, &ledger_socket, execution_wire());
     let mut kernel_server = spawn_kernel(&dir, &ledger_socket);
     let mut client = kernel_server.client().expect("connect execution client");
 
@@ -835,8 +862,67 @@ fn export_normalized(ops: &dyn ExecutionOps, path: &Path) -> String {
         .expect("canonical snapshot")
 }
 
+/// The result of driving the handler-registry scenario over a process wire.
+struct RegistryRun {
+    detail: String,
+    result: String,
+    pending: usize,
+    snapshot: String,
+    transcript: String,
+}
+
+/// Drive the handler-registry reconcile scenario through a process binding over
+/// `wire`: announce a pending intent, then reconcile it via the caller-side
+/// registry (`step`). Returns the receipt detail, remaining pending work, and
+/// the normalized snapshot.
+fn run_registry_scenario(
+    dir: &Path,
+    wire: Wire,
+    def: &ActivityDef,
+    inputs: &serde_json::Value,
+    op: &OperationId,
+    hash: &str,
+    outcome_ref: &ArtifactRef,
+) -> RegistryRun {
+    let ledger_socket = dir.join("ledger.sock");
+    let mut ledger_server = spawn_ledger_wire(dir, &ledger_socket, wire);
+    let mut kernel_server = spawn_kernel_wire(dir, &ledger_socket, wire);
+    let client = kernel_server.client().expect("connect");
+    let mut client = client.with_effect_dispatch(Box::new(PresentDispatch {
+        key: HandlerKey::new("fake/build", "v1"),
+        outcome_ref: outcome_ref.clone(),
+    }));
+    ExecutionApi::start(&mut client, &task()).expect("process start");
+    apply(
+        &mut client,
+        &exec(),
+        &KernelCommand::Deliver {
+            operation_id: op.clone(),
+            inputs_hash: hash.to_string(),
+        },
+        &registry_announce_inputs(def, inputs),
+    );
+    let step = ExecutionApi::step(&mut client, &exec()).expect("step");
+    let receipt = client.receipt(op).expect("receipt").expect("recorded");
+    let pending = client.pending_dispatch().expect("pending").len();
+    let snapshot = export_normalized(&client, &dir.join("proc.json"));
+
+    drop(client);
+    let _ = kernel_server.stop();
+    let _ = ledger_server.stop();
+
+    RegistryRun {
+        detail: format!("{}/{}", receipt.kind, receipt.inputs_hash),
+        result: serde_json::to_string(&receipt.result).expect("receipt result"),
+        pending,
+        snapshot,
+        transcript: serde_json::to_string(&step).expect("step transcript"),
+    }
+}
+
 /// The handler-registry protocol must reproduce the in-process `run_activity`
-/// reconcile outcome and durable state through the process boundary.
+/// reconcile outcome and durable state through the process boundary, on both
+/// wires (IPCX.7 keeps the caller-side dispatch faithful over Connect).
 #[test]
 fn handler_registry_step_parity_in_process_vs_process() {
     let def = ActivityDef::new("fake/build", "v1");
@@ -890,118 +976,116 @@ fn handler_registry_step_parity_in_process_vs_process() {
     let in_receipt = engine.receipt(&op).expect("receipt").expect("recorded");
     let in_pending = engine.pending_dispatch().expect("pending").len();
     let in_snapshot = export_normalized(&engine, &dir_in.join("in.json"));
+    let in_detail = format!("{}/{}", in_receipt.kind, in_receipt.inputs_hash);
+    let in_result = serde_json::to_string(&in_receipt.result).expect("in-process receipt result");
 
-    // Process: ExecutionClient + caller-side dispatch.
-    let dir_proc = fresh();
-    let ledger_socket = dir_proc.join("ledger.sock");
-    let mut ledger_server = spawn_ledger(&dir_proc, &ledger_socket);
-    let mut kernel_server = spawn_kernel(&dir_proc, &ledger_socket);
-    let client = kernel_server.client().expect("connect");
-    let mut client = client.with_effect_dispatch(Box::new(PresentDispatch {
-        key: HandlerKey::new("fake/build", "v1"),
-        outcome_ref: outcome_ref.clone(),
-    }));
-    ExecutionApi::start(&mut client, &task()).expect("process start");
-    apply(
-        &mut client,
-        &exec(),
-        &KernelCommand::Deliver {
-            operation_id: op.clone(),
-            inputs_hash: hash,
-        },
-        &registry_announce_inputs(&def, &inputs),
+    // Process, both wires: ExecutionClient + caller-side dispatch.
+    let dir_framed = fresh();
+    let framed = run_registry_scenario(
+        &dir_framed,
+        Wire::Framed,
+        &def,
+        &inputs,
+        &op,
+        &hash,
+        &outcome_ref,
     );
-    let step = ExecutionApi::step(&mut client, &exec()).expect("step");
-    assert_eq!(
-        step,
-        agalma_contracts::StepOutcome::Dispatched {
-            operation: op.clone(),
-            reconciled: true,
-            duplicate: false,
-        },
-        "process reconcile outcome"
+    let dir_connect = fresh();
+    let connect = run_registry_scenario(
+        &dir_connect,
+        Wire::Connect,
+        &def,
+        &inputs,
+        &op,
+        &hash,
+        &outcome_ref,
     );
-    let proc_receipt = client.receipt(&op).expect("receipt").expect("recorded");
-    let proc_pending = client.pending_dispatch().expect("pending").len();
-    let proc_snapshot = export_normalized(&client, &dir_proc.join("proc.json"));
 
     // Parity: same receipt, no pending work, identical normalized state.
-    assert_eq!(in_receipt.inputs_hash, proc_receipt.inputs_hash);
-    assert_eq!(in_receipt.kind, proc_receipt.kind);
-    assert_eq!(in_receipt.result, proc_receipt.result);
+    assert_eq!(in_result, framed.result, "framed receipt result parity");
+    assert_eq!(in_result, connect.result, "connect receipt result parity");
     assert_eq!(in_pending, 0);
-    assert_eq!(proc_pending, 0);
+    assert_eq!(framed.pending, 0);
+    assert_eq!(connect.pending, 0);
+    assert_eq!(framed.detail, in_detail, "framed receipt parity");
+    assert_eq!(connect.detail, in_detail, "connect receipt parity");
     assert_eq!(
-        in_snapshot, proc_snapshot,
-        "handler-protocol snapshot parity"
+        in_snapshot, framed.snapshot,
+        "framed handler-protocol snapshot parity"
     );
-
-    drop(client);
-    let _ = kernel_server.stop();
-    let _ = ledger_server.stop();
+    assert_eq!(
+        in_snapshot, connect.snapshot,
+        "connect handler-protocol snapshot parity"
+    );
+    assert_eq!(
+        framed.transcript, connect.transcript,
+        "connect reconcile outcome matches framed"
+    );
 }
 
 /// A pinned pending operation survives a rebind and is reconciled through the
-/// boundary by the caller-side registry (`recover`).
+/// boundary by the caller-side registry (`recover`) — on both wires (IPCX.7).
 #[test]
 fn handler_registry_recover_after_rebind() {
-    let run = fresh();
-    let a_dir = run.join("a");
-    let b_dir = run.join("b");
-    std::fs::create_dir_all(&a_dir).unwrap();
-    std::fs::create_dir_all(&b_dir).unwrap();
-    let snapshot_path = run.join("snapshot.json");
-    let def = ActivityDef::new("fake/build", "v1");
-    let inputs = json!({ "task": "fix-parity" });
-    let op = OperationId::derive(&exec(), "build");
-    let hash = operation_input_hash(&def, &inputs);
+    for wire in [Wire::Framed, Wire::Connect] {
+        let run = fresh();
+        let a_dir = run.join("a");
+        let b_dir = run.join("b");
+        std::fs::create_dir_all(&a_dir).unwrap();
+        std::fs::create_dir_all(&b_dir).unwrap();
+        let snapshot_path = run.join("snapshot.json");
+        let def = ActivityDef::new("fake/build", "v1");
+        let inputs = json!({ "task": "fix-parity" });
+        let op = OperationId::derive(&exec(), "build");
+        let hash = operation_input_hash(&def, &inputs);
 
-    // Generation 1: binding A announces a pinned (unconsumed) intent.
-    let a_ledger = a_dir.join("ledger.sock");
-    let mut ledger_a = spawn_ledger(&a_dir, &a_ledger);
-    let mut kernel_a = spawn_kernel(&a_dir, &a_ledger);
-    let a_pid = kernel_a.pid();
-    let mut a = kernel_a.client().expect("client a");
-    ExecutionApi::start(&mut a, &task()).expect("start a");
-    apply(
-        &mut a,
-        &exec(),
-        &KernelCommand::Deliver {
-            operation_id: op.clone(),
-            inputs_hash: hash.clone(),
-        },
-        &registry_announce_inputs(&def, &inputs),
-    );
-    assert_eq!(a.pending_dispatch().expect("pending a").len(), 1);
-    a.export_snapshot_to(&snapshot_path).expect("export");
-    drop(a);
-    assert!(kernel_a.stop().process_group_gone, "binding A drained");
-    assert!(!pid_alive(a_pid), "binding A is gone");
-    let _ = ledger_a.stop();
+        // Generation 1: binding A announces a pinned (unconsumed) intent.
+        let a_ledger = a_dir.join("ledger.sock");
+        let mut ledger_a = spawn_ledger_wire(&a_dir, &a_ledger, wire);
+        let mut kernel_a = spawn_kernel_wire(&a_dir, &a_ledger, wire);
+        let a_pid = kernel_a.pid();
+        let mut a = kernel_a.client().expect("client a");
+        ExecutionApi::start(&mut a, &task()).expect("start a");
+        apply(
+            &mut a,
+            &exec(),
+            &KernelCommand::Deliver {
+                operation_id: op.clone(),
+                inputs_hash: hash.clone(),
+            },
+            &registry_announce_inputs(&def, &inputs),
+        );
+        assert_eq!(a.pending_dispatch().expect("pending a").len(), 1);
+        a.export_snapshot_to(&snapshot_path).expect("export");
+        drop(a);
+        assert!(kernel_a.stop().process_group_gone, "binding A drained");
+        assert!(!pid_alive(a_pid), "binding A is gone");
+        let _ = ledger_a.stop();
 
-    // Generation 2: binding B imports the snapshot and recovers through the
-    // caller-side registry — the pinned operation settles there.
-    let b_ledger = b_dir.join("ledger.sock");
-    let mut ledger_b = spawn_ledger(&b_dir, &b_ledger);
-    let mut kernel_b = spawn_kernel(&b_dir, &b_ledger);
-    let client = kernel_b.client().expect("client b");
-    let mut b = client.with_effect_dispatch(Box::new(PresentDispatch {
-        key: HandlerKey::new("fake/build", "v1"),
-        outcome_ref: ArtifactRef::derive("build-output"),
-    }));
-    b.import_snapshot_from(&snapshot_path).expect("import");
-    assert_eq!(b.pending_dispatch().expect("pending b").len(), 1);
-    b.recover().expect("recover through boundary");
-    assert_eq!(
-        b.pending_dispatch().expect("pending after recover").len(),
-        0,
-        "recovered operation settled"
-    );
-    let receipt = b.receipt(&op).expect("receipt").expect("recorded");
-    assert_eq!(receipt.kind, "operation");
-    assert_eq!(receipt.inputs_hash, hash);
+        // Generation 2: binding B imports the snapshot and recovers through the
+        // caller-side registry — the pinned operation settles there.
+        let b_ledger = b_dir.join("ledger.sock");
+        let mut ledger_b = spawn_ledger_wire(&b_dir, &b_ledger, wire);
+        let mut kernel_b = spawn_kernel_wire(&b_dir, &b_ledger, wire);
+        let client = kernel_b.client().expect("client b");
+        let mut b = client.with_effect_dispatch(Box::new(PresentDispatch {
+            key: HandlerKey::new("fake/build", "v1"),
+            outcome_ref: ArtifactRef::derive("build-output"),
+        }));
+        b.import_snapshot_from(&snapshot_path).expect("import");
+        assert_eq!(b.pending_dispatch().expect("pending b").len(), 1);
+        b.recover().expect("recover through boundary");
+        assert_eq!(
+            b.pending_dispatch().expect("pending after recover").len(),
+            0,
+            "recovered operation settled ({wire:?})"
+        );
+        let receipt = b.receipt(&op).expect("receipt").expect("recorded");
+        assert_eq!(receipt.kind, "operation");
+        assert_eq!(receipt.inputs_hash, hash);
 
-    drop(b);
-    let _ = kernel_b.stop();
-    let _ = ledger_b.stop();
+        drop(b);
+        let _ = kernel_b.stop();
+        let _ = ledger_b.stop();
+    }
 }

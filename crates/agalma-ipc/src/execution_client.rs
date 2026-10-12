@@ -40,6 +40,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::client::Client;
+use crate::connect::{ConnectClient, Wire};
 use crate::error::IpcError;
 use crate::execution_handler::{
     EffectContext, EffectDispatch, EffectMode, EffectProbe, EffectReport, HandlerError, StepBegin,
@@ -249,25 +250,63 @@ pub trait ExecutionOps: ExecutionApi {
 /// [`ExecutionClient::with_effect_dispatch`] to drive the handler-registry
 /// protocol: the client performs effects through its local registry and the
 /// server owns the durable announce/commit.
+///
+/// Since IPCX.7 the client can speak either [`Wire::Framed`] (B1 length-prefixed
+/// JSON) or [`Wire::Connect`] (ConnectRPC over HTTP/2 on a Unix socket). The
+/// envelope semantics are identical on both; only the byte transport differs,
+/// including the caller-side effect-dispatch protocol.
 pub struct ExecutionClient {
-    client: RefCell<Client>,
+    backend: RefCell<Backend>,
     dispatch: Option<Box<dyn EffectDispatch>>,
 }
 
+/// The transport backing an [`ExecutionClient`] (IPCX.7).
+enum Backend {
+    /// B1 framed-JSON client ([`Client`]).
+    Framed(Client),
+    /// IPCX Connect client plus the runtime it is driven on.
+    Connect(ConnectBackend),
+}
+
+/// Connect transport state: the async client and the runtime that drives it.
+struct ConnectBackend {
+    runtime: tokio::runtime::Runtime,
+    client: ConnectClient,
+}
+
 impl ExecutionClient {
-    /// Connect to the kernel server listening on `socket`.
+    /// Connect to the kernel server listening on `socket` over the framed
+    /// transport.
     pub fn connect(socket: &Path) -> Result<ExecutionClient, IpcError> {
+        ExecutionClient::connect_wire(socket, Wire::Framed)
+    }
+
+    /// Connect to the kernel server listening on `socket` over `wire`. Both wires
+    /// preserve the envelope semantics (and the caller-side effect-dispatch
+    /// protocol).
+    pub fn connect_wire(socket: &Path, wire: Wire) -> Result<ExecutionClient, IpcError> {
+        let backend = match wire {
+            Wire::Framed => Backend::Framed(Client::connect(socket)?),
+            Wire::Connect => {
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| IpcError::unavailable(format!("tokio runtime: {e}")))?;
+                let client = runtime.block_on(ConnectClient::connect(socket))?;
+                Backend::Connect(ConnectBackend { runtime, client })
+            }
+        };
         Ok(ExecutionClient {
-            client: RefCell::new(Client::connect(socket)?),
+            backend: RefCell::new(backend),
             dispatch: None,
         })
     }
 
-    /// Build a client from an already-connected transport (used by the process
-    /// supervisor after the `READY` handshake).
+    /// Build a framed client from an already-connected transport (used by the
+    /// process supervisor after the `READY` handshake).
     pub fn from_client(client: Client) -> ExecutionClient {
         ExecutionClient {
-            client: RefCell::new(client),
+            backend: RefCell::new(Backend::Framed(client)),
             dispatch: None,
         }
     }
@@ -289,8 +328,13 @@ impl ExecutionClient {
         method: &str,
         params: &impl Serialize,
     ) -> Result<R, ContractError> {
-        let mut client = self.client.borrow_mut();
-        client.call_typed(method, params).map_err(map_ipc_error)
+        match &mut *self.backend.borrow_mut() {
+            Backend::Framed(client) => client.call_typed(method, params).map_err(map_ipc_error),
+            Backend::Connect(backend) => {
+                crate::block_on_nested(&backend.runtime, backend.client.call_typed(method, params))
+                    .map_err(map_ipc_error)
+            }
+        }
     }
 
     /// Perform a begun effect through the caller registry and complete it.
@@ -692,6 +736,15 @@ mod tests {
     #[test]
     fn missing_socket_is_unavailable() {
         let err = ExecutionClient::connect(std::path::Path::new("/nonexistent/exec.sock"));
+        assert!(matches!(err, Err(IpcError::Unavailable(_))));
+    }
+
+    #[test]
+    fn missing_socket_is_unavailable_over_connect() {
+        let err = ExecutionClient::connect_wire(
+            std::path::Path::new("/nonexistent/exec.sock"),
+            Wire::Connect,
+        );
         assert!(matches!(err, Err(IpcError::Unavailable(_))));
     }
 }

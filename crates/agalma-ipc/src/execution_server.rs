@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use agalma_contracts::ContractError;
 use serde_json::Value;
 
+use crate::connect::{serve_wire, Wire};
 use crate::execution_client::{
     BeginStepCall, CompleteStepCall, DirectiveExecCall, ExecIdCall, ExecutionOps, KernelCall,
     LeaseExecCall, NowCall, PendingStepCall, ReceiptCall, ReclaimCall, SnapshotPathCall, StartCall,
@@ -19,6 +20,20 @@ use crate::execution_client::{
 };
 use crate::harness_client::{decode_params, encode_result};
 use crate::server::Server;
+
+/// Serve a kernel [`Server`] over the selected wire transport (IPCX.7).
+///
+/// `Framed` runs the B1 serial accept loop; `Connect` runs the IPCX Connect/UDS
+/// accept loop. Both announce the same `READY {json}` line and preserve every
+/// envelope guarantee (receipt replay, version refusal, in-band error codes), so
+/// the supervisor and its bind gate are wire-agnostic.
+pub fn serve_execution(
+    server: Server,
+    socket: &std::path::Path,
+    wire: Wire,
+) -> std::io::Result<()> {
+    serve_wire(server, socket, wire)
+}
 
 /// Register every execution/kernel operation on `server`, hosting `engine`.
 ///

@@ -23,7 +23,10 @@ use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use agalma_ipc::{register_execution, CommandSpec, LedgerClient, SandboxClient, Server, ServerInfo};
+use agalma_ipc::{
+    register_execution, serve_execution, CommandSpec, LedgerClient, SandboxClient, Server,
+    ServerInfo, Wire,
+};
 
 use crate::engine::KernelEngine;
 
@@ -69,24 +72,48 @@ pub fn build_server(engine: KernelEngine<LedgerClient>) -> Server {
 }
 
 /// Connect the ledger client, open the kernel (optionally binding the sandbox
-/// seam), and bind `socket`; serve until stopped.
+/// seam), and bind `socket`; serve over the wire selected by
+/// `AGALMA_IPC_WIRE` (`connect` default, `framed` optional; IPCX.7) until
+/// stopped.
+///
+/// The same wire backs the kernel's own `LedgerClient` connection, so the nested
+/// kernel→ledger edge speaks the transport the supervisor selected for this
+/// boundary.
 pub fn serve(
     socket: &Path,
     state_dir: &Path,
     ledger_socket: &Path,
     sandbox_socket: Option<&Path>,
 ) -> io::Result<()> {
-    let ledger = LedgerClient::connect(ledger_socket, state_dir)
+    serve_wire(
+        socket,
+        state_dir,
+        ledger_socket,
+        sandbox_socket,
+        Wire::from_env(Wire::Connect),
+    )
+}
+
+/// Connect the ledger client, open the kernel (optionally binding the sandbox
+/// seam), and bind `socket`; serve over `wire` until stopped (IPCX.7).
+pub fn serve_wire(
+    socket: &Path,
+    state_dir: &Path,
+    ledger_socket: &Path,
+    sandbox_socket: Option<&Path>,
+    wire: Wire,
+) -> io::Result<()> {
+    let ledger = LedgerClient::connect_wire(ledger_socket, state_dir, wire)
         .map_err(|e| io::Error::other(format!("connect ledger server: {e}")))?;
-    let mut engine = KernelEngine::open(ledger)
-        .map_err(|e| io::Error::other(format!("open kernel: {e}")))?;
+    let mut engine =
+        KernelEngine::open(ledger).map_err(|e| io::Error::other(format!("open kernel: {e}")))?;
     if let Some(sandbox_socket) = sandbox_socket {
-        let sandbox = SandboxClient::connect(sandbox_socket)
+        let sandbox = SandboxClient::connect_wire(sandbox_socket, wire)
             .map_err(|e| io::Error::other(format!("connect sandbox server: {e}")))?;
         engine = engine.with_sandbox(Box::new(sandbox));
     }
-    let mut server = build_server(engine);
-    server.serve(socket)
+    let server = build_server(engine);
+    serve_execution(server, socket, wire)
 }
 
 /// Full argv/env entry point used by the server binary.

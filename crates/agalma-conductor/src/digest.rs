@@ -20,7 +20,8 @@ use std::path::Path;
 use std::process::Command;
 
 use agalma_contracts::{
-    ArtifactRef, Checkout, ContractError, DigestRecord, ExecutionId, LedgerApi, OperationId, Task,
+    ArtifactRef, Checkout, ContractError, DigestRecord, ExecutionEvent, ExecutionId, LedgerApi,
+    OperationId, Task,
 };
 use agalma_ledger::SqliteLedger;
 use serde::{Deserialize, Serialize};
@@ -54,6 +55,36 @@ pub struct CostSummary {
     pub tokens_in: u64,
     pub tokens_out: u64,
     pub usd: f64,
+}
+
+/// Aggregate the `usage` events of an execution into a [`CostSummary`].
+///
+/// Single derivation shared by the digest rollup and the economics view
+/// (TUI.4): non-`usage` events are ignored, missing numeric fields default to
+/// zero. The route/wall/stall fields are not part of the cost summary.
+pub fn cost_from_events(events: &[ExecutionEvent]) -> CostSummary {
+    let mut cost = CostSummary::default();
+    for event in events {
+        if event.kind != "usage" {
+            continue;
+        }
+        cost.tokens_in += event
+            .payload
+            .get("tokens_in")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        cost.tokens_out += event
+            .payload
+            .get("tokens_out")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        cost.usd += event
+            .payload
+            .get("cost_usd")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+    }
+    cost
 }
 
 /// Repair activity for the execution.
@@ -211,7 +242,7 @@ fn build(
         diagnosis_artifacts: diagnosis_artifacts(&root, attempts),
     };
 
-    let mut cost = CostSummary::default();
+    let cost = cost_from_events(&events);
     let mut wall_ms = 0u64;
     let mut stalls = 0u32;
     let mut route = String::new();
@@ -225,21 +256,6 @@ fn build(
         if event.kind != "usage" {
             continue;
         }
-        cost.tokens_in += event
-            .payload
-            .get("tokens_in")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        cost.tokens_out += event
-            .payload
-            .get("tokens_out")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        cost.usd += event
-            .payload
-            .get("cost_usd")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
         cash_usd += event
             .payload
             .get("cash_usd")

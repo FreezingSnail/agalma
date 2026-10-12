@@ -13,6 +13,7 @@ use agalma_ledger::SqliteLedger;
 use serde::Serialize;
 
 use crate::components::{ComponentSnapshot, Transports};
+use crate::economics::EconomicsSnapshot;
 
 /// Top-level read-model document emitted by `agalma status --json`.
 ///
@@ -34,6 +35,9 @@ pub struct Snapshot {
     pub executions: Vec<ExecutionSnapshot>,
     /// Per-component vision: bindings, transports, socket liveness, health.
     pub components: Vec<ComponentSnapshot>,
+    /// Economics + timeline: spend vs intake-fence allowance, digest summaries,
+    /// parked/degradation alerts, curated event timeline (TUI.4).
+    pub economics: EconomicsSnapshot,
 }
 
 /// One execution row in the read model.
@@ -81,6 +85,7 @@ pub fn snapshot_with_transports(
             binding: None,
             executions: Vec::new(),
             components: crate::components::derive::<SqliteLedger>(state_dir, None, &[], transports),
+            economics: EconomicsSnapshot::default(),
         });
     }
 
@@ -127,6 +132,7 @@ pub fn snapshot_with_transports(
         binding: overall_binding(&ledger, &records),
         executions,
         components: crate::components::derive(state_dir, Some(&ledger), &records, transports),
+        economics: crate::economics::derive(&ledger, &records, &std::collections::BTreeMap::new()),
     })
 }
 
@@ -137,7 +143,10 @@ pub fn to_json(snapshot: &Snapshot) -> Result<String, String> {
 }
 
 /// Reason recorded by the most recent `parked` event for an execution.
-fn parked_reason<L: LedgerApi + ?Sized>(ledger: &L, record: &ExecutionRecord) -> Option<String> {
+pub(crate) fn parked_reason<L: LedgerApi + ?Sized>(
+    ledger: &L,
+    record: &ExecutionRecord,
+) -> Option<String> {
     ledger.events(&record.execution_id).ok().and_then(|events| {
         events
             .iter()

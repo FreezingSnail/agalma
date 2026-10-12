@@ -29,6 +29,7 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::MissedTickBehavior;
 
 use crate::cli::WatchArgs;
+use crate::economics::AlertLevel;
 use crate::status::Snapshot;
 
 /// Enter the alternate screen and hide the cursor.
@@ -189,11 +190,15 @@ pub fn render(snapshot: &Snapshot, ctx: &FrameContext<'_>) -> String {
     }
 
     out.push_str(&format!("{DIM}{}{RESET}\n", rule(width)));
+    out.push_str(&render_economics(snapshot));
+    out.push_str(&render_timeline(snapshot, ctx));
     out.push_str(&render_components(snapshot));
     out.push_str(&format!("{DIM}{}{RESET}\n", rule(width)));
     out.push_str(&format!(
-        "{DIM}{} execution(s) · {} component(s) · {} ms · q + Enter quits · Ctrl-C exits{RESET}",
+        "{DIM}{} execution(s) · {} cost row(s) · {} alert(s) · {} component(s) · {} ms · q + Enter quits · Ctrl-C exits{RESET}",
         snapshot.executions.len(),
+        snapshot.economics.rows.len(),
+        snapshot.economics.alerts.len(),
         snapshot.components.len(),
         ctx.interval_ms
     ));
@@ -320,6 +325,84 @@ fn pending_text(count: usize, operations: &[String]) -> String {
         Some(first) => format!("{count} ({first})"),
         None => "-".to_string(),
     }
+}
+
+/// The economics panel: spend vs allowance per execution, digest rollup, and
+/// parked/degradation alerts (TUI.4). Empty when there is no row or alert.
+fn render_economics(snapshot: &Snapshot) -> String {
+    let economics = &snapshot.economics;
+    if economics.rows.is_empty() && economics.alerts.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{BOLD}ECONOMICS{RESET}  {DIM}spend / allowance · tokens · digest · alerts{RESET}\n"
+    ));
+    for row in &economics.rows {
+        let budget = if row.over_budget { RED } else { GREEN };
+        let mut line = format!(
+            "  {CYAN}{:<20}{RESET} {:<8} {budget}{:<44}{RESET} {DIM}tok {}/{}{RESET}",
+            clip(&row.execution_id, 20),
+            clip(&row.phase, 8),
+            clip(&row.spend_allowance_text(), 44),
+            row.tokens_in,
+            row.tokens_out,
+        );
+        if let Some(digest) = &row.digest {
+            line.push_str(&format!(
+                "  {DIM}digest:{RESET} {}",
+                clip(&digest.summary_text(), 48)
+            ));
+        }
+        out.push_str(&line);
+        out.push('\n');
+    }
+    for alert in &economics.alerts {
+        let (style, label) = match alert.level {
+            AlertLevel::Park => (YELLOW, "PARKED"),
+            AlertLevel::Degraded => (RED, "DEGRADED"),
+        };
+        out.push_str(&format!(
+            "  {BOLD}{style}{label}{RESET} {CYAN}{}{RESET} {}\n",
+            clip(&alert.execution_id, 20),
+            clip(&alert.reason, 60),
+        ));
+    }
+    out
+}
+
+/// The curated event + digest timeline (oldest first), showing the most recent
+/// entries that fit above the footer (TUI.4).
+fn render_timeline(snapshot: &Snapshot, ctx: &FrameContext<'_>) -> String {
+    let timeline = &snapshot.economics.timeline;
+    if timeline.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{BOLD}TIMELINE{RESET}  {DIM}events + digests · oldest first{RESET}\n"
+    ));
+    // Keep the tail (most recent) within the remaining vertical budget.
+    let max_rows = ctx.height.saturating_sub(18).max(3);
+    let start = timeline.len().saturating_sub(max_rows);
+    if start > 0 {
+        out.push_str(&format!("{DIM}  … {start} earlier{RESET}\n"));
+    }
+    for entry in &timeline[start..] {
+        let sequence = if entry.kind == "digest" {
+            "·".to_string()
+        } else {
+            format!("{}", entry.sequence)
+        };
+        out.push_str(&format!(
+            "  {DIM}{:>3}{RESET} {CYAN}{:<14}{RESET} {:<18} {}\n",
+            sequence,
+            clip(&entry.kind, 14),
+            clip(&entry.execution_id, 18),
+            clip(&entry.summary, 72),
+        ));
+    }
+    out
 }
 
 /// The per-component panel: transport, API version, socket liveness, bindings,
@@ -500,7 +583,9 @@ fn terminal_size() -> (usize, usize) {
 mod tests {
     use super::*;
     use crate::components::{BindingView, ComponentSnapshot};
+    use crate::economics::{Alert, DigestSummary, EconomicsRow, EconomicsSnapshot, TimelineEntry};
     use crate::status::{ExecutionSnapshot, Snapshot};
+    use agalma_ledger::SqliteLedger;
     use agalma_testkit::ScratchDir;
 
     fn ctx(width: usize, height: usize, interval_ms: u64) -> FrameContext<'static> {
@@ -523,6 +608,7 @@ mod tests {
             binding: None,
             executions: Vec::new(),
             components: Vec::new(),
+            economics: EconomicsSnapshot::default(),
         }
     }
 
@@ -584,6 +670,103 @@ mod tests {
                 harness: "reference@reference/v1".to_string(),
             }],
             components: components(),
+            economics: economics(),
+        }
+    }
+
+    /// One execution's economics row (known allowance, one digest), a second
+    /// row with budget exceedance, timeline entries, and both alert levels.
+    fn economics() -> EconomicsSnapshot {
+        EconomicsSnapshot {
+            rows: vec![
+                EconomicsRow {
+                    execution_id: "exec:task-a:1".to_string(),
+                    task_id: "task-a".to_string(),
+                    phase: "Build".to_string(),
+                    state: "Running".to_string(),
+                    attempt: 2,
+                    tokens_in: 1500,
+                    tokens_out: 320,
+                    spend_usd: 0.25,
+                    allowance_usd: Some(2.0),
+                    remaining_usd: Some(1.75),
+                    over_budget: false,
+                    stalls: 0,
+                    degraded: false,
+                    parked: false,
+                    parked_reason: None,
+                    digest: Some(DigestSummary {
+                        verdict: "green".to_string(),
+                        attempts: 2,
+                        tokens_in: 1500,
+                        tokens_out: 320,
+                        usd: 0.25,
+                        wall_ms: 4200,
+                        stalls: 0,
+                    }),
+                },
+                EconomicsRow {
+                    execution_id: "exec:task-b:1".to_string(),
+                    task_id: "task-b".to_string(),
+                    phase: "Verify".to_string(),
+                    state: "Parked".to_string(),
+                    attempt: 1,
+                    tokens_in: 900,
+                    tokens_out: 100,
+                    spend_usd: 0.30,
+                    allowance_usd: Some(0.20),
+                    remaining_usd: Some(-0.10),
+                    over_budget: true,
+                    stalls: 2,
+                    degraded: true,
+                    parked: true,
+                    parked_reason: Some("session_gone".to_string()),
+                    digest: None,
+                },
+            ],
+            timeline: vec![
+                TimelineEntry {
+                    execution_id: "exec:task-a:1".to_string(),
+                    sequence: 1,
+                    kind: "claim".to_string(),
+                    summary: "claimed lease 3".to_string(),
+                    recorded_at_unix_ms: 10,
+                },
+                TimelineEntry {
+                    execution_id: "exec:task-a:1".to_string(),
+                    sequence: 2,
+                    kind: "decision".to_string(),
+                    summary: "decision recorded op:build@2@2".to_string(),
+                    recorded_at_unix_ms: 20,
+                },
+                TimelineEntry {
+                    execution_id: "exec:task-b:1".to_string(),
+                    sequence: 4,
+                    kind: "provider_health".to_string(),
+                    summary: "degraded: session_gone".to_string(),
+                    recorded_at_unix_ms: 30,
+                },
+                TimelineEntry {
+                    execution_id: "exec:task-a:1".to_string(),
+                    sequence: 0,
+                    kind: "digest".to_string(),
+                    summary: "green attempts=2 tokens=1500/320 usd=0.250000 wall_ms=4200 stalls=0"
+                        .to_string(),
+                    recorded_at_unix_ms: 40,
+                },
+            ],
+            alerts: vec![
+                Alert {
+                    execution_id: "exec:task-b:1".to_string(),
+                    level: AlertLevel::Park,
+                    reason: "session_gone".to_string(),
+                },
+                Alert {
+                    execution_id: "exec:task-b:1".to_string(),
+                    level: AlertLevel::Degraded,
+                    reason: "2 stall(s) · last: session_gone".to_string(),
+                },
+            ],
         }
     }
 
@@ -662,10 +845,104 @@ mod tests {
     }
 
     #[test]
+    fn present_snapshot_renders_economics_and_timeline() {
+        let frame = render(&present(), &ctx(150, 40, 1000));
+        let plain = strip_ansi(&frame);
+        // Demo frame for the TUI.4 report (run with --nocapture to view).
+        println!("--- TUI.4 economics + timeline demo ---\n{plain}");
+        assert!(plain.contains("ECONOMICS"), "{plain}");
+        assert!(plain.contains("TIMELINE"), "{plain}");
+        // Spend vs known allowance, and the over-budget row.
+        assert!(plain.contains("$0.250000 / $2.00 rem $1.750000"), "{plain}");
+        assert!(
+            plain.contains("$0.300000 / $0.20 rem $-0.100000 OVER"),
+            "{plain}"
+        );
+        // Spend vs unknown allowance.
+        assert!(plain.contains("tok 1500/320"), "{plain}");
+        // Digest rollup.
+        assert!(plain.contains("digest:"), "{plain}");
+        assert!(plain.contains("green attempts=2"), "{plain}");
+        // Park/degradation alerts.
+        assert!(plain.contains("PARKED"), "{plain}");
+        assert!(plain.contains("DEGRADED"), "{plain}");
+        // Timeline: events and the digest milestone, oldest first.
+        assert!(plain.contains("claimed lease 3"), "{plain}");
+        assert!(plain.contains("decision recorded op:build@2@2"), "{plain}");
+        assert!(plain.contains("degraded: session_gone"), "{plain}");
+        let claim = plain.find("claimed lease 3").expect("claim");
+        let decision = plain.find("decision recorded").expect("decision");
+        let digest = plain.find("wall_ms=4200").expect("digest milestone");
+        assert!(
+            claim < decision && decision < digest,
+            "timeline order: {plain}"
+        );
+    }
+
+    #[test]
+    fn real_ledger_snapshot_renders_economics_and_timeline() {
+        use agalma_contracts::{
+            CommitBatch, ExecutionEvent, ExecutionPhase, ExecutionRecord, ExecutionState,
+            LedgerApi, TaskId,
+        };
+        use serde_json::json;
+
+        let dir = ScratchDir::new("watch-economics-real");
+        let exec = agalma_contracts::ExecutionId::derive(&TaskId::new("task-a"), 1);
+        let mut ledger = SqliteLedger::open(dir.path().join("ledger.sqlite")).expect("open ledger");
+        ledger
+            .commit(CommitBatch {
+                expected_revision: None,
+                state: Some(ExecutionRecord {
+                    execution_id: exec.clone(),
+                    task_id: TaskId::new("task-a"),
+                    generation: 1,
+                    phase: ExecutionPhase::Build,
+                    state: ExecutionState::Parked,
+                    attempt: 2,
+                    revision: 0,
+                }),
+                events: vec![
+                    ExecutionEvent {
+                        execution_id: exec.clone(),
+                        sequence: 0,
+                        kind: "usage".to_string(),
+                        payload: json!({"tokens_in": 10, "tokens_out": 5, "cost_usd": 0.01}),
+                        recorded_at_unix_ms: 1,
+                    },
+                    ExecutionEvent {
+                        execution_id: exec.clone(),
+                        sequence: 0,
+                        kind: "provider_health".to_string(),
+                        payload: json!({"reason": "idle"}),
+                        recorded_at_unix_ms: 2,
+                    },
+                ],
+                receipts: vec![],
+                intents: vec![],
+            })
+            .expect("seed ledger");
+        drop(ledger);
+
+        let snapshot = crate::status::snapshot(dir.path()).expect("snapshot");
+        let plain = strip_ansi(&render(&snapshot, &ctx(150, 40, 1000)));
+        assert!(plain.contains("ECONOMICS"), "{plain}");
+        assert!(plain.contains("TIMELINE"), "{plain}");
+        // No durable budget in the ledger → allowance is unknown on the real path.
+        assert!(plain.contains("$0.010000 / unknown"), "{plain}");
+        assert!(plain.contains("PARKED"), "{plain}");
+        assert!(plain.contains("DEGRADED"), "{plain}");
+        assert!(plain.contains("degraded: idle"), "{plain}");
+    }
+
+    #[test]
     fn absent_snapshot_has_no_component_panel() {
         let plain = strip_ansi(&render(&absent(), &ctx(120, 24, 1000)));
         assert!(!plain.contains("COMPONENTS"), "{plain}");
+        assert!(!plain.contains("ECONOMICS"), "{plain}");
+        assert!(!plain.contains("TIMELINE"), "{plain}");
         assert!(plain.contains("0 component(s)"), "{plain}");
+        assert!(plain.contains("0 cost row(s)"), "{plain}");
     }
 
     #[test]

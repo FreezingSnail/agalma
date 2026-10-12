@@ -14,6 +14,7 @@ pub mod concierge;
 pub mod config;
 pub mod control;
 pub mod digest;
+pub mod economics;
 pub mod execution_process;
 pub mod harness_binding;
 pub mod harness_process;

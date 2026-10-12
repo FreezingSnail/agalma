@@ -10,6 +10,7 @@ use agalma_contracts::harness::{Describe, HarnessApi};
 use agalma_contracts::ContractError;
 use serde_json::Value;
 
+use crate::connect::{serve_wire, Wire};
 use crate::harness_client::{
     decode_params, encode_result, AttemptCall, OperationCall, RunTurnCall, SessionCall,
 };
@@ -24,6 +25,16 @@ pub fn server_info_from(describe: &Describe) -> ServerInfo {
         impl_version: describe.impl_version.clone(),
         capabilities: describe.capabilities.clone(),
     }
+}
+
+/// Serve a harness [`Server`] over the selected wire transport (IPCX.2).
+///
+/// `Framed` runs the B1 serial accept loop; `Connect` runs the IPCX Connect/UDS
+/// accept loop. Both announce the same `READY {json}` line and preserve every
+/// envelope guarantee (receipt replay, version refusal, in-band error codes), so
+/// the supervisor and its bind gate are wire-agnostic.
+pub fn serve_harness(server: Server, socket: &std::path::Path, wire: Wire) -> std::io::Result<()> {
+    serve_wire(server, socket, wire)
 }
 
 /// Register every [`HarnessApi`] method on `server`, hosting `harness`.

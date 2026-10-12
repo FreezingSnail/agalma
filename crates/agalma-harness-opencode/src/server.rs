@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use agalma_contracts::harness::HarnessApi;
 use agalma_contracts::sandbox::SandboxApi;
-use agalma_ipc::{register_harness, server_info_from, CommandSpec, SandboxClient, Server};
+use agalma_ipc::{register_harness, server_info_from, CommandSpec, SandboxClient, Server, Wire};
 use serde_json::{json, Value};
 
 use crate::adapter::{OpenCodeHarness, OpenCodeHarnessConfig};
@@ -311,15 +311,10 @@ where
             sandbox_socket.display()
         )
     })?;
-    let mut server = build_server(Box::new(sandbox), config);
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("tokio runtime: {e}"))?;
+    let server = build_server(Box::new(sandbox), config);
+    let wire = Wire::from_env(Wire::Framed);
     let display = socket.display().to_string();
-    runtime
-        .block_on(async move { server.serve(&socket) })
-        .map_err(|e| format!("serve {display}: {e}"))
+    agalma_ipc::serve_harness(server, &socket, wire).map_err(|e| format!("serve {display}: {e}"))
 }
 
 #[cfg(test)]

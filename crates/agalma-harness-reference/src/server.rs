@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use agalma_ipc::{register_harness, server_info_from, CommandSpec, Server};
+use agalma_ipc::{register_harness, server_info_from, CommandSpec, Server, Wire};
 
 use crate::adapter::{ReferenceHarness, ReferenceHarnessConfig};
 use crate::{describe_for, ReferenceProfile};
@@ -57,10 +57,20 @@ pub fn build_server(profile: ReferenceProfile, scenario_dir: PathBuf) -> Server 
     server
 }
 
-/// Bind `socket` and serve `profile` until stopped.
+/// Bind `socket` and serve `profile` over the framed transport until stopped.
 pub fn serve(socket: &Path, profile: ReferenceProfile, scenario_dir: PathBuf) -> io::Result<()> {
-    let mut server = build_server(profile, scenario_dir);
-    server.serve(socket)
+    serve_wire(socket, profile, scenario_dir, Wire::Framed)
+}
+
+/// Bind `socket` and serve `profile` over the selected wire transport (IPCX.2).
+pub fn serve_wire(
+    socket: &Path,
+    profile: ReferenceProfile,
+    scenario_dir: PathBuf,
+    wire: Wire,
+) -> io::Result<()> {
+    let server = build_server(profile, scenario_dir);
+    agalma_ipc::serve_harness(server, socket, wire)
 }
 
 /// Scenario directory for a server: [`SCENARIO_DIR_ENV`] when set, else
@@ -85,7 +95,9 @@ where
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("create socket dir {}: {e}", parent.display()))?;
     }
-    serve(&socket, profile, scenario_dir).map_err(|e| format!("serve {}: {e}", socket.display()))
+    let wire = Wire::from_env(Wire::Framed);
+    serve_wire(&socket, profile, scenario_dir, wire)
+        .map_err(|e| format!("serve {}: {e}", socket.display()))
 }
 
 /// The environment a reference server announces for `profile` (tests/docs).

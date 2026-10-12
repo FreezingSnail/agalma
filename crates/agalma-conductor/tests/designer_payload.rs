@@ -28,6 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agalma_conductor::harness_process::{resolve_server_binary, ProcessBinding, READY_TIMEOUT};
+use agalma_ipc::Wire;
 use agalma_conductor::sweep::{designer_prompt, RetryContext};
 use agalma_contracts::harness::{
     CreateSessionRequest, HarnessApi, Limits, RunTurnRequest, StartAttemptRequest, StopEvidence,
@@ -470,8 +471,16 @@ fn process_vendor_payload_identifies_epic_and_repo() {
         // sandbox ignores the program, but `resolve_program` still needs a path.
         .env("OPENCODE_BIN", FAKE_PROGRAM);
     let program = resolve_server_binary(&spec.program).expect("opencode server binary resolves");
-    let mut binding = ProcessBinding::spawn(spec, program, harness_socket, 1, MODEL, READY_TIMEOUT)
-        .expect("spawn opencode server");
+    let mut binding = ProcessBinding::spawn(
+        spec,
+        program,
+        harness_socket,
+        1,
+        MODEL,
+        Wire::Connect,
+        READY_TIMEOUT,
+    )
+    .expect("spawn opencode server");
 
     let all = rounds();
     let mut fixtures = Vec::new();

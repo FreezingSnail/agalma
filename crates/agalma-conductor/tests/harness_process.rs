@@ -25,7 +25,7 @@ use agalma_contracts::{
 use agalma_harness_reference::{
     self as reference, ReferenceHarness, ReferenceHarnessConfig, ReferenceProfile,
 };
-use agalma_ipc::{Client, CommandSpec};
+use agalma_ipc::{Client, CommandSpec, Wire};
 
 use agalma_conductor::harness_binding::{
     persist_binding, plan_binding, read_pinned_binding, BindPlan, HarnessKind,
@@ -200,6 +200,7 @@ fn spawn_process_reference(
     socket: &Path,
     scenario_dir: &Path,
     generation: u32,
+    wire: Wire,
 ) -> ProcessBinding {
     let (spec, program) = reference_spec(profile, socket, scenario_dir);
     ProcessBinding::spawn(
@@ -208,6 +209,7 @@ fn spawn_process_reference(
         socket.to_path_buf(),
         generation,
         MODEL,
+        wire,
         READY_TIMEOUT,
     )
     .unwrap_or_else(|e| panic!("spawn reference server: {e}"))
@@ -253,7 +255,8 @@ fn reference_server_child() {
     let scenario_dir = std::env::var(reference::SCENARIO_DIR_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(&socket).parent().unwrap().join("scenario"));
-    let _ = reference::serve(Path::new(&socket), profile, scenario_dir);
+    let wire = Wire::from_env(Wire::Framed);
+    let _ = reference::serve_wire(Path::new(&socket), profile, scenario_dir, wire);
 }
 
 // ===========================================================================
@@ -278,6 +281,12 @@ fn shadow_parity_in_process_vs_process_reference() {
         &socket,
         &dir.join("scenario-process"),
         1,
+        Wire::Connect,
+    );
+    assert_eq!(
+        binding.wire(),
+        Wire::Connect,
+        "harness process wire is Connect"
     );
     let record = binding.binding().clone();
     let process = run_scenario(&mut binding, &ws_proc);
@@ -311,6 +320,95 @@ fn shadow_parity_in_process_vs_process_reference() {
 }
 
 // ===========================================================================
+// Case a' — wire parity: in-process vs framed vs Connect (IPCX.2)
+// ===========================================================================
+
+/// The harness boundary over Connect (IPCX.2): the same reference scenario
+/// produces an identical normalized transcript under the in-process binding, the
+/// framed process wire, and the Connect process wire. Both process wires also
+/// reproduce the wire-independent static bind plan. This is the dual-binding
+/// parity proof for the migrated boundary.
+#[test]
+fn wire_parity_framed_vs_connect_matches_in_process() {
+    let dir = fresh("wire-parity");
+
+    let ws_in = workspace(&dir, "ws-in-process");
+    let mut inproc = ReferenceHarness::new(reference_config(
+        ReferenceProfile::Success,
+        dir.join("scenario-in-process"),
+    ));
+    let in_process = run_scenario(&mut inproc, &ws_in);
+
+    let ws_framed = workspace(&dir, "ws-framed");
+    let socket_framed = dir.join("framed.sock");
+    let mut framed = spawn_process_reference(
+        ReferenceProfile::Success,
+        &socket_framed,
+        &dir.join("scenario-framed"),
+        1,
+        Wire::Framed,
+    );
+    assert_eq!(framed.wire(), Wire::Framed);
+    let framed_record = framed.binding().clone();
+    let framed_transcript = run_scenario(&mut framed, &ws_framed);
+
+    let ws_connect = workspace(&dir, "ws-connect");
+    let socket_connect = dir.join("connect.sock");
+    let mut connect = spawn_process_reference(
+        ReferenceProfile::Success,
+        &socket_connect,
+        &dir.join("scenario-connect"),
+        1,
+        Wire::Connect,
+    );
+    assert_eq!(connect.wire(), Wire::Connect);
+    let connect_record = connect.binding().clone();
+    let connect_transcript = run_scenario(&mut connect, &ws_connect);
+
+    // In-process vs framed vs Connect: identical normalized transcript.
+    assert_eq!(
+        in_process.describe, framed_transcript.describe,
+        "framed identity parity"
+    );
+    assert_eq!(
+        in_process.describe, connect_transcript.describe,
+        "connect identity parity"
+    );
+    assert_eq!(
+        in_process.state, framed_transcript.state,
+        "framed state parity"
+    );
+    assert_eq!(
+        in_process.state, connect_transcript.state,
+        "connect state parity"
+    );
+    assert_eq!(
+        in_process.events, framed_transcript.events,
+        "framed event transcript parity"
+    );
+    assert_eq!(
+        in_process.events, connect_transcript.events,
+        "connect event transcript parity"
+    );
+    assert_eq!(
+        in_process.artifact_digest, framed_transcript.artifact_digest,
+        "framed produced artifact digest parity"
+    );
+    assert_eq!(
+        in_process.artifact_digest, connect_transcript.artifact_digest,
+        "connect produced artifact digest parity"
+    );
+    assert!(in_process.artifact_digest.is_some());
+
+    // The bind gate is wire-independent: both process wires reproduce the plan.
+    let expected = plan_binding(HarnessKind::Reference, 1, MODEL)
+        .expect("static plan")
+        .binding;
+    assert_eq!(framed_record, expected, "framed bind plan parity");
+    assert_eq!(connect_record, expected, "connect bind plan parity");
+}
+
+// ===========================================================================
 // Case b — staged rebind with an in-flight operation pinned across the swap
 // ===========================================================================
 
@@ -340,7 +438,9 @@ fn staged_rebind_uses_pinned_binding_not_flipped_config() {
         &socket1,
         &dir.join("scenario-pinned"),
         1,
+        Wire::Connect,
     );
+    assert_eq!(b1.wire(), Wire::Connect);
     let r1 = run_scenario(&mut b1, &ws);
     assert!(
         r1.artifact_digest.is_none(),
@@ -364,7 +464,9 @@ fn staged_rebind_uses_pinned_binding_not_flipped_config() {
         &socket2,
         &dir.join("scenario-flipped"),
         2,
+        Wire::Connect,
     );
+    assert_eq!(b2.wire(), Wire::Connect);
     let r2 = run_scenario(&mut b2, &ws);
     assert!(
         r2.artifact_digest.is_some(),
@@ -532,6 +634,7 @@ fn harness_client_maps_transport_loss_to_contract_error() {
         &socket,
         &dir.join("scenario-client"),
         1,
+        Wire::Connect,
     );
     let ws = workspace(&dir, "ws");
     let attempt = binding.start_attempt(start_req(&ws)).expect("start");
@@ -633,6 +736,7 @@ fn assert_failed_startup_cleanup(name: &str, ready: Option<&str>, expect: Option
         socket.clone(),
         1,
         MODEL,
+        Wire::Connect,
         Duration::from_millis(300),
     ) {
         Ok(_) => panic!("mock startup must fail"),
@@ -710,6 +814,7 @@ fn retry_on_the_same_socket_after_failed_startup_succeeds() {
         socket.clone(),
         1,
         MODEL,
+        Wire::Connect,
         Duration::from_millis(300),
     ) {
         Ok(_) => panic!("first start fails"),
@@ -721,7 +826,13 @@ fn retry_on_the_same_socket_after_failed_startup_succeeds() {
     // Same socket path: the real reference server starts and runs cleanly.
     let scenario = dir.join("scenario");
     std::fs::create_dir_all(&scenario).expect("scenario dir");
-    let binding = spawn_process_reference(ReferenceProfile::Success, &socket, &scenario, 1);
+    let binding = spawn_process_reference(
+        ReferenceProfile::Success,
+        &socket,
+        &scenario,
+        1,
+        Wire::Connect,
+    );
     let pid = binding.pid();
     assert!(
         proc_stat(pid).is_some(),
@@ -745,7 +856,13 @@ fn supervisor_startup_restart_drop_lifecycle() {
     std::fs::create_dir_all(&scenario).expect("scenario dir");
 
     // Normal startup.
-    let mut binding = spawn_process_reference(ReferenceProfile::Success, &socket, &scenario, 1);
+    let mut binding = spawn_process_reference(
+        ReferenceProfile::Success,
+        &socket,
+        &scenario,
+        1,
+        Wire::Connect,
+    );
     let started = binding.pid();
     assert!(proc_stat(started).is_some(), "server alive after startup");
 

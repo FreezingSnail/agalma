@@ -151,3 +151,120 @@ docs/b1-harness-evidence.md                                   # this file
 ```
 
 No file under `crates/agalma-contracts/**` changed; no contract schema changed.
+
+# IPCX.2 — harness boundary on the Connect transport
+
+Bead: `agalma-ebg.3`. Design: `docs/ipc-connect-design.md` (D1–D7). Foundation:
+`agalma-ebg.2` (`ipc.proto`, Connect stack + pins, UDS accept loop, client core,
+Connect-level conformance harness). HEAD at start: `79e3b42`.
+
+Goal: move the already-extracted `HarnessApi` process boundary onto the Connect
+transport (IPCX D7, boundary #1) **without changing the envelope semantics or any
+consumer logic**, and prove it with the B1 recipe — dual-binding parity, staged
+rebind, rollback, IPC conformance — extended to the Connect wire. This is the
+per-boundary evidence D4 names (`docs/ipcx-<boundary>-evidence.md`); it is folded
+into this file so the harness boundary's B1 and IPCX evidence stay together.
+
+## What migrated
+
+The typed harness client and its method-registration helper stay the entry
+points; only the byte transport under them changed.
+
+| Concern | Where |
+|---|---|
+| Wire selector `Wire::{Framed,Connect}` + `WIRE_ENV` (`AGALMA_IPC_WIRE`) + `serve_wire` | `crates/agalma-ipc/src/connect.rs` |
+| `HarnessClient` speaks either wire (`connect_wire`); `connect` stays framed | `crates/agalma-ipc/src/harness_client.rs` |
+| `serve_harness(server, socket, wire)` harness serve entry point | `crates/agalma-ipc/src/harness_server.rs` |
+| Reference server serves the selected wire (`serve_wire`, `run_from_args`) | `crates/agalma-harness-reference/src/server.rs` |
+| OpenCode server serves the selected wire | `crates/agalma-harness-opencode/src/server.rs` |
+| `ProcessBinding` selects the wire, exports it to the child, connects matching client | `crates/agalma-conductor/src/harness_process.rs` |
+
+- The harness process wire **defaults to `Connect`** (`harness_wire()`); a parity
+  run sets `AGALMA_IPC_WIRE=framed` to compare the two against the same scenario.
+  The selected wire is exported to the child in the same variable, so the server
+  serves the matching transport. Both wires announce the identical
+  `READY {json}` line, so the supervisor handshake and bind gate are unchanged.
+- Envelope semantics are preserved verbatim on both wires: `v`/`id`/`method`/
+  `params_json`; duplicate-id receipt replay; `UnknownOutcome`/contract errors
+  in-band; version refusal; unknown-method `UnsupportedCapability`. The Connect
+  path reuses `Server::dispatch`, so no envelope code was forked.
+- No new dependency. `connectrpc`/`buffa` stay confined to `agalma-ipc`
+  (architecture test unchanged and green); no `Cargo.toml`/`Cargo.lock` change.
+
+### New interfaces
+
+- `agalma_ipc`: `connect::{Wire, WIRE_ENV, serve_wire}`,
+  `ConnectClient::call_typed`; `harness_client::HarnessClient::connect_wire`
+  (framed `connect`/`from_client` retained); `harness_server::serve_harness`.
+- `agalma-harness-reference`: `serve_wire` (framed `serve` retained).
+- `agalma_conductor::harness_process`: `harness_wire`, `ProcessBinding::wire`,
+  `ProcessBinding::spawn(.., wire, ..)`.
+
+## Results
+
+All commands from the repo root, `--offline`.
+
+| Command | Observed |
+|---|---|
+| `cargo build --offline --workspace` | exit 0, 0 warnings |
+| `cargo test --offline -p agalma-ipc` | 48 unit + 14 conformance + 9 connect-conformance + **4 harness-connect** + doc-tests; 0 failures |
+| `cargo test --offline -p agalma-conductor --test harness_process` | **14 passed; 0 failed** |
+| `cargo test --offline -p agalma-conductor --test architecture` | 6 passed; 0 failed |
+| `cargo test --offline -p agalma-harness-reference -p agalma-harness-opencode` | 60 passed; 0 failed |
+
+`tests/harness_connect.rs` (new, `agalma-ipc`):
+
+| Test | What it proves |
+|---|---|
+| `harness_api_over_connect_matches_framed` | The typed `HarnessClient` drives all nine `HarnessApi` methods over a `register_harness` server; a framed and a Connect server produce an **identical typed transcript** (cached identity, handles, terminal state, event rendering, cancel/stop evidence). |
+| `harness_connect_live_describe_round_trips` | `describe_live` travels over Connect and matches the cached identity. |
+| `harness_connect_missing_socket_is_unavailable` | A missing Connect socket surfaces as `Unavailable`. |
+| `wire_selector_parses_and_defaults` | Wire selector parsing/rendering. |
+
+`tests/harness_process.rs` (conductor):
+
+| Test | What it proves |
+|---|---|
+| `wire_parity_framed_vs_connect_matches_in_process` (new) | The same reference scenario yields an identical normalized transcript under the in-process binding, the **framed** process wire, and the **Connect** process wire; both process wires reproduce the wire-independent static bind plan. |
+| `shadow_parity_in_process_vs_process_reference` | In-process vs process parity, now over **Connect** (`binding.wire() == Connect`). |
+| `staged_rebind_uses_pinned_binding_not_flipped_config` | In-flight operation pinned to `reference-fail` keeps its pin across a process swap; the next attempt binds the flipped config; binding ids differ — over **Connect**. |
+| `rollback_restores_binding_without_state_loss` | Candidate retired, prior binding restored `Active`, pre-rollback event survives. |
+| `harness_client_maps_transport_loss_to_contract_error` | A dead Connect transport maps to `UnknownOutcome`/`KnownFailure`. |
+| `harness_client_duplicate_id_replay_and_connection_loss` | Raw framed `Client`: duplicate-id replay, connection loss, missing socket (framed path still proven). |
+| startup/restart/drop lifecycle tests | Shared `spawn_supervised` cleanup reaps the process tree on failed Connect startup; retry on the same socket succeeds. |
+
+## Consumer-invariance proof
+
+Phase/activity logic is unchanged: `open_reference_harness` /
+`open_opencode_harness` and `HarnessTransport` keep their signatures; only the
+private wire selection and the client construction site changed. No contract
+schema changed. `git diff --name-only` (tracked) plus the new file, all within the
+allowed set:
+
+```
+crates/agalma-conductor/src/harness_process.rs
+crates/agalma-conductor/tests/harness_process.rs
+crates/agalma-harness-opencode/src/server.rs
+crates/agalma-harness-reference/src/lib.rs
+crates/agalma-harness-reference/src/server.rs
+crates/agalma-ipc/src/connect.rs
+crates/agalma-ipc/src/harness_client.rs
+crates/agalma-ipc/src/harness_server.rs
+crates/agalma-ipc/src/lib.rs
+crates/agalma-ipc/tests/harness_connect.rs               # new
+docs/b1-harness-evidence.md                              # this file
+```
+
+## Deviations and notes
+
+1. The IPCX design D4 names a per-boundary `docs/ipcx-<boundary>-evidence.md`;
+   this bead's scope extends the existing B1 harness evidence instead, keeping
+   the framed and Connect proofs side by side.
+2. The harness process wire defaults to `Connect`. The process transport itself
+   is still only exercised by the boundary tests (the phase path constructs
+   harnesses in-process, unchanged since B1.2), so the default flip changes no
+   production path; `AGALMA_IPC_WIRE=framed` restores the framed wire for parity.
+3. `serve_wire` installs a multithread Tokio runtime for both wires so
+   server-hosted implementations that need a reactor (the OpenCode harness) keep
+   working; the framed branch runs the serial accept loop under `block_on`, as it
+   did before.

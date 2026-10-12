@@ -28,6 +28,7 @@ use connectrpc::{
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder as AutoBuilder;
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 use tower::Service as _;
 
@@ -43,6 +44,75 @@ use crate::server::Server;
 /// socket. Ignored for routing (the socket path selects the peer); the Connect
 /// path always begins with `agalma.ipc.v1.Ipc/Call`.
 const AUTHORITY: &str = "http://agalma.local";
+
+// ---------------------------------------------------------------------------
+// Wire selector
+// ---------------------------------------------------------------------------
+
+/// Wire transport backing a process binding during the ConnectRPC migration
+/// (IPCX design D7).
+///
+/// Both wires speak the *same* envelope ([`crate::envelope`]); only the byte
+/// transport differs. `Framed` is the B1 length-prefixed JSON transport
+/// ([`crate::server`]/[`crate::client`]); `Connect` is the IPCX HTTP/2
+/// Connect transport ([`serve`]/[`ConnectClient`]). The per-boundary selector
+/// lets a parity run compare both against the same scenario.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wire {
+    /// Length-prefixed JSON frames over a Unix socket (B1 D1).
+    Framed,
+    /// ConnectRPC `Call` over HTTP/2 on a Unix socket (IPCX D1).
+    Connect,
+}
+
+/// Environment variable selecting a process binding's wire transport
+/// (`framed` | `connect`). Absent or unrecognized uses the caller's default.
+pub const WIRE_ENV: &str = "AGALMA_IPC_WIRE";
+
+impl Wire {
+    /// Stable selector string (the [`WIRE_ENV`] value).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Wire::Framed => "framed",
+            Wire::Connect => "connect",
+        }
+    }
+
+    /// Parse a selector string; an unknown value is `None`.
+    pub fn parse(value: &str) -> Option<Wire> {
+        match value {
+            "framed" => Some(Wire::Framed),
+            "connect" => Some(Wire::Connect),
+            _ => None,
+        }
+    }
+
+    /// Read [`WIRE_ENV`]; absent or unrecognized returns `default`.
+    pub fn from_env(default: Wire) -> Wire {
+        std::env::var(WIRE_ENV)
+            .ok()
+            .and_then(|value| Wire::parse(&value))
+            .unwrap_or(default)
+    }
+}
+
+/// Serve `server` over `wire` until stopped.
+///
+/// The framed branch runs the B1 serial accept loop; the Connect branch runs
+/// the IPCX UDS accept loop. Both print the same single `READY {json}` line, so
+/// the supervisor's handshake and bind gate are transport-agnostic. A
+/// multithread Tokio runtime is installed for both branches because
+/// server-hosted implementations (e.g. the OpenCode harness) may need a reactor.
+pub fn serve_wire(mut server: Server, socket: &Path, wire: Wire) -> std::io::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| std::io::Error::other(format!("tokio runtime: {e}")))?;
+    match wire {
+        Wire::Framed => runtime.block_on(async move { server.serve(socket) }),
+        Wire::Connect => runtime.block_on(serve(server, socket)),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Server
@@ -169,14 +239,11 @@ fn response_to_proto(response: &Response) -> IpcResponse {
         serde_json::to_vec(inner.as_ref().unwrap_or(&Value::Null))
             .expect("response result always serializes")
     });
-    let error = response
-        .error
-        .as_ref()
-        .map(|e| ProtoError {
-            code: e.code.clone(),
-            message: e.message.clone(),
-            ..Default::default()
-        });
+    let error = response.error.as_ref().map(|e| ProtoError {
+        code: e.code.clone(),
+        message: e.message.clone(),
+        ..Default::default()
+    });
     IpcResponse {
         v: response.v,
         id: response.id,
@@ -220,15 +287,11 @@ pub struct ConnectClient {
 impl ConnectClient {
     /// Connect to the server listening on `socket` and speak Connect.
     pub async fn connect(socket: &Path) -> Result<ConnectClient, IpcError> {
-        let authority: http::Uri = AUTHORITY
-            .parse()
-            .expect("static authority is a valid URI");
+        let authority: http::Uri = AUTHORITY.parse().expect("static authority is a valid URI");
         let connection = connectrpc::client::Http2Connection::builder()
             .connect_unix(socket, authority.clone())
             .await
-            .map_err(|e| {
-                IpcError::unavailable(format!("connect to {}: {e}", socket.display()))
-            })?;
+            .map_err(|e| IpcError::unavailable(format!("connect to {}: {e}", socket.display())))?;
         let config = ClientConfig::new(authority).with_protocol(connectrpc::Protocol::Connect);
         Ok(ConnectClient {
             client: IpcClient::new(connection.shared(1), config),
@@ -300,6 +363,19 @@ impl ConnectClient {
             ))),
         }
     }
+
+    /// Call `method` with `params` (auto id) and decode the JSON result into `R`.
+    pub async fn call_typed<P, R>(&mut self, method: &str, params: &P) -> Result<R, IpcError>
+    where
+        P: Serialize,
+        R: DeserializeOwned,
+    {
+        let value = serde_json::to_value(params)
+            .map_err(|e| IpcError::protocol(format!("encode params: {e}")))?;
+        let result = self.call(method, value).await?;
+        serde_json::from_value(result)
+            .map_err(|e| IpcError::protocol(format!("decode result: {e}")))
+    }
 }
 
 /// Classify a ConnectRPC transport error as an [`IpcError`].
@@ -311,9 +387,11 @@ impl ConnectClient {
 /// `Protocol` violation.
 fn map_connect_error(id: u64, error: ConnectError) -> IpcError {
     match error.code {
-        ErrorCode::Unavailable | ErrorCode::DeadlineExceeded => IpcError::unavailable(format!(
-            "connect transport for request id {id}: {error}"
+        ErrorCode::Unavailable | ErrorCode::DeadlineExceeded => {
+            IpcError::unavailable(format!("connect transport for request id {id}: {error}"))
+        }
+        _ => IpcError::protocol(format!(
+            "connect protocol fault for request id {id}: {error}"
         )),
-        _ => IpcError::protocol(format!("connect protocol fault for request id {id}: {error}")),
     }
 }

@@ -61,13 +61,13 @@ pub mod proto {
 
 pub use client::Client;
 pub use command::CommandSpec;
-pub use connect::{ConnectClient, IpcDispatcher};
+pub use connect::{serve_wire, ConnectClient, IpcDispatcher, Wire, WIRE_ENV};
 pub use envelope::{Request, Response, ResponseError, PROTOCOL_VERSION};
 pub use error::{IpcError, CODE_PROTOCOL, CODE_UNAVAILABLE};
 pub use execution_client::{
     BeginStepCall, CompleteStepCall, DirectiveExecCall, ExecIdCall, ExecutionClient, ExecutionOps,
-    KernelCall, LeaseExecCall, NowCall, PendingStepCall, ReceiptCall, ReclaimCall, SnapshotPathCall,
-    StartCall, TimerExecParams,
+    KernelCall, LeaseExecCall, NowCall, PendingStepCall, ReceiptCall, ReclaimCall,
+    SnapshotPathCall, StartCall, TimerExecParams,
 };
 pub use execution_handler::{
     EffectContext, EffectDispatch, EffectMode, EffectProbe, EffectReport, HandlerError, HandlerKey,
@@ -75,10 +75,10 @@ pub use execution_handler::{
 };
 pub use execution_server::{register_execution, EXECUTION_METHODS};
 pub use frame::{FrameError, MAX_FRAME};
-pub use harness_client::{
-    AttemptCall, HarnessClient, OperationCall, RunTurnCall, SessionCall,
+pub use harness_client::{AttemptCall, HarnessClient, OperationCall, RunTurnCall, SessionCall};
+pub use harness_server::{
+    ensure_all_handlers, register_harness, serve_harness, server_info_from, HARNESS_METHODS,
 };
-pub use harness_server::{ensure_all_handlers, register_harness, server_info_from, HARNESS_METHODS};
 pub use ledger_client::{
     BindingParams, CommitParams, DecisionParams, DigestParams, DirectiveIdCall, DirectiveParams,
     DueTimersParams, ExecutionCall, KeyCall, LatchParams, LeaseCall, LedgerClient, LedgerOps,

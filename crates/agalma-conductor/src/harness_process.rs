@@ -9,8 +9,11 @@
 //! id/generation (an in-flight operation is never rebound).
 //!
 //! Transport selection is [`HarnessTransport`] (`AGALMA_HARNESS_TRANSPORT`):
-//! `in-process` (default) or `process`. The build/verify phase logic is
-//! unchanged (D5); the transport is exercised through the factory here.
+//! `in-process` (default) or `process`. The process wire is selected by
+//! [`harness_wire`] (`AGALMA_IPC_WIRE`): `connect` (default, IPCX.2) or
+//! `framed`, so a parity run can compare both against the same scenario. The
+//! build/verify phase logic is unchanged (D5); the transport is exercised
+//! through the factory here.
 
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader};
@@ -26,7 +29,7 @@ use agalma_contracts::harness::{
 use agalma_contracts::{BindingRecord, ContractError};
 use agalma_harness_opencode::{self as opencode, OpenCodeHarness, OpenCodeHarnessConfig};
 use agalma_harness_reference::{self as reference, ReferenceProfile};
-use agalma_ipc::{CommandSpec, HarnessClient, SandboxClient, ServerInfo};
+use agalma_ipc::{CommandSpec, HarnessClient, SandboxClient, ServerInfo, Wire, WIRE_ENV};
 
 use crate::harness_binding::{self, HarnessKind};
 
@@ -62,6 +65,16 @@ impl HarnessTransport {
             HarnessTransport::Process => "process",
         }
     }
+}
+
+/// The wire transport the harness process boundary uses (IPCX.2).
+///
+/// The harness boundary migrated to [`Wire::Connect`]; a parity run may set
+/// [`agalma_ipc::WIRE_ENV`] to `framed` to compare the two wires against the
+/// same scenario. The selected wire is also exported to the child process (see
+/// [`ProcessBinding::spawn`]) so its server serves the matching transport.
+pub fn harness_wire() -> Wire {
+    Wire::from_env(Wire::Connect)
 }
 
 /// Resolve a component server binary name relative to the conductor executable.
@@ -117,24 +130,31 @@ pub struct ProcessBinding {
     client: HarnessClient,
     generation: u32,
     model: String,
+    wire: Wire,
     stopped: bool,
 }
 
 impl ProcessBinding {
     /// Spawn `program` from `spec` (which must include `--socket <socket>`),
-    /// wait for `READY`, run the bind gate, and connect.
+    /// wait for `READY`, run the bind gate, and connect over `wire`.
+    ///
+    /// The selected wire is also exported to the child in [`WIRE_ENV`], so the
+    /// server serves the matching transport; both wires announce the same
+    /// `READY` line and speak the same envelope.
     pub fn spawn(
         spec: CommandSpec,
         program: PathBuf,
         socket: PathBuf,
         generation: u32,
         model: &str,
+        wire: Wire,
         timeout: Duration,
     ) -> Result<ProcessBinding, String> {
         // The cleanup guard owns the freshly spawned group for every fallible
         // startup stage (READY wait is inside `spawn_supervised`; bind gate and
         // client connect follow here). Ownership transfers to the binding only
         // once construction is complete, so no error path leaks the server tree.
+        let spec = spec.env(WIRE_ENV, wire.as_str());
         let (guard, info) = spawn_supervised(&spec, &program, &socket, timeout)?;
 
         let describe = describe_from_info(&info);
@@ -147,7 +167,7 @@ impl ProcessBinding {
         )
         .map_err(|e| format!("bind gate rejected {}: {e}", info.impl_name))?;
 
-        let client = HarnessClient::connect(&socket).map_err(|e| e.to_string())?;
+        let client = HarnessClient::connect_wire(&socket, wire).map_err(|e| e.to_string())?;
 
         let child = guard.into_child();
 
@@ -162,6 +182,7 @@ impl ProcessBinding {
             client,
             generation,
             model: model.to_string(),
+            wire,
             stopped: false,
         })
     }
@@ -189,6 +210,11 @@ impl ProcessBinding {
     /// The socket path.
     pub fn socket(&self) -> &Path {
         &self.socket
+    }
+
+    /// The wire transport this binding (and its server) uses.
+    pub fn wire(&self) -> Wire {
+        self.wire
     }
 
     /// The connected harness client.
@@ -224,6 +250,7 @@ impl ProcessBinding {
             self.socket.clone(),
             self.generation,
             &self.model,
+            self.wire,
             READY_TIMEOUT,
         )?;
         if restarted.binding.binding_id != binding_id || restarted.binding.generation != generation
@@ -319,8 +346,16 @@ pub fn open_reference_harness(
                 scenario_dir.to_string_lossy().into_owned(),
             );
             let program = resolve_server_binary(&spec.program)?;
-            let binding =
-                ProcessBinding::spawn(spec, program, socket, generation, model, READY_TIMEOUT)?;
+            let wire = harness_wire();
+            let binding = ProcessBinding::spawn(
+                spec,
+                program,
+                socket,
+                generation,
+                model,
+                wire,
+                READY_TIMEOUT,
+            )?;
             Ok(Box::new(binding))
         }
     }
@@ -468,12 +503,14 @@ pub fn open_opencode_harness(init: OpenCodeHarnessInit) -> Result<LiveHarness, S
         HarnessTransport::Process => {
             let spec = opencode_server_spec(&init);
             let program = resolve_server_binary(&spec.program)?;
+            let wire = harness_wire();
             let binding = ProcessBinding::spawn(
                 spec,
                 program,
                 init.harness_socket,
                 init.generation,
                 &init.model,
+                wire,
                 READY_TIMEOUT,
             )?;
             Ok(LiveHarness::Process(binding))

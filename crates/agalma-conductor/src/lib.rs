@@ -22,6 +22,7 @@ pub mod provider_auth;
 pub mod provider_proxy;
 pub mod reap;
 pub mod reconcile;
+pub mod review;
 pub mod routing;
 pub mod sandbox_process;
 pub mod session;
@@ -40,6 +41,9 @@ pub const CONCIERGE_PROMPT: &str = include_str!("../prompts/concierge.md");
 /// Canonical designer role prompt (CP.2, `agalma-i5h.3`): epic design → staged
 /// decomposition.
 pub const DESIGNER_PROMPT: &str = include_str!("../prompts/designer.md");
+/// Canonical reviewer role prompt (CP.5, `agalma-i5h.6`): merged diff vs epic
+/// design/acceptance → exactly one `REVIEW:` marker.
+pub const REVIEWER_PROMPT: &str = include_str!("../prompts/reviewer.md");
 
 use std::fs::OpenOptions;
 use std::io::Write;

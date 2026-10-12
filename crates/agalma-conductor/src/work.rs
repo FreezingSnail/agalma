@@ -42,7 +42,7 @@ use agalma_execution::{
     Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION, LEDGER_SCHEMA_VERSION,
 };
 use agalma_sandbox::PRODUCT_PROFILE;
-use agalma_taskqueue::PARKED_LABEL;
+use agalma_taskqueue::{BdTaskQueue, PARKED_LABEL};
 use serde_json::json;
 
 use agalma_ipc::TaskQueueOps;
@@ -210,6 +210,44 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
         Err(err) => eprintln!("agalma: epic sweep failed: {err}"),
     }
 
+    // Per-epic review gate (CP.5): after an epic's last child lands, run one
+    // reviewer session over the merged diff vs the epic design/acceptance. A
+    // drift verdict files a P1 `drift-fix` task and holds ordinary dispatch.
+    // Best-effort: a review failure must not block the loop, and an unavailable
+    // strong route skips the gate (never a silent pass or downgrade).
+    match crate::review::run_review(
+        &repo,
+        &state_dir,
+        paid_available,
+        proxy_url.clone(),
+        override_model.as_deref(),
+    ) {
+        Ok(report) if report.skipped_reason.is_none() => eprintln!(
+            "agalma: review gate: {} epic(s) reviewed, {} approved, {} drift, {} escalated",
+            report.epics_seen.len(),
+            report.approved.len(),
+            report.drift.len(),
+            report.escalated.len()
+        ),
+        Ok(_) => {}
+        Err(err) => eprintln!("agalma: review gate failed: {err}"),
+    }
+
+    // Hold ordinary dispatch while any epic's review drift is unresolved: the
+    // drift-fix task is rework, and dispatch resumes only once a later review
+    // approves (or a human clears the escalation). Best-effort check.
+    match crate::review::dispatch_hold(&BdTaskQueue::new(&repo)) {
+        Ok(Some(epic)) => {
+            eprintln!(
+                "agalma: ordinary dispatch held: epic {epic} has an unresolved review drift \
+                 (drift-fix pending); no ordinary task will be claimed"
+            );
+            return Ok(ExitCode::SUCCESS);
+        }
+        Ok(None) => {}
+        Err(err) => eprintln!("agalma: review hold check failed: {err}"),
+    }
+
     let mut processed: u32 = 0;
     let mut last: Option<Terminal> = None;
     loop {
@@ -252,6 +290,17 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
             harness.clone(),
         )?;
         processed += 1;
+        // CP.5: the first child of an epic to land records the epic's review
+        // baseline (`review-start:<HEAD>`) so the post-merge review has a diff
+        // anchor. Best-effort; a task with no parent epic is a no-op.
+        if matches!(terminal, Terminal::Done) {
+            if let Err(err) = crate::review::record_start_on_land(&repo, task.task_id.as_str()) {
+                eprintln!(
+                    "agalma: review baseline record for {}: {err}",
+                    task.task_id.as_str()
+                );
+            }
+        }
         last = Some(terminal);
         if args.once {
             break;

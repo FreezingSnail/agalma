@@ -931,7 +931,10 @@ fn handler_registry_step_parity_in_process_vs_process() {
     assert_eq!(in_receipt.result, proc_receipt.result);
     assert_eq!(in_pending, 0);
     assert_eq!(proc_pending, 0);
-    assert_eq!(in_snapshot, proc_snapshot, "handler-protocol snapshot parity");
+    assert_eq!(
+        in_snapshot, proc_snapshot,
+        "handler-protocol snapshot parity"
+    );
 
     drop(client);
     let _ = kernel_server.stop();

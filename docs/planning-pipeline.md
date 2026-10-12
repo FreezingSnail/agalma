@@ -121,6 +121,17 @@ design/acceptance; parse exactly one marker line `REVIEW: APPROVED` or
 `drift-fix` task under the epic and hold ordinary dispatch until cleared;
 retry budget then human escalation. (Detailed in CP.5.)
 
+Durable per-epic state (survives restart), mirroring the epic sweep:
+`review-start:<sha>` is the diff baseline recorded at the first child land;
+`review-attempts:<n>` counts review attempts (reconciled with the `drift-fix`
+tasks); `review-drift` is the active dispatch hold (removed on a later
+`APPROVED`); `review-approved` is terminal (never re-reviewed); `human` marks
+escalation. The reviewer runs on the strongest (planner) route under a
+`review:<epic>` scope and fails closed when it is unavailable — never a silent
+pass or a downgrade to a free builder model. A `drift-fix` task is rework
+bookkeeping (deferred, never ordinary fleet work); the hold withholds ordinary
+dispatch until a re-review approves or a human takes over.
+
 ## Pilot
 
 `agalma-3kr` (TUI control plane) is the first goal to travel the full path:

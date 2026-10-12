@@ -57,9 +57,19 @@ pub fn build_server(profile: ReferenceProfile, scenario_dir: PathBuf) -> Server 
     server
 }
 
-/// Bind `socket` and serve `profile` over the framed transport until stopped.
+/// Wire the reference harness server serves on.
+///
+/// IPCX convention: [`agalma_ipc::WIRE_ENV`] selects the wire with a `Connect`
+/// default; `AGALMA_IPC_WIRE=framed` restores the B1 length-prefixed transport.
+/// Aligned with the sandbox/peer component servers (`agalma-3ej`).
+pub fn wire_from_env() -> Wire {
+    Wire::from_env(Wire::Connect)
+}
+
+/// Bind `socket` and serve `profile` over the wire selected by
+/// [`agalma_ipc::WIRE_ENV`] (`connect` default, `framed` optional) until stopped.
 pub fn serve(socket: &Path, profile: ReferenceProfile, scenario_dir: PathBuf) -> io::Result<()> {
-    serve_wire(socket, profile, scenario_dir, Wire::Framed)
+    serve_wire(socket, profile, scenario_dir, wire_from_env())
 }
 
 /// Bind `socket` and serve `profile` over the selected wire transport (IPCX.2).
@@ -95,7 +105,7 @@ where
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("create socket dir {}: {e}", parent.display()))?;
     }
-    let wire = Wire::from_env(Wire::Framed);
+    let wire = wire_from_env();
     serve_wire(&socket, profile, scenario_dir, wire)
         .map_err(|e| format!("serve {}: {e}", socket.display()))
 }

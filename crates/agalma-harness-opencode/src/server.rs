@@ -1,10 +1,12 @@
 //! OpenCode `HarnessApi` component server (B1.2; sandbox client B1.3).
 //!
-//! Hosts the real [`OpenCodeHarness`] behind the framed transport. The server is
+//! Hosts the real [`OpenCodeHarness`] behind the selected wire transport
+//! (IPCX.2: `Connect` default, `framed` via `AGALMA_IPC_WIRE`). The server is
 //! trusted code: the confined `opencode serve` child is launched through the
 //! extracted `SandboxApi` boundary — a [`SandboxClient`] connected to the
 //! sandbox component server named by `AGALMA_SANDBOX_SOCKET` — instead of
-//! embedding `agalma-sandbox` in-process (B1.3).
+//! embedding `agalma-sandbox` in-process (B1.3). Both boundaries the server owns
+//! (inbound serve, outbound sandbox client) read the same [`Wire`] selection.
 //!
 //! Configuration arrives from the environment (the conductor's `server_command()`
 //! / `ProcessBinding` supplies it). The process transport serializes the full
@@ -287,6 +289,33 @@ pub fn root_for(socket: &Path) -> PathBuf {
         })
 }
 
+/// Wire the OpenCode harness server speaks on every boundary it owns.
+///
+/// Both the inbound serve loop [`agalma_ipc::serve_harness`] and the outbound
+/// [`SandboxClient`] read [`agalma_ipc::WIRE_ENV`] with a `Connect` default —
+/// the IPCX convention the sandbox/peer component servers already follow. A
+/// client that hardcoded `Framed` while the sandbox server served the default
+/// `Connect` read the HTTP/2 preamble as a frame length (`"HTTP"` → protocol
+/// violation), which broke every live session (`agalma-3ej`).
+/// `AGALMA_IPC_WIRE=framed` restores the B1 length-prefixed transport on both
+/// boundaries.
+///
+/// Split out (like [`config_from_lookup`]) so the selection is testable without
+/// mutating the process environment.
+pub fn wire_from_env() -> Wire {
+    Wire::from_env(Wire::Connect)
+}
+
+/// Connect the [`SandboxClient`] the harness drives confined launches through.
+///
+/// Uses the same env-selected wire as the serve loop ([`wire_from_env`]) so the
+/// outbound sandbox boundary agrees with the sandbox server's own default
+/// (`agalma-3ej`); see [`wire_from_env`].
+pub fn connect_sandbox(socket: &Path) -> Result<SandboxClient, String> {
+    SandboxClient::connect_wire(socket, wire_from_env())
+        .map_err(|e| format!("connect sandbox server at {}: {e}", socket.display()))
+}
+
 /// Full argv/env entry point used by the server binary.
 pub fn run_from_args<I>(args: I) -> Result<(), String>
 where
@@ -305,14 +334,9 @@ where
                 .unwrap_or_else(|| Path::new("."))
                 .join("sandbox.sock")
         });
-    let sandbox = SandboxClient::connect(&sandbox_socket).map_err(|e| {
-        format!(
-            "connect sandbox server at {}: {e}",
-            sandbox_socket.display()
-        )
-    })?;
+    let sandbox = connect_sandbox(&sandbox_socket)?;
     let server = build_server(Box::new(sandbox), config);
-    let wire = Wire::from_env(Wire::Framed);
+    let wire = wire_from_env();
     let display = socket.display().to_string();
     agalma_ipc::serve_harness(server, &socket, wire).map_err(|e| format!("serve {display}: {e}"))
 }

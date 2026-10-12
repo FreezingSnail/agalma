@@ -25,7 +25,7 @@ use agalma_contracts::{
 use agalma_harness_reference::{
     self as reference, ReferenceHarness, ReferenceHarnessConfig, ReferenceProfile,
 };
-use agalma_ipc::{Client, CommandSpec, Wire};
+use agalma_ipc::{Client, CommandSpec, Wire, WIRE_ENV};
 
 use agalma_conductor::harness_binding::{
     persist_binding, plan_binding, read_pinned_binding, BindPlan, HarnessKind,
@@ -216,6 +216,10 @@ fn spawn_process_reference(
 }
 
 /// Spawn a bare reference server (no supervisor) and wait for READY.
+///
+/// Unlike [`ProcessBinding::spawn`], this raw path does not set the wire, and
+/// its caller drives a hardcoded framed [`Client`]. Pin `framed` so the server
+/// (whose default is now IPCX `Connect`) speaks the matching transport.
 fn spawn_raw_server(profile: ReferenceProfile, socket: &Path, scenario_dir: &Path) -> Child {
     let (spec, program) = reference_spec(profile, socket, scenario_dir);
     if let Some(parent) = socket.parent() {
@@ -225,6 +229,7 @@ fn spawn_raw_server(profile: ReferenceProfile, socket: &Path, scenario_dir: &Pat
     let mut child = Command::new(&program)
         .args(&spec.args)
         .envs(&spec.env)
+        .env(WIRE_ENV, Wire::Framed.as_str())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

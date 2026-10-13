@@ -34,6 +34,7 @@ pub mod status;
 pub mod stop;
 pub mod sweep;
 pub mod task;
+pub mod task_package;
 pub mod taskqueue_process;
 pub mod watch;
 pub mod work;

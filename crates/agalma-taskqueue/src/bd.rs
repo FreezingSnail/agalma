@@ -66,6 +66,48 @@ pub struct EpicRecord {
     pub labels: Vec<String>,
 }
 
+/// A dependency edge on an issue, as `bd show --json` reports it.
+///
+/// `bd list --json` and `bd show --json` use different shapes under the same
+/// `dependencies` key: the list shape carries `depends_on_id`/`type`, the show
+/// shape nests a full issue object with `id`/`dependency_type`. Both are
+/// normalized here by [`BdDependency::target`] and [`BdDependency::edge_kind`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskDependency {
+    /// The other issue's id.
+    pub id: String,
+    /// The edge kind (`blocks`, `parent-child`, ...) when recorded.
+    pub kind: Option<String>,
+}
+
+/// Full issue context for immutable task-package construction (SF.2).
+///
+/// Unlike [`TaskQueueApi::get`], this does not require a fenced task block: it
+/// returns the raw body/design/notes/acceptance, the parent and dependency
+/// edges, and comment/handoff text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskDefinition {
+    /// Backlog identity (bd issue id).
+    pub task_id: TaskId,
+    /// Human title (issue title).
+    pub title: String,
+    /// Issue description/body exactly as authored.
+    pub description: String,
+    /// Issue design section, when present.
+    pub design: Option<String>,
+    /// Issue notes section, when present.
+    pub notes: Option<String>,
+    /// Issue acceptance criteria text, when present.
+    pub acceptance_criteria: Option<String>,
+    /// Parent epic id, derived from the nested `parent-child` edge (or the
+    /// top-level `parent` field).
+    pub parent: Option<String>,
+    /// Non-parent dependency edges (e.g. `blocks`).
+    pub dependencies: Vec<TaskDependency>,
+    /// Comment bodies, oldest first (`--include-comments`).
+    pub comments: Vec<String>,
+}
+
 /// Task backlog adapter backed by the `bd` CLI.
 pub struct BdTaskQueue {
     /// Working directory for `bd` (the repository owning the backlog).
@@ -140,6 +182,22 @@ impl BdTaskQueue {
             .next()
             .ok_or_else(|| ContractError::KnownFailure(format!("task {id}: not found")))?;
         Ok(issue.into_projection())
+    }
+
+    /// Read the full issue definition for immutable task-package construction
+    /// (SF.2): title, body, design, notes, acceptance, parent and dependency
+    /// edges, and comment bodies.
+    ///
+    /// Unlike [`TaskQueueApi::get`], no fenced task block is required. The nested
+    /// `parent-child` dependency edge is lifted to [`TaskDefinition::parent`];
+    /// the remaining edges become [`TaskDefinition::dependencies`].
+    pub fn task_definition(&self, id: &TaskId) -> Result<TaskDefinition, ContractError> {
+        let stdout = self.bd_ok(&["show", id.as_str(), "--json", "--include-comments"])?;
+        let issue = parse_issues(&stdout)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| ContractError::KnownFailure(format!("task {id}: not found")))?;
+        Ok(issue.into_definition())
     }
 
     /// Set an issue's status. `closed` goes through `bd close` (which records a
@@ -359,10 +417,30 @@ struct BdComment {
 /// usable for both payloads.
 #[derive(Debug, Deserialize)]
 struct BdDependency {
+    /// The issue id from the list shape (`depends_on_id`) or the nested
+    /// show-shape issue object (`id`).
     #[serde(default)]
     depends_on_id: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    /// Edge kind from the list shape (`type`).
     #[serde(default, rename = "type")]
     kind: Option<String>,
+    /// Edge kind from the nested show shape (`dependency_type`).
+    #[serde(default)]
+    dependency_type: Option<String>,
+}
+
+impl BdDependency {
+    /// The other issue's id, whichever shape supplied it.
+    fn target(&self) -> Option<&str> {
+        self.depends_on_id.as_deref().or(self.id.as_deref())
+    }
+
+    /// The edge kind, whichever shape supplied it.
+    fn edge_kind(&self) -> Option<&str> {
+        self.kind.as_deref().or(self.dependency_type.as_deref())
+    }
 }
 
 /// Subset of the bd issue JSON the adapter consumes.
@@ -374,6 +452,12 @@ struct BdIssue {
     description: String,
     #[serde(default)]
     design: Option<String>,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    acceptance_criteria: Option<String>,
+    #[serde(default)]
+    parent: Option<String>,
     #[serde(default)]
     issue_type: Option<String>,
     status: String,
@@ -482,8 +566,8 @@ impl BdIssue {
             .dependencies
             .unwrap_or_default()
             .into_iter()
-            .filter(|edge| edge.kind.as_deref() == Some("blocks"))
-            .filter_map(|edge| edge.depends_on_id)
+            .filter(|edge| edge.edge_kind() == Some("blocks"))
+            .filter_map(|edge| edge.target().map(str::to_string))
             .collect();
         crate::decomp::ChildTask {
             id: self.id,
@@ -492,6 +576,44 @@ impl BdIssue {
             design: self.design,
             labels: self.labels.unwrap_or_default(),
             depends_on,
+        }
+    }
+
+    /// Project an issue into the full definition for task-package construction.
+    ///
+    /// The nested `parent-child` edge is lifted to the parent; other edges are
+    /// kept as dependencies. A top-level `parent` field (when present) wins.
+    fn into_definition(self) -> TaskDefinition {
+        let mut parent = self.parent.clone();
+        let mut dependencies = Vec::new();
+        for edge in self.dependencies.unwrap_or_default() {
+            let Some(target) = edge.target().map(str::to_string) else {
+                continue;
+            };
+            let kind = edge.edge_kind().map(str::to_string);
+            if kind.as_deref() == Some("parent-child") {
+                if parent.is_none() {
+                    parent = Some(target);
+                }
+                continue;
+            }
+            dependencies.push(TaskDependency { id: target, kind });
+        }
+        TaskDefinition {
+            task_id: TaskId::new(self.id),
+            title: self.title,
+            description: self.description,
+            design: self.design,
+            notes: self.notes,
+            acceptance_criteria: self.acceptance_criteria,
+            parent,
+            dependencies,
+            comments: self
+                .comments
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|c| c.text)
+                .collect(),
         }
     }
 }
@@ -522,6 +644,9 @@ mod tests {
             title: "x".to_string(),
             description: String::new(),
             design: None,
+            notes: None,
+            acceptance_criteria: None,
+            parent: None,
             issue_type: Some("task".to_string()),
             status: "open".to_string(),
             assignee: None,
@@ -597,6 +722,76 @@ mod tests {
         rejected.status = "open".to_string();
         rejected.defer_until = Some("2099-01-01T00:00:00Z".to_string());
         assert!(!rejected.is_ready_candidate());
+    }
+
+    #[test]
+    fn show_shaped_nested_dependencies_and_parent_parse() {
+        // `bd show --json` nests full issue objects with `id`/`dependency_type`.
+        let json = r#"[
+          {
+            "id": "t.1",
+            "title": "T",
+            "description": "Task body.",
+            "design": "Design text.",
+            "notes": "Notes text.",
+            "acceptance_criteria": "Acceptance text.",
+            "status": "open",
+            "dependencies": [
+              { "id": "epic.1", "dependency_type": "parent-child" },
+              { "id": "dep.1", "dependency_type": "blocks" }
+            ],
+            "comments": [
+              { "id": "c1", "text": "handoff one" },
+              { "id": "c2", "text": "handoff two" }
+            ]
+          }
+        ]"#;
+        let definition = parse_issues(json)
+            .expect("parse show shape")
+            .into_iter()
+            .next()
+            .expect("one issue")
+            .into_definition();
+        assert_eq!(definition.parent.as_deref(), Some("epic.1"));
+        assert_eq!(
+            definition.dependencies,
+            vec![TaskDependency {
+                id: "dep.1".to_string(),
+                kind: Some("blocks".to_string()),
+            }]
+        );
+        assert_eq!(
+            definition.comments,
+            vec!["handoff one".to_string(), "handoff two".to_string()]
+        );
+        assert_eq!(definition.acceptance_criteria.as_deref(), Some("Acceptance text."));
+        assert_eq!(definition.design.as_deref(), Some("Design text."));
+        assert_eq!(definition.notes.as_deref(), Some("Notes text."));
+        assert_eq!(definition.title, "T");
+    }
+
+    #[test]
+    fn list_shaped_dependency_edges_still_parse_blocks() {
+        // `bd list --json` uses `depends_on_id`/`type`; the normalized helpers
+        // keep decomposition children working.
+        let json = r#"[
+          {
+            "id": "t.1",
+            "title": "T",
+            "status": "open",
+            "dependencies": [
+              { "depends_on_id": "dep.1", "type": "blocks" },
+              { "depends_on_id": "epic.1", "type": "parent-child" }
+            ]
+          }
+        ]"#;
+        let child = parse_issues(json)
+            .expect("parse list shape")
+            .into_iter()
+            .next()
+            .expect("one issue")
+            .into_child_task();
+        assert_eq!(child.depends_on, vec!["dep.1".to_string()]);
     }
 }
 

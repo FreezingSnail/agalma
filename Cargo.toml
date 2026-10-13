@@ -47,6 +47,11 @@ clap = { version = "=4.6.7", features = ["derive"] }
 rustls = { version = "=0.23.43", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12", "logging"] }
 webpki-roots = "=1.0.9"
+# Canonical SHA-256 for revision-1 self-mutation identities (design gate
+# agalma-fjq). Already a transitive dependency of the rustls closure above; the
+# pure digest helper in `agalma-contracts` (`canonical-json/v1` + `sha256:`) is
+# its only product user. No dependency download here.
+ring = "=0.17.14"
 # IPC v2 ConnectRPC transport (approved 2026-10-11; design:
 # docs/ipc-connect-design.md D2). `agalma-ipc` only. No TLS/compression/
 # protobuf-JSON features.

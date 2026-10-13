@@ -39,6 +39,8 @@ pub enum Command {
     PlanCheck(PlanCheckArgs),
     /// One-shot intake (CP.4): turn a goal into an epic + design via a planner session.
     Concierge(ConciergeArgs),
+    /// Run one scoped designer decomposition attempt for an existing epic (CP.6).
+    Designer(DesignerArgs),
     /// Reap terminal executions' heavy scratch (manual/older state dirs).
     Gc(GcArgs),
 }
@@ -179,6 +181,23 @@ pub struct ConciergeArgs {
     /// The stated goal to turn into an epic + design.
     #[arg(value_name = "GOAL")]
     pub goal: String,
+    /// Target repository (bd workspace); defaults to the cwd.
+    #[arg(long, value_name = "PATH")]
+    pub repo: Option<PathBuf>,
+    /// Override the state directory.
+    #[arg(long, value_name = "DIR")]
+    pub state_dir: Option<PathBuf>,
+    /// Override the model identifier.
+    #[arg(long, value_name = "ID")]
+    pub model: Option<String>,
+}
+
+/// Arguments for `agalma designer`.
+#[derive(Debug, Args)]
+pub struct DesignerArgs {
+    /// Epic to decompose.
+    #[arg(long, value_name = "ID")]
+    pub epic: String,
     /// Target repository (bd workspace); defaults to the cwd.
     #[arg(long, value_name = "PATH")]
     pub repo: Option<PathBuf>,

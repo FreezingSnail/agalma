@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use agalma_conductor::sweep::{
-    sweep_epics, write_live_designer_prompt, DesignerOutcome, DesignerRequest, DesignerSession,
-    PlannerGate,
+    sweep_epic, sweep_epics, write_live_designer_prompt, DesignerOutcome, DesignerRequest,
+    DesignerSession, PlannerGate,
 };
 use agalma_contracts::TaskQueueApi;
 use agalma_taskqueue::BdTaskQueue;
@@ -1329,4 +1329,219 @@ fn crash_after_complete_commit_without_projection_is_recovered() {
         sorted.sort();
         sorted
     });
+}
+
+// ---------------------------------------------------------------------------
+// Scoped single-epic entry (`agalma designer`, CP.6): one designer attempt for
+// exactly one existing open epic, sharing the fleet sweep's per-epic semantics.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scoped_run_decomposes_only_the_named_epic() {
+    let scratch = Scratch::new("scoped-one");
+    let epic1 = scratch.create_epic("Scoped epic 1");
+    let epic2 = scratch.create_epic("Scoped epic 2");
+    let designer = ScriptedDesigner::new(Mode::Valid);
+
+    let report = sweep_epic(
+        &scratch.repo,
+        &scratch.state_dir,
+        &epic1,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("scoped sweep");
+
+    assert_eq!(report.epics_seen, vec![epic1.clone()], "{report:?}");
+    assert_eq!(report.approved, vec![epic1.clone()], "{report:?}");
+    assert_eq!(designer.called(), vec![epic1.clone()], "only epic1 dispatched");
+
+    // The other epic was never examined or decomposed.
+    assert!(
+        scratch.children(&epic2).is_empty(),
+        "epic2 untouched: {:?}",
+        scratch.children(&epic2)
+    );
+
+    // epic1's children are deferred, staged, and approved.
+    let children = scratch.children(&epic1);
+    assert_eq!(children.len(), 8, "eight staged children");
+    for child in &children {
+        assert!(
+            has_label(child, "decomp-approved"),
+            "child approved: {child}"
+        );
+        assert_eq!(child["status"], "deferred", "child stays deferred");
+    }
+}
+
+#[test]
+fn scoped_run_recovers_interrupted_attempt_without_session() {
+    let scratch = Scratch::new("scoped-recover");
+    let epic = scratch.create_epic("Interrupted epic");
+
+    // A crash right after a complete valid decomposition was committed but
+    // before any verdict: eight staged children, the attempt counter, and the
+    // durable in-flight marker, no child verdicts.
+    let ids: Vec<String> = (0..8)
+        .map(|i| {
+            scratch.create_child(
+                &epic,
+                &format!("child {i}"),
+                &low_desc(&format!("c{i}")),
+                "staged,difficulty:low",
+            )
+        })
+        .collect();
+    scratch.bd_ok(&["update", &epic, "--add-label", "decomp-attempts:1"]);
+    scratch.bd_ok(&["update", &epic, "--add-label", "decomp-inflight"]);
+
+    let designer = ScriptedDesigner::new(Mode::Valid);
+    let report = sweep_epic(
+        &scratch.repo,
+        &scratch.state_dir,
+        &epic,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("scoped sweep");
+
+    assert_eq!(report.recovered, vec![epic.clone()], "{report:?}");
+    assert_eq!(report.approved, vec![epic.clone()], "{report:?}");
+    assert!(report.epics_swept.is_empty(), "no new session: {report:?}");
+    assert!(designer.called().is_empty(), "designer never re-run");
+    assert!(
+        !has_label(&scratch.show(&epic), "decomp-inflight"),
+        "in-flight marker cleared"
+    );
+    assert_eq!(staged_ids(&scratch, &epic), {
+        let mut sorted = ids.clone();
+        sorted.sort();
+        sorted
+    });
+}
+
+#[test]
+fn scoped_run_refuses_non_candidates_and_unknown_epics() {
+    let scratch = Scratch::new("scoped-refuse");
+    let designer = ScriptedDesigner::new(Mode::Valid);
+
+    // (a) An unknown epic id is not an open epic.
+    let err = sweep_epic(
+        &scratch.repo,
+        &scratch.state_dir,
+        "sweep-nonexistent",
+        &gate(true, true),
+        &designer,
+    )
+    .expect_err("unknown epic must be refused");
+    assert!(
+        err.to_string().contains("not an open epic"),
+        "clear reason: {err}"
+    );
+    assert!(designer.called().is_empty(), "no session for unknown epic");
+
+    // (b) A human-escalated epic is excluded from open_epics: same refusal.
+    let human = scratch.create_epic("Human epic");
+    scratch.bd_ok(&["update", &human, "--add-label", "human"]);
+    let err = sweep_epic(
+        &scratch.repo,
+        &scratch.state_dir,
+        &human,
+        &gate(true, true),
+        &designer,
+    )
+    .expect_err("human-escalated epic must be refused");
+    assert!(
+        err.to_string().contains("not an open epic"),
+        "clear reason: {err}"
+    );
+    assert!(designer.called().is_empty(), "no session for human epic");
+
+    // (c) A fully approved epic is not a candidate: no re-dispatch.
+    let epic = scratch.create_epic("Approved epic");
+    let first = sweep_epic(
+        &scratch.repo,
+        &scratch.state_dir,
+        &epic,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("first scoped sweep");
+    assert_eq!(first.approved, vec![epic.clone()], "{first:?}");
+    assert_eq!(designer.called(), vec![epic.clone()], "one session so far");
+
+    let err = sweep_epic(
+        &scratch.repo,
+        &scratch.state_dir,
+        &epic,
+        &gate(true, true),
+        &designer,
+    )
+    .expect_err("approved epic must be refused");
+    assert!(
+        err.to_string().contains("not a decomposition candidate"),
+        "clear reason: {err}"
+    );
+    assert_eq!(
+        designer.called(),
+        vec![epic.clone()],
+        "no second session for an approved epic"
+    );
+}
+
+#[test]
+fn scoped_run_rejected_decomposition_records_fix() {
+    let scratch = Scratch::new("scoped-reject");
+    let epic = scratch.create_epic("Invalid epic");
+    let designer = ScriptedDesigner::new(Mode::Invalid);
+
+    let report = sweep_epic(
+        &scratch.repo,
+        &scratch.state_dir,
+        &epic,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("scoped sweep");
+
+    assert_eq!(report.rejected, vec![epic.clone()], "{report:?}");
+    assert_eq!(fix_count(&scratch, &epic), 1, "one rework task");
+    assert!(report.timed_out.is_empty(), "{report:?}");
+    assert!(
+        !has_label(&scratch.show(&epic), "decomp-inflight"),
+        "in-flight marker cleared after reconciliation"
+    );
+}
+
+#[test]
+fn scoped_run_is_suppressed_by_stop() {
+    let scratch = Scratch::new("scoped-stop");
+    let epic = scratch.create_epic("Stopped epic");
+    fs::write(scratch.state_dir.join("STOP"), b"stop").expect("write STOP");
+    let designer = ScriptedDesigner::new(Mode::Valid);
+
+    let report = sweep_epic(
+        &scratch.repo,
+        &scratch.state_dir,
+        &epic,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("scoped sweep");
+
+    assert!(
+        report
+            .skipped_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("stop policy"),
+        "stop reason: {report:?}"
+    );
+    assert!(report.stopped, "stopped recorded: {report:?}");
+    assert!(designer.called().is_empty(), "no session while stopped");
+    assert!(
+        scratch.children(&epic).is_empty(),
+        "no children created while stopped"
+    );
 }

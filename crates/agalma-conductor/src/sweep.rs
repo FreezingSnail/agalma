@@ -63,6 +63,19 @@
 //! children mark an epic whose decomposition is not the sweep's to touch, so it
 //! is never blindly replanned.
 //!
+//! ## Scoped single-epic entry (`agalma designer`, CP.6)
+//!
+//! [`sweep_epic`] runs exactly one designer attempt for exactly one existing
+//! open epic, sharing the fleet sweep's per-epic semantics byte-for-byte (the
+//! same recovery, stop gates, route resolution, attempt bookkeeping, session,
+//! and CP.1 gate via [`run_epic_turn`]). It refuses epics the sweep would never
+//! touch — a missing, closed, or human-escalated epic, or one that is not a
+//! decomposition candidate (approved decomposition, hand-authored children, or
+//! retries exhausted) — rather than silently replanning them, and it never
+//! examines any other candidate epic. [`run_designer`] is the production entry
+//! the `agalma designer` command calls; it mirrors [`run_sweep`]'s gating order
+//! (stop check, then planner gate, then the live session).
+//!
 //! ## Testability
 //!
 //! [`sweep_epics`] takes a `&dyn DesignerSession`, so tests script the designer
@@ -448,115 +461,268 @@ pub fn sweep_epics_with_stop(
             continue;
         }
         report.epics_seen.push(epic.id.clone());
-
-        // An in-flight marker left by a previous sweep means that attempt was
-        // interrupted (process death / cancelled session). Finalize the partial
-        // children it left behind instead of starting a second designer session
-        // over the same epic — never duplicate decomposition work.
-        if epic.labels.iter().any(|label| label == DECOMP_INFLIGHT) {
-            let fixes = count_fixes(&queue, &epic.id)?;
-            let attempt = observed_attempts(&epic.labels, fixes).max(1);
-            eprintln!(
-                "agalma: epic sweep: recovering interrupted decomposition for {} (attempt {attempt})",
-                epic.id
-            );
-            apply_gate(&mut queue, &epic.id, attempt, &mut report)?;
-            finish_attempt(&mut queue, &epic.id)?;
-            report.recovered.push(epic.id.clone());
-            continue;
-        }
-
-        // Stop gate before paid dispatch: candidacy reads are done; re-check so
-        // a stop that arrived during them suppresses the route/labels/session.
-        if stop.stopped() {
-            report.stopped = true;
-            break;
-        }
-
-        // Resolve (and durably record) the planner route for this epic.
-        let route = match routing::resolve_route(
+        match run_epic_turn(
+            &mut queue,
+            repo,
             state_dir,
-            &epic.id,
-            "planner",
-            TaskFamily::Feature,
-            gate.allow_paid,
-            gate.paid_available,
-            gate.override_model.as_deref(),
-        ) {
-            Ok(route) => route,
-            Err(err) => {
-                eprintln!(
-                    "agalma: epic sweep: planner route unavailable for {}: {err}",
-                    epic.id
-                );
-                continue;
-            }
-        };
-
-        // Start (and durably record) this attempt before the session runs, so a
-        // crash mid-session is recoverable and the retry bound survives restart.
-        let fixes = count_fixes(&queue, &epic.id)?;
-        let attempt = observed_attempts(&epic.labels, fixes) + 1;
-        queue.add_label(&TaskId::new(&epic.id), &attempts_label(attempt))?;
-        queue.add_label(&TaskId::new(&epic.id), DECOMP_INFLIGHT)?;
-
-        let request = DesignerRequest {
-            epic: epic.id.clone(),
-            repo: repo.to_path_buf(),
-            state_dir: state_dir.to_path_buf(),
-            model: route.model.clone(),
-            prompt_path: prompt_path.clone(),
-        };
-        eprintln!(
-            "agalma: epic sweep: running designer for {} (model {})",
-            epic.id, route.model
-        );
-        match designer.run(&request) {
-            Ok(DesignerOutcome::Completed) => report.epics_swept.push(epic.id.clone()),
-            Ok(DesignerOutcome::TimedOut) => {
-                eprintln!(
-                    "agalma: epic sweep: designer for {} hit the turn bound; reconciling committed decomposition",
-                    epic.id
-                );
-                report.timed_out.push(epic.id.clone());
-            }
-            Err(err) => {
-                if stop.stopped() {
-                    eprintln!(
-                        "agalma: epic sweep: designer session for {} cancelled by stop: {err}",
-                        epic.id
-                    );
-                } else {
-                    eprintln!(
-                        "agalma: epic sweep: designer session for {} failed: {err}",
-                        epic.id
-                    );
-                }
+            &prompt_path,
+            &epic,
+            gate,
+            designer,
+            stop,
+            &mut report,
+        )? {
+            EpicTurn::Done => {}
+            EpicTurn::Halted => {
+                report.stopped = true;
+                break;
             }
         }
-
-        // Stop gate during running planning work: a stop that arrived while the
-        // session ran halts the sweep. The durable `decomp-inflight` marker is
-        // deliberately left in place (never implicitly cleared) so the next
-        // post-resume sweep reconciles the interrupted decomposition instead of
-        // starting a second session; no gate verdict is projected and no child
-        // is touched.
-        if stop.stopped() {
-            eprintln!(
-                "agalma: epic sweep: stop requested during {}; preserving interrupted \
-                 decomposition for reconciliation",
-                epic.id
-            );
-            report.stopped = true;
-            break;
-        }
-
-        // Reconcile whatever the attempt left behind (a complete set, a partial
-        // set, or nothing at all) and project one verdict.
-        apply_gate(&mut queue, &epic.id, attempt, &mut report)?;
-        finish_attempt(&mut queue, &epic.id)?;
     }
     Ok(report)
+}
+
+// ---------------------------------------------------------------------------
+// Scoped single-epic entry (`agalma designer`, CP.6): one designer attempt for
+// exactly one existing open epic, sharing the fleet sweep's per-epic semantics.
+// ---------------------------------------------------------------------------
+
+/// Run one scoped designer attempt for exactly one existing open epic.
+///
+/// Stop-safe entry point mirroring [`sweep_epics`]: honors the production stop
+/// policy (`<state>/STOP` sentinel or the ledger kill latch) so the command
+/// never launches a paid planning session or edits the backlog while stopped.
+/// Tests that script the control call [`sweep_epic_with_stop`].
+///
+/// Only `epic` is examined; every other candidate epic is left untouched. The
+/// named epic must be an open, decomposable candidate — a missing, closed, or
+/// human-escalated epic, or one the sweep would never replan, is a hard error,
+/// never a silent replan.
+pub fn sweep_epic(
+    repo: &Path,
+    state_dir: &Path,
+    epic: &str,
+    gate: &PlannerGate,
+    designer: &dyn DesignerSession,
+) -> Result<SweepReport, ContractError> {
+    sweep_epic_with_stop(
+        repo,
+        state_dir,
+        epic,
+        gate,
+        designer,
+        &FileStopControl::new(state_dir),
+    )
+}
+
+/// Run one scoped designer attempt honoring an explicit stop control.
+///
+/// Semantics (the fleet sweep's per-epic path, plus a scoped lookup):
+/// 1. an active stop skips with [`STOP_REASON`] and `stopped = true`;
+/// 2. an unavailable planner route skips with
+///    [`PlannerGate::unavailable_reason`];
+/// 3. the epic is looked up among [`BdTaskQueue::open_epics`]; missing, closed,
+///    or human-escalated is a [`ContractError::KnownFailure`];
+/// 4. a non-candidate epic (approved decomposition, hand-authored children, or
+///    retries exhausted) is a [`ContractError::KnownFailure`] — no candidacy
+///    bypass, ever;
+/// 5. otherwise the epic is pushed to `epics_seen` and one turn runs
+///    ([`run_epic_turn`]); a mid-turn stop sets `stopped = true`.
+pub fn sweep_epic_with_stop(
+    repo: &Path,
+    state_dir: &Path,
+    epic: &str,
+    gate: &PlannerGate,
+    designer: &dyn DesignerSession,
+    stop: &dyn StopControl,
+) -> Result<SweepReport, ContractError> {
+    let mut report = SweepReport::default();
+    if stop.stopped() {
+        let reason = STOP_REASON.to_string();
+        eprintln!("agalma: designer skipped: {reason}");
+        report.skipped_reason = Some(reason);
+        report.stopped = true;
+        return Ok(report);
+    }
+    if !gate.available() {
+        let reason = gate.unavailable_reason();
+        eprintln!("agalma: designer skipped: {reason}");
+        report.skipped_reason = Some(reason);
+        return Ok(report);
+    }
+
+    let prompt_path = write_designer_prompt(state_dir)?;
+    let mut queue = BdTaskQueue::new(repo);
+    let record = queue
+        .open_epics()?
+        .into_iter()
+        .find(|candidate| candidate.id == epic)
+        .ok_or_else(|| {
+            ContractError::KnownFailure(format!(
+                "epic {epic} is not an open epic in {} (missing, closed, or escalated to a human)",
+                repo.display()
+            ))
+        })?;
+    if !is_candidate(&queue, &record)? {
+        return Err(ContractError::KnownFailure(format!(
+            "epic {epic} is not a decomposition candidate (approved decomposition, hand-authored children, or retries exhausted)"
+        )));
+    }
+
+    report.epics_seen.push(record.id.clone());
+    match run_epic_turn(
+        &mut queue,
+        repo,
+        state_dir,
+        &prompt_path,
+        &record,
+        gate,
+        designer,
+        stop,
+        &mut report,
+    )? {
+        EpicTurn::Done => {}
+        EpicTurn::Halted => report.stopped = true,
+    }
+    Ok(report)
+}
+
+/// Terminal state of one per-epic designer turn, shared by the fleet sweep loop
+/// and the scoped `agalma designer` entry point.
+enum EpicTurn {
+    /// The turn finished (dispatched and reconciled, or skipped); the caller
+    /// continues with the next epic.
+    Done,
+    /// A stop arrived before dispatch or during the session; the caller halts.
+    Halted,
+}
+
+/// Run one per-epic designer turn: interrupted-attempt recovery, the
+/// pre-dispatch stop gate, planner-route resolution, attempt bookkeeping, the
+/// designer session, the post-session stop gate, and same-pass gate
+/// reconciliation (including timeout-after-commit).
+///
+/// Extracted from the fleet sweep loop so that loop and the scoped
+/// [`sweep_epic_with_stop`] share the per-epic semantics byte-for-byte. `repo`
+/// is threaded through explicitly (the target repository the designer session
+/// authors children in) rather than recovered from `queue`.
+#[allow(clippy::too_many_arguments)]
+fn run_epic_turn(
+    queue: &mut BdTaskQueue,
+    repo: &Path,
+    state_dir: &Path,
+    prompt_path: &Path,
+    epic: &EpicRecord,
+    gate: &PlannerGate,
+    designer: &dyn DesignerSession,
+    stop: &dyn StopControl,
+    report: &mut SweepReport,
+) -> Result<EpicTurn, ContractError> {
+    // An in-flight marker left by a previous sweep means that attempt was
+    // interrupted (process death / cancelled session). Finalize the partial
+    // children it left behind instead of starting a second designer session
+    // over the same epic — never duplicate decomposition work.
+    if epic.labels.iter().any(|label| label == DECOMP_INFLIGHT) {
+        let fixes = count_fixes(queue, &epic.id)?;
+        let attempt = observed_attempts(&epic.labels, fixes).max(1);
+        eprintln!(
+            "agalma: epic sweep: recovering interrupted decomposition for {} (attempt {attempt})",
+            epic.id
+        );
+        apply_gate(queue, &epic.id, attempt, report)?;
+        finish_attempt(queue, &epic.id)?;
+        report.recovered.push(epic.id.clone());
+        return Ok(EpicTurn::Done);
+    }
+
+    // Stop gate before paid dispatch: candidacy reads are done; re-check so a
+    // stop that arrived during them suppresses the route/labels/session.
+    if stop.stopped() {
+        return Ok(EpicTurn::Halted);
+    }
+
+    // Resolve (and durably record) the planner route for this epic.
+    let route = match routing::resolve_route(
+        state_dir,
+        &epic.id,
+        "planner",
+        TaskFamily::Feature,
+        gate.allow_paid,
+        gate.paid_available,
+        gate.override_model.as_deref(),
+    ) {
+        Ok(route) => route,
+        Err(err) => {
+            eprintln!(
+                "agalma: epic sweep: planner route unavailable for {}: {err}",
+                epic.id
+            );
+            return Ok(EpicTurn::Done);
+        }
+    };
+
+    // Start (and durably record) this attempt before the session runs, so a
+    // crash mid-session is recoverable and the retry bound survives restart.
+    let fixes = count_fixes(queue, &epic.id)?;
+    let attempt = observed_attempts(&epic.labels, fixes) + 1;
+    queue.add_label(&TaskId::new(&epic.id), &attempts_label(attempt))?;
+    queue.add_label(&TaskId::new(&epic.id), DECOMP_INFLIGHT)?;
+
+    let request = DesignerRequest {
+        epic: epic.id.clone(),
+        repo: repo.to_path_buf(),
+        state_dir: state_dir.to_path_buf(),
+        model: route.model.clone(),
+        prompt_path: prompt_path.to_path_buf(),
+    };
+    eprintln!(
+        "agalma: epic sweep: running designer for {} (model {})",
+        epic.id, route.model
+    );
+    match designer.run(&request) {
+        Ok(DesignerOutcome::Completed) => report.epics_swept.push(epic.id.clone()),
+        Ok(DesignerOutcome::TimedOut) => {
+            eprintln!(
+                "agalma: epic sweep: designer for {} hit the turn bound; reconciling committed decomposition",
+                epic.id
+            );
+            report.timed_out.push(epic.id.clone());
+        }
+        Err(err) => {
+            if stop.stopped() {
+                eprintln!(
+                    "agalma: epic sweep: designer session for {} cancelled by stop: {err}",
+                    epic.id
+                );
+            } else {
+                eprintln!(
+                    "agalma: epic sweep: designer session for {} failed: {err}",
+                    epic.id
+                );
+            }
+        }
+    }
+
+    // Stop gate during running planning work: a stop that arrived while the
+    // session ran halts the sweep. The durable `decomp-inflight` marker is
+    // deliberately left in place (never implicitly cleared) so the next
+    // post-resume sweep reconciles the interrupted decomposition instead of
+    // starting a second session; no gate verdict is projected and no child
+    // is touched.
+    if stop.stopped() {
+        eprintln!(
+            "agalma: epic sweep: stop requested during {}; preserving interrupted \
+             decomposition for reconciliation",
+            epic.id
+        );
+        return Ok(EpicTurn::Halted);
+    }
+
+    // Reconcile whatever the attempt left behind (a complete set, a partial
+    // set, or nothing at all) and project one verdict.
+    apply_gate(queue, &epic.id, attempt, report)?;
+    finish_attempt(queue, &epic.id)?;
+    Ok(EpicTurn::Done)
 }
 
 /// Single-line reason recorded when a stop suppresses a sweep.
@@ -594,6 +760,42 @@ pub fn run_sweep(
     }
     let session = LiveDesignerSession::build(state_dir, proxy_url, paid_available)?;
     sweep_epics_with_stop(repo, state_dir, &gate, &session, &stop)
+}
+
+/// Production entry point for the scoped `agalma designer` command: build the
+/// planner gate and the live OpenCode designer session, then run one scoped
+/// attempt for `epic`. Mirrors [`run_sweep`]'s gating order — a stop is honored
+/// (with a log line) before the gate is read and before any session is
+/// constructed, and an unavailable planner route skips without downgrading.
+pub fn run_designer(
+    repo: &Path,
+    state_dir: &Path,
+    epic: &str,
+    paid_available: bool,
+    proxy_url: Option<String>,
+    override_model: Option<&str>,
+) -> Result<SweepReport, ContractError> {
+    let stop = FileStopControl::new(state_dir);
+    if stop.stopped() {
+        let reason = STOP_REASON.to_string();
+        eprintln!("agalma: designer skipped: {reason}");
+        return Ok(SweepReport {
+            skipped_reason: Some(reason),
+            stopped: true,
+            ..SweepReport::default()
+        });
+    }
+    let gate = PlannerGate::from_env(paid_available, override_model);
+    if !gate.available() {
+        let reason = gate.unavailable_reason();
+        eprintln!("agalma: designer skipped: {reason}");
+        return Ok(SweepReport {
+            skipped_reason: Some(reason),
+            ..SweepReport::default()
+        });
+    }
+    let session = LiveDesignerSession::build(state_dir, proxy_url, paid_available)?;
+    sweep_epic_with_stop(repo, state_dir, epic, &gate, &session, &stop)
 }
 
 /// Count an epic's `decomp-fix` rework tasks (its historical attempt record).

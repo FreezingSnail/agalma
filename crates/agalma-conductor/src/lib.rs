@@ -13,6 +13,7 @@ pub mod composition;
 pub mod concierge;
 pub mod config;
 pub mod control;
+pub mod designer;
 pub mod digest;
 pub mod economics;
 pub mod execution_process;
@@ -90,6 +91,7 @@ pub async fn run() -> ExitCode {
         Command::Models => models_command(),
         Command::PlanCheck(args) => crate::plan_check::run_plan_check(&args),
         Command::Concierge(args) => crate::concierge::run_concierge_command(&args),
+        Command::Designer(args) => crate::designer::run_designer_command(&args),
         Command::Gc(args) => gc_command(&args),
     }
 }

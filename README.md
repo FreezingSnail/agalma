@@ -87,8 +87,32 @@ process-transport smoke + default flip (`agalma-rvj`).
 
 ## Development
 
+Repository collaboration follows [AGENTS.md](AGENTS.md) and the
+[development workflow](docs/development-workflow.md). Sol owns architecture,
+planning, and review using the [Sol architect persona](agents/sol-architect.md).
+All code implementation goes to GPT-6 Luna or DeepSeek Flash through OpenCode.
+
+Build every product workspace target with the root Makefile:
+
 ```sh
-cargo test --offline              # workspace tests
+make             # debug; same as make all / make build
+make release     # release profile
+make help        # usage and Cargo/cache overrides
+```
+
+Builds use `--offline --locked`, reuse `target/`, and include all workspace
+libraries, binaries, examples, tests, and benches without executing tests.
+Standalone spikes and fixture projects are excluded. `CARGO`, `CARGO_FLAGS`, and
+`CARGO_TARGET_DIR` can be overridden; see the development workflow for details.
+
+Choose and state a focused, peer, or full test scope before running checks. The
+workflow defines the unified `scripts/test.sh` entry point, which is pending
+implementation, and documents the existing commands to use during the transition.
+The workspace command below is a full test run; it is not the default check for
+every change, and process checks may need separately built server binaries.
+
+```sh
+cargo test --offline --workspace  # full workspace tests; excludes ignored live checks
 cargo run --offline -p agalma-conductor -- run \
   --fixture fixtures/target-template --once \
   --state-dir target/test-runs/e2e

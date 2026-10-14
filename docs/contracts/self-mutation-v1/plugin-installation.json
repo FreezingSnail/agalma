@@ -1,0 +1,16 @@
+{
+  "format": "PluginInstallation/v1",
+  "plugin_id": "example.unfamiliar-reporter",
+  "package_digest": "sha256:e97ff4437b90d47ca1965510e49c6eb6bd4e511de956daa5d94bc2f34f58c9fb",
+  "configuration": {
+    "path": "objects/default-config.json",
+    "digest": "sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+    "bytes": 3,
+    "media_type": "application/json"
+  },
+  "launch_profile": "reporter-read-only/v1",
+  "approved_capabilities": [
+    "report.publish:example.unfamiliar-reporter"
+  ],
+  "installation_digest": "sha256:17d2f8b6308cd55314c10ae4565b4898e048934d5b54b622181f5f328873692f"
+}

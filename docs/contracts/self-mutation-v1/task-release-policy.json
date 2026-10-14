@@ -1,0 +1,30 @@
+{
+  "format": "TaskReleasePolicy/v1",
+  "policy_id": "prompt-skill-release/v1",
+  "directive": {
+    "id": "standup-prompts",
+    "version": 1,
+    "digest": "sha256:e72dbb8251dbc3b931d8d7c39e39fea46bf5955c4681705b900c0ee2fa20a66b"
+  },
+  "allowed_targets": [
+    "prompt",
+    "skill"
+  ],
+  "allowed_paths": [
+    "genome/prompts/builder.md",
+    "genome/skills/builder/"
+  ],
+  "protected_paths": [
+    "fixtures/protected/",
+    "platform/",
+    "AGENTS.md",
+    "genome/prompts/evaluator.md",
+    "genome/prompts/reviewer.md",
+    "genome/prompts/planner.md"
+  ],
+  "max_task_allowance_nusd": 2000000000,
+  "max_attempts": 2,
+  "require_decomp_approved": true,
+  "qualification_policy_digest": "sha256:4b2fede27ca429967b232302eb87b45e2f4e7cbfbe3d69a2deafbaa3a45adbef",
+  "policy_digest": "sha256:2c0256dc85db19b5ea9142d7ce8938c180c15fbe8e1dc55b2951e27efa7d690f"
+}

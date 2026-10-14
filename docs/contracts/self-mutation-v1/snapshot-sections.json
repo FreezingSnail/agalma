@@ -1,0 +1,79 @@
+{
+  "format": "snapshot-contract/v2",
+  "wire_format": "agalma-state/v2",
+  "schema_version": 5,
+  "compatibility": "Keep existing v1 methods for fixtures/inspection. Production export/import negotiates complete-state/v2; never infer omitted legacy tables are empty.",
+  "sections": {
+    "exec_def_version": "String",
+    "kernel_version": "String",
+    "kill_latch": "bool",
+    "kernel_meta": "BTreeMap<String, String>",
+    "lease_generations": "BTreeMap<TaskId, u32>",
+    "executions": "Vec<ExecutionRecord>; ordered by execution_id",
+    "events": "Vec<ExecutionEvent>; ordered by execution_id, sequence",
+    "receipts": "Vec<OperationReceipt>; ordered by operation_id",
+    "intents": "Vec<DispatchIntent>; ordered by operation_id",
+    "timers": "Vec<TimerRecord>; ordered by timer_id",
+    "directives": "Vec<DirectiveRow>; ordered by directive_id",
+    "bindings": "Vec<BindingRecord>; ordered by binding_id",
+    "decisions": "Vec<SnapshotDecisionRow>; ordered by operation_id",
+    "decision_outcomes": "Vec<SnapshotDecisionOutcomeRow>; ordered by operation_id",
+    "digests": "Vec<DigestRecord>; ordered by execution_id, version",
+    "control_receipts": "Vec<ControlReceipt>; ordered by action_id",
+    "component_states": "Vec<ComponentStateRow>; ordered by namespace",
+    "component_events": "Vec<ComponentEventRow>; ordered by namespace, sequence",
+    "component_operations": "Vec<ComponentOperationRow>; ordered by namespace, operation_id",
+    "component_receipts": "Vec<ComponentReceiptRow>; ordered by namespace, operation_id",
+    "component_commits": "Vec<ComponentCommitAnchor>; ordered by namespace, commit_id"
+  },
+  "new_rows": {
+    "SnapshotDecisionRow": {
+      "operation_id": "OperationId",
+      "kind": "String; must match request.kind.as_str()",
+      "inputs_hash": "String; preserve existing legacy conflict hash",
+      "request": "DecisionRequest; existing canonical type",
+      "recorded_at_unix_ms": "u64"
+    },
+    "SnapshotDecisionOutcomeRow": {
+      "operation_id": "OperationId",
+      "outcome": "DecisionOutcome; existing canonical type",
+      "recorded_at_unix_ms": "u64"
+    },
+    "ComponentStateRow": {
+      "namespace": "String",
+      "revision": "u64",
+      "watermark": "u64",
+      "checkpoint": "Option<Value>; integer-only protocol payload",
+      "recorded_at_unix_ms": "u64"
+    },
+    "ComponentEventRow": {
+      "namespace": "String",
+      "sequence": "u64",
+      "event": "ComponentEvent; schema.json"
+    },
+    "ComponentOperationRow": {
+      "namespace": "String",
+      "operation": "ComponentOperation; schema.json"
+    },
+    "ComponentReceiptRow": {
+      "namespace": "String",
+      "receipt": "ComponentReceipt; schema.json"
+    },
+    "ComponentCommitAnchor": {
+      "namespace": "String",
+      "commit_id": "String",
+      "input_digest": "sha256 digest",
+      "revision": "u64",
+      "committed_at_unix_ms": "u64"
+    }
+  },
+  "import_invariants": [
+    "Validate every section, duplicate identity, foreign-key relationship and declared format before mutation.",
+    "Complete import targets an empty, exclusively owned, quiescent destination and commits atomically.",
+    "Preserve all IDs, revisions, sequence watermarks, pins, timestamps, unknown operations and reservation history.",
+    "Legacy payload numbers retain their existing native representation; hash the exact exported artifact bytes rather than recanonicalizing legacy floats in another language.",
+    "Missing/unknown sections are not silently discarded; a v1 export alone is incomplete for production recovery.",
+    "Replay of control, decision and component commit IDs after import returns the recorded result; changed input conflicts.",
+    "External-effect reconciliation is required before dispatch after restore; complete data is not proof that outside effects vanished."
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "format": "CancellationSettlement/v1",
+  "execution_id": "fixture.task/1",
+  "state": "settled",
+  "request_operation_id": "fixture.task/1/cancel",
+  "requested_at_unix_ms": 1791820800000,
+  "settled_at_unix_ms": 1791820800002,
+  "unconfirmed_operations": [],
+  "termination_evidence": [
+    {
+      "path": "objects/termination-evidence.txt",
+      "digest": "sha256:7c8440080bb8ffcd53943be1d49b93b37f47e8a0126fa9a7200ca7316aee572a",
+      "bytes": 75,
+      "media_type": "text/plain"
+    }
+  ],
+  "public_projection": {
+    "state": "Failed",
+    "phase": "Parked",
+    "outcome": "Cancelled"
+  }
+}

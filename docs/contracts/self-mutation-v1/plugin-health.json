@@ -1,0 +1,15 @@
+{
+  "format": "PluginHealth/v1",
+  "plugin_id": "example.unfamiliar-reporter",
+  "binding": {
+    "binding_id": "fixture.reporter",
+    "api": "plugin",
+    "api_version": 1,
+    "implementation_version": "fixture-1",
+    "generation": 1,
+    "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+  },
+  "state": "ready",
+  "detail": "Fixture observation",
+  "checked_at_unix_ms": 1791820800000
+}

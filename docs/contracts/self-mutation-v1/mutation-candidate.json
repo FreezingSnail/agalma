@@ -1,0 +1,38 @@
+{
+  "format": "MutationCandidate/v1",
+  "candidate_id": "fixture.candidate-1",
+  "directive": {
+    "id": "standup-prompts",
+    "version": 1,
+    "digest": "sha256:e72dbb8251dbc3b931d8d7c39e39fea46bf5955c4681705b900c0ee2fa20a66b"
+  },
+  "target": {
+    "kind": "prompt",
+    "identity": "builder.instructions",
+    "authorization_profile_digest": "sha256:c5bfd95730102e47b3c565b088241465e934a4b39ad2032cbd689c891676ddaa"
+  },
+  "baseline": {
+    "path": "objects/baseline-genome.txt",
+    "digest": "sha256:4a21119e4a5b4bfeae9614b07d659502cb9802e5b46ccf7b227ad94cc257a43c",
+    "bytes": 24,
+    "media_type": "text/plain"
+  },
+  "candidate": {
+    "path": "objects/candidate-genome.txt",
+    "digest": "sha256:1af85b99b5b40c5e83a994f7945a3cc7a5d429e5862605e8e2bdbbfcaf83272a",
+    "bytes": 71,
+    "media_type": "text/plain"
+  },
+  "proposal_id": "fixture.proposal-1",
+  "build_task_id": "fixture.task",
+  "constraints_digest": "sha256:db2961aff25874bb8bb6f71f794b1bab62c807bbf7a926946d80d869716814fa",
+  "bench_pack": {
+    "path": "objects/bench-pack.json",
+    "digest": "sha256:1cf090564c9f5f69bac3b9be4e4f098052dde821dbfbd9699dc121cb853cfe0d",
+    "bytes": 56,
+    "media_type": "application/json"
+  },
+  "evaluation_policy_digest": "sha256:4b2fede27ca429967b232302eb87b45e2f4e7cbfbe3d69a2deafbaa3a45adbef",
+  "budget_nusd": 5000000000,
+  "candidate_digest": "sha256:6ad9bd680f95df85ebcb60f0dc02d010b5e2665a50d9a2ccf7602d2266d7f656"
+}

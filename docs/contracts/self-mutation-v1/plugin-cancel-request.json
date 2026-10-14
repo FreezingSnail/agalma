@@ -1,0 +1,16 @@
+{
+  "format": "PluginCancelRequest/v1",
+  "plugin_id": "example.action-fixture",
+  "binding": {
+    "binding_id": "fixture.reporter",
+    "api": "plugin",
+    "api_version": 1,
+    "implementation_version": "fixture-1",
+    "generation": 1,
+    "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+  },
+  "operation_id": "example.action-fixture/op-1",
+  "cancel_request_id": "fixture.cancel-1",
+  "deadline_unix_ms": 1791820810000,
+  "grant_fingerprint": "sha256:3bbf925a7c211e4b3f5dc16a27775fbba88eff8362f865b1e7a8506bdcacd642"
+}

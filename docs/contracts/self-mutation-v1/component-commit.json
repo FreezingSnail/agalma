@@ -1,0 +1,80 @@
+{
+  "format": "ComponentCommit/v1",
+  "namespace": "example.action-fixture",
+  "commit_id": "commit-1",
+  "expected_revision": 0,
+  "checkpoint": {
+    "value": 1
+  },
+  "events": [
+    {
+      "event_id": "event-1",
+      "kind": "fixture.updated",
+      "payload": {
+        "value": 1
+      },
+      "recorded_at_unix_ms": 1791820800000
+    }
+  ],
+  "operations": [
+    {
+      "operation_id": "example.action-fixture/op-1",
+      "input_digest": "sha256:48208f9428d64634bd8e28ff345bf0eab60d53c18fa2fbdb0b9bc1e84df2b5f6",
+      "binding": {
+        "binding_id": "fixture.reporter",
+        "api": "plugin",
+        "api_version": 1,
+        "implementation_version": "fixture-1",
+        "generation": 1,
+        "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "intent": {
+        "format": "ActionIntent/v1",
+        "plugin_id": "example.action-fixture",
+        "binding": {
+          "binding_id": "fixture.reporter",
+          "api": "plugin",
+          "api_version": 1,
+          "implementation_version": "fixture-1",
+          "generation": 1,
+          "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+        },
+        "action_id": "fixture.update",
+        "operation_id": "example.action-fixture/op-1",
+        "input": {
+          "value": 1
+        },
+        "input_digest": "sha256:48208f9428d64634bd8e28ff345bf0eab60d53c18fa2fbdb0b9bc1e84df2b5f6",
+        "deadline_unix_ms": 1791820810000,
+        "scope": {
+          "directive_id": "standup-prompts",
+          "directive_version": 1,
+          "execution_id": "fixture.task/1"
+        },
+        "grant_fingerprint": "sha256:3bbf925a7c211e4b3f5dc16a27775fbba88eff8362f865b1e7a8506bdcacd642",
+        "actor": "policy"
+      },
+      "state": "completed",
+      "deadline_unix_ms": 1791820810000
+    }
+  ],
+  "receipts": [
+    {
+      "operation_id": "example.action-fixture/op-1",
+      "input_digest": "sha256:48208f9428d64634bd8e28ff345bf0eab60d53c18fa2fbdb0b9bc1e84df2b5f6",
+      "binding": {
+        "binding_id": "fixture.reporter",
+        "api": "plugin",
+        "api_version": 1,
+        "implementation_version": "fixture-1",
+        "generation": 1,
+        "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "outcome": {
+        "value": 1
+      },
+      "completed_at_unix_ms": 1791820800001
+    }
+  ],
+  "input_digest": "sha256:1ed592a764d29f4bb1a16954df8763f0241488357badae81a820340334b41f25"
+}

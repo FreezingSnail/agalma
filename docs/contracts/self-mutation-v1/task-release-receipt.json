@@ -1,0 +1,15 @@
+{
+  "format": "TaskReleaseReceipt/v1",
+  "task_id": "fixture.mutation-task",
+  "definition_digest": "sha256:26fba1ec245ab14e8c6c92a93dfe756be1e88adaf521e62bbdbc2a3754ef41d6",
+  "policy_digest": "sha256:2c0256dc85db19b5ea9142d7ce8938c180c15fbe8e1dc55b2951e27efa7d690f",
+  "directive": {
+    "id": "standup-prompts",
+    "version": 1,
+    "digest": "sha256:e72dbb8251dbc3b931d8d7c39e39fea46bf5955c4681705b900c0ee2fa20a66b"
+  },
+  "operation_id": "fixture.release-1",
+  "decision": "allow",
+  "reason": "approved_prompt_scope",
+  "observed_at_unix_ms": 1791820800000
+}

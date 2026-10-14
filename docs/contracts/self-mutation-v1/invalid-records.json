@@ -1,0 +1,451 @@
+[
+  {
+    "name": "task-package:format",
+    "expected_code": "UnsupportedVersion",
+    "record": {
+      "format": "TaskPackage/v99",
+      "task_id": "fixture.task",
+      "execution_id": "fixture.task/1",
+      "generation": 1,
+      "lease_generation": 1,
+      "repository": {
+        "identity": "agalma-fixture",
+        "base_sha": "1111111111111111111111111111111111111111"
+      },
+      "directive": {
+        "id": "standup-prompts",
+        "version": 1,
+        "digest": "sha256:e72dbb8251dbc3b931d8d7c39e39fea46bf5955c4681705b900c0ee2fa20a66b"
+      },
+      "authorization": {
+        "origin": "human_bootstrap",
+        "policy_digest": "sha256:1cf982da4c8d4bc81c96163f5fd42521b666d49aa838a8eb012284e7709e94d8",
+        "receipt": {
+          "path": "objects/authorization.json",
+          "digest": "sha256:7bb9dfa8faed938e73fb3b58d4d9b79b5e28e4849a70e913a4f1b361a35fc557",
+          "bytes": 49,
+          "media_type": "application/json"
+        }
+      },
+      "definition": {
+        "title": "Fixture immutable context task",
+        "description": {
+          "source": "bd:fixture.task/description",
+          "text": "Implement the specified bounded behavior.\n",
+          "digest": "sha256:fcfeba9c70aceb046f647314b1dd880c79c881312f69d37939b82c19f03d8a8a"
+        },
+        "design": {
+          "source": "bd:fixture.task/design",
+          "text": "Use the declared contract; held-out answers remain unreadable.\n",
+          "digest": "sha256:630e2a71ed7e1e2a24eb4d634a10fed96300e8b3aafc6da6bc0eed3da2f4ac30"
+        },
+        "notes": {
+          "source": "bd:fixture.task/notes",
+          "text": "This is a protocol example, not a completed implementation.\n",
+          "digest": "sha256:146adabbda3c093bad41d310bbdc913fd23263c11e404cf348d9c6e52f4d7a85"
+        },
+        "machine_block": "provides: fixture_behavior\nconsumes:\nfiles: prompts/example.md\ntier: high\n",
+        "acceptance": [
+          "cargo test --offline -p agalma-conductor --test sf_task_package"
+        ]
+      },
+      "context": [
+        {
+          "kind": "instruction",
+          "source": "AGENTS.md",
+          "artifact": {
+            "path": "objects/instructions.txt",
+            "digest": "sha256:d2e41d8eb3106ab182d14b431703a7543a9f33ecc339f7f1e739413e91bde682",
+            "bytes": 5702,
+            "media_type": "text/plain"
+          }
+        },
+        {
+          "kind": "shared_design",
+          "source": "docs/self-mutation-contracts.md",
+          "artifact": {
+            "path": "objects/shared-contracts.txt",
+            "digest": "sha256:b1353b44ae57eacf59d0dab69e3099da52426194fe8354aeb40eeb689f38ea66",
+            "bytes": 35371,
+            "media_type": "text/plain"
+          }
+        }
+      ],
+      "scope": {
+        "allowed_paths": [
+          "prompts/example.md"
+        ],
+        "protected_paths": [
+          "fixtures/protected/"
+        ],
+        "readable_artifacts": [
+          "sha256:d2e41d8eb3106ab182d14b431703a7543a9f33ecc339f7f1e739413e91bde682",
+          "sha256:b1353b44ae57eacf59d0dab69e3099da52426194fe8354aeb40eeb689f38ea66",
+          "sha256:43d5a172118a4a2709646b5232e04101fce2e7defa4c54af8099ee14cc365cff"
+        ],
+        "oracle": {
+          "path": "objects/protected-oracle-manifest.txt",
+          "digest": "sha256:0189a2598b7db9a1c75a0dcb86de4e56da2daf552bc3ffff80255c22f3567a9b",
+          "bytes": 75,
+          "media_type": "text/plain"
+        }
+      },
+      "max_attempts": 2,
+      "budget": {
+        "allowance_nusd": 2000000000,
+        "unknown_usage": "deny",
+        "quota_policy_digest": "sha256:c77a91dc2d908f96e01e3bbf7dd8d560f8e9d76e38a1d9c67bd932fbe09b6bd5"
+      },
+      "roles": [
+        {
+          "role": "builder",
+          "route_id": "fixture.builder",
+          "model": "fixture-model",
+          "harness": {
+            "binding_id": "fixture.harness",
+            "api": "harness",
+            "api_version": 1,
+            "implementation_version": "fixture-1",
+            "generation": 1,
+            "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+          },
+          "prompt": {
+            "path": "objects/builder-prompt.txt",
+            "digest": "sha256:43d5a172118a4a2709646b5232e04101fce2e7defa4c54af8099ee14cc365cff",
+            "bytes": 80,
+            "media_type": "text/plain"
+          }
+        }
+      ],
+      "recorded_at_unix_ms": 1791820800000,
+      "package_digest": "sha256:57ff81bb1aeafa6c1c765cdb64d82799a21508fd23290886b9afff01527cc63d"
+    }
+  },
+  {
+    "name": "task-package:package_digest",
+    "expected_code": "IntegrityMismatch",
+    "record": {
+      "format": "TaskPackage/v1",
+      "task_id": "fixture.task",
+      "execution_id": "fixture.task/1",
+      "generation": 1,
+      "lease_generation": 1,
+      "repository": {
+        "identity": "agalma-fixture",
+        "base_sha": "1111111111111111111111111111111111111111"
+      },
+      "directive": {
+        "id": "standup-prompts",
+        "version": 1,
+        "digest": "sha256:e72dbb8251dbc3b931d8d7c39e39fea46bf5955c4681705b900c0ee2fa20a66b"
+      },
+      "authorization": {
+        "origin": "human_bootstrap",
+        "policy_digest": "sha256:1cf982da4c8d4bc81c96163f5fd42521b666d49aa838a8eb012284e7709e94d8",
+        "receipt": {
+          "path": "objects/authorization.json",
+          "digest": "sha256:7bb9dfa8faed938e73fb3b58d4d9b79b5e28e4849a70e913a4f1b361a35fc557",
+          "bytes": 49,
+          "media_type": "application/json"
+        }
+      },
+      "definition": {
+        "title": "Fixture immutable context task",
+        "description": {
+          "source": "bd:fixture.task/description",
+          "text": "Implement the specified bounded behavior.\n",
+          "digest": "sha256:fcfeba9c70aceb046f647314b1dd880c79c881312f69d37939b82c19f03d8a8a"
+        },
+        "design": {
+          "source": "bd:fixture.task/design",
+          "text": "Use the declared contract; held-out answers remain unreadable.\n",
+          "digest": "sha256:630e2a71ed7e1e2a24eb4d634a10fed96300e8b3aafc6da6bc0eed3da2f4ac30"
+        },
+        "notes": {
+          "source": "bd:fixture.task/notes",
+          "text": "This is a protocol example, not a completed implementation.\n",
+          "digest": "sha256:146adabbda3c093bad41d310bbdc913fd23263c11e404cf348d9c6e52f4d7a85"
+        },
+        "machine_block": "provides: fixture_behavior\nconsumes:\nfiles: prompts/example.md\ntier: high\n",
+        "acceptance": [
+          "cargo test --offline -p agalma-conductor --test sf_task_package"
+        ]
+      },
+      "context": [
+        {
+          "kind": "instruction",
+          "source": "AGENTS.md",
+          "artifact": {
+            "path": "objects/instructions.txt",
+            "digest": "sha256:d2e41d8eb3106ab182d14b431703a7543a9f33ecc339f7f1e739413e91bde682",
+            "bytes": 5702,
+            "media_type": "text/plain"
+          }
+        },
+        {
+          "kind": "shared_design",
+          "source": "docs/self-mutation-contracts.md",
+          "artifact": {
+            "path": "objects/shared-contracts.txt",
+            "digest": "sha256:b1353b44ae57eacf59d0dab69e3099da52426194fe8354aeb40eeb689f38ea66",
+            "bytes": 35371,
+            "media_type": "text/plain"
+          }
+        }
+      ],
+      "scope": {
+        "allowed_paths": [
+          "prompts/example.md"
+        ],
+        "protected_paths": [
+          "fixtures/protected/"
+        ],
+        "readable_artifacts": [
+          "sha256:d2e41d8eb3106ab182d14b431703a7543a9f33ecc339f7f1e739413e91bde682",
+          "sha256:b1353b44ae57eacf59d0dab69e3099da52426194fe8354aeb40eeb689f38ea66",
+          "sha256:43d5a172118a4a2709646b5232e04101fce2e7defa4c54af8099ee14cc365cff"
+        ],
+        "oracle": {
+          "path": "objects/protected-oracle-manifest.txt",
+          "digest": "sha256:0189a2598b7db9a1c75a0dcb86de4e56da2daf552bc3ffff80255c22f3567a9b",
+          "bytes": 75,
+          "media_type": "text/plain"
+        }
+      },
+      "max_attempts": 2,
+      "budget": {
+        "allowance_nusd": 2000000000,
+        "unknown_usage": "deny",
+        "quota_policy_digest": "sha256:c77a91dc2d908f96e01e3bbf7dd8d560f8e9d76e38a1d9c67bd932fbe09b6bd5"
+      },
+      "roles": [
+        {
+          "role": "builder",
+          "route_id": "fixture.builder",
+          "model": "fixture-model",
+          "harness": {
+            "binding_id": "fixture.harness",
+            "api": "harness",
+            "api_version": 1,
+            "implementation_version": "fixture-1",
+            "generation": 1,
+            "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+          },
+          "prompt": {
+            "path": "objects/builder-prompt.txt",
+            "digest": "sha256:43d5a172118a4a2709646b5232e04101fce2e7defa4c54af8099ee14cc365cff",
+            "bytes": 80,
+            "media_type": "text/plain"
+          }
+        }
+      ],
+      "recorded_at_unix_ms": 1791820800000,
+      "package_digest": "fnv1a64:0000000000000000"
+    }
+  },
+  {
+    "name": "plugin-manifest:protocol_major",
+    "expected_code": "UnsupportedVersion",
+    "record": {
+      "format": "PluginManifest/v1",
+      "plugin_id": "example.unfamiliar-reporter",
+      "package_version": "1.0.0",
+      "package_digest": "sha256:e97ff4437b90d47ca1965510e49c6eb6bd4e511de956daa5d94bc2f34f58c9fb",
+      "protocol_major": 99,
+      "entrypoint": {
+        "path": "bin/reporter",
+        "argv": [
+          "--serve"
+        ],
+        "launch_profile": "reporter-read-only/v1"
+      },
+      "domain_apis": [],
+      "requested_capabilities": [
+        "report.publish:example.unfamiliar-reporter"
+      ],
+      "required_services": [
+        "component-store/v1"
+      ],
+      "optional_services": [],
+      "config_schema": {
+        "path": "objects/config-schema.json",
+        "digest": "sha256:fb224ba2f183e4422368b3b48213e4229d06d019f138a8483b3f9cb89b57a78b",
+        "bytes": 63,
+        "media_type": "application/json"
+      },
+      "default_configuration": {
+        "path": "objects/default-config.json",
+        "digest": "sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+        "bytes": 3,
+        "media_type": "application/json"
+      },
+      "report_schemas": [
+        {
+          "namespace": "example.reporter.status",
+          "version": 1,
+          "schema": {
+            "path": "objects/report-schema.json",
+            "digest": "sha256:24aed4e6aee668ccdcb65abbfc9b82d9c8e158213e73774c805e94b5ebc6d6fd",
+            "bytes": 39,
+            "media_type": "application/json"
+          }
+        }
+      ],
+      "views": [
+        {
+          "view_id": "status",
+          "schema_namespace": "example.reporter.status",
+          "kind": "Status",
+          "title": "Example reporter",
+          "schema_version": 1,
+          "fields": [
+            "ready"
+          ]
+        }
+      ],
+      "actions": [],
+      "state_compatibility": {
+        "reads": [
+          "reporter-state/v1"
+        ],
+        "writes": "reporter-state/v1"
+      }
+    }
+  },
+  {
+    "name": "report-envelope:sequence",
+    "expected_code": "InvalidRecord",
+    "record": {
+      "format": "ReportEnvelope/v1",
+      "plugin_id": "example.unfamiliar-reporter",
+      "binding": {
+        "binding_id": "fixture.reporter",
+        "api": "plugin",
+        "api_version": 1,
+        "implementation_version": "fixture-1",
+        "generation": 1,
+        "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "schema_namespace": "example.reporter.status",
+      "schema_version": 1,
+      "sequence": 0,
+      "reported_at_unix_ms": 1791820800000,
+      "observed_at_unix_ms": 1791820800001,
+      "execution_id": null,
+      "durability": "durable",
+      "payload": {
+        "ready": true
+      },
+      "payload_digest": "sha256:b342fc286d0216cc212e0d7ba234894e2e7283ddf14f959adf0fe7fd5924308a"
+    }
+  },
+  {
+    "name": "provider-budget-profile:max_completions",
+    "expected_code": "UnboundedProvider",
+    "record": {
+      "format": "ProviderBudgetProfile/v1",
+      "profile_id": "fake-byte-provider/v1",
+      "provider": "fixture",
+      "model": "fixture-model",
+      "upstream": "http://127.0.0.1:0/v1",
+      "allowed_paths": [
+        "/chat/completions"
+      ],
+      "billing_class": "cash",
+      "billing_revision": "fixture-r1",
+      "source_evidence": {
+        "path": "objects/fake-provider-evidence.txt",
+        "digest": "sha256:815208a7137cf408cb2b6dcdaa95f310e474ec6d4e2d12ff6c75cd6d1a987033",
+        "bytes": 121,
+        "media_type": "text/plain"
+      },
+      "valid_from_unix_ms": 1791820800000,
+      "valid_until_unix_ms": 1791907200000,
+      "max_billable_input_tokens": 4096,
+      "max_billable_output_tokens": 1024,
+      "input_cash_per_million_nusd": 2000000000,
+      "output_cash_per_million_nusd": 6000000000,
+      "other_maximum_charge_nusd": 0,
+      "output_limit_field": "max_tokens",
+      "max_completions": 2,
+      "request_mode": "inspected_http_forward",
+      "inspection_body_limit_bytes": 1048576,
+      "limit_evidence": {
+        "path": "objects/fake-limit-evidence.txt",
+        "digest": "sha256:662595586923167da206616e0393625ac35bf34d2645083177b551ddc2698234",
+        "bytes": 87,
+        "media_type": "text/plain"
+      },
+      "quota_policy_digest": "sha256:c77a91dc2d908f96e01e3bbf7dd8d560f8e9d76e38a1d9c67bd932fbe09b6bd5",
+      "profile_digest": "sha256:5cb416c3050d9b4914f0fda3ea804d89e0afbeb24c129c0fc3a2ee6b74e13edc"
+    }
+  },
+  {
+    "name": "evaluation-policy:qualification_trials",
+    "expected_code": "InvalidRecord",
+    "record": {
+      "format": "EvaluationPolicy/v1",
+      "policy_id": "success-first/v1",
+      "automatic_targets": [
+        "prompt",
+        "skill"
+      ],
+      "screen_tasks": 10,
+      "screen_trials": 2,
+      "qualification_tasks": 20,
+      "qualification_trials": 2,
+      "held_out_tasks": 5,
+      "success_margin_basis_points": 500,
+      "sign_test_p_max_ppm": 50000,
+      "variable_spend_ratio_max_ppm": 1100000,
+      "wall_time_ratio_max_ppm": 1200000,
+      "regression_veto": true,
+      "unknown_evidence": "deny",
+      "canary_candidate_tasks": 10,
+      "canary_baseline_tasks": 10,
+      "canary_deadline_ms": 86400000,
+      "candidate_failure_rollback_count": 2,
+      "policy_digest": "sha256:4b2fede27ca429967b232302eb87b45e2f4e7cbfbe3d69a2deafbaa3a45adbef"
+    }
+  },
+  {
+    "name": "epic-review-admission:format",
+    "expected_code": "UnsupportedVersion",
+    "record": {
+      "format": "EpicReviewAdmission/v99",
+      "epic_id": "fixture.m2",
+      "definition_digest": "sha256:ead50f84fdb1be55862bcd6dfb463a5bd839111bf7324fad806e0c8ef8bfe870",
+      "design": {
+        "path": "objects/shared-contracts.txt",
+        "digest": "sha256:b1353b44ae57eacf59d0dab69e3099da52426194fe8354aeb40eeb689f38ea66",
+        "bytes": 35371,
+        "media_type": "text/plain"
+      },
+      "base_sha": "1111111111111111111111111111111111111111",
+      "candidate_sha": "2222222222222222222222222222222222222222",
+      "children": [
+        {
+          "id": "fixture.m2.1",
+          "definition_digest": "sha256:66139a13c2bea2f988694372716fbf05489db4d9ea54ca1691d43fca5c8f970f",
+          "status": "closed",
+          "labels": [
+            "staged"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "target_id": "fixture.extensions",
+          "type": "blocks",
+          "observed_status": "open"
+        }
+      ],
+      "decision": "waiting_prerequisite",
+      "blocking_ids": [
+        "fixture.extensions"
+      ],
+      "observed_at_unix_ms": 1791820800000,
+      "input_digest": "sha256:d81231af9a5d230e735f857a9b12f8e2ed25f2f978e3a316e68b5c5afe1bf934"
+    }
+  }
+]

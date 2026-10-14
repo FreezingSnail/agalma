@@ -1,0 +1,37 @@
+{
+  "format": "ProviderBudgetProfile/v1",
+  "profile_id": "fake-byte-provider/v1",
+  "provider": "fixture",
+  "model": "fixture-model",
+  "upstream": "http://127.0.0.1:0/v1",
+  "allowed_paths": [
+    "/chat/completions"
+  ],
+  "billing_class": "cash",
+  "billing_revision": "fixture-r1",
+  "source_evidence": {
+    "path": "objects/fake-provider-evidence.txt",
+    "digest": "sha256:815208a7137cf408cb2b6dcdaa95f310e474ec6d4e2d12ff6c75cd6d1a987033",
+    "bytes": 121,
+    "media_type": "text/plain"
+  },
+  "valid_from_unix_ms": 1791820800000,
+  "valid_until_unix_ms": 1791907200000,
+  "max_billable_input_tokens": 4096,
+  "max_billable_output_tokens": 1024,
+  "input_cash_per_million_nusd": 2000000000,
+  "output_cash_per_million_nusd": 6000000000,
+  "other_maximum_charge_nusd": 0,
+  "output_limit_field": "max_tokens",
+  "max_completions": 1,
+  "request_mode": "inspected_http_forward",
+  "inspection_body_limit_bytes": 1048576,
+  "limit_evidence": {
+    "path": "objects/fake-limit-evidence.txt",
+    "digest": "sha256:662595586923167da206616e0393625ac35bf34d2645083177b551ddc2698234",
+    "bytes": 87,
+    "media_type": "text/plain"
+  },
+  "quota_policy_digest": "sha256:c77a91dc2d908f96e01e3bbf7dd8d560f8e9d76e38a1d9c67bd932fbe09b6bd5",
+  "profile_digest": "sha256:5cb416c3050d9b4914f0fda3ea804d89e0afbeb24c129c0fc3a2ee6b74e13edc"
+}

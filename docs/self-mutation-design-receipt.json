@@ -1,0 +1,2527 @@
+{
+  "format": "agalma-design-receipt/v1",
+  "revision": 1,
+  "design_gate": "agalma-fjq",
+  "recorded_at": "2026-10-12T21:57:20.344361+00:00",
+  "author": "Codex planning session",
+  "source_head": "4cd040cb0bf875f469adf8376e06da1d194b89b5",
+  "workspace_status": [
+    " M docs/planning-pipeline.md",
+    " M docs/self-hosting-roadmap.md",
+    "?? AGENTS.md",
+    "?? docs/contracts/",
+    "?? docs/self-mutation-contracts.md",
+    "?? docs/self-mutation-roadmap-beads.md",
+    "?? docs/self-mutation-roadmap.md",
+    "?? docs/self-mutation-standup-beads.md",
+    "?? docs/self-mutation-standup.md",
+    "?? docs/smart-routing-design.md",
+    "?? docs/tui-pilot-reconciliation.md"
+  ],
+  "source_note": "Planning files are uncommitted. Existing smart-routing-design.md belongs to another session and is excluded. This is a design audit, not independent live runtime evidence.",
+  "user_decisions": {
+    "first_automatic_targets": [
+      "builder_prompt",
+      "builder_context_skill"
+    ],
+    "later_plugins": "explicit_allowlist",
+    "objective": "higher_task_success",
+    "guards": [
+      "protected_regression_veto",
+      "spending_limits"
+    ]
+  },
+  "file_digests": {
+    "AGENTS.md": "sha256:d2e41d8eb3106ab182d14b431703a7543a9f33ecc339f7f1e739413e91bde682",
+    "docs/self-mutation-contracts.md": "sha256:b1353b44ae57eacf59d0dab69e3099da52426194fe8354aeb40eeb689f38ea66",
+    "docs/self-mutation-roadmap.md": "sha256:864c615d39860db489a1e06323dad7e4a1db9cb6f76ad58474ef1105bbdaebae",
+    "docs/self-mutation-roadmap-beads.md": "sha256:351c34d501b53f5777cc493d6a260c88bbb59845d14ffb0cd99085099628ec6b",
+    "docs/self-mutation-standup.md": "sha256:db0340252fd51ccd5eb95be8584c986270b5a6bdb5eedfbadb653755becd1721",
+    "docs/self-mutation-standup-beads.md": "sha256:3beb965935113873bbfac62be3e8b2dee931d56b9378b9935318bd739f134de7",
+    "docs/self-hosting-roadmap.md": "sha256:ab637d33b6b5f00b72177a447559b848e7754f902992efa75c7d636ce2a11294",
+    "docs/planning-pipeline.md": "sha256:47078c9dd2e457b0bfd079a00ccb6d6bb8b29c7d969b51e7d570b4933919aaf1",
+    "docs/tui-pilot-reconciliation.md": "sha256:859f7fea9d18b9ca9457a56674265aff303fc0abca89d7b847748eb24a4661f2",
+    "docs/contracts/self-mutation-v1/action-intent.json": "sha256:9b39ecea2ef3746938a7b476853811c7afd66297aebb1407492a6247c72799bc",
+    "docs/contracts/self-mutation-v1/cancellation-settlement.json": "sha256:b3f0eb7464c8967ba1319c7bb7aff3c7e92a62d098762a89c16fa34c03b26df1",
+    "docs/contracts/self-mutation-v1/canonical-vectors.json": "sha256:f8bc9cdb950fc45de7f3aa1c3293e00b5e37c61c4b03e61477b213e540f8b537",
+    "docs/contracts/self-mutation-v1/component-commit.json": "sha256:b7d4533da59d4960ba3a294ac579d4384b7818df4451845ec3fe43234e5801e6",
+    "docs/contracts/self-mutation-v1/epic-review-admission.json": "sha256:5d39b9d60f72ec2ae3b2d43874c114e80d410b8ab8cbe448103227e336df9f72",
+    "docs/contracts/self-mutation-v1/evaluation-policy.json": "sha256:578b9ebf879f90838399494689204a82260883dd8ada9336a3e56ba9b26f4dfd",
+    "docs/contracts/self-mutation-v1/failure-detail.json": "sha256:de6326a937348ee6f2a974d270046fd60972a1d74d48e13b59c3109b9cad5dc2",
+    "docs/contracts/self-mutation-v1/invalid-records.json": "sha256:e1c8d96d22e61f4d1ea5fb29a21d0ef87ed5410a48d18d7e732d94b660b55d1d",
+    "docs/contracts/self-mutation-v1/mutation-candidate.json": "sha256:1cf8b71eaf4bf2f65787ba242afb14c7c44604003a69b9a4ef31a218e587d60a",
+    "docs/contracts/self-mutation-v1/objects.json": "sha256:de8bff363abeeff451cc830f71e0fe957d3c78918161b765f23f0d9d229e86a8",
+    "docs/contracts/self-mutation-v1/plugin-cancel-request.json": "sha256:e631ab6f627eeb5a02e2aaa871b1d701d328941ba5532980de04cd3e6b76d8e4",
+    "docs/contracts/self-mutation-v1/plugin-health.json": "sha256:620aa7a5013b1f84ff4b60f071afb4762f73bbc2d8c1e9a39281907dcd64557c",
+    "docs/contracts/self-mutation-v1/plugin-installation.json": "sha256:4cc521016b0639ef0e74d3f7744cdf067a77dd21e386432bbaf547990fde12d8",
+    "docs/contracts/self-mutation-v1/plugin-manifest.json": "sha256:d8e2efb67c64639b184012eb35d5931e45efccf78160c26f5169d95c8ad5e21a",
+    "docs/contracts/self-mutation-v1/plugin-operation-status.json": "sha256:5e6f5942c8ef0ff956269f9554323fda09a2d1ca18af2918b627d772adcfa4d0",
+    "docs/contracts/self-mutation-v1/plugin-snapshot.json": "sha256:f3657f799256980eaa4ba4fb28d3eddabe23859ec56b8325c9b84a80b8833326",
+    "docs/contracts/self-mutation-v1/provider-budget-profile.json": "sha256:6195752654d0768d3860af00a94e7c698d0bb85296d29f64b2449a82fb7866f0",
+    "docs/contracts/self-mutation-v1/report-envelope.json": "sha256:127f8cd6f2e888f01d8e247cf5bd55755eb3f2387eeaa50e0fcf46a8a0574e20",
+    "docs/contracts/self-mutation-v1/report-publication.json": "sha256:9a428c9bb326da2175253eeae7655aa4e4ea4d7cfa418a3f2696ccfe2dc42c0e",
+    "docs/contracts/self-mutation-v1/schema.json": "sha256:bac84c256f292e1c5e066c4acef8c980c79699100a7b8978f29aca79357d003b",
+    "docs/contracts/self-mutation-v1/snapshot-sections.json": "sha256:e34daffb5b3222698179dff42166fc9b2ad4d83561c277a46359ab99c691ce7c",
+    "docs/contracts/self-mutation-v1/task-package.json": "sha256:67ee8ee8072e6b87d01597eccb596363317d639605e2dfd49987b8ed309e461d",
+    "docs/contracts/self-mutation-v1/task-release-policy.json": "sha256:7992d8a7c12d11e5d39f6fc84f40e943ada158c35e3770bfc4cef162301dda5e",
+    "docs/contracts/self-mutation-v1/task-release-receipt.json": "sha256:6f566c01cd748a71fabb2ba7247acbab18dae10fa719c7a5daf2a8b2bf4c0cc3",
+    "docs/contracts/self-mutation-v1/README.md": "sha256:d1c1390badae8d1e8031da358fed7d439ea99c9def5c9d2993d799282942c558",
+    "docs/contracts/self-mutation-v1/validate.py": "sha256:4b389f17150c008ce1a46530b6acdb4992f3d78d7915621e1986cb338d3f2aa2"
+  },
+  "checks": {
+    "plan_checks": [
+      {
+        "group": "SF",
+        "epic": "agalma-5fy",
+        "expected_children": 11,
+        "command": [
+          "target/debug/agalma",
+          "plan-check",
+          "--epic",
+          "agalma-5fy",
+          "--repo",
+          "/Users/connorfranc/code/agalma"
+        ],
+        "exit_code": 0,
+        "output": "OK"
+      },
+      {
+        "group": "HP",
+        "epic": "agalma-jmr",
+        "expected_children": 8,
+        "command": [
+          "target/debug/agalma",
+          "plan-check",
+          "--epic",
+          "agalma-jmr",
+          "--repo",
+          "/Users/connorfranc/code/agalma"
+        ],
+        "exit_code": 0,
+        "output": "OK"
+      },
+      {
+        "group": "SM",
+        "epic": "agalma-cg9",
+        "expected_children": 9,
+        "command": [
+          "target/debug/agalma",
+          "plan-check",
+          "--epic",
+          "agalma-cg9",
+          "--repo",
+          "/Users/connorfranc/code/agalma"
+        ],
+        "exit_code": 0,
+        "output": "OK"
+      },
+      {
+        "group": "MX",
+        "epic": "agalma-xlw",
+        "expected_children": 8,
+        "command": [
+          "target/debug/agalma",
+          "plan-check",
+          "--epic",
+          "agalma-xlw",
+          "--repo",
+          "/Users/connorfranc/code/agalma"
+        ],
+        "exit_code": 0,
+        "output": "OK"
+      },
+      {
+        "group": "CV",
+        "epic": "agalma-pob",
+        "expected_children": 8,
+        "command": [
+          "target/debug/agalma",
+          "plan-check",
+          "--epic",
+          "agalma-pob",
+          "--repo",
+          "/Users/connorfranc/code/agalma"
+        ],
+        "exit_code": 0,
+        "output": "OK"
+      },
+      {
+        "group": "M3",
+        "epic": "agalma-3q5",
+        "expected_children": 9,
+        "command": [
+          "target/debug/agalma",
+          "plan-check",
+          "--epic",
+          "agalma-3q5",
+          "--repo",
+          "/Users/connorfranc/code/agalma"
+        ],
+        "exit_code": 0,
+        "output": "OK"
+      },
+      {
+        "group": "P1",
+        "epic": "agalma-52v",
+        "expected_children": 8,
+        "command": [
+          "target/debug/agalma",
+          "plan-check",
+          "--epic",
+          "agalma-52v",
+          "--repo",
+          "/Users/connorfranc/code/agalma"
+        ],
+        "exit_code": 0,
+        "output": "OK"
+      }
+    ],
+    "contract_audit": {
+      "command": "python3 docs/contracts/self-mutation-v1/validate.py",
+      "exit_code": 0,
+      "output": "OK: 19 positive records, 7 rejected records, 4 canonical vectors; all refs/digests and fake reservation checked"
+    },
+    "cycles": [],
+    "first_tranche_children": 28,
+    "later_children": 33,
+    "all_children_deferred": true,
+    "duplicate_tui_children_retired": 10
+  },
+  "planned_children": [
+    {
+      "id": "agalma-3q5.1",
+      "title": "M3.1 versioned operator cadence and directive-authorized release policy",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "m3",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9.8",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9.9",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:d84c521eabd732d66c386a67935e7ca7eb495c2ff07e9ad78f09a11dcd8a6129",
+        "design": "sha256:c50f712d0a44ebef5e982fe1994e485627bdd8a57ef9a952aa133ae312c1ba6a",
+        "acceptance_criteria": "sha256:62ceb0f930ecd40fd5ebbe3b7ee46d160e976b875ba148d82d671067b215b5bf",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-3q5.2",
+      "title": "M3.2 durable serial scheduler owner fencing idle and backoff",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "m3",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5.1",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:0e4163cd2efe774df84c7ece799bea465f6e04bac46f45f2038d53dfda9a9def",
+        "design": "sha256:22cbfe808fbba618f88024479bb878c5cc474820fbba48879a6dbac19e58be11",
+        "acceptance_criteria": "sha256:77f0ce660746fd19536db8c4f84eed6a620646db35d197d1ac19887795ea444c",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-3q5.3",
+      "title": "M3.3 hierarchical aggregate cash quota and local resource governor",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "m3",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5.1",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy.7",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:abd553056840fb0e900e2fddd56106f4aa2d610551b33b4eaed6654979e15f74",
+        "design": "sha256:443860fc93ce1fc5f6a49ae3b2645db88045c108239708555db0fa6edf33ba74",
+        "acceptance_criteria": "sha256:ebb0c88f25bc137ef8de9cd96858649343d7d97c2d5a08e2c6657140ce1aa26e",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-3q5.4",
+      "title": "M3.4 receipted reconciliation mining digest and alert jobs",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "m3",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5.2",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5.3",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:5defc02bc958b28aa0f6d80394b93829d6dd6773e8035cfb878a4a3ebeee756e",
+        "design": "sha256:9f4db4f2c68064022d7445a5564ce95671ad9f02aaaa30359f0e3f5dabd0ff71",
+        "acceptance_criteria": "sha256:795475cf604437570079086fbd754122f7744e14e0687577cf30ed51abe5d148",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-3q5.5",
+      "title": "M3.5 external supervision and clean single-owner lifecycle",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "m3",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5.2",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:7a0dd9ced873c717695dfa2a88a5c84855b5491986edbd323d4aa4c7b3649a61",
+        "design": "sha256:c3fa8e13b4de443b7bd4c55396b8d6a64078988159edc8c62c3252d9e9d2a027",
+        "acceptance_criteria": "sha256:3c0be9993004564b40899e8e38af7a9c19e79d9c41384e12819174a539c9e10f",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-3q5.6",
+      "title": "M3.6 complete backups pinned retention and disk-pressure admission",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "m3",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5.3",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob.8",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:7fac4466e472a427956d351b4e213f727ef6f4176bf3cfdae59f1635bbe7cbf7",
+        "design": "sha256:27a4ee0dbcc604bb0c56167bbc14d96f954673c5a58b182187fe906cda927713",
+        "acceptance_criteria": "sha256:97e72582a3df89c2ac7e4337d97eed1e740ddf3f3843bfedc41bea3ad73edb38",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-3q5.7",
+      "title": "M3.7 isolated restore and quiescent schema upgrade reconciliation",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "m3",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5.6",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:97c5900f8dc4c91f6e6bcfe68d2835d08766eebd30886bc6efaef18467e16dee",
+        "design": "sha256:95ce1773bdc01688eaa3ec2bb36c8e47f183ea90539cee29ef2867f61d5cfa0a",
+        "acceptance_criteria": "sha256:b4af207c732457f85aaf38d52b21ec3f10971ed1cf41633ccfb1b750585e6fd6",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-3q5.8",
+      "title": "M3.8 crash kill resume and degradation drill matrix",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "m3",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5.4",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5.5",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5.7",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:dc50a1f99b0770c1d8a7e6a1ee5e0831c923cd2cf0c05ef16a2f2d9b8925d331",
+        "design": "sha256:0a5a908a478bd0d981e81f4418d34248f55b91ae8798f57ea925db437616770c",
+        "acceptance_criteria": "sha256:ceb55c88c183005132f70daa00ea9fcd9eb71098e3581498c40da696480ebad4",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-3q5.9",
+      "title": "M3.9 genuine 72-hour unattended baseline and MVP evidence",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "m3",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5.8",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob.8",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-xlw.8",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:ae331b50d21fbe354d4780c1511105106c8de6d5e39f9fc6017a9b5dc8e440ef",
+        "design": "sha256:4318136082fbf573f245877eb24c9441a09520b0bf90d5483d5f406158fb3c7b",
+        "acceptance_criteria": "sha256:9ee07923647d66551816bd4ad3ff51b9222282b92de522353541604aa873220d",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-52v.1",
+      "title": "P1.1 immutable core update candidate and compatibility manifest",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "p1",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-3q5.9",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-52v",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:d042f83e5a5c7d99a32ff1f9818af6c7c0b623c0e85818bc017755101fbe0ab7",
+        "design": "sha256:1e0f4b46d392191fa4727a23fb906397364cf7f989eb4a995cdac16888b48f9e",
+        "acceptance_criteria": "sha256:d5c7720b269c7e23fd9805b5a867f38a21ad027992f38cd595a9d3e7c17a5199",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-52v.2",
+      "title": "P1.2 independent reproducible build and protected S0 M3 evaluation",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "p1",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-52v.1",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-52v",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:2d0fe3a7a53b13181678a592717e892ad016de2fdd0640b832a6e19a6521f180",
+        "design": "sha256:9a1ffedb95a7669b7965e82efe3c9a7ecad02ead6e7f13a677544160ddfb4f82",
+        "acceptance_criteria": "sha256:5aaa294b3b60eff42789f4a4d45eb1115de79923a17fac05907ccbd32bcb3b3b",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-52v.3",
+      "title": "P1.3 external bootstrap supervisor handover journal and fencing",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "p1",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-52v.1",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-52v",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:d40eeab69815e54cc2366934a5b5354de1e2ea6504c817efd183a9ec5a8b645d",
+        "design": "sha256:370cc9dccfd0dcdee10a7433e1fcb05464b5be86ab6f2c7e8c8ca3dfbacc7c4e",
+        "acceptance_criteria": "sha256:18348989b31ef414c78177355da36692d776d355c0321762c5e70649b9d49344",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-52v.4",
+      "title": "P1.4 drain checkpoint stage and receipted core activation",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "p1",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-52v.2",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-52v.3",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-52v",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:56e4118cb3a5f453f575280cc0e687790b6062fc1ade4f167ff7b0232ae6b8f3",
+        "design": "sha256:247be293c5d8f55ceb1e9635ebe01ab667d13f88e7a8251ec7408aec55fd4887",
+        "acceptance_criteria": "sha256:9522bde011de98e608bf68180cf417062f50d2f4d51739d191fcf9e2ed5b3f5c",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-52v.5",
+      "title": "P1.5 failed-start and health-regression compatible binary rollback",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "p1",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-52v.4",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-52v",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:4b21975b28203ef1f8fcb76888a133c68b8668226b43a3a471a506cb5b317d6b",
+        "design": "sha256:b8f5eccb5a20332ad8baac41a9dc65525c6a6ae70ed8979408ea77cf5431ce31",
+        "acceptance_criteria": "sha256:1c83cd79a62cc61ebd91a5531f932247a9b37d6fe2b3679683b2351feae9681a",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-52v.6",
+      "title": "P1.6 isolated shadow core evaluation and bounded canary",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "p1",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-52v.5",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-52v",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:025b4255464e1a3c07e8e344f5c2959e7b6e12d23cda28abbc51af30ea182844",
+        "design": "sha256:9c620333c7e62ab9058f38e3d18f526efd90826e4001483f6449e11885796f58",
+        "acceptance_criteria": "sha256:f6c7c419dfcccdde6c6917fb63e7b60db65977ed1f836fd4674b5cb41c1aa5c2",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-52v.7",
+      "title": "P1.7 versioned directive-bounded code autonomy enablement",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "p1",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-52v.6",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-52v",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:ff6bc9e2d654ce4a23ec6185f56087379304745c8c0512ac667acbd8a130d573",
+        "design": "sha256:9e3a862279e0baacba3aa0d8cf92f1dbb9cf8176bc6093aa348dc6a89fa45f6d",
+        "acceptance_criteria": "sha256:6d1b5a9e1511767438f3b2f9a7fad75f5b98ff519797820b3f08c205e5f03d1c",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-52v.8",
+      "title": "P1.8 independent complete autonomy and code self-correction proof",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "p1",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-52v.7",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-52v",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:30509449c9fb9d8eb18ab3b65d5cb3a67c88fba7f08906e7ab5452ff59e69557",
+        "design": "sha256:739dfde737226f8c8387c5e8218861d1b1313efb860884d98a62e8a0fe5ff9b7",
+        "acceptance_criteria": "sha256:96693eee0ae6d2f9f6e0036ffc32d81db0ce5480906188b213582ee6c43887d0",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-5fy.1",
+      "title": "SF.1 general repository builder prompt with complete frozen context",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-build",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-5fy.2",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:9d67caff8e0425bc7839620b26648c3bf8ed11d3814ea25287b05e262240e79a",
+        "design": "sha256:d2399a591faf91766287ed783820e3f292e43c643150dc185467957ebd050650",
+        "acceptance_criteria": "sha256:7a6867c7e167b3811ac7881244331506a035d348b647275df37ecc8d9b2e1320",
+        "notes": "sha256:3d9fc8dd13e4bc3b9edd934ac775cbdcfd4d863b0f979a412589994854153e22"
+      }
+    },
+    {
+      "id": "agalma-5fy.10",
+      "title": "SF.10 fresh goal to design staging execution review and epic closure proof",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-build",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-5fy.11",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy.9",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-9m2",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cmq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:7c539c40b35ce874293b48b8c7e2d8c1066b583526b9569ba67581f17a8dec91",
+        "design": "sha256:3eaf109d32ebc8e5c36499ea4884d9a026ea4b5631787d394c8a119d149d8fe9",
+        "acceptance_criteria": "sha256:4ad2b0f2003f1855b5aa59c54e642cfbe6b2954fa5682a1f362b595263f95abf",
+        "notes": "sha256:45ce23532b681fbc93d663eeec93d425d9bd631fecbadb6cf947007221b1d917"
+      }
+    },
+    {
+      "id": "agalma-5fy.11",
+      "title": "SF.11 prerequisite-aware epic review admission and closure recheck",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-build",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-5fy.2",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy.5",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:4d993788087058fa6d78ee76862becf5ee5f248cdc4778efe270798a93fb9276",
+        "design": "sha256:01e61b717e6f4e669b485790bd94c8893e99703c7f30318b1762351e1e456111",
+        "acceptance_criteria": "sha256:37b27ce0e33905817dda786e68a3b0464742be1bb29494332c2da08d5c38c2fd",
+        "notes": "sha256:c32d6fc07a2a1ff091e0ca8f2e824d141846720bb4723d5cfc89c0e303bc41c5"
+      }
+    },
+    {
+      "id": "agalma-5fy.2",
+      "title": "SF.2 immutable task package: full issue design, rules, acceptance and recovery inputs",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-build",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:026287395f1fcf2e456f25bcbb52063453e908a6e2539db07e54dbd8327c8573",
+        "design": "sha256:9e620765297ec0d0e6ff95aac6b5a41b5653568425e6be9cf747e918cb1de8e2",
+        "acceptance_criteria": "sha256:47c311634526d895328e3895f647f3ff01e546db47a721872f0ad1c9a0baf651",
+        "notes": "sha256:c28db5408ae465d9fd379de551c6dcea9105996d5c60673f008d874a380900dc"
+      }
+    },
+    {
+      "id": "agalma-5fy.3",
+      "title": "SF.3 execution-scoped history replay and survivor reconciliation before work dispatch",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-build",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-5fy.2",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:83fde880fb5b771aa68a4729eb0019bfd49214d87213b89b459f07fb38032890",
+        "design": "sha256:e221ad05173cb79af770fcf64e088286e7644937885ea5261e9d2fe85cebbef1",
+        "acceptance_criteria": "sha256:1d5cc2def5c14812d1911aa3ca6f31299a32934856670b629d1bce7df7e1f698",
+        "notes": "sha256:3d9fc8dd13e4bc3b9edd934ac775cbdcfd4d863b0f979a412589994854153e22"
+      }
+    },
+    {
+      "id": "agalma-5fy.4",
+      "title": "SF.4 durable per-execution cancellation that survives factory resume",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-build",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-5fy.3",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:3309fbb1272d67a4116b34d7dee19618276c5c3d0dcf5b8f6309fe0eac9e87e9",
+        "design": "sha256:1f6f496f30664625c4df34ff27f58ba67ce6740c06005de27491463cbbe138e1",
+        "acceptance_criteria": "sha256:7732ff6a30b765666840c876f4441e4f882af1ac84e45ef575c90164a66cc3ac",
+        "notes": "sha256:78e3ddaf3a0ba7d5b7713405fbc22bfea57bcc49a6dbb58b9f5b8b76fe3d9107"
+      }
+    },
+    {
+      "id": "agalma-5fy.5",
+      "title": "SF.5 fail-closed stop admission for planning, sessions and plugin actions",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-build",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:a7abdbdd87507559bb37407727b2fe52c26bc22e0055ffef61f7a99b33cf5c33",
+        "design": "sha256:074ad528de9f522c92e659e6d24d850219b1b1a41eb48fa205670479b36138e8",
+        "acceptance_criteria": "sha256:d688609696e554c4719b01bcfcd98ffd7b9e158eb0cdab7b772e7fc30002cdec",
+        "notes": "sha256:3d9fc8dd13e4bc3b9edd934ac775cbdcfd4d863b0f979a412589994854153e22"
+      }
+    },
+    {
+      "id": "agalma-5fy.6",
+      "title": "SF.6 enforce candidate file scope and immutable protected verification inputs",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-build",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-5fy.2",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:d6ba770db32a5b1f4c94449945a8d3c25d8053a2626a813f146b306584e026ed",
+        "design": "sha256:86ab0744006495044e6120fd4bc3c74caf817f97dbab4497484b2ab431be2ac0",
+        "acceptance_criteria": "sha256:ed8d8c53a22926a5578731c1e237d44763fb1bea4cf3d02cd87098fd6bba2682",
+        "notes": "sha256:3d9fc8dd13e4bc3b9edd934ac775cbdcfd4d863b0f979a412589994854153e22"
+      }
+    },
+    {
+      "id": "agalma-5fy.7",
+      "title": "SF.7 task cash admission, outstanding reservations and unknown-usage recovery",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-build",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-5fy.2",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy.5",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:ad1868243ddbe67053cd08c411be564c0f1905788a057763eb5e08eec04c8861",
+        "design": "sha256:db622367c97ec1783eeee92af796bb4554429b9d54b73fa024889ad95e97021d",
+        "acceptance_criteria": "sha256:9e41b81424c615b4d87d3ecaa39790cea840197bc9f950e9f2d53e63c2ab5ecc",
+        "notes": "sha256:0eae4e92e8131ece49a303ebae5a2de871e690f55cad8895ceed7e168a06592b"
+      }
+    },
+    {
+      "id": "agalma-5fy.8",
+      "title": "SF.8 builder-only Flash model selection with independent planner and reviewer routes",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-build",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-5fy.2",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:58977cdf586f48e00dbfd72d3aa411d5cc3c2adfa88248a97ec1d6836ed7d4b4",
+        "design": "sha256:2c76917a1da33db45b86b590853561e5f43dec5dadb1b6f0497f3403c725d6ea",
+        "acceptance_criteria": "sha256:3efcec3b22489744e0624399a5a963ed0c39d462a2f10b5eb7a4c74b36631ddb",
+        "notes": "sha256:3d9fc8dd13e4bc3b9edd934ac775cbdcfd4d863b0f979a412589994854153e22"
+      }
+    },
+    {
+      "id": "agalma-5fy.9",
+      "title": "SF.9 scratch self-build evidence: Flash context, protected acceptance and recovery",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-build",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-3ej",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy.1",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy.3",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy.4",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy.5",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy.6",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy.7",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy.8",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-ud1",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:2b5ad7367e824271eb3de94db1738f5250af680ae0de6cf50b2fc8aee7cf03a5",
+        "design": "sha256:e75371b682bea1a14456fb91ada58f4b653c95414d3c199693dd00e622ab0b0e",
+        "acceptance_criteria": "sha256:a28c0ba13b2a10fccca51661b9a5a83c6fba2a0827a60cab9449231bc1ca609d",
+        "notes": "sha256:3d9fc8dd13e4bc3b9edd934ac775cbdcfd4d863b0f979a412589994854153e22"
+      }
+    },
+    {
+      "id": "agalma-cg9.1",
+      "title": "SM.1 immutable genome and mutation candidate package with constrained lifecycle",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "m2",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-5fy.9",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr.8",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:24019c62daa736407cfe600e7ed2803a2021ce8a83fbfd6b627b2edb65fcdaa3",
+        "design": "sha256:a06c9a4a5943bf0fe9ca36ac613955305c9f495e7d93a1b6801b66511a92f458",
+        "acceptance_criteria": "sha256:8dea3cfcecb7de316d227719eeed5a251c4a178ded3f534f702a3340ce950300",
+        "notes": "sha256:c5c087b77840d9e88da5837c1b8cd87a2b52d7528988e90b0c31e9d1db195198"
+      }
+    },
+    {
+      "id": "agalma-cg9.2",
+      "title": "SM.2 protected immutable benchmark and holdout pack for mutation evaluation",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "m2",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-cg9.1",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:1d90f22135ade10cd5e4b5060eba032e8c8c6aead6e10282c8102c22cc356b38",
+        "design": "sha256:12febfd02cc9660aa4bc3a2469c22dc3050f54aedd5c09c5a0e99e34483e8525",
+        "acceptance_criteria": "sha256:be178c63cc542a46440ca9afc081ef3a0bd63e56a1595213412f97edbcd7edd7",
+        "notes": "sha256:44e1062f6a69634e85d2f94ac7d35b350391f8b5fd74e886c463cfad7242a1bd"
+      }
+    },
+    {
+      "id": "agalma-cg9.3",
+      "title": "SM.3 paired immutable baseline/candidate benchmark runner with complete accounting",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "m2",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-cg9.1",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9.2",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:fcd3b03f6f548556f270c3778b35f6d4f0cab6fa14ad48524d2bd993394c66d2",
+        "design": "sha256:fa968c6862dbeadaa52601c4b0894f142aa380db4fe78c536fabd668939c46a9",
+        "acceptance_criteria": "sha256:5fd3abb72cbc38271453e599d09bb45cca5f7246d8c9567ddc5f03133c570f4b",
+        "notes": "sha256:558d87558f48dfad38f149615543c44210a7a9abbbda08eee79570687900eb76"
+      }
+    },
+    {
+      "id": "agalma-cg9.4",
+      "title": "SM.4 independent evaluator and deterministic qualification with regression veto",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "m2",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-cg9.3",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:a3813164bd9a406ae92b810e0c263a1f3d53abf7c1bcbce978e3444033e59356",
+        "design": "sha256:e4afcc01f21daa5e9bb800faff29e6c8b684eb417732c280bc618ce445fc502e",
+        "acceptance_criteria": "sha256:5670f2eb412456c8406a75f25ab60c579003d5dfba601193db87d9d7939f4104",
+        "notes": "sha256:88d093f6d3263b86894bdb51f851be774ef7e2bc78ea95d3350a0c3febffc65f"
+      }
+    },
+    {
+      "id": "agalma-cg9.5",
+      "title": "SM.5 bounded mutation proposals produce complete staged factory tasks",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "m2",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-cg9.1",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9.4",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:1027a0b552087f630c136c2acc10f25df69dbed9f54ef5cde807fe5e1ec1d1aa",
+        "design": "sha256:bd1a83353c21c63247b107f6e0de8ca0397ab6aa4054438da7f27c7516baf454",
+        "acceptance_criteria": "sha256:645873319697bd81bf528281b8e1e3b676d1266100fe04600a6d7b44e00612d5",
+        "notes": "sha256:8b55d9e6f9f198f91d7fd803373b9e7abe5efaab7a9ba6c70aab39c0af0afd72"
+      }
+    },
+    {
+      "id": "agalma-cg9.6",
+      "title": "SM.6 durable evidence-gated promotion of prompt and authorized plugin candidates",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "m2",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-cg9.4",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9.5",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:ddfce6053677cfe4da2654ae65cea5bfb0d54540fddd5e2e52c5c85c4314cb8a",
+        "design": "sha256:dac2f20d9bacb37b1f7862eef3ca7b4cdde9cd8aad98802f57421299355c4bf4",
+        "acceptance_criteria": "sha256:1bfe1fb7a6b9ae9fafc42d8f1139c058f6861129beeeecb66729b43af2110b23",
+        "notes": "sha256:2868857b1a354649c92ebb611fb6fc7ea7e6360b53643f07650d2a7785f84d6e"
+      }
+    },
+    {
+      "id": "agalma-cg9.7",
+      "title": "SM.7 canary regression detection and automatic receipted rollback",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "m2",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-cg9.6",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:19b82cd832e5aece2a2683a9a77be9d44d8f3eea33cbffdb6066de971db8cf47",
+        "design": "sha256:c0849b58db63c80e5af588213cc473a77ae06081cf48fbc661d55508908741c6",
+        "acceptance_criteria": "sha256:c56ab31bedf59422c987a2742ec59dd38d99ee8c032a7a25358d8ba7772d80ca",
+        "notes": "sha256:544bcf97a6804ce957759a1d626d353063ad06fa07de506e22800aa1f328c192"
+      }
+    },
+    {
+      "id": "agalma-cg9.8",
+      "title": "SM.8 full self-mutation proof: retained win, rejected candidate and canary rollback",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "m2",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-9m2",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9.2",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9.5",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9.7",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9.9",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cmq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:2c0ccb8fd6d6087c914c982a74bffb6d8fae78805afa0fd27214179209644b85",
+        "design": "sha256:1c579f807733c9c34236803a2c894cc3f1b893590ecbb2b2d9944efa183cd411",
+        "acceptance_criteria": "sha256:dc0af98677ee7089fd20138d4910afad5850415c55ff510c935bdc83d2ea3f25",
+        "notes": "sha256:ff43d3be61d07e2ff56d2bc587d2f2429c5bcaf34abe072927ec89170245c304"
+      }
+    },
+    {
+      "id": "agalma-cg9.9",
+      "title": "SM.9 directive-authorized prompt skill task release with durable admission receipts",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "m2",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-5fy.2",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy.7",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9.4",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9.5",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr.5",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:4956d48fe032b09d9201ff51c3d8769b8eb1bd02343c5a84b04c79e21f9369f4",
+        "design": "sha256:f2235131d9b37ae98f70c914467bff30c392e6cb3721d9270163e189625a8bdb",
+        "acceptance_criteria": "sha256:b46404a7aa801098c960fb114fda903eecbb0fc49338cbae4a56ed26755c4cac",
+        "notes": "sha256:486f6fd8bb334e8aad0dac63c12d58f5f2e2f59cf5c6c7408428f8d8876cbd0b"
+      }
+    },
+    {
+      "id": "agalma-jmr.1",
+      "title": "HP.1 common plugin manifest, reporting, actions and component-ledger contracts",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "nano-service",
+        "plugin-platform",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-5fy.10",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy.9",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:c83c94a0074ae94a5c64be7de5e4d66b8e2eeb800ff658993ea3af4973eb7904",
+        "design": "sha256:2159f8fa24220f6beaaf0fd1d250476c0df191fe04e360901fc6abfd9c3cf1f4",
+        "acceptance_criteria": "sha256:666b2b71d77765479e6b003169d6cd5c3aa9669a72de4e606191d97f21d0ebb4",
+        "notes": "sha256:ada501306b5b3d57c97062367dbccf52911365fb06b6412c80820cae725b15f6"
+      }
+    },
+    {
+      "id": "agalma-jmr.2",
+      "title": "HP.2 discover independent plugin packages from configured directories",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "nano-service",
+        "plugin-platform",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr.1",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:5dd14f804894dfcbafdf03446fae9f12924ac3c2f0b76528efecae209ab70b79",
+        "design": "sha256:5c20e3b590d9669bdddb8d3b7005cb0ba3319e248440dde46173b17416aca72f",
+        "acceptance_criteria": "sha256:b42586021d3b969349158b3f729f77430ee97d1183962276e73260bf9f8a8e0f",
+        "notes": "sha256:3d9fc8dd13e4bc3b9edd934ac775cbdcfd4d863b0f979a412589994854153e22"
+      }
+    },
+    {
+      "id": "agalma-jmr.3",
+      "title": "HP.3 dynamic plugin registry and supervised lifecycle with pinned generations",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "nano-service",
+        "plugin-platform",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr.2",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:40df1d89d833c54ce8bc245b53676648c69e94e4677d0bb5b573f11abca2419f",
+        "design": "sha256:56b8e237b513ffcecd8da224f73ec609690a1a012e8643becbc269f49442f7be",
+        "acceptance_criteria": "sha256:f72988b6a981b87b085b014692c15807ba73c6c6f28fe872c9ee0fe3f29e4515",
+        "notes": "sha256:678a489716f71fd1dab1bd210fdfd11eb8a7fff78a20b116a4e2283ac144e82a"
+      }
+    },
+    {
+      "id": "agalma-jmr.4",
+      "title": "HP.4 common plugin IPC and capability-scoped hub routing",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "nano-service",
+        "plugin-platform",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr.1",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr.3",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:82994b10c8cca26e2aa4172ef80cf96899ee717e52e62226fb6257cdb6973fb2",
+        "design": "sha256:006c9c1ade9d1ddc3ff440cfa5e18005572168b840aacdb17a659cc3dc3101e4",
+        "acceptance_criteria": "sha256:f22681ec4d591db998cdced98b717b5de8e06751eba7d2129d7f3b8eb89c4e58",
+        "notes": "sha256:0f60613227dc79cce4b9bc2843ddfe6d3f27eb53777a5344584b1cdfb2ca56fa"
+      }
+    },
+    {
+      "id": "agalma-jmr.5",
+      "title": "HP.5 durable plugin reports, component ledger storage and snapshot recovery",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "nano-service",
+        "plugin-platform",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr.4",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:b70cb67030f833f06a17d387c01448686d6300d56736fc9405ca6fd2807640eb",
+        "design": "sha256:67ebb89126f7abe33d9a3830323148d615863b132e7e3ed34328bb684988dfdb",
+        "acceptance_criteria": "sha256:d45880a42c8fa09d11634784e308f835852174cf8d2323d47a49cb8199180860",
+        "notes": "sha256:6c499af3c7cc6066fab1c76db202ac2c17439dda015bc924975bc34d3b5f2589"
+      }
+    },
+    {
+      "id": "agalma-jmr.6",
+      "title": "HP.6 registry-driven component navigation and declarative plugin data views",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "nano-service",
+        "plugin-platform",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr.5",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:d3c6ef3fbe8095fb3d498d29cdb058a9e8d2fa594cc7c0e4ef3c304f1e191008",
+        "design": "sha256:bd2de1c8c6f920e29a8749dd2470e4f61cc5ecbaa98903b323a1ef4bb123ca29",
+        "acceptance_criteria": "sha256:21ca49f615dede5f2250100fc49a2cbf8bdc674182f5189dc61433bd7bf48688",
+        "notes": "sha256:3d9fc8dd13e4bc3b9edd934ac775cbdcfd4d863b0f979a412589994854153e22"
+      }
+    },
+    {
+      "id": "agalma-jmr.7",
+      "title": "HP.7 authorized plugin actions with durable intents, receipts and recovery",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "nano-service",
+        "plugin-platform",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr.4",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr.5",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:517237352902ed5c55f0c8fb1824b1b9a22a32f6dd8545c51f909e38e1e86750",
+        "design": "sha256:0d892bf4bf534af3a058eae0f6ae96f1fad506e33b5ca986ce16fa0a40ac555e",
+        "acceptance_criteria": "sha256:162a430f7924f2183063cdb7b286dc3df5c269840c56df8e88a09f4344d92a55",
+        "notes": "sha256:3d9fc8dd13e4bc3b9edd934ac775cbdcfd4d863b0f979a412589994854153e22"
+      }
+    },
+    {
+      "id": "agalma-jmr.8",
+      "title": "HP.8 independent plugin install, UI reporting, action, restart and replacement proof",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "nano-service",
+        "plugin-platform",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-fjq",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr.3",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr.6",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr.7",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:881ba75e3a0532a725be19915c484890cc9a11caee803dd97d348bdf3e02559b",
+        "design": "sha256:68382df4c94c7d6e754ded92b2dfac53b7ffdb02f6b03f58c9cd1eb3abe71d70",
+        "acceptance_criteria": "sha256:3e90986293440344ebb5ea5c09c0c79831e3982ce0a1b928a03112601263d8db",
+        "notes": "sha256:3d9fc8dd13e4bc3b9edd934ac775cbdcfd4d863b0f979a412589994854153e22"
+      }
+    },
+    {
+      "id": "agalma-pob.1",
+      "title": "CV.1 selected production ExecutionApi and caller-side handler dispatch",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy.4",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-5fy.9",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr.8",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:cf738f0f2b41d120e0f81e6cec65859ac842fc485b751ff275253cc52724fd6b",
+        "design": "sha256:48cd53c5468fbe19c8f1c166b717c6d4e1d5d6db50810885e3e869bd24e0f495",
+        "acceptance_criteria": "sha256:e6911ca652709eab9ba73e3198e4d9720cf294fb4c1e44bcd8ef207e18a7d2d7",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-pob.2",
+      "title": "CV.2 auxiliary ledger and standalone CLI API convergence",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-jmr.8",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:3bb2b9b42e5289a73451d70d54ae0e73394b59729466135de8f38723776b7af4",
+        "design": "sha256:d167421e030c01dedb538fcb2a1df521371fa16c216aea75df783bdf530db927",
+        "acceptance_criteria": "sha256:055b91f9e857c82a458a99b13588a72096b34797665b8c16dd8fd2494f72f063",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-pob.3",
+      "title": "CV.3 ledger execution packages and bounded bootstrap",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob.1",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob.2",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:13744dfffd181990ec668c854a87ba575121015d2f16bdf3ab46ca76f3292cec",
+        "design": "sha256:31b6cd9320c6cf3f456c6bfc2cbc351470d7a3ee823ca44b0827d4a384582b8a",
+        "acceptance_criteria": "sha256:acf9a3cd0b673199a796f5662ad0cd90265a27ba4f96b6ebcb92232d24af43b3",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-pob.4",
+      "title": "CV.4 workspace taskqueue packaging and hub domain routing",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob.3",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:b09bc4a92554d58acbbb763be84355eada0abb0c62247369846c2e1c0766ac0f",
+        "design": "sha256:d5f76bcd218e84ab0193c82777ec2a8409da8e1bedb68ac355dd809cb20a7e37",
+        "acceptance_criteria": "sha256:8eaa4097111aaa4e6cc9b2c2189d3675e8f0b46b3e5f5ea395c8b658b17c46a5",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-pob.5",
+      "title": "CV.5 sandbox harness packaging with credential and termination continuity",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-fez",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob.3",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:6327fd497570b002a691b8e7e2571ee99e0ad4a3b7fbfad1d93ea120ba4bc256",
+        "design": "sha256:f14487daf0774f45a7a9411bca4635002253051c96f2cb418eb0bfe350f3a975",
+        "acceptance_criteria": "sha256:d2bcad9f55487b38f57cb7fc2a46e39d0c06f3c2a10a39da6c3652945a6ec93b",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-pob.6",
+      "title": "CV.6 Router integration using shared plugin services",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-myx.11",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-myx.12",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob.3",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:1dd323c5f227b6fa1b3efaf2a0f23c126556554cf0d4e3335d45f7ec34ef84c8",
+        "design": "sha256:615374f77fe97c43572015cda1a96ac72112b6af1d88880767c2ce84e7d9a9d6",
+        "acceptance_criteria": "sha256:07cda08a759139567837bab9f627256fcba741d1208b4481d053876b342b09aa",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-pob.7",
+      "title": "CV.7 cross-service drain rebind and compatible rollback scenarios",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob.4",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob.5",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob.6",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:f380b0531e58c929df5fb18eb3da58f541dcdf820c12615709176e5f7d5d370e",
+        "design": "sha256:0c53356f14d1bf567c68fd9ffb9e90fbe605b523b5c00d576188607f7037b2f3",
+        "acceptance_criteria": "sha256:da9c2a21f847e4c7454e0749f9149b068aaf280ee23f4302fce0296cdb32ea79",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-pob.8",
+      "title": "CV.8 real production convergence evidence and architecture audit",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob.7",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-pob",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:071618da90a7ec24d3cbeeab4dc553bb2e2675e76c21f8e114862d6f34273e58",
+        "design": "sha256:ded46fb4039698039974a0dead67cf724f28346420f0c24c14b579d2d9ea4b50",
+        "acceptance_criteria": "sha256:7a5790d33ead3f7a15c777c4e9fd16e2d0446f5995e107534ceac14db3277fd0",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-xlw.1",
+      "title": "MX.1 canonical nerve events and pinned adapter profiles",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9.8",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-myx.11",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-xlw",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:8766fe1083317f1595eb40536262aabcd6d6735929d6dc7ef164da34c29a85b3",
+        "design": "sha256:914f904fc09cda9035012544f47b773dda529268d3978137863d2ef4f81f4f66",
+        "acceptance_criteria": "sha256:6c36bcd627dbe273b9b23f233798b49bb9d905f96142cc317d978d4804450a5b",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-xlw.2",
+      "title": "MX.2 immutable context injection and compaction continuity",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-xlw.1",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-xlw",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:acc579557b9d3195b8a30375d1b7d8baac33933de8eb6c05025f7c729ce780a3",
+        "design": "sha256:5f5823e2c6b67300eae62c479654417343b4fc1883fb64ce6811b8ea85004a13",
+        "acceptance_criteria": "sha256:d33318d2eb493d77ce25bf6f51537749558abef253ba318967254ecf99f91e80",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-xlw.3",
+      "title": "MX.3 bounded repair and permission bridge without privilege escalation",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-xlw.1",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-xlw",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:6322fb95b0efbba4f17b5d2e124617084ce521088e91bdcf72cf878d2ced1f00",
+        "design": "sha256:02407c532e65a292b8992d20967dd1b6eea93c76372f92bfcbbffd750d1f24b1",
+        "acceptance_criteria": "sha256:f70ebf8e48b300b327c494117cdb294f8dad0740999e6082794f624a35c9f86b",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-xlw.4",
+      "title": "MX.4 scoped postmortem memory and evaluated skill curation",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9.9",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-xlw.2",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-xlw.3",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-xlw",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:3316f17f6c8917eb29efc6c363f5c74e61d4a056e22cf9836d943c64ab3fcf1c",
+        "design": "sha256:5aea445b19e58bc24e8fa28e9213833e1531dc05cce29a69565411d32f1a1dad",
+        "acceptance_criteria": "sha256:48b46c4acc58b1bcec41b2439e7d482735b448f505ec1a5fd991462923c8c306",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-xlw.5",
+      "title": "MX.5 model tuple and harness-profile onboarding registry",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9.8",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-myx.1",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-myx.11",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-myx.4",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-xlw",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:9568144f1786b5049ab43747829c81d4f9904481ba193a5dc5578da631c206b7",
+        "design": "sha256:81f4d1f7412fe341f1982bf9ed5418e34660ab19ecc62ce051fa269e65a15574",
+        "acceptance_criteria": "sha256:d4775ede600ebdf72856c3997e08b39c464b9401e40e7c43138aad42dc136908",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-xlw.6",
+      "title": "MX.6 screen full evaluation and gated routing mutation",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-cg9.7",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-xlw.5",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-xlw",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:bd8c871fcbbdeac087f9c25bcd1d0b3d9c214a33cc014fb96ed950bce9fa4c28",
+        "design": "sha256:2675ed3923b410df05d0dbee3cc525a6708578cd3a1d6cd20171007d321fece7",
+        "acceptance_criteria": "sha256:f811bb03dee65d5a80964d94333f0fa99fd5b2a72a64604c848dff8873404aaf",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-xlw.7",
+      "title": "MX.7 decision-kind shadow evaluation and eligible fallback",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-xlw.6",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-xlw",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:cf5fd35be29dfca27d40c2588ab052c5be5d971ef4aa91b0b8e1239f07d240ff",
+        "design": "sha256:0e4e8a814f3c52d67e6b353c3c5852a1c5cf5a39099a4d8a21c6447bb9989af1",
+        "acceptance_criteria": "sha256:a2ec7bee650c6413edce2adb988ebafe91fe718a95f0dc0756f3196e820c8dcb",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    },
+    {
+      "id": "agalma-xlw.8",
+      "title": "MX.8 integrated remaining M2 evidence and milestone audit",
+      "status": "deferred",
+      "defer_until": "2099-01-01T00:00:00Z",
+      "labels": [
+        "architecture",
+        "decomp-approved",
+        "difficulty:high",
+        "flash-implementation",
+        "self-mutation",
+        "staged"
+      ],
+      "dependencies": [
+        {
+          "target": "agalma-16k",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-xlw.4",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-xlw.7",
+          "type": "blocks"
+        },
+        {
+          "target": "agalma-xlw",
+          "type": "parent-child"
+        }
+      ],
+      "content_digests": {
+        "description": "sha256:1a61fb145c4582a445d16e2cc24ecc07303849d0c28252c803f71da32efe02ac",
+        "design": "sha256:357c31168c7ee5e5147708418844e405ac582b2345ab629ebba04ff276ea8e41",
+        "acceptance_criteria": "sha256:782d7bf6a07e193d16a7fc7ef04ce24e4fc046ccf7c243ca98049dd1efc054fa",
+        "notes": "sha256:e42b4fc0bdca828df0ab29a45776b7b57854c373e1a2814c64b53463b2ed5b2b"
+      }
+    }
+  ],
+  "tui_audit": {
+    "passed": 38,
+    "failed": 0,
+    "duplicate_children_retired": 10,
+    "receipt": "docs/tui-pilot-reconciliation.md"
+  },
+  "live_provider_profiles_certified": false,
+  "unsupported_provider_policy": "deny paid dispatch; SF.7 must certify",
+  "execution_released": false,
+  "paid_inference_performed": false,
+  "later_runtime_design_gate": {
+    "id": "agalma-16k",
+    "status": "open",
+    "requires": [
+      "agalma-jmr.8",
+      "agalma-cg9.8"
+    ]
+  }
+}

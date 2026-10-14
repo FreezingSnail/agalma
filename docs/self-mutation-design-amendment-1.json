@@ -1,0 +1,49 @@
+{
+  "format": "agalma-design-amendment/v1",
+  "amendment": 1,
+  "recorded_at": "2026-10-13T00:18:39.578651+00:00",
+  "base_receipt": "docs/self-mutation-design-receipt.json",
+  "protocol_revision_unchanged": 1,
+  "reason": "The implemented scoped designer CLI adds a stop-admission caller absent from original SF.5 ownership.",
+  "bead": "agalma-5fy.5",
+  "new_owned_file": "crates/agalma-conductor/src/designer.rs",
+  "new_blocker": "agalma-9m2",
+  "before_description_digest": "sha256:a7abdbdd87507559bb37407727b2fe52c26bc22e0055ffef61f7a99b33cf5c33",
+  "after_content_digests": {
+    "description": "sha256:302f8272949b211b2e1e2187ae608126e36150468034aac62576d4ef5f5130b3",
+    "design": "sha256:074ad528de9f522c92e659e6d24d850219b1b1a41eb48fa205670479b36138e8",
+    "acceptance_criteria": "sha256:d688609696e554c4719b01bcfcd98ffd7b9e158eb0cdab7b772e7fc30002cdec",
+    "notes": "sha256:90f0e77b4c959f025650caa0bedb0fdeda80835a9fb6a6c09204b353ac774411"
+  },
+  "checks": {
+    "plan_check": {
+      "command": [
+        "target/debug/agalma",
+        "plan-check",
+        "--epic",
+        "agalma-5fy",
+        "--repo",
+        "/Users/connorfranc/code/agalma"
+      ],
+      "output": "OK",
+      "exit_code": 0
+    },
+    "dependency_cycles": [],
+    "original_document_hashes_match": true
+  },
+  "execution_released": false,
+  "review_identity_clarification": {
+    "bead": "agalma-5fy.11",
+    "notes_digest": "sha256:b0cfde26cf9de9284a674e2e9b9347f0b6df3f3a8753dac953c4b3f8828d1857",
+    "rule": "Verify each full-record digest separately; compare semantic review fields across fresh observations, not timestamp-bearing full hashes.",
+    "check": {
+      "new_observation_changes_full_digest": true,
+      "new_observation_preserves_semantic_inputs": true,
+      "prerequisite_edit_changes_semantic_inputs": true
+    }
+  },
+  "handoff": {
+    "path": "docs/deepseek-review-handoff.md",
+    "digest": "sha256:7eb09e5cd657b42694fb8b38390fb806d40e377730efd37dc88fc701d7c4f3c3"
+  }
+}

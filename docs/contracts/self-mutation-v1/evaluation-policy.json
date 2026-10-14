@@ -1,0 +1,24 @@
+{
+  "format": "EvaluationPolicy/v1",
+  "policy_id": "success-first/v1",
+  "automatic_targets": [
+    "prompt",
+    "skill"
+  ],
+  "screen_tasks": 10,
+  "screen_trials": 2,
+  "qualification_tasks": 20,
+  "qualification_trials": 5,
+  "held_out_tasks": 5,
+  "success_margin_basis_points": 500,
+  "sign_test_p_max_ppm": 50000,
+  "variable_spend_ratio_max_ppm": 1100000,
+  "wall_time_ratio_max_ppm": 1200000,
+  "regression_veto": true,
+  "unknown_evidence": "deny",
+  "canary_candidate_tasks": 10,
+  "canary_baseline_tasks": 10,
+  "canary_deadline_ms": 86400000,
+  "candidate_failure_rollback_count": 2,
+  "policy_digest": "sha256:4b2fede27ca429967b232302eb87b45e2f4e7cbfbe3d69a2deafbaa3a45adbef"
+}

@@ -1,0 +1,6 @@
+{
+  "format": "FailureDetail/v1",
+  "code": "AuthorityDenied",
+  "subject": "fixture.task",
+  "message": "The task is outside the active directive scope."
+}

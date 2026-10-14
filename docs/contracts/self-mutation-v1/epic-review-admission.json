@@ -1,0 +1,36 @@
+{
+  "format": "EpicReviewAdmission/v1",
+  "epic_id": "fixture.m2",
+  "definition_digest": "sha256:ead50f84fdb1be55862bcd6dfb463a5bd839111bf7324fad806e0c8ef8bfe870",
+  "design": {
+    "path": "objects/shared-contracts.txt",
+    "digest": "sha256:b1353b44ae57eacf59d0dab69e3099da52426194fe8354aeb40eeb689f38ea66",
+    "bytes": 35371,
+    "media_type": "text/plain"
+  },
+  "base_sha": "1111111111111111111111111111111111111111",
+  "candidate_sha": "2222222222222222222222222222222222222222",
+  "children": [
+    {
+      "id": "fixture.m2.1",
+      "definition_digest": "sha256:66139a13c2bea2f988694372716fbf05489db4d9ea54ca1691d43fca5c8f970f",
+      "status": "closed",
+      "labels": [
+        "staged"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "target_id": "fixture.extensions",
+      "type": "blocks",
+      "observed_status": "open"
+    }
+  ],
+  "decision": "waiting_prerequisite",
+  "blocking_ids": [
+    "fixture.extensions"
+  ],
+  "observed_at_unix_ms": 1791820800000,
+  "input_digest": "sha256:d81231af9a5d230e735f857a9b12f8e2ed25f2f978e3a316e68b5c5afe1bf934"
+}

@@ -1,0 +1,31 @@
+{
+  "format": "PluginOperationStatus/v1",
+  "plugin_id": "example.action-fixture",
+  "binding": {
+    "binding_id": "fixture.reporter",
+    "api": "plugin",
+    "api_version": 1,
+    "implementation_version": "fixture-1",
+    "generation": 1,
+    "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+  },
+  "operation_id": "example.action-fixture/op-1",
+  "input_digest": "sha256:48208f9428d64634bd8e28ff345bf0eab60d53c18fa2fbdb0b9bc1e84df2b5f6",
+  "state": "completed",
+  "receipt": {
+    "operation_id": "example.action-fixture/op-1",
+    "input_digest": "sha256:48208f9428d64634bd8e28ff345bf0eab60d53c18fa2fbdb0b9bc1e84df2b5f6",
+    "binding": {
+      "binding_id": "fixture.reporter",
+      "api": "plugin",
+      "api_version": 1,
+      "implementation_version": "fixture-1",
+      "generation": 1,
+      "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "outcome": {
+      "value": 1
+    },
+    "completed_at_unix_ms": 1791820800001
+  }
+}

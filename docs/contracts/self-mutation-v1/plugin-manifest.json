@@ -1,0 +1,65 @@
+{
+  "format": "PluginManifest/v1",
+  "plugin_id": "example.unfamiliar-reporter",
+  "package_version": "1.0.0",
+  "package_digest": "sha256:e97ff4437b90d47ca1965510e49c6eb6bd4e511de956daa5d94bc2f34f58c9fb",
+  "protocol_major": 1,
+  "entrypoint": {
+    "path": "bin/reporter",
+    "argv": [
+      "--serve"
+    ],
+    "launch_profile": "reporter-read-only/v1"
+  },
+  "domain_apis": [],
+  "requested_capabilities": [
+    "report.publish:example.unfamiliar-reporter"
+  ],
+  "required_services": [
+    "component-store/v1"
+  ],
+  "optional_services": [],
+  "config_schema": {
+    "path": "objects/config-schema.json",
+    "digest": "sha256:fb224ba2f183e4422368b3b48213e4229d06d019f138a8483b3f9cb89b57a78b",
+    "bytes": 63,
+    "media_type": "application/json"
+  },
+  "default_configuration": {
+    "path": "objects/default-config.json",
+    "digest": "sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+    "bytes": 3,
+    "media_type": "application/json"
+  },
+  "report_schemas": [
+    {
+      "namespace": "example.reporter.status",
+      "version": 1,
+      "schema": {
+        "path": "objects/report-schema.json",
+        "digest": "sha256:24aed4e6aee668ccdcb65abbfc9b82d9c8e158213e73774c805e94b5ebc6d6fd",
+        "bytes": 39,
+        "media_type": "application/json"
+      }
+    }
+  ],
+  "views": [
+    {
+      "view_id": "status",
+      "schema_namespace": "example.reporter.status",
+      "kind": "Status",
+      "title": "Example reporter",
+      "schema_version": 1,
+      "fields": [
+        "ready"
+      ]
+    }
+  ],
+  "actions": [],
+  "state_compatibility": {
+    "reads": [
+      "reporter-state/v1"
+    ],
+    "writes": "reporter-state/v1"
+  }
+}

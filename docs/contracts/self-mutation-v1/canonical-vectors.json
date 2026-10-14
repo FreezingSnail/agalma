@@ -1,0 +1,37 @@
+[
+  {
+    "input": {},
+    "canonical_utf8": "{}",
+    "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+  },
+  {
+    "input": {
+      "z": 1,
+      "a": "é"
+    },
+    "canonical_utf8": "{\"a\":\"é\",\"z\":1}",
+    "digest": "sha256:fb64e573f7cde5b7efeda52ffc4bdd57572055b0b7e64a70172606c82c6c7eac"
+  },
+  {
+    "input": {
+      "nested": {
+        "b": 2,
+        "a": 1
+      },
+      "ordered": [
+        2,
+        1
+      ]
+    },
+    "canonical_utf8": "{\"nested\":{\"a\":1,\"b\":2},\"ordered\":[2,1]}",
+    "digest": "sha256:be6840ade8cd24da15acbf13f17313f4aef7b895334663413fb24bc30cd1ebb7"
+  },
+  {
+    "input": {
+      "quote": "a\"b\\c\n",
+      "integer": 18446744073709551615
+    },
+    "canonical_utf8": "{\"integer\":18446744073709551615,\"quote\":\"a\\\"b\\\\c\\n\"}",
+    "digest": "sha256:3cfae7d4936d4034a9d2387f391796833fd3d1eb15bcdc7ea7a080a9f78bc8cd"
+  }
+]

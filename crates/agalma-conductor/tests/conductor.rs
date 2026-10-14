@@ -63,6 +63,7 @@ fn dummy_deps(state_dir: &Path) -> PhaseDeps {
         harness: agalma_conductor::harness_binding::harness_handle(
             agalma_conductor::harness_binding::HarnessChoice::OpenCode,
         ),
+        stop: std::rc::Rc::new(agalma_conductor::stop::FileStopControl::new(state_dir)),
     }
 }
 

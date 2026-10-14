@@ -119,6 +119,7 @@ fn sandboxed_git_guard_runs_without_xcrun_noise() {
             acceptance: vec![GUARD.to_string()],
         }),
         harness: harness_handle(HarnessChoice::OpenCode),
+        stop: std::rc::Rc::new(agalma_conductor::stop::FileStopControl::new(&state_dir)),
     };
 
     let workspace = Rc::new(RefCell::new(WorkspaceHandle::in_process(&state_dir)));

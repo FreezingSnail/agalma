@@ -47,6 +47,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::rc::Rc;
 
 use agalma_contracts::ids::ArtifactRef;
 use agalma_contracts::{ContractError, OperationId, TaskFamily, TaskId, TaskQueueApi};
@@ -56,8 +57,8 @@ use serde_json::Value;
 
 use crate::routing;
 use crate::session::{sanitize, LiveSession, SessionSpec};
-use crate::stop::{FileStopControl, StopControl};
-use crate::sweep::{PlannerGate, STOP_REASON};
+use crate::stop::{bind_stop_control, StopControl};
+use crate::sweep::PlannerGate;
 
 /// Label of the P1 rework task filed on a drift verdict (design: `drift-fix`).
 pub const DRIFT_FIX_LABEL: &str = "drift-fix";
@@ -264,13 +265,8 @@ pub fn review_epics(
     gate: &PlannerGate,
     reviewer: &dyn ReviewerSession,
 ) -> Result<ReviewReport, ContractError> {
-    review_epics_with_stop(
-        repo,
-        state_dir,
-        gate,
-        reviewer,
-        &FileStopControl::new(state_dir),
-    )
+    let stop = bind_stop_control(state_dir);
+    review_epics_with_stop(repo, state_dir, gate, reviewer, &*stop)
 }
 
 /// Run one serial review pass honoring an explicit stop control.
@@ -286,10 +282,9 @@ pub fn review_epics_with_stop(
     stop: &dyn StopControl,
 ) -> Result<ReviewReport, ContractError> {
     let mut report = ReviewReport::default();
-    if stop.stopped() {
-        let reason = STOP_REASON.to_string();
+    if let Some(reason) = stop.decision().reason() {
         eprintln!("agalma: review gate skipped: {reason}");
-        report.skipped_reason = Some(reason);
+        report.skipped_reason = Some(reason.to_string());
         report.stopped = true;
         return Ok(report);
     }
@@ -303,9 +298,9 @@ pub fn review_epics_with_stop(
     let mut queue = BdTaskQueue::new(repo);
     let epics = queue.open_epics()?;
     for epic in epics {
-        if stop.stopped() {
+        if let Some(reason) = stop.decision().reason() {
             eprintln!(
-                "agalma: review gate: stop requested; halting before epic {}",
+                "agalma: review gate: stop requested ({reason}); halting before epic {}",
                 epic.id
             );
             report.stopped = true;
@@ -316,6 +311,18 @@ pub fn review_epics_with_stop(
             continue;
         }
         report.epics_seen.push(epic.id.clone());
+
+        // Stop gate after candidate reads and before any queue/route effect
+        // (`agalma-5fy.5`): a stop that arrived during the reads suppresses the
+        // baseline hold, the route decision, the attempt label and the session.
+        if let Some(reason) = stop.decision().reason() {
+            eprintln!(
+                "agalma: review gate: stop requested ({reason}); halting before review of {}",
+                epic.id
+            );
+            report.stopped = true;
+            break;
+        }
 
         // A review without a recorded baseline cannot diff against the design;
         // fail safe (hold) rather than approve on an empty diff.
@@ -379,6 +386,17 @@ pub fn review_epics_with_stop(
             diff_path,
         };
 
+        // Stop gate immediately before the paid dispatch and the attempt-label
+        // mutation.
+        if let Some(reason) = stop.decision().reason() {
+            eprintln!(
+                "agalma: review gate: stop requested ({reason}); halting before dispatching the \
+                 reviewer for {}",
+                epic.id
+            );
+            report.stopped = true;
+            break;
+        }
         eprintln!(
             "agalma: review gate: reviewing {} (model {})",
             epic.id, route.model
@@ -386,21 +404,37 @@ pub fn review_epics_with_stop(
         let attempt = next_attempt(&queue, &epic.id)?;
         queue.add_label(&TaskId::new(&epic.id), &attempts_label(attempt))?;
         match reviewer.run(&request) {
-            Ok(output) => match parse_verdict(&output) {
-                Ok(verdict) => apply_verdict(
-                    &mut queue,
-                    &epic.id,
-                    attempt,
-                    &request.start_sha,
-                    verdict,
-                    &mut report,
-                )?,
-                Err(err) => {
-                    apply_error(&mut queue, &epic.id, attempt, &err.to_string(), &mut report)?
+            Ok(output) => {
+                // Stop gate after the session returns, before any verdict/error
+                // projection: a stop that arrived mid-session (or an established
+                // ledger that became unreadable) suppresses the projection so no
+                // epic is closed and no drift task is created. The attempt label
+                // already recorded is preserved (never implicitly cleared).
+                if let Some(reason) = stop.decision().reason() {
+                    eprintln!(
+                        "agalma: review gate: stop requested ({reason}) after the reviewer session \
+                         for {}; preserving evidence without projecting a verdict",
+                        epic.id
+                    );
+                    report.stopped = true;
+                    break;
                 }
-            },
+                match parse_verdict(&output) {
+                    Ok(verdict) => apply_verdict(
+                        &mut queue,
+                        &epic.id,
+                        attempt,
+                        &request.start_sha,
+                        verdict,
+                        &mut report,
+                    )?,
+                    Err(err) => {
+                        apply_error(&mut queue, &epic.id, attempt, &err.to_string(), &mut report)?
+                    }
+                }
+            }
             Err(err) => {
-                if stop.stopped() {
+                if stop.decision().is_denied() {
                     eprintln!(
                         "agalma: review gate: reviewer session for {} cancelled by stop: {err}",
                         epic.id
@@ -763,14 +797,16 @@ pub struct LiveReviewerSession {
 }
 
 impl LiveReviewerSession {
-    /// Assemble the live session config (materializing the sandbox profile).
+    /// Assemble the live session config (materializing the sandbox profile),
+    /// using the same bound stop control passed for admission (`agalma-5fy.5`).
     pub fn build(
         state_dir: &Path,
         proxy_url: Option<String>,
         paid_available: bool,
+        stop: Rc<dyn StopControl>,
     ) -> Result<Self, ContractError> {
         Ok(LiveReviewerSession {
-            live: LiveSession::build(state_dir, proxy_url, paid_available)?,
+            live: LiveSession::build(state_dir, proxy_url, paid_available, stop)?,
         })
     }
 }
@@ -819,12 +855,35 @@ pub fn run_review(
     proxy_url: Option<String>,
     override_model: Option<&str>,
 ) -> Result<ReviewReport, ContractError> {
-    let stop = FileStopControl::new(state_dir);
-    if stop.stopped() {
-        let reason = STOP_REASON.to_string();
+    let stop = bind_stop_control(state_dir);
+    run_review_with_stop(
+        repo,
+        state_dir,
+        paid_available,
+        proxy_url,
+        override_model,
+        stop,
+    )
+}
+
+/// [`run_review`] honoring an explicit (already-bound) stop control.
+///
+/// The **same** control is used for admission and passed through the reviewer
+/// session seam. The work loop already holds a bound ledger handle and MUST
+/// prefer this entry with a [`crate::stop::BoundStopControl`] built from that
+/// handle so the review gate reads the *same* durable stop state (`agalma-5fy.5`).
+pub fn run_review_with_stop(
+    repo: &Path,
+    state_dir: &Path,
+    paid_available: bool,
+    proxy_url: Option<String>,
+    override_model: Option<&str>,
+    stop: Rc<dyn StopControl>,
+) -> Result<ReviewReport, ContractError> {
+    if let Some(reason) = stop.decision().reason() {
         eprintln!("agalma: review gate skipped: {reason}");
         return Ok(ReviewReport {
-            skipped_reason: Some(reason),
+            skipped_reason: Some(reason.to_string()),
             stopped: true,
             ..ReviewReport::default()
         });
@@ -838,8 +897,9 @@ pub fn run_review(
             ..ReviewReport::default()
         });
     }
-    let session = LiveReviewerSession::build(state_dir, proxy_url, paid_available)?;
-    review_epics_with_stop(repo, state_dir, &gate, &session, &stop)
+    let session =
+        LiveReviewerSession::build(state_dir, proxy_url, paid_available, Rc::clone(&stop))?;
+    review_epics_with_stop(repo, state_dir, &gate, &session, &*stop)
 }
 
 #[cfg(test)]

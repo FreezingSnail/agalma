@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
-use agalma_contracts::{ContractError, ExecutionApi, ExecutionPhase};
+use agalma_contracts::{ContractError, ExecutionApi, ExecutionPhase, LedgerApi};
 use agalma_execution::{Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
 use agalma_sandbox::PRODUCT_PROFILE;
 
@@ -21,6 +21,7 @@ use crate::harness_binding::{harness_handle, HarnessChoice};
 use crate::ledger_process::{LedgerHandle, LedgerTransport};
 use crate::phases::{activities, PhaseDeps, RunState};
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
+use crate::stop::{BoundStopControl, StopControl};
 use crate::task::{self, TaskDescriptor};
 use crate::workspace_process::{WorkspaceHandle, WorkspaceTransport};
 
@@ -86,6 +87,50 @@ pub struct Composition {
     pub state_dir: PathBuf,
     pub fixture: PathBuf,
     pub ledger_path: PathBuf,
+    /// Shared bound stop control used by the fixture/run drive loop and phase
+    /// polls (`agalma-5fy.5`).
+    pub stop: Rc<dyn StopControl>,
+}
+
+/// Bounded survivor cleanup used when the stop decision is `Stopped`
+/// (`agalma-5fy.5`): terminate live workers recorded for the authoritative bound
+/// pending intents, without constructing the normal composition (no
+/// proxy/workspace/prompts/session/task admission). Reuses the existing
+/// [`crate::workers::reconcile_survivor`] path.
+pub(crate) fn reconcile_bound_survivors(state_dir: &Path, ledger: &LedgerHandle) {
+    let pending = match ledger.pending_intents() {
+        Ok(pending) => pending,
+        Err(err) => {
+            eprintln!("agalma: survivor cleanup: pending intents unreadable: {err}");
+            return;
+        }
+    };
+    let mut sandbox = agalma_sandbox::SeatbeltSandbox::new();
+    for intent in pending {
+        if intent.consumed {
+            continue;
+        }
+        let Some(kind) = intent.payload.get("kind").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let attempt = intent
+            .payload
+            .get("attempt")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        if let Err(err) = crate::workers::reconcile_survivor(
+            state_dir,
+            &intent.execution_id,
+            kind,
+            attempt,
+            &mut sandbox,
+        ) {
+            eprintln!(
+                "agalma: survivor cleanup for {} failed: {err}",
+                intent.execution_id
+            );
+        }
+    }
 }
 
 impl Composition {
@@ -110,7 +155,42 @@ impl Composition {
             std::fs::canonicalize(&config.fixture).unwrap_or_else(|_| config.fixture.clone());
 
         let ledger_path = state_dir.join("ledger.sqlite");
-        let mut ledger = LedgerHandle::from_transport(&state_dir, LedgerTransport::from_env())?;
+        // Entry-aware STOP guard before any ledger open (`agalma-5fy.5`): a
+        // present stop must never initialize a database or start the proxy.
+        if let Some(reason) = crate::stop::observe_sentinel(&state_dir).reason() {
+            return Err(ContractError::KnownFailure(format!(
+                "stop admission refused: {reason}"
+            )));
+        }
+        // Explicit fresh initialization vs established open through the selected
+        // binding (`agalma-5fy.5`): a lost/partial established ledger is refused
+        // here, never recreated. The same bound control is shared with the phase
+        // polls and the fixture/run drive loop.
+        let mut ledger =
+            crate::ledger_process::open_admission_ledger(&state_dir, LedgerTransport::from_env())
+                .map_err(ContractError::KnownFailure)?;
+        let stop: Rc<dyn StopControl> = Rc::new(BoundStopControl::new(&state_dir, ledger.clone()));
+        // Typed bound decision BEFORE normal composition (proxy/workspace/prompts/
+        // activities/task admission) (`agalma-5fy.5`):
+        // - Running: normal composition;
+        // - Unavailable: immediate refusal (no attempt to infer/read lost state);
+        // - Stopped: bounded existing survivor cleanup over the authoritative
+        //   bound pending intents, then refusal — no proxy/workspace/session/task
+        //   admission.
+        match stop.decision() {
+            crate::stop::StopDecision::Running => {}
+            crate::stop::StopDecision::Unavailable(reason) => {
+                return Err(ContractError::KnownFailure(format!(
+                    "stop state unavailable; refusing composition: {reason}"
+                )));
+            }
+            crate::stop::StopDecision::Stopped(reason) => {
+                reconcile_bound_survivors(&state_dir, &ledger);
+                return Err(ContractError::KnownFailure(format!(
+                    "stop policy active; refusing normal composition: {reason}"
+                )));
+            }
+        }
 
         let task = task::load_task_descriptor(&fixture)
             .map_err(|e| ContractError::KnownFailure(e.to_string()))?;
@@ -178,6 +258,7 @@ impl Composition {
             idle_timeout: resolve_idle_timeout(),
             repo: None,
             harness: harness_handle(HarnessChoice::OpenCode),
+            stop: Rc::clone(&stop),
         };
 
         let shared_state = Rc::new(RefCell::new(RunState::default()));
@@ -200,6 +281,7 @@ impl Composition {
             state_dir,
             fixture,
             ledger_path,
+            stop,
         })
     }
 

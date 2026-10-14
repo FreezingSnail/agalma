@@ -94,6 +94,7 @@ fn build_harness(state_dir: &Path) -> Harness {
         harness: agalma_conductor::harness_binding::harness_handle(
             agalma_conductor::harness_binding::HarnessChoice::OpenCode,
         ),
+        stop: std::rc::Rc::new(agalma_conductor::stop::FileStopControl::new(state_dir)),
     };
     let workspace = Rc::new(RefCell::new(WorkspaceHandle::in_process(state_dir)));
     let state = Rc::new(RefCell::new(RunState::default()));

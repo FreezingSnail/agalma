@@ -22,6 +22,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::rc::Rc;
 
 use agalma_contracts::ids::ArtifactRef;
 use agalma_contracts::{ContractError, OperationId, TaskFamily};
@@ -30,7 +31,7 @@ use serde_json::Value;
 use crate::cli::ConciergeArgs;
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
 use crate::session::{sanitize, LiveSession, SessionSpec};
-use crate::stop::{FileStopControl, StopControl};
+use crate::stop::{bind_stop_control, StopControl};
 use crate::sweep::PlannerGate;
 use crate::{config, routing};
 
@@ -87,14 +88,13 @@ pub fn run_concierge(
     gate: &PlannerGate,
     session: &dyn ConciergeSession,
 ) -> Result<ConciergeReport, ContractError> {
-    run_concierge_with_stop(
-        repo,
-        state_dir,
-        goal,
-        gate,
-        session,
-        &FileStopControl::new(state_dir),
-    )
+    // Fail closed on the planner route before initializing/binding the ledger:
+    // an unavailable planner never creates admission state.
+    if !gate.available() {
+        return Err(ContractError::KnownFailure(gate.unavailable_reason()));
+    }
+    let stop = bind_stop_control(state_dir);
+    run_concierge_with_stop(repo, state_dir, goal, gate, session, &*stop)
 }
 
 /// Run one concierge intake honoring an explicit stop control.
@@ -110,11 +110,8 @@ pub fn run_concierge_with_stop(
     session: &dyn ConciergeSession,
     stop: &dyn StopControl,
 ) -> Result<ConciergeReport, ContractError> {
-    if stop.stopped() {
-        return Err(ContractError::KnownFailure(
-            "stop policy active (STOP sentinel or kill latch); concierge intake suppressed"
-                .to_string(),
-        ));
+    if let Some(reason) = stop.decision().reason() {
+        return Err(ContractError::KnownFailure(reason.to_string()));
     }
     if !gate.available() {
         return Err(ContractError::KnownFailure(gate.unavailable_reason()));
@@ -182,6 +179,17 @@ pub fn run_concierge_command(args: &ConciergeArgs) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    // Stop admission BEFORE the proxy and the confined session are constructed
+    // (`agalma-5fy.5`): Running/Stopped/Unavailable through the selected ledger
+    // binding. An unreadable established ledger fails closed here, so no proxy,
+    // no session, and no route decision is created. The same control is passed
+    // through the session seam.
+    let stop = crate::stop::bind_stop_control(&state_dir);
+    if let Some(reason) = stop.decision().reason() {
+        eprintln!("agalma: concierge: {reason}");
+        return ExitCode::FAILURE;
+    }
+
     // The paid planner route needs the credential-injecting proxy. Start it
     // only when the paid path is actually active.
     let allow_paid = routing::allow_paid_from_env();
@@ -198,7 +206,12 @@ pub fn run_concierge_command(args: &ConciergeArgs) -> ExitCode {
     };
     let proxy_url = proxy.as_ref().map(ProviderProxy::url);
 
-    let session = match LiveConciergeSession::build(&state_dir, proxy_url, paid_available) {
+    let session = match LiveConciergeSession::build(
+        &state_dir,
+        proxy_url,
+        paid_available,
+        Rc::clone(&stop),
+    ) {
         Ok(session) => session,
         Err(err) => {
             eprintln!("agalma: concierge: {err}");
@@ -206,7 +219,7 @@ pub fn run_concierge_command(args: &ConciergeArgs) -> ExitCode {
         }
     };
 
-    match run_concierge(&repo, &state_dir, &args.goal, &gate, &session) {
+    match run_concierge_with_stop(&repo, &state_dir, &args.goal, &gate, &session, &*stop) {
         Ok(report) => {
             for epic in &report.epics {
                 println!("epic: {epic}");
@@ -318,14 +331,16 @@ pub struct LiveConciergeSession {
 }
 
 impl LiveConciergeSession {
-    /// Assemble the live session config (materializing the sandbox profile).
+    /// Assemble the live session config (materializing the sandbox profile),
+    /// using the same bound stop control passed for admission (`agalma-5fy.5`).
     pub fn build(
         state_dir: &Path,
         proxy_url: Option<String>,
         paid_available: bool,
+        stop: Rc<dyn StopControl>,
     ) -> Result<Self, ContractError> {
         Ok(LiveConciergeSession {
-            live: LiveSession::build(state_dir, proxy_url, paid_available)?,
+            live: LiveSession::build(state_dir, proxy_url, paid_available, stop)?,
         })
     }
 }
@@ -430,8 +445,9 @@ mod tests {
         let dir = ScratchDir::new("concierge-nested-state");
         let nested = dir.join("a").join("b").join("c");
         assert!(!nested.exists(), "nested state dir must start absent");
-        let _session =
-            LiveConciergeSession::build(&nested, None, false).expect("build fresh state dir");
+        let stop: Rc<dyn StopControl> = Rc::new(crate::stop::FileStopControl::new(&nested));
+        let _session = LiveConciergeSession::build(&nested, None, false, stop)
+            .expect("build fresh state dir");
         assert!(
             nested.join("worker.sb").exists(),
             "sandbox profile materialized under the created state dir"

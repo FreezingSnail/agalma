@@ -32,7 +32,7 @@ use agalma_taskqueue::{BdTaskQueue, STAGED_LABEL};
 
 use crate::cli::DesignerArgs;
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
-use crate::sweep::{run_designer, PlannerGate};
+use crate::sweep::{run_designer_with_stop, PlannerGate};
 use crate::{config, routing};
 
 /// `agalma designer --epic <id> [--repo <path>] [--state-dir <dir>] [--model <id>]`:
@@ -61,6 +61,17 @@ pub fn run_designer_command(args: &DesignerArgs) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    // Stop admission BEFORE the proxy and the confined session are constructed
+    // (`agalma-5fy.5`): Running/Stopped/Unavailable through the selected ledger
+    // binding. An unreadable established ledger fails closed here, so the
+    // provider proxy is never started and no designer session/scratch dir is
+    // created. The same control is passed through the session seam.
+    let stop = crate::stop::bind_stop_control(&state_dir);
+    if let Some(reason) = stop.decision().reason() {
+        eprintln!("agalma: designer: {reason}");
+        return ExitCode::FAILURE;
+    }
+
     // The paid planner route needs the credential-injecting proxy. Start it
     // only when the paid path is actually active.
     let allow_paid = routing::allow_paid_from_env();
@@ -77,13 +88,14 @@ pub fn run_designer_command(args: &DesignerArgs) -> ExitCode {
     };
     let proxy_url = proxy.as_ref().map(ProviderProxy::url);
 
-    let report = match run_designer(
+    let report = match run_designer_with_stop(
         &repo,
         &state_dir,
         &args.epic,
         paid_available,
         proxy_url,
         args.model.as_deref(),
+        stop,
     ) {
         Ok(report) => report,
         Err(err) => {

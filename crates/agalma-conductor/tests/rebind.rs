@@ -146,6 +146,9 @@ fn build_harness(
             acceptance: vec![ACCEPTANCE.to_string()],
         }),
         harness: handle.clone(),
+        stop: std::rc::Rc::new(agalma_conductor::stop::FileStopControl::new(
+            &origin.state_dir,
+        )),
     };
     let workspace = Rc::new(RefCell::new(WorkspaceHandle::in_process(&origin.state_dir)));
     let state = Rc::new(RefCell::new(RunState::default()));

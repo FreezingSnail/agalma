@@ -222,6 +222,55 @@ impl SqliteLedger {
         Ok(SqliteLedger { conn })
     }
 
+    /// Open an **existing** ledger without creating or initializing anything
+    /// (`agalma-5fy.5`).
+    ///
+    /// Unlike [`SqliteLedger::open`] this never creates the database, never runs
+    /// first-open schema initialization and never migrates: the file must
+    /// already exist and its recorded `schema_version` must match
+    /// [`SCHEMA_VERSION`]. A missing, non-file, unreadable, corrupt or
+    /// incompatible established database is an error, so a lost or partial
+    /// ledger can never be replaced by a freshly created clear-latch database.
+    /// A metadata/read failure is surfaced, never treated as absence.
+    pub fn open_existing(path: impl AsRef<Path>) -> Result<Self, ContractError> {
+        let path = path.as_ref();
+        match std::fs::metadata(path) {
+            Ok(meta) if meta.is_file() => {}
+            Ok(_) => {
+                return Err(ContractError::KnownFailure(format!(
+                    "established ledger path is not a file: {}",
+                    path.display()
+                )))
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(ContractError::KnownFailure(format!(
+                    "established ledger missing at {}",
+                    path.display()
+                )))
+            }
+            Err(err) => {
+                return Err(ContractError::KnownFailure(format!(
+                    "established ledger metadata {}: {err}",
+                    path.display()
+                )))
+            }
+        }
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+        )
+        .map_err(db_err)?;
+        configure(&conn)?;
+        let ledger = SqliteLedger { conn };
+        match ledger.stored_schema_version()? {
+            Some(version) if version == SCHEMA_VERSION => Ok(ledger),
+            other => Err(ContractError::Conflict(format!(
+                "incompatible ledger schema (established open): recorded={other:?} \
+                 expected={SCHEMA_VERSION}; refusing (no create/migrate)"
+            ))),
+        }
+    }
+
     /// Recorded `schema_version`, or `None` before first initialization.
     pub fn stored_schema_version(&self) -> Result<Option<u32>, ContractError> {
         Ok(meta_value(&self.conn, "schema_version")?.and_then(|v| v.parse().ok()))

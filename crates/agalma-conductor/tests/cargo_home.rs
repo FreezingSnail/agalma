@@ -237,6 +237,7 @@ fn sandboxed_acceptance_resolves_cargo_offline() {
             acceptance: vec![ACCEPT.to_string()],
         }),
         harness: harness_handle(HarnessChoice::OpenCode),
+        stop: std::rc::Rc::new(agalma_conductor::stop::FileStopControl::new(&state_dir)),
     };
 
     let workspace = Rc::new(RefCell::new(WorkspaceHandle::in_process(&state_dir)));

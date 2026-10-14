@@ -83,6 +83,7 @@
 //! harness. [`LiveDesignerSession`] is the production implementation.
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use agalma_contracts::ids::ArtifactRef;
 use agalma_contracts::{ContractError, OperationId, TaskFamily, TaskId, TaskQueueApi};
@@ -92,7 +93,7 @@ use agalma_taskqueue::{
 
 use crate::routing;
 use crate::session::{sanitize, LiveSession, SessionSpec};
-use crate::stop::{FileStopControl, StopControl};
+use crate::stop::{bind_stop_control, StopControl};
 
 /// Label applied to children a passing decomposition gate accepted.
 ///
@@ -403,13 +404,8 @@ pub fn sweep_epics(
     gate: &PlannerGate,
     designer: &dyn DesignerSession,
 ) -> Result<SweepReport, ContractError> {
-    sweep_epics_with_stop(
-        repo,
-        state_dir,
-        gate,
-        designer,
-        &FileStopControl::new(state_dir),
-    )
+    let stop = bind_stop_control(state_dir);
+    sweep_epics_with_stop(repo, state_dir, gate, designer, &*stop)
 }
 
 /// Run one serial sweep honoring an explicit stop control.
@@ -429,10 +425,9 @@ pub fn sweep_epics_with_stop(
     stop: &dyn StopControl,
 ) -> Result<SweepReport, ContractError> {
     let mut report = SweepReport::default();
-    if stop.stopped() {
-        let reason = STOP_REASON.to_string();
+    if let Some(reason) = stop.decision().reason() {
         eprintln!("agalma: epic sweep skipped: {reason}");
-        report.skipped_reason = Some(reason);
+        report.skipped_reason = Some(reason.to_string());
         report.stopped = true;
         return Ok(report);
     }
@@ -449,9 +444,9 @@ pub fn sweep_epics_with_stop(
     for epic in epics {
         // Stop gate between candidate epics: re-read before touching the epic
         // so no label is added and no session is dispatched once stopped.
-        if stop.stopped() {
+        if let Some(reason) = stop.decision().reason() {
             eprintln!(
-                "agalma: epic sweep: stop requested; halting sweep before epic {}",
+                "agalma: epic sweep: stop requested ({reason}); halting sweep before epic {}",
                 epic.id
             );
             report.stopped = true;
@@ -505,14 +500,8 @@ pub fn sweep_epic(
     gate: &PlannerGate,
     designer: &dyn DesignerSession,
 ) -> Result<SweepReport, ContractError> {
-    sweep_epic_with_stop(
-        repo,
-        state_dir,
-        epic,
-        gate,
-        designer,
-        &FileStopControl::new(state_dir),
-    )
+    let stop = bind_stop_control(state_dir);
+    sweep_epic_with_stop(repo, state_dir, epic, gate, designer, &*stop)
 }
 
 /// Run one scoped designer attempt honoring an explicit stop control.
@@ -537,10 +526,9 @@ pub fn sweep_epic_with_stop(
     stop: &dyn StopControl,
 ) -> Result<SweepReport, ContractError> {
     let mut report = SweepReport::default();
-    if stop.stopped() {
-        let reason = STOP_REASON.to_string();
+    if let Some(reason) = stop.decision().reason() {
         eprintln!("agalma: designer skipped: {reason}");
-        report.skipped_reason = Some(reason);
+        report.skipped_reason = Some(reason.to_string());
         report.stopped = true;
         return Ok(report);
     }
@@ -637,7 +625,11 @@ fn run_epic_turn(
 
     // Stop gate before paid dispatch: candidacy reads are done; re-check so a
     // stop that arrived during them suppresses the route/labels/session.
-    if stop.stopped() {
+    if let Some(reason) = stop.decision().reason() {
+        eprintln!(
+            "agalma: epic sweep: stop requested ({reason}); halting before epic {}",
+            epic.id
+        );
         return Ok(EpicTurn::Halted);
     }
 
@@ -689,7 +681,7 @@ fn run_epic_turn(
             report.timed_out.push(epic.id.clone());
         }
         Err(err) => {
-            if stop.stopped() {
+            if stop.decision().is_denied() {
                 eprintln!(
                     "agalma: epic sweep: designer session for {} cancelled by stop: {err}",
                     epic.id
@@ -708,10 +700,11 @@ fn run_epic_turn(
     // deliberately left in place (never implicitly cleared) so the next
     // post-resume sweep reconciles the interrupted decomposition instead of
     // starting a second session; no gate verdict is projected and no child
-    // is touched.
-    if stop.stopped() {
+    // is touched. An unreadable established ledger (Unavailable) halts the same
+    // way — uncertainty is fail-closed.
+    if let Some(reason) = stop.decision().reason() {
         eprintln!(
-            "agalma: epic sweep: stop requested during {}; preserving interrupted \
+            "agalma: epic sweep: stop requested ({reason}) during {}; preserving interrupted \
              decomposition for reconciliation",
             epic.id
         );
@@ -725,9 +718,9 @@ fn run_epic_turn(
     Ok(EpicTurn::Done)
 }
 
-/// Single-line reason recorded when a stop suppresses a sweep.
-pub const STOP_REASON: &str =
-    "stop policy active (STOP sentinel or kill latch); planning dispatch suppressed";
+/// Single-line reason recorded when a stop suppresses a sweep. Kept as a public
+/// alias of the shared [`crate::stop::STOPPED_REASON`] (`agalma-5fy.5`).
+pub const STOP_REASON: &str = crate::stop::STOPPED_REASON;
 
 /// Production entry point: build the planner gate and the live OpenCode designer
 /// session, then sweep. Skips (with a log line) when a stop is active — before
@@ -739,12 +732,36 @@ pub fn run_sweep(
     proxy_url: Option<String>,
     override_model: Option<&str>,
 ) -> Result<SweepReport, ContractError> {
-    let stop = FileStopControl::new(state_dir);
-    if stop.stopped() {
-        let reason = STOP_REASON.to_string();
+    let stop = bind_stop_control(state_dir);
+    run_sweep_with_stop(
+        repo,
+        state_dir,
+        paid_available,
+        proxy_url,
+        override_model,
+        stop,
+    )
+}
+
+/// [`run_sweep`] honoring an explicit (already-bound) stop control.
+///
+/// The **same** control is used for admission and passed through the live
+/// session seam, so the mid-turn poll reads the selected ledger binding rather
+/// than opening a second database (`agalma-5fy.5`). The work loop already holds a
+/// bound ledger handle and MUST prefer this entry with a
+/// [`crate::stop::BoundStopControl`] built from that handle.
+pub fn run_sweep_with_stop(
+    repo: &Path,
+    state_dir: &Path,
+    paid_available: bool,
+    proxy_url: Option<String>,
+    override_model: Option<&str>,
+    stop: Rc<dyn StopControl>,
+) -> Result<SweepReport, ContractError> {
+    if let Some(reason) = stop.decision().reason() {
         eprintln!("agalma: epic sweep skipped: {reason}");
         return Ok(SweepReport {
-            skipped_reason: Some(reason),
+            skipped_reason: Some(reason.to_string()),
             stopped: true,
             ..SweepReport::default()
         });
@@ -758,8 +775,13 @@ pub fn run_sweep(
             ..SweepReport::default()
         });
     }
-    let session = LiveDesignerSession::build(state_dir, proxy_url, paid_available)?;
-    sweep_epics_with_stop(repo, state_dir, &gate, &session, &stop)
+    let session = LiveDesignerSession::build(
+        state_dir,
+        proxy_url,
+        paid_available,
+        Rc::clone(&stop),
+    )?;
+    sweep_epics_with_stop(repo, state_dir, &gate, &session, &*stop)
 }
 
 /// Production entry point for the scoped `agalma designer` command: build the
@@ -775,12 +797,33 @@ pub fn run_designer(
     proxy_url: Option<String>,
     override_model: Option<&str>,
 ) -> Result<SweepReport, ContractError> {
-    let stop = FileStopControl::new(state_dir);
-    if stop.stopped() {
-        let reason = STOP_REASON.to_string();
+    let stop = bind_stop_control(state_dir);
+    run_designer_with_stop(
+        repo,
+        state_dir,
+        epic,
+        paid_available,
+        proxy_url,
+        override_model,
+        stop,
+    )
+}
+
+/// [`run_designer`] honoring an explicit (already-bound) stop control (see
+/// [`run_sweep_with_stop`]).
+pub fn run_designer_with_stop(
+    repo: &Path,
+    state_dir: &Path,
+    epic: &str,
+    paid_available: bool,
+    proxy_url: Option<String>,
+    override_model: Option<&str>,
+    stop: Rc<dyn StopControl>,
+) -> Result<SweepReport, ContractError> {
+    if let Some(reason) = stop.decision().reason() {
         eprintln!("agalma: designer skipped: {reason}");
         return Ok(SweepReport {
-            skipped_reason: Some(reason),
+            skipped_reason: Some(reason.to_string()),
             stopped: true,
             ..SweepReport::default()
         });
@@ -794,8 +837,13 @@ pub fn run_designer(
             ..SweepReport::default()
         });
     }
-    let session = LiveDesignerSession::build(state_dir, proxy_url, paid_available)?;
-    sweep_epic_with_stop(repo, state_dir, epic, &gate, &session, &stop)
+    let session = LiveDesignerSession::build(
+        state_dir,
+        proxy_url,
+        paid_available,
+        Rc::clone(&stop),
+    )?;
+    sweep_epic_with_stop(repo, state_dir, epic, &gate, &session, &*stop)
 }
 
 /// Count an epic's `decomp-fix` rework tasks (its historical attempt record).
@@ -1025,14 +1073,16 @@ pub struct LiveDesignerSession {
 }
 
 impl LiveDesignerSession {
-    /// Assemble the live session config (materializing the sandbox profile).
+    /// Assemble the live session config (materializing the sandbox profile),
+    /// using the same bound stop control passed for admission (`agalma-5fy.5`).
     pub fn build(
         state_dir: &Path,
         proxy_url: Option<String>,
         paid_available: bool,
+        stop: Rc<dyn StopControl>,
     ) -> Result<Self, ContractError> {
         Ok(LiveDesignerSession {
-            live: LiveSession::build(state_dir, proxy_url, paid_available)?
+            live: LiveSession::build(state_dir, proxy_url, paid_available, stop)?
                 .with_turn_timeout(crate::composition::resolve_designer_timeout()),
         })
     }

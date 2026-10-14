@@ -70,7 +70,7 @@ use serde_json::json;
 use crate::harness_binding::{self, HarnessHandle, HarnessKind};
 use crate::harness_process::{self, HarnessTransport, LiveHarness, OpenCodeHarnessInit};
 use crate::sandbox_process::SandboxSource;
-use crate::stop::{FileStopControl, StopControl};
+use crate::stop::StopControl;
 use crate::workers::{self, Survivor};
 use crate::workspace_process::WorkspaceHandle;
 
@@ -176,6 +176,10 @@ pub struct PhaseDeps {
     /// Harness binding selection (M1.7). Activities resolve the pinned binding
     /// for an operation, else the current selection, at attempt start.
     pub harness: HarnessHandle,
+    /// Shared bound stop control (`agalma-5fy.5`): the same control the caller
+    /// used for admission, reused by the live turn polls so a phase poll reads
+    /// the selected ledger binding rather than a second database.
+    pub stop: Rc<dyn StopControl>,
 }
 
 /// Repo-mode parameters carried per execution (M1 queue-driven conductor).
@@ -820,7 +824,7 @@ impl BuildActivity {
             &op,
             self.deps.idle_timeout,
             self.deps.turn_timeout,
-            Some(&FileStopControl::new(&self.deps.state_dir)),
+            Some(&*self.deps.stop),
         );
         // Cancel before close: the interrupt must reach a live session, and a
         // 404 means it already ended (benign). A terminal outcome needs no
@@ -1133,7 +1137,7 @@ impl BuildActivity {
             &op,
             self.deps.idle_timeout,
             self.deps.turn_timeout,
-            Some(&FileStopControl::new(&self.deps.state_dir)),
+            Some(&*self.deps.stop),
         );
         // Cancel before close: the interrupt must reach a live session, and a
         // 404 means it already ended (benign). A terminal outcome needs no
@@ -1701,7 +1705,7 @@ impl VerifyActivity {
             &op,
             self.deps.idle_timeout,
             self.deps.turn_timeout,
-            Some(&FileStopControl::new(&self.deps.state_dir)),
+            Some(&*self.deps.stop),
         );
         settle_after_poll(
             harness,
@@ -3003,6 +3007,7 @@ mod tests {
             harness: crate::harness_binding::harness_handle(
                 crate::harness_binding::HarnessChoice::OpenCode,
             ),
+            stop: Rc::new(crate::stop::FileStopControl::new(std::path::Path::new("state"))),
         }
     }
 
@@ -3447,7 +3452,7 @@ mod tests {
         let stop_path = dir.join("STOP");
         let mut harness = FakeTurn::new(FakeMode::Silent, 1_000);
         harness.stop_file = Some((stop_path.clone(), 1));
-        let control = FileStopControl::new(&dir);
+        let control = crate::stop::FileStopControl::new(&dir);
         let op = FakeTurn::op();
         let started = Instant::now();
         let outcome = poll_terminal(
@@ -3469,6 +3474,33 @@ mod tests {
         assert!(
             stop_path.exists(),
             "stop state retained (never implicitly cleared)"
+        );
+    }
+
+    #[test]
+    fn injected_stop_control_drives_poll_terminal() {
+        // The phase poll consumes the control injected through PhaseDeps
+        // (`agalma-5fy.5`) rather than constructing a second FileStopControl.
+        struct AlwaysStopped;
+        impl StopControl for AlwaysStopped {
+            fn stopped(&self) -> bool {
+                true
+            }
+        }
+        let mut deps = deps(None);
+        deps.stop = Rc::new(AlwaysStopped);
+        let mut harness = FakeTurn::new(FakeMode::Silent, 5);
+        let op = FakeTurn::op();
+        let outcome = poll_terminal(
+            &mut harness,
+            &op,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Some(&*deps.stop),
+        );
+        assert!(
+            matches!(outcome, PollOutcome::Stopped),
+            "the injected control drives the poll: {outcome:?}"
         );
     }
 

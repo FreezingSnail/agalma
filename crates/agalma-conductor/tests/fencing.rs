@@ -152,6 +152,9 @@ fn build_harness(origin: &Origin, acceptance: &[&str]) -> Harness {
         harness: agalma_conductor::harness_binding::harness_handle(
             agalma_conductor::harness_binding::HarnessChoice::OpenCode,
         ),
+        stop: std::rc::Rc::new(agalma_conductor::stop::FileStopControl::new(
+            &origin.state_dir,
+        )),
     };
     let workspace = Rc::new(RefCell::new(WorkspaceHandle::in_process(&origin.state_dir)));
     let state = Rc::new(RefCell::new(RunState::default()));

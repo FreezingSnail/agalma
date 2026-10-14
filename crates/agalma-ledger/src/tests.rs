@@ -1006,3 +1006,73 @@ fn migration_v3_to_v4_refused_with_in_flight_execution() {
         "reason must name in-flight executions: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Explicit fresh initialization vs established open (`agalma-5fy.5`)
+// ---------------------------------------------------------------------------
+
+/// `open_existing` refuses a missing database and never creates one.
+#[test]
+fn open_existing_missing_refuses_without_creating() {
+    let dir = run_dir("open-existing-missing");
+    let path = dir.join("ledger.sqlite");
+    assert!(!path.exists(), "starts absent");
+
+    let err = SqliteLedger::open_existing(&path).map(|_| ()).unwrap_err();
+    assert!(
+        err.to_string().contains("missing"),
+        "clear missing reason: {err}"
+    );
+    assert!(!path.exists(), "open_existing must never create the database");
+}
+
+/// `open_existing` opens an already-initialized ledger (same schema, clear
+/// latch) and refuses a corrupt file.
+#[test]
+fn open_existing_opens_initialized_and_refuses_corrupt() {
+    let dir = run_dir("open-existing-initialized");
+    let path = dir.join("ledger.sqlite");
+    {
+        let mut ledger = SqliteLedger::open(&path).unwrap();
+        ledger.set_kill_latch(true).unwrap();
+    }
+    let ledger = SqliteLedger::open_existing(&path).expect("open existing initialized");
+    assert!(ledger.kill_latch().unwrap(), "latch read through existing open");
+
+    let corrupt = dir.join("corrupt.sqlite");
+    std::fs::write(&corrupt, b"not a sqlite database").unwrap();
+    let err = SqliteLedger::open_existing(&corrupt).map(|_| ()).unwrap_err();
+    assert!(
+        matches!(err, ContractError::KnownFailure(_)),
+        "corrupt existing refuses: {err:?}"
+    );
+}
+
+/// `open_existing` refuses an incompatible established schema (no migration) and
+/// does not rewrite the recorded version.
+#[test]
+fn open_existing_incompatible_refuses_without_migrating() {
+    let dir = run_dir("open-existing-incompatible");
+    let path = dir.join("ledger.sqlite");
+    drop(SqliteLedger::open(&path).unwrap());
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute("UPDATE meta SET value='999' WHERE key='schema_version'", [])
+            .unwrap();
+    }
+
+    let err = SqliteLedger::open_existing(&path).map(|_| ()).unwrap_err();
+    assert!(
+        matches!(err, ContractError::Conflict(_)),
+        "incompatible existing refuses: {err:?}"
+    );
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let version: String = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key='schema_version'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(version, "999", "open_existing must not migrate/rewrite");
+}

@@ -61,6 +61,7 @@ use crate::phases::{
 };
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
 use crate::routing::{self, RouteSelection};
+use crate::stop::{BoundStopControl, StopControl};
 use crate::task_package::{
     build_package, gather_admission_context, legacy_park, load_admitted_package,
     load_frozen_or_legacy, persist_package, read_artifact, AuthorizationInput, PackageInputs,
@@ -113,13 +114,49 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
     let _lock = LockGuard::acquire(&state_dir).map_err(ContractError::KnownFailure)?;
 
     let ledger_path = state_dir.join("ledger.sqlite");
-    let ledger = LedgerHandle::from_transport(&state_dir, LedgerTransport::from_env())?;
+    // Entry-aware STOP guard before any ledger open (`agalma-5fy.5`): a present
+    // stop (including a dangling symlink or a metadata error) must never
+    // initialize a database or start the proxy.
+    if let Some(reason) = crate::stop::observe_sentinel(&state_dir).reason() {
+        return Err(ContractError::KnownFailure(format!(
+            "stop admission refused: {reason}"
+        )));
+    }
+    // Explicit fresh initialization vs established open through the selected
+    // binding (`agalma-5fy.5`): a lost/partial established ledger refuses here,
+    // never recreated. The same bound control is shared with the sweep, the
+    // review gate, the work loop and the phase polls.
+    let ledger = crate::ledger_process::open_admission_ledger(
+        &state_dir,
+        LedgerTransport::from_env(),
+    )
+    .map_err(ContractError::KnownFailure)?;
     {
         let version = ledger.schema_version()?;
         if version != LEDGER_SCHEMA_VERSION {
             return Err(ContractError::KnownFailure(format!(
                 "incompatible ledger schema {version} (expected {LEDGER_SCHEMA_VERSION}) at {}",
                 ledger_path.display()
+            )));
+        }
+    }
+    let stop: Rc<dyn StopControl> = Rc::new(BoundStopControl::new(&state_dir, ledger.clone()));
+    // Typed bound decision BEFORE proxy/workspace/queue/task admission
+    // (`agalma-5fy.5`): Running normal; Unavailable immediate refusal (no attempt
+    // to infer/read lost state); Stopped bounded existing survivor cleanup over
+    // the authoritative bound pending intents, then refusal — no proxy/queue
+    // construction or new dispatch.
+    match stop.decision() {
+        crate::stop::StopDecision::Running => {}
+        crate::stop::StopDecision::Unavailable(reason) => {
+            return Err(ContractError::KnownFailure(format!(
+                "stop state unavailable; refusing work loop: {reason}"
+            )));
+        }
+        crate::stop::StopDecision::Stopped(reason) => {
+            crate::composition::reconcile_bound_survivors(&state_dir, &ledger);
+            return Err(ContractError::KnownFailure(format!(
+                "stop policy active; refusing work loop: {reason}"
             )));
         }
     }
@@ -182,6 +219,7 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
         proxy_url.clone(),
         &mut queue,
         harness.clone(),
+        Rc::clone(&stop),
     )?;
 
     // Boot reap sweep: after recovery, delete the heavy scratch of every
@@ -203,12 +241,13 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
     // route skips the sweep (never a silent downgrade). The sweep applies the
     // stop policy (STOP sentinel or kill latch) before any planning dispatch
     // (`agalma-r2l`).
-    match crate::sweep::run_sweep(
+    match crate::sweep::run_sweep_with_stop(
         &repo,
         &state_dir,
         paid_available,
         proxy_url.clone(),
         override_model.as_deref(),
+        Rc::clone(&stop),
     ) {
         Ok(report) if report.skipped_reason.is_none() => eprintln!(
             "agalma: epic sweep: {} candidate(s), {} approved, {} rejected, {} escalated, {} timed out",
@@ -227,12 +266,13 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
     // drift verdict files a P1 `drift-fix` task and holds ordinary dispatch.
     // Best-effort: a review failure must not block the loop, and an unavailable
     // strong route skips the gate (never a silent pass or downgrade).
-    match crate::review::run_review(
+    match crate::review::run_review_with_stop(
         &repo,
         &state_dir,
         paid_available,
         proxy_url.clone(),
         override_model.as_deref(),
+        Rc::clone(&stop),
     ) {
         Ok(report) if report.skipped_reason.is_none() => eprintln!(
             "agalma: review gate: {} epic(s) reviewed, {} approved, {} drift, {} escalated",
@@ -263,14 +303,12 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
     let mut processed: u32 = 0;
     let mut last: Option<Terminal> = None;
     loop {
-        // Stop policy before any claim/dispatch: the `STOP` sentinel OR the
-        // durable kill latch halts the loop before it can mutate the backlog
-        // (`agalma-r2l`). The latch is never cleared here; only the human
-        // `agalma resume` flow clears it.
-        if state_dir.join("STOP").exists() || ledger.kill_latch()? {
-            eprintln!(
-                "agalma: stop policy active (STOP sentinel or kill latch); halting work loop"
-            );
+        // Stop policy before any claim/dispatch: the shared bound control's typed
+        // decision halts the loop before it can mutate the backlog
+        // (`agalma-r2l`, `agalma-5fy.5`). Stopped/Unavailable both deny; the
+        // latch is never cleared here (only the human `agalma resume` clears it).
+        if let Some(reason) = stop.decision().reason() {
+            eprintln!("agalma: stop policy active ({reason}); halting work loop");
             break;
         }
         if let Some(max) = args.max_tasks {
@@ -300,6 +338,7 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
             &evidence,
             &mut queue,
             harness.clone(),
+            Rc::clone(&stop),
         )?;
         processed += 1;
         // CP.5: the first child of an epic to land records the epic's review
@@ -413,6 +452,7 @@ fn run_task(
     evidence: &ClaimEvidence,
     queue: &mut TaskQueueHandle,
     harness: HarnessHandle,
+    stop: Rc<dyn StopControl>,
 ) -> Result<Terminal, ContractError> {
     let (builder, verifier) = task_routes(state_dir, task, override_model, paid_available)?;
     let plan = RolePlan {
@@ -471,16 +511,17 @@ fn run_task(
         repo,
         harness,
         &builder_prompt,
+        Rc::clone(&stop),
     )?;
 
     let terminal = drive_task(
         &mut executor,
         &execution,
-        state_dir,
         queue,
         &task.task_id,
         lease,
         false,
+        &*stop,
     )?;
     finalize(
         state_dir,
@@ -610,25 +651,35 @@ fn project_terminal(
 }
 
 /// Drive one execution to a terminal state, projecting each phase transition to
-/// the backlog and honoring the `STOP` sentinel. `best_effort` (recovery) makes
-/// the phase comment non-fatal when the source issue has been removed.
+/// the backlog and honoring the shared bound stop decision. `best_effort`
+/// (recovery) makes the phase comment non-fatal when the source issue has been
+/// removed. `Unavailable` suppresses projection and dispatch without setting the
+/// latch (`agalma-5fy.5`).
 #[allow(clippy::too_many_arguments)]
 fn drive_task(
     executor: &mut Executor<LedgerHandle>,
     execution: &ExecutionId,
-    state_dir: &Path,
     queue: &mut TaskQueueHandle,
     task_id: &TaskId,
     lease: u32,
     best_effort: bool,
+    stop: &dyn StopControl,
 ) -> Result<Terminal, ContractError> {
-    let stop = state_dir.join("STOP");
     let mut last_phase: Option<ExecutionPhase> = None;
     loop {
-        if stop.exists() {
-            executor.set_kill_latch(true)?;
-            eprintln!("agalma: STOP sentinel present; kill latch set");
-            return Ok(Terminal::Blocked);
+        match stop.decision() {
+            crate::stop::StopDecision::Running => {}
+            crate::stop::StopDecision::Stopped(reason) => {
+                executor.set_kill_latch(true)?;
+                eprintln!("agalma: stop policy active ({reason}); kill latch set");
+                return Ok(Terminal::Blocked);
+            }
+            crate::stop::StopDecision::Unavailable(reason) => {
+                eprintln!(
+                    "agalma: stop state unavailable ({reason}); halting without projection"
+                );
+                return Ok(Terminal::Blocked);
+            }
         }
         let status = executor.status(execution)?;
         if last_phase != Some(status.phase) {
@@ -714,6 +765,7 @@ fn recover_inflight(
     proxy_url: Option<String>,
     queue: &mut TaskQueueHandle,
     harness: HarnessHandle,
+    stop: Rc<dyn StopControl>,
 ) -> Result<(), ContractError> {
     let executions = ledger.executions()?;
     for record in executions {
@@ -783,16 +835,17 @@ fn recover_inflight(
             repo,
             harness.clone(),
             &builder_prompt,
+            Rc::clone(&stop),
         )?;
         let lease = execution_lease(&executor, &record.execution_id, record.generation);
         let terminal = drive_task(
             &mut executor,
             &record.execution_id,
-            state_dir,
             queue,
             &task_id,
             lease,
             true,
+            &*stop,
         )?;
         finalize(
             state_dir,
@@ -1195,6 +1248,7 @@ fn build_executor(
     repo: &Path,
     harness: HarnessHandle,
     builder_prompt_bytes: &[u8],
+    stop: Rc<dyn StopControl>,
 ) -> Result<Executor<LedgerHandle>, ContractError> {
     let mut executor = Executor::new(
         ledger.clone(),
@@ -1212,6 +1266,7 @@ fn build_executor(
         repo,
         harness,
         builder_prompt_bytes,
+        stop,
     )?;
     let workspace = Rc::new(RefCell::new(WorkspaceHandle::from_transport(
         state_dir,
@@ -1239,6 +1294,7 @@ fn phase_deps(
     repo: &Path,
     harness: HarnessHandle,
     builder_prompt_bytes: &[u8],
+    stop: Rc<dyn StopControl>,
 ) -> Result<PhaseDeps, ContractError> {
     let profile_path = state_dir.join("worker.sb");
     std::fs::write(&profile_path, PRODUCT_PROFILE).map_err(|e| {
@@ -1287,6 +1343,7 @@ fn phase_deps(
             acceptance: task.acceptance.clone(),
         }),
         harness,
+        stop,
     })
 }
 

@@ -35,7 +35,7 @@ use agalma_contracts::{
     ExecutionRecord, LedgerApi, OperationId, OperationReceipt, StateSnapshot, TaskId, TimerRecord,
 };
 use agalma_ipc::{CommandSpec, LedgerClient, LedgerOps, Wire, WIRE_ENV};
-use agalma_ledger::server::server_command;
+use agalma_ledger::server::{server_command, OpenMode, OPEN_EXISTING_FLAG};
 use agalma_ledger::SqliteLedger;
 
 use crate::harness_process::{
@@ -103,11 +103,26 @@ pub fn ledger_wire() -> Wire {
 
 /// Launch spec for the ledger server bound to `socket`, owning `state_dir`.
 pub fn ledger_server_spec(socket: &Path, state_dir: &Path) -> CommandSpec {
-    server_command()
+    ledger_server_spec_mode(socket, state_dir, OpenMode::Create)
+}
+
+/// Launch spec for the ledger server under an explicit [`OpenMode`]. An
+/// [`OpenMode::Existing`] server opens without create/init/migrate
+/// (`agalma-5fy.5`).
+pub fn ledger_server_spec_mode(
+    socket: &Path,
+    state_dir: &Path,
+    mode: OpenMode,
+) -> CommandSpec {
+    let spec = server_command()
         .arg("--socket")
         .arg(socket.to_string_lossy().into_owned())
         .arg("--state-dir")
-        .arg(state_dir.to_string_lossy().into_owned())
+        .arg(state_dir.to_string_lossy().into_owned());
+    match mode {
+        OpenMode::Create => spec,
+        OpenMode::Existing => spec.arg(OPEN_EXISTING_FLAG),
+    }
 }
 
 /// A supervised ledger component-server process.
@@ -121,10 +136,27 @@ pub struct LedgerProcess {
 
 impl LedgerProcess {
     /// Spawn a ledger server owning `state_dir`, listening on
-    /// `<state_dir>/ledger.sock` over [`ledger_wire`]; wait for `READY`.
+    /// `<state_dir>/ledger.sock` over [`ledger_wire`]; wait for `READY`. Creates
+    /// and initializes first-open state.
     pub fn spawn(state_dir: &Path, timeout: Duration) -> Result<LedgerProcess, String> {
+        LedgerProcess::spawn_mode(state_dir, timeout, OpenMode::Create)
+    }
+
+    /// Spawn a ledger server that opens an **existing** database without
+    /// create/init/migrate; a missing/corrupt/incompatible database fails to
+    /// start (`agalma-5fy.5`).
+    pub fn spawn_existing(state_dir: &Path, timeout: Duration) -> Result<LedgerProcess, String> {
+        LedgerProcess::spawn_mode(state_dir, timeout, OpenMode::Existing)
+    }
+
+    /// Spawn a ledger server owning `state_dir` under an explicit [`OpenMode`].
+    pub fn spawn_mode(
+        state_dir: &Path,
+        timeout: Duration,
+        mode: OpenMode,
+    ) -> Result<LedgerProcess, String> {
         let socket = ledger_socket(state_dir);
-        let spec = ledger_server_spec(&socket, state_dir);
+        let spec = ledger_server_spec_mode(&socket, state_dir, mode);
         let program = resolve_server_binary(&spec.program)?;
         LedgerProcess::spawn_with_spec_wire(
             spec,
@@ -255,9 +287,33 @@ impl LedgerHandle {
         })
     }
 
+    /// Bind the in-process backend to an **existing** ledger without
+    /// create/init/migrate (`agalma-5fy.5`).
+    pub fn in_process_existing(state_dir: &Path) -> Result<LedgerHandle, ContractError> {
+        let ledger = SqliteLedger::open_existing(state_dir.join("ledger.sqlite"))?;
+        Ok(LedgerHandle {
+            backend: Rc::new(RefCell::new(Backend::InProcess(ledger))),
+            _process: None,
+        })
+    }
+
     /// Spawn a supervised ledger server owning `state_dir` and connect.
     pub fn process(state_dir: &Path) -> Result<LedgerHandle, ContractError> {
         let process = LedgerProcess::spawn(state_dir, READY_TIMEOUT)
+            .map_err(|e| ContractError::KnownFailure(format!("start ledger server: {e}")))?;
+        let client = process
+            .client()
+            .map_err(|e| ContractError::KnownFailure(format!("connect ledger server: {e}")))?;
+        Ok(LedgerHandle {
+            backend: Rc::new(RefCell::new(Backend::Process(client))),
+            _process: Some(Rc::new(process)),
+        })
+    }
+
+    /// Spawn a supervised ledger server that opens an **existing** database
+    /// without create/init/migrate (`agalma-5fy.5`).
+    pub fn process_existing(state_dir: &Path) -> Result<LedgerHandle, ContractError> {
+        let process = LedgerProcess::spawn_existing(state_dir, READY_TIMEOUT)
             .map_err(|e| ContractError::KnownFailure(format!("start ledger server: {e}")))?;
         let client = process
             .client()
@@ -289,6 +345,18 @@ impl LedgerHandle {
         match transport {
             LedgerTransport::InProcess => LedgerHandle::in_process(state_dir),
             LedgerTransport::Process => LedgerHandle::process(state_dir),
+        }
+    }
+
+    /// Build a handle for the selected `transport` over an **existing** ledger,
+    /// without create/init/migrate (`agalma-5fy.5`).
+    pub fn from_transport_existing(
+        state_dir: &Path,
+        transport: LedgerTransport,
+    ) -> Result<LedgerHandle, ContractError> {
+        match transport {
+            LedgerTransport::InProcess => LedgerHandle::in_process_existing(state_dir),
+            LedgerTransport::Process => LedgerHandle::process_existing(state_dir),
         }
     }
 
@@ -559,6 +627,238 @@ impl LedgerOps for LedgerHandle {
             Backend::InProcess(l) => l.import_snapshot_from(path),
             Backend::Process(c) => c.import_snapshot_from(path),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Explicit fresh initialization vs established open (`agalma-5fy.5`)
+// ---------------------------------------------------------------------------
+
+/// Durable establishment marker (outside the database): its presence means this
+/// state dir has already been initialized, so a missing database is lost
+/// established state — never a fresh first use.
+pub const ESTABLISHED_MARKER: &str = "ledger.established";
+/// Temporary marker written before the atomic rename; its presence alone means a
+/// partial/ambiguous initialization.
+pub const ESTABLISHED_MARKER_TMP: &str = "ledger.established.tmp";
+/// Database file name under the run state dir (mirrors the server).
+pub const LEDGER_DB_NAME: &str = "ledger.sqlite";
+/// Establishment marker schema version.
+pub const ESTABLISHED_MARKER_VERSION: u64 = 1;
+/// Bounded failure injection at the establishment durability barrier: a file at
+/// `<state_dir>/ledger.establish.fail` makes the directory sync barrier fail, so
+/// admission refuses (`agalma-5fy.5`). Only ever refuses admission, never admits.
+pub const ESTABLISH_DURABILITY_FAIL_INJECTION: &str = "ledger.establish.fail";
+
+/// Classification of a state dir's ledger establishment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Establishment {
+    /// No marker and no database: an explicit virgin initialization.
+    Fresh,
+    /// A durable establishment marker exists: open the existing database, never
+    /// create a replacement.
+    Established,
+    /// A valid initialized database exists without a marker (legacy/pre-record):
+    /// adopt it (record the marker) before admitting it.
+    Adopt,
+    /// A partial, ambiguous or unreadable establishment observation: refuse.
+    Ambiguous(String),
+}
+
+/// Classification of one filesystem entry that distinguishes a genuinely missing
+/// entry from a present-but-unresolved one (e.g. a dangling symlink) and from a
+/// metadata error. `symlink_metadata` is used so a present link is not mistaken
+/// for absence.
+enum Entry {
+    /// Genuinely missing (`symlink_metadata` → `NotFound`).
+    Missing,
+    /// Present and resolves to a regular file.
+    File,
+    /// Present but does not resolve to a regular file (dangling symlink, dir).
+    Unresolved(String),
+    /// A metadata error other than `NotFound`.
+    Error(String),
+}
+
+fn classify_entry(path: &Path) -> Entry {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => match std::fs::metadata(path) {
+            Ok(resolved) if resolved.is_file() => Entry::File,
+            Ok(_) => Entry::Unresolved(format!("{} is not a regular file", path.display())),
+            Err(err) => {
+                Entry::Unresolved(format!("unresolved entry {}: {err}", path.display()))
+            }
+        },
+        Ok(meta) if meta.is_file() => Entry::File,
+        Ok(_) => Entry::Unresolved(format!("{} is not a regular file", path.display())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Entry::Missing,
+        Err(err) => Entry::Error(format!("{}: {err}", path.display())),
+    }
+}
+
+/// Classify the establishment of `state_dir` without creating anything.
+///
+/// A present-but-unresolved entry (dangling symlink) for the marker, temp marker
+/// or database is `Ambiguous` — never `Fresh` — so a dangling `ledger.established`
+/// cannot be mistaken for a fresh first use and recreate a clear ledger.
+pub fn classify_establishment(state_dir: &Path) -> Establishment {
+    let marker = state_dir.join(ESTABLISHED_MARKER);
+    let tmp = state_dir.join(ESTABLISHED_MARKER_TMP);
+    let db = state_dir.join(LEDGER_DB_NAME);
+
+    // A leftover temporary marker is a partial initialization.
+    match classify_entry(&tmp) {
+        Entry::Missing => {}
+        Entry::File => {
+            return Establishment::Ambiguous(
+                "partial initialization (temporary establishment marker present)".to_string(),
+            )
+        }
+        Entry::Unresolved(reason) => {
+            return Establishment::Ambiguous(format!("temporary establishment marker: {reason}"))
+        }
+        Entry::Error(err) => return Establishment::Ambiguous(format!("marker temp metadata: {err}")),
+    }
+
+    match classify_entry(&marker) {
+        Entry::File => match std::fs::read_to_string(&marker) {
+            Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+                Ok(value)
+                    if value.get("version").and_then(|v| v.as_u64())
+                        == Some(ESTABLISHED_MARKER_VERSION) =>
+                {
+                    Establishment::Established
+                }
+                _ => Establishment::Ambiguous("establishment marker malformed".to_string()),
+            },
+            Err(err) => {
+                Establishment::Ambiguous(format!("establishment marker unreadable: {err}"))
+            }
+        },
+        Entry::Missing => match classify_entry(&db) {
+            Entry::File => Establishment::Adopt,
+            Entry::Missing => Establishment::Fresh,
+            Entry::Unresolved(reason) => {
+                Establishment::Ambiguous(format!("ledger entry: {reason}"))
+            }
+            Entry::Error(err) => Establishment::Ambiguous(format!("ledger metadata: {err}")),
+        },
+        Entry::Unresolved(reason) => {
+            Establishment::Ambiguous(format!("establishment marker: {reason}"))
+        }
+        Entry::Error(err) => Establishment::Ambiguous(format!("marker metadata: {err}")),
+    }
+}
+
+/// Write the durable establishment marker atomically (temp + fsync + rename +
+/// dir fsync). Every step propagates: a failure to record establishment durably
+/// must not yield a successfully established admission handle
+/// (`agalma-5fy.5`).
+fn write_establishment_marker(state_dir: &Path) -> Result<(), String> {
+    let marker = state_dir.join(ESTABLISHED_MARKER);
+    let tmp = state_dir.join(ESTABLISHED_MARKER_TMP);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let payload = format!(
+        "{{\"version\":{ESTABLISHED_MARKER_VERSION},\"initialized_at_ms\":{now}}}"
+    );
+    let mut file = std::fs::File::create(&tmp)
+        .map_err(|e| format!("create establishment marker {}: {e}", tmp.display()))?;
+    use std::io::Write;
+    file.write_all(payload.as_bytes())
+        .map_err(|e| format!("write establishment marker: {e}"))?;
+    file.sync_all()
+        .map_err(|e| format!("sync establishment marker: {e}"))?;
+    drop(file);
+    std::fs::rename(&tmp, &marker)
+        .map_err(|e| format!("commit establishment marker: {e}"))?;
+    marker_durability_barrier(state_dir)
+}
+
+/// The establishment durability barrier: the directory open + `sync_all` that
+/// must succeed for a published marker to be considered durably established,
+/// plus the bounded failure injection (`agalma-5fy.5`).
+///
+/// A failure propagates so admission refuses. It is applied both when publishing
+/// a fresh/adopted marker **and** before accepting an already-present marker on a
+/// retry, so a publication that failed after its rename (marker visible but not
+/// confirmed) cannot silently become Running on the next bind.
+fn marker_durability_barrier(state_dir: &Path) -> Result<(), String> {
+    // Bounded failure injection at the durability barrier: only ever refuses
+    // admission, never admits.
+    if state_dir.join(ESTABLISH_DURABILITY_FAIL_INJECTION).exists() {
+        return Err(
+            "injected establishment durability failure (directory sync barrier)".to_string(),
+        );
+    }
+    let dir = std::fs::File::open(state_dir)
+        .map_err(|e| format!("open state dir for sync {}: {e}", state_dir.display()))?;
+    dir.sync_all()
+        .map_err(|e| format!("sync establishment marker dir: {e}"))?;
+    Ok(())
+}
+
+/// Open the admission ledger for `state_dir` through the **selected** binding,
+/// honoring explicit fresh initialization vs established open (`agalma-5fy.5`).
+///
+/// - `Fresh`: explicitly create/initialize the selected binding, then record the
+///   durable establishment marker. A create/record error propagates.
+/// - `Established`: open the existing database without create/init/migrate; a
+///   missing database is lost established state and refuses (never recreated).
+/// - `Adopt`: open the existing (pre-record) database without create/init and
+///   record the marker.
+/// - `Ambiguous`: refuse with the reason.
+///
+/// A failed bind/read observation is an error; there is no private-database
+/// fallback.
+pub fn open_admission_ledger(
+    state_dir: &Path,
+    transport: LedgerTransport,
+) -> Result<LedgerHandle, String> {
+    match classify_establishment(state_dir) {
+        Establishment::Fresh => {
+            std::fs::create_dir_all(state_dir)
+                .map_err(|e| format!("create state dir {}: {e}", state_dir.display()))?;
+            let handle = LedgerHandle::from_transport(state_dir, transport)
+                .map_err(|e| e.to_string())?;
+            write_establishment_marker(state_dir)?;
+            Ok(handle)
+        }
+        Establishment::Established => {
+            // Fast refuse when the established database is gone: never create a
+            // replacement authority through a create-if-missing path. A present
+            // but unresolved entry is refused too (never treated as fresh).
+            let db = state_dir.join(LEDGER_DB_NAME);
+            match classify_entry(&db) {
+                Entry::File => {}
+                Entry::Missing => {
+                    return Err(format!(
+                        "established ledger missing at {} (refusing to recreate)",
+                        db.display()
+                    ))
+                }
+                Entry::Unresolved(reason) => {
+                    return Err(format!("established ledger unresolved: {reason}"))
+                }
+                Entry::Error(err) => return Err(format!("established ledger metadata: {err}")),
+            }
+            // Require the same durability barrier before accepting the marker: a
+            // marker published by a failed (post-rename) publication is visible
+            // but unconfirmed, so a retry must re-confirm durability rather than
+            // silently become Running.
+            marker_durability_barrier(state_dir)?;
+            LedgerHandle::from_transport_existing(state_dir, transport)
+                .map_err(|e| e.to_string())
+        }
+        Establishment::Adopt => {
+            let handle = LedgerHandle::from_transport_existing(state_dir, transport)
+                .map_err(|e| e.to_string())?;
+            write_establishment_marker(state_dir)?;
+            Ok(handle)
+        }
+        Establishment::Ambiguous(reason) => Err(format!("ambiguous establishment: {reason}")),
     }
 }
 

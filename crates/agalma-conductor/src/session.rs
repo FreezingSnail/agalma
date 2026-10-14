@@ -18,6 +18,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::Duration;
 
 use agalma_contracts::harness::{
@@ -31,7 +32,7 @@ use crate::harness_process::{self, HarnessTransport, OpenCodeHarnessInit};
 use crate::phases::{ensure_cargo_home, poll_terminal, PollOutcome};
 use crate::routing;
 use crate::sandbox_process::SandboxSource;
-use crate::stop::{FileStopControl, StopControl};
+use crate::stop::StopControl;
 
 /// Per-conductor live session configuration shared by every role.
 ///
@@ -50,15 +51,24 @@ pub struct LiveSession {
     /// Stop control polled while the session runs (`agalma-r2l`). A `STOP`
     /// sentinel or the durable kill latch cancels the turn and refuses to start
     /// a new one; the control is never cleared here.
-    stop: Box<dyn StopControl>,
+    /// Stop control polled while the session runs (`agalma-r2l`). A `STOP`
+    /// sentinel or the durable kill latch cancels the turn and refuses to start
+    /// a new one; the control is never cleared here. Shared (`Rc`) so the same
+    /// bound control used for admission is passed through this seam
+    /// (`agalma-5fy.5`).
+    stop: Rc<dyn StopControl>,
 }
 
 impl LiveSession {
-    /// Assemble the live session config (materializing the sandbox profile).
+    /// Assemble the live session config (materializing the sandbox profile) with
+    /// the given stop control. The control is the **same** binding used for
+    /// admission (`agalma-5fy.5`), so the mid-turn poll reads the selected ledger
+    /// service, not a second database.
     pub fn build(
         state_dir: &Path,
         proxy_url: Option<String>,
         paid_available: bool,
+        stop: Rc<dyn StopControl>,
     ) -> Result<Self, ContractError> {
         // The state dir may not exist yet on a fresh `--state-dir` (e.g. a
         // nested path): the session path owns materializing it before any
@@ -86,12 +96,12 @@ impl LiveSession {
             toolchain_env,
             turn_timeout: crate::composition::DEFAULT_TURN_TIMEOUT,
             idle_timeout: crate::composition::resolve_idle_timeout(),
-            stop: Box::new(FileStopControl::new(state_dir)),
+            stop,
         })
     }
 
     /// Install a custom stop control (tests embed a scripted one).
-    pub fn with_stop(mut self, stop: Box<dyn StopControl>) -> Self {
+    pub fn with_stop(mut self, stop: Rc<dyn StopControl>) -> Self {
         self.stop = stop;
         self
     }
@@ -170,12 +180,14 @@ pub fn run_session_end(
     live: &LiveSession,
     spec: &SessionSpec,
 ) -> Result<SessionEnd, ContractError> {
-    // Dispatch gate (`agalma-r2l`): never start a session under an active stop.
-    // This is the innermost admission check behind the sweep/intake gates; it
-    // closes the window where a stop arrives between candidacy and dispatch.
-    if live.stop.stopped() {
+    // Dispatch gate (`agalma-r2l`, `agalma-5fy.5`): never start a session under
+    // an active stop, and never under an unreadable established ledger
+    // (fail-closed uncertainty). This is the innermost admission check behind
+    // the sweep/intake gates; it closes the window where a stop arrives between
+    // candidacy and dispatch.
+    if let Some(reason) = live.stop.decision().reason() {
         return Err(ContractError::KnownFailure(format!(
-            "{} not started: stop requested (STOP sentinel or kill latch set)",
+            "{} not started: {reason}",
             spec.error_label
         )));
     }
@@ -391,6 +403,8 @@ mod tests {
     use super::*;
     use agalma_testkit::ScratchDir;
 
+    use crate::stop::FileStopControl;
+
     fn scratch_dir(name: &str) -> ScratchDir {
         ScratchDir::new(&format!("session-{name}"))
     }
@@ -468,7 +482,8 @@ mod tests {
         let dir = scratch_dir("nested-state");
         let nested = dir.join("a").join("b").join("c");
         assert!(!nested.exists(), "nested state dir must start absent");
-        let live = LiveSession::build(&nested, None, false).expect("build with fresh state dir");
+        let stop: Rc<dyn StopControl> = Rc::new(FileStopControl::new(&nested));
+        let live = LiveSession::build(&nested, None, false, stop).expect("build with fresh state dir");
         assert!(
             nested.join("worker.sb").exists(),
             "sandbox profile materialized under the created state dir"
@@ -482,7 +497,8 @@ mod tests {
         // even being built (no harness, no paid call).
         let dir = scratch_dir("stopped");
         std::fs::write(dir.join("STOP"), b"stop").expect("write STOP");
-        let live = LiveSession::build(&dir, None, false).expect("build live session");
+        let stop: Rc<dyn StopControl> = Rc::new(FileStopControl::new(&dir));
+        let live = LiveSession::build(&dir, None, false, stop).expect("build live session");
         let err = run_session(&live, &spec()).expect_err("stopped must not dispatch");
         assert!(err.to_string().contains("stop"), "{err}");
         // Nothing session-scoped was materialized.

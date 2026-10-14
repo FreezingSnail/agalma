@@ -171,7 +171,7 @@ async fn run_command(args: RunArgs) -> ExitCode {
     println!("execution: {execution}");
 
     let state_dir = composition.state_dir.clone();
-    let status = match drive(&mut composition.executor, &execution, &state_dir) {
+    let status = match drive(&mut composition.executor, &execution, &*composition.stop) {
         Ok(status) => status,
         Err(err) => {
             eprintln!("agalma: run failed: {err}");
@@ -229,15 +229,23 @@ fn resume_or_start(
 fn drive(
     executor: &mut Executor<LedgerHandle>,
     execution: &ExecutionId,
-    state_dir: &std::path::Path,
+    stop: &dyn crate::stop::StopControl,
 ) -> Result<ExecutionStatus, agalma_contracts::ContractError> {
-    // Sentinel checked before every dispatch (design: `<state>/STOP`).
-    let stop = state_dir.join("STOP");
+    // The shared bound stop decision is checked before every dispatch: a
+    // sentinel/latch sets the kill latch and halts; an unreadable established
+    // ledger (Unavailable) halts without mutating state (`agalma-5fy.5`).
     loop {
-        if stop.exists() {
-            executor.set_kill_latch(true)?;
-            eprintln!("agalma: STOP sentinel present; kill latch set");
-            break;
+        match stop.decision() {
+            crate::stop::StopDecision::Running => {}
+            crate::stop::StopDecision::Stopped(reason) => {
+                executor.set_kill_latch(true)?;
+                eprintln!("agalma: stop policy active ({reason}); kill latch set");
+                break;
+            }
+            crate::stop::StopDecision::Unavailable(reason) => {
+                eprintln!("agalma: stop state unavailable ({reason}); halting");
+                break;
+            }
         }
         match executor.step(execution)? {
             StepOutcome::Dispatched { .. } | StepOutcome::Advanced { .. } => continue,

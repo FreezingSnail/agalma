@@ -67,6 +67,19 @@ pub fn build_server(ledger: SqliteLedger) -> Server {
     server
 }
 
+/// Whether the server creates/initializes the ledger or opens an established one
+/// (`agalma-5fy.5`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenMode {
+    /// Create the database if absent and run first-open schema initialization.
+    Create,
+    /// Open an existing database without creating, initializing or migrating.
+    Existing,
+}
+
+/// Server argv flag selecting [`OpenMode::Existing`].
+pub const OPEN_EXISTING_FLAG: &str = "--open-existing";
+
 /// Acquire the single-writer lock for `state_dir`, open the ledger at
 /// `<state_dir>/ledger.sqlite`, and bind `socket`; serve over the wire selected
 /// by `AGALMA_IPC_WIRE` (`connect` default, `framed` optional; IPCX.6) until
@@ -74,7 +87,7 @@ pub fn build_server(ledger: SqliteLedger) -> Server {
 ///
 /// Refuses to start when another live server holds the state dir.
 pub fn serve(socket: &Path, state_dir: &Path) -> io::Result<()> {
-    serve_wire(socket, state_dir, Wire::from_env(Wire::Connect))
+    serve_mode(socket, state_dir, Wire::from_env(Wire::Connect), OpenMode::Create)
 }
 
 /// Acquire the single-writer lock for `state_dir`, open the ledger at
@@ -83,9 +96,28 @@ pub fn serve(socket: &Path, state_dir: &Path) -> io::Result<()> {
 ///
 /// Refuses to start when another live server holds the state dir.
 pub fn serve_wire(socket: &Path, state_dir: &Path, wire: Wire) -> io::Result<()> {
+    serve_mode(socket, state_dir, wire, OpenMode::Create)
+}
+
+/// Acquire the single-writer lock for `state_dir`, open the ledger at
+/// `<state_dir>/ledger.sqlite` under `mode`, and bind `socket`; serve over
+/// `wire` until stopped.
+///
+/// [`OpenMode::Existing`] opens without creating/initializing/migrating: a
+/// missing, corrupt or incompatible established database fails to start.
+/// Refuses to start when another live server holds the state dir.
+pub fn serve_mode(
+    socket: &Path,
+    state_dir: &Path,
+    wire: Wire,
+    mode: OpenMode,
+) -> io::Result<()> {
     let lock = StateLock::acquire(state_dir).map_err(io::Error::other)?;
-    let ledger = SqliteLedger::open(state_dir.join(DB_NAME))
-        .map_err(|e| io::Error::other(format!("open ledger: {e}")))?;
+    let ledger = match mode {
+        OpenMode::Create => SqliteLedger::open(state_dir.join(DB_NAME)),
+        OpenMode::Existing => SqliteLedger::open_existing(state_dir.join(DB_NAME)),
+    }
+    .map_err(|e| io::Error::other(format!("open ledger: {e}")))?;
     let server = build_server(ledger);
     // Keep the lock alive for the whole serve loop; it is released on process
     // exit (server killed) and removed by Drop on a clean return.
@@ -96,7 +128,8 @@ pub fn serve_wire(socket: &Path, state_dir: &Path, wire: Wire) -> io::Result<()>
 
 /// Full argv/env entry point used by the server binary.
 ///
-/// Required: `--socket <path>` and `--state-dir <path>`.
+/// Required: `--socket <path>` and `--state-dir <path>`. Optional:
+/// `--open-existing` (open an established ledger without create/init).
 pub fn run_from_args<I>(args: I) -> Result<(), String>
 where
     I: IntoIterator<Item = String>,
@@ -104,11 +137,17 @@ where
     let args: Vec<String> = args.into_iter().collect();
     let socket = agalma_ipc::socket_from_args(args.clone())?;
     let state_dir = state_dir_from_args(&args)?;
+    let mode = if args.iter().any(|arg| arg == OPEN_EXISTING_FLAG) {
+        OpenMode::Existing
+    } else {
+        OpenMode::Create
+    };
     if let Some(parent) = socket.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("create socket dir {}: {e}", parent.display()))?;
     }
-    serve(&socket, &state_dir).map_err(|e| format!("serve {}: {e}", socket.display()))
+    serve_mode(&socket, &state_dir, Wire::from_env(Wire::Connect), mode)
+        .map_err(|e| format!("serve {}: {e}", socket.display()))
 }
 
 /// Parse `--state-dir <path>` / `--state-dir=<path>`.

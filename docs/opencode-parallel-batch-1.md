@@ -523,6 +523,37 @@ Do not rerun a full suite, change task acceptance or implement SF.3/SF.4/SF.6.
 Stop for Sol review before commit/closure, or at one reproducible external
 blocker with at most 30 minutes of diagnosis. No successor release or push.
 
+### Approved commits and integration transfer — 2026-10-13
+
+The subsequent user request to review, approve, and commit authorized bounded
+commits after review. Earlier no-commit instructions describe the initial
+dispatch; they do not block the explicit commit windows recorded here.
+
+- SF.2 is approved, committed as `ca4d068`, and closed with implementation
+  attribution to `opencode-go/deepseek-v4.1-flash`. Final focused evidence is
+  `target/test-runs/opencode-batch-1/agalma-5fy.2/sf_task_package-oracle.log`
+  and its `.exit` file: 30 passed, zero failed or ignored, exit 0. Supporting
+  library and execution checks passed 159 and 11 cases respectively. Source
+  review resolved the preparation/admission, frozen-reference, lease/replay,
+  durability, and oracle-grant findings. This is not SF.3 history or SF.6
+  enforcement acceptance.
+- Sol explicitly transferred `work.rs` and `phases.rs` to Lane B session
+  `ses_ec9b93b5fffeOnt2kazYcEy11M` after that commit. The amended SF.5 bead
+  includes composition/run wiring and necessary PhaseDeps constructor files.
+  The held integration above is now dispatched; SF.5 remains incomplete until
+  the integrated production paths and required focused cases pass review.
+- The requested Luna README update is approved and committed as `e869130`;
+  `agalma-4ds` is closed with implementation attribution to
+  `opencode-go/gpt-6-luna`. Documentation content, link targets, and whitespace
+  were checked; no runtime acceptance is claimed by this documentation change.
+- User-authorized build cleanup removed inactive `target/side` and six
+  abandoned incremental `*-working` directories after a process check found no
+  active Cargo or rustc build. About 2.3 GB was removed. Active debug outputs,
+  `target/test-runs`, worker reports, source snapshots, and frozen receipts were
+  retained. This operation did not rebuild or rerun acceptance.
+
+No push, successor release, or broader platform acceptance is recorded here.
+
 ## Lane A: agalma-5fy.2 — finish immutable task admission/recovery
 
 Preserve wave one at commit `1726298`: canonical digest helpers, complete task

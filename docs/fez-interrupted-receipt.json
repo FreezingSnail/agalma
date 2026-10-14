@@ -1,0 +1,211 @@
+{
+  "receipt_version": 1,
+  "bead": "agalma-fez",
+  "recorded_at": "2026-10-13T03:45:35.059122+00:00",
+  "head": "d4ef8058c88db13b808ae9052d11b6566b472c56",
+  "checkout": "working tree; source hashes describe receipt-time files, not a clean committed revision",
+  "command": "bash scripts/verify-peer-transports.sh",
+  "exit_code": 130,
+  "qualified_acceptance_passed": false,
+  "wire": "connect",
+  "transport_overrides": "unset",
+  "paid_live_override": "unset",
+  "ready_timeout_seconds": 20,
+  "preflight": {
+    "method": "argument-parser missing-socket rejection before socket tests",
+    "server_hashes": {
+      "ledger": {
+        "digest": "sha256:a846d701e9206a328f67fad4622918d852efcc3a406d2b88344d37e6068f9b0f",
+        "path": "target/debug/agalma-ledger-server"
+      },
+      "workspace": {
+        "digest": "sha256:0a67edea75b8e001c490bdfb91f045a4c42ac8872a7a2d24520540abc3eacc87",
+        "path": "target/debug/agalma-workspace-server"
+      },
+      "taskqueue": {
+        "digest": "sha256:aff35c9cf8b49285dd6b79bc406c757793aa0c33e107ea8671027087d5daec37",
+        "path": "target/debug/agalma-taskqueue-server"
+      },
+      "kernel": {
+        "digest": "sha256:3e2c17c5f4a4218883654bcef75edeef6f52ad68069dc692767cc62ae99fd640",
+        "path": "target/debug/agalma-kernel-server"
+      },
+      "sandbox": {
+        "digest": "sha256:17628fbc06b79c5e77f3762f1d19c8cf92538a96126094ec7e0e047d0fd4a320",
+        "path": "target/debug/agalma-sandbox-server"
+      }
+    },
+    "hashes_unchanged_after_run": {
+      "ledger": true,
+      "workspace": true,
+      "taskqueue": true,
+      "kernel": true,
+      "sandbox": true
+    }
+  },
+  "required_smokes": {
+    "executed": 5,
+    "passed": 5,
+    "failed": 0,
+    "skipped": false
+  },
+  "conductor_suite": {
+    "passed": 231,
+    "failed": 0,
+    "ignored": 0,
+    "test_target_results": [
+      {
+        "passed": 154,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 9,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 14,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "complete": false
+  },
+  "prior_missing_binary_checks": {
+    "artifact": "target/test-runs/fez-repair/results.json",
+    "artifact_digest": "sha256:06ca471d1b21e6000a9cd4a60f4edf403978db2eee0880f51a92dc0f04c4e707",
+    "checks": [
+      {
+        "case": "ledger",
+        "exit_code": 101,
+        "expected_failure_observed": true
+      },
+      {
+        "case": "workspace",
+        "exit_code": 101,
+        "expected_failure_observed": true
+      },
+      {
+        "case": "taskqueue",
+        "exit_code": 101,
+        "expected_failure_observed": true
+      },
+      {
+        "case": "execution",
+        "exit_code": 101,
+        "expected_failure_observed": true
+      },
+      {
+        "case": "sandbox",
+        "exit_code": 101,
+        "expected_failure_observed": true
+      },
+      {
+        "case": "execution-with-kernel",
+        "exit_code": 101,
+        "expected_failure_observed": true
+      }
+    ]
+  },
+  "log": {
+    "path": "target/test-runs/fez-repair/qualified-acceptance.log",
+    "digest": "sha256:8e805c8386ba378515e06e7c340f98d74fd7db2ddee4052c301bb289723d2e5f"
+  },
+  "cold_launch_failure": {
+    "sandbox_pid": 94623,
+    "launch_time_local": "2026-10-12 22:30:16.176 EDT",
+    "sample": "target/test-runs/fez-repair/sandbox-1-server-94623-sample.txt",
+    "sample_digest": "sha256:36da746542741a4c3131753766f8d97def6d01953bf3e6ba6982d70d48827e65",
+    "observed_stack": "779 observations at _dyld_start + 0, before Rust main",
+    "policy_log": "target/test-runs/fez-repair/sandbox-execution-policy.log",
+    "policy_log_digest": "sha256:f7daefdea634b176c4ef2c1dfb89947068e207504180c4374254abe186de5440",
+    "assessment_observations_local": [
+      "22:30:30.828",
+      "22:30:44.590"
+    ],
+    "classification": "Evidence supports host execution-assessment delay for this launch; not proof of every historical timeout"
+  },
+  "limits": [
+    "Cold, previously unassessed executables may exceed 20s startup; acceptance follows explicit build qualification",
+    "Execution/kernel default remains in-process pending CV.1 production integration",
+    "These checks do not establish full plugin installation, durable descendant settlement, or paid model quality"
+  ],
+  "source_hashes_at_receipt": {
+    "scripts/verify-peer-transports.sh": "sha256:7039b0831133d6f3fced8a9219bb85487802c1149162e43e3f56d108a1565bb2",
+    "crates/agalma-conductor/src/harness_process.rs": "sha256:41196012bce8788220f4c4670fba33f68d82c550f5eca1ee84624c4690508c7a",
+    "crates/agalma-conductor/src/phases.rs": "sha256:f955d21337e50f577d6d8e7888458240a74846e1983f659011dfb0572e36b001",
+    "crates/agalma-conductor/src/ledger_process.rs": "sha256:5fe15859e26499d91cf64e3407dce4c72ed79de37fabc33714e3d38ee169844d",
+    "crates/agalma-conductor/src/workspace_process.rs": "sha256:bbbb3a0e454f2fa7a38654f48ff99b7ed75d24272258d7a87cd9e1a06c9bd591",
+    "crates/agalma-conductor/src/taskqueue_process.rs": "sha256:ae6b84719ab439b3727cc6bddca96cbebcff49ae31585b98271571215a9bbccf",
+    "crates/agalma-conductor/src/execution_process.rs": "sha256:50ed71b0b9a0f36d7b625cf7ba760cc59af353580fec63d59881288e2fff7089",
+    "crates/agalma-conductor/src/sandbox_process.rs": "sha256:48fe8553f1ca34a3515526ad233108be08dcc60dd2d0a7360fd73278957f6a39",
+    "crates/agalma-conductor/tests/ledger_process.rs": "sha256:4c22c68121675ba3e4b67e4f44dc39aa59fe7d95d652a7cbc587963724b2d63a",
+    "crates/agalma-conductor/tests/workspace_process.rs": "sha256:9be4c51184a599ad6a64c8b14077d4ef522892bcecacf0cf9291469e0b72c49e",
+    "crates/agalma-conductor/tests/taskqueue_process.rs": "sha256:db6ad8ba7681e8cf77aa4c12eaa606beffeca2dc06bc56ac09a37a8a9a59a2d0",
+    "crates/agalma-conductor/tests/execution_process.rs": "sha256:288ba264da9e1253260848aca29416d2ff6bc9267766d229fb4f791e6e62f186",
+    "crates/agalma-conductor/tests/sandbox_process.rs": "sha256:1a416d529f896dcd7ee1c30f27298aaf07a95eacbfa4ddc5ba6558182eda343d",
+    "crates/agalma-ipc/src/connect.rs": "sha256:51ee49fe481f85c1c9537211ad9f60459a1ce06e0d1af24e9a89c4bca9c48b02"
+  },
+  "stopped_at_user_request": true
+}

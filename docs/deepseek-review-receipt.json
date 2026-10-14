@@ -1,0 +1,192 @@
+{
+  "format": "agalma-implementation-review/v1",
+  "recorded_at": "2026-10-13T00:33:36.119912+00:00",
+  "reviewed_timeout_commit": "3ddcd980d190868824169d9a380cee235c862555",
+  "head_at_receipt": "3ddcd980d190868824169d9a380cee235c862555",
+  "scope": "Read-only product-code review; planning notes, caller ownership and evidence amended. CLI and transport source remains other-session working-tree work.",
+  "planner_cli_checks": {
+    "command": "cargo test --offline -p agalma-conductor --test sweep --test designer",
+    "exit_code": 0,
+    "sweep_passed": 22,
+    "cli_passed": 3
+  },
+  "transport_review": {
+    "fresh_server_build_command": "cargo build --offline -p agalma-ledger -p agalma-workspace -p agalma-taskqueue -p agalma-kernel -p agalma-sandbox --bins",
+    "server_digests": {
+      "ledger": "sha256:1525bcf8b37a3bcfebd59adae6ce9f4a27e8bd08469c3de509ed23977f6683df",
+      "workspace": "sha256:59508c6de4b6732262091e55dae5e99e16610bc7ed0efc6225bf3b01f834dea7",
+      "taskqueue": "sha256:0c6ed945a691c0696f293ff7633bdfa25ec2da00b8870a64219fb9d0a0c6945a",
+      "kernel": "sha256:af1596766607cac794b3b6c0809dd5cdfd97cd6d0bdaf18f5f81d3ab373c24b4",
+      "sandbox": "sha256:0bcb11bc771fbc45afcaa20baf4d08e352d1170201e2de309f471037759ceb2b"
+    },
+    "results": [
+      {
+        "target": "ledger_process",
+        "case": "live_process_smoke_ledger_long_state_dir",
+        "command": [
+          "/Users/connorfranc/code/agalma/target/debug/deps/ledger_process-703f0850e54f1c1e",
+          "--exact",
+          "live_process_smoke_ledger_long_state_dir",
+          "--nocapture"
+        ],
+        "test_binary_digest": "sha256:048102813d40baf4fa5a62b8fbc2b39da8ea2e5f59c277f25cfb6334d9b01df8",
+        "exit_code": 0,
+        "executed_without_skip": true,
+        "passed": true,
+        "output": "\nrunning 1 test\ntest live_process_smoke_ledger_long_state_dir ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.07s\n\nagalma-ipc: connect connection error: connection error\n"
+      },
+      {
+        "target": "workspace_process",
+        "case": "live_process_smoke_workspace_long_state_dir",
+        "command": [
+          "/Users/connorfranc/code/agalma/target/debug/deps/workspace_process-e9f59a0585b6f5e7",
+          "--exact",
+          "live_process_smoke_workspace_long_state_dir",
+          "--nocapture"
+        ],
+        "test_binary_digest": "sha256:caa7f18fba5a22af170e1321ddf8992fda4ddbd726e228ce424c0188de9f70fa",
+        "exit_code": 101,
+        "executed_without_skip": true,
+        "passed": false,
+        "output": "\nrunning 1 test\ntest live_process_smoke_workspace_long_state_dir ... FAILED\n\nfailures:\n\nfailures:\n    live_process_smoke_workspace_long_state_dir\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 20.01s\n\n\nthread 'live_process_smoke_workspace_long_state_dir' (194211860) panicked at crates/agalma-conductor/tests/workspace_process.rs:174:29:\nproduction workspace spawn: server did not announce READY within 20s\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+      },
+      {
+        "target": "taskqueue_process",
+        "case": "live_process_smoke_taskqueue_long_state_dir",
+        "command": [
+          "/Users/connorfranc/code/agalma/target/debug/deps/taskqueue_process-3aaf1e8298acd553",
+          "--exact",
+          "live_process_smoke_taskqueue_long_state_dir",
+          "--nocapture"
+        ],
+        "test_binary_digest": "sha256:b328abf92519168d28eaf3a69055932c3a427005a2e0e1ae4327ad71904a995d",
+        "exit_code": 0,
+        "executed_without_skip": true,
+        "passed": true,
+        "output": "\nrunning 1 test\ntest live_process_smoke_taskqueue_long_state_dir ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 3.25s\n\nagalma-ipc: connect connection error: connection error\n"
+      },
+      {
+        "target": "execution_process",
+        "case": "live_process_smoke_execution_long_state_dir",
+        "command": [
+          "/Users/connorfranc/code/agalma/target/debug/deps/execution_process-5b017b8fad06973d",
+          "--exact",
+          "live_process_smoke_execution_long_state_dir",
+          "--nocapture"
+        ],
+        "test_binary_digest": "sha256:71277c5ff87b8c98d66417c85e395e05fb4a31cd8b2b7141a7758187967db740",
+        "exit_code": 0,
+        "executed_without_skip": true,
+        "passed": true,
+        "output": "\nrunning 1 test\ntest live_process_smoke_execution_long_state_dir ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.13s\n\nagalma-ipc: connect connection error: connection error\nagalma-ipc: connect connection error: connection error\n"
+      },
+      {
+        "target": "sandbox_process",
+        "case": "live_process_smoke_sandbox_long_state_dir",
+        "command": [
+          "/Users/connorfranc/code/agalma/target/debug/deps/sandbox_process-34dbfb84022557ae",
+          "--exact",
+          "live_process_smoke_sandbox_long_state_dir",
+          "--nocapture"
+        ],
+        "test_binary_digest": "sha256:2962025bcdad89efbb5ce44650b0df27f404804f7a647a58d5153d8942dc40d1",
+        "exit_code": 0,
+        "executed_without_skip": true,
+        "passed": true,
+        "output": "\nrunning 1 test\ntest live_process_smoke_sandbox_long_state_dir ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.11s\n\nagalma-ipc: connect connection error: connection error\n"
+      }
+    ]
+  },
+  "transport_passed": [
+    "ledger_process",
+    "taskqueue_process",
+    "execution_process",
+    "sandbox_process"
+  ],
+  "transport_failed": [
+    "workspace_process"
+  ],
+  "initial_attempts": [
+    {
+      "result": "sandbox denied Unix socket binding",
+      "exit_code": 101
+    },
+    {
+      "result": "approved cargo rerun timed out waiting for kernel READY",
+      "exit_code": 101
+    }
+  ],
+  "source_digests_at_receipt": {
+    "crates/agalma-conductor/src/composition.rs": "sha256:0e5ea31de9e86f25d654e6ee0ddd5de5e57ce512b7c8116ee8bac85b701ee383",
+    "crates/agalma-conductor/src/session.rs": "sha256:718bed9e17f431a26501790329facd225f2c30bb0d367c5261b60c09d35a3130",
+    "crates/agalma-conductor/src/sweep.rs": "sha256:301ae2ddd442aa1b865daca6cdacfd5b47a953e115962e22ce46c2197153ccb9",
+    "crates/agalma-conductor/src/designer.rs": "sha256:9ee3ec74f5e58461fd4b16c314fafea5ab2b5fbcc70f5291976a4d4275a8803e",
+    "crates/agalma-conductor/src/phases.rs": "sha256:f955d21337e50f577d6d8e7888458240a74846e1983f659011dfb0572e36b001",
+    "crates/agalma-conductor/src/ledger_process.rs": "sha256:5fe15859e26499d91cf64e3407dce4c72ed79de37fabc33714e3d38ee169844d",
+    "crates/agalma-conductor/src/workspace_process.rs": "sha256:bbbb3a0e454f2fa7a38654f48ff99b7ed75d24272258d7a87cd9e1a06c9bd591",
+    "crates/agalma-conductor/src/taskqueue_process.rs": "sha256:ae6b84719ab439b3727cc6bddca96cbebcff49ae31585b98271571215a9bbccf",
+    "crates/agalma-conductor/src/execution_process.rs": "sha256:50ed71b0b9a0f36d7b625cf7ba760cc59af353580fec63d59881288e2fff7089",
+    "crates/agalma-conductor/src/sandbox_process.rs": "sha256:48fe8553f1ca34a3515526ad233108be08dcc60dd2d0a7360fd73278957f6a39",
+    "crates/agalma-conductor/tests/sweep.rs": "sha256:f6a0125e45966ef76edbc15317cf74170b379580a378d476f92d251939302862",
+    "crates/agalma-conductor/tests/designer.rs": "sha256:4486145a8dfb7642ac53505cdf3ce7fc112ff0ebf4980120554ebf339ea98a72",
+    "crates/agalma-conductor/tests/ledger_process.rs": "sha256:de6f05e709664ed27e5bce879ee5581f92ade96c68b8f9f9d6ec7d11826e5ba6",
+    "crates/agalma-conductor/tests/workspace_process.rs": "sha256:adbca9665ade43f23717c53e67bb0b1a3f07134111ff6c144c9a2719bb7d718c",
+    "crates/agalma-conductor/tests/taskqueue_process.rs": "sha256:c3bb971c12f2cfa86c2ee76127e6dc4b5fde978d968eefe7df75d6c38cbfafec",
+    "crates/agalma-conductor/tests/execution_process.rs": "sha256:ca6af9cb35461853d83a3a082cb41ed1e93c2e3a815c16198316ab847f730895",
+    "crates/agalma-conductor/tests/sandbox_process.rs": "sha256:fd4d8092f1f486223afb451101f7ab56d8e0135251ff5bd37fd4236392776d6d"
+  },
+  "findings": [
+    {
+      "bead": "agalma-fez",
+      "severity": "acceptance gap",
+      "finding": "Required smoke tests return success when server binaries are absent."
+    },
+    {
+      "bead": "agalma-fez",
+      "severity": "failed check",
+      "finding": "Workspace production spawn did not announce READY within 20s after a fresh server build."
+    },
+    {
+      "bead": "agalma-5fy.5",
+      "severity": "handoff amended",
+      "finding": "Added the scoped designer caller and blocker on its 9m2 handoff."
+    },
+    {
+      "bead": "agalma-5fy.11",
+      "severity": "comparison clarified",
+      "finding": "Fresh observation time changes full record hash without changing semantic review input."
+    }
+  ],
+  "original_contract_document_hashes_match": true,
+  "amendment_receipt": "docs/self-mutation-design-amendment-1.json",
+  "dependency_cycles": [],
+  "next_tasks": [
+    {
+      "id": "agalma-5fy.2",
+      "status": "deferred",
+      "blocking_dependencies": [
+        {
+          "id": "agalma-fjq",
+          "status": "closed"
+        }
+      ]
+    },
+    {
+      "id": "agalma-5fy.5",
+      "status": "deferred",
+      "blocking_dependencies": [
+        {
+          "id": "agalma-fjq",
+          "status": "closed"
+        },
+        {
+          "id": "agalma-9m2",
+          "status": "closed"
+        }
+      ]
+    }
+  ],
+  "all_61_planned_children_deferred": true,
+  "execution_released": false,
+  "paid_inference_performed": false
+}

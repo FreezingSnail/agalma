@@ -1,0 +1,308 @@
+{
+  "receipt_version": 2,
+  "bead": "agalma-fez",
+  "recorded_at": "2026-10-13T14:31:45.689141+00:00",
+  "head": "17262989841f3ddea21711d5afbda7b70cdabf5f",
+  "qualified_acceptance_passed": true,
+  "verification_mode": "completed checkpoint targets plus unfinished targets and fresh peer smokes",
+  "prior_interrupted_receipt": {
+    "path": "docs/fez-interrupted-receipt.json",
+    "digest": "sha256:a62952ef061393aefc0f84328a170b90c3e582761e15dd502bf889f82525a7c8"
+  },
+  "resume_log": {
+    "path": "target/test-runs/fez-repair/resumed-acceptance.log",
+    "digest": "sha256:3fe818791e1403ad0f58714d9852215787a4425f1eed2ed8c1df0284e379a3cd",
+    "exit_code": 0
+  },
+  "verification_scope": "FEZ smokes and all conductor unit/integration targets; doctests were not rerun in this resumption",
+  "required_smokes": {
+    "executed": 5,
+    "passed": 5,
+    "skipped": false
+  },
+  "conductor_suite": {
+    "passed": 335,
+    "failed": 0,
+    "ignored": 2,
+    "complete": true,
+    "missing_targets": [],
+    "completed_targets": {
+      "src/lib.rs": {
+        "passed": 154,
+        "failed": 0,
+        "ignored": 0
+      },
+      "src/main.rs": {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      "architecture": {
+        "passed": 9,
+        "failed": 0,
+        "ignored": 0
+      },
+      "cargo_home": {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      "concierge": {
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0
+      },
+      "conductor": {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      "designer": {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0
+      },
+      "designer_payload": {
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      "digest": {
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      },
+      "execution_process": {
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0
+      },
+      "fencing": {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      },
+      "gc": {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0
+      },
+      "harness_process": {
+        "passed": 14,
+        "failed": 0,
+        "ignored": 0
+      },
+      "ledger_process": {
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0
+      },
+      "plan_check": {
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      },
+      "prompts": {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0
+      },
+      "provider_proxy_live": {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 1
+      },
+      "provider_proxy_paid_live": {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 1
+      },
+      "reap": {
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      },
+      "rebind": {
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      },
+      "recovery": {
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      },
+      "review": {
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      },
+      "routing": {
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      },
+      "sandbox_process": {
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0
+      },
+      "sf_task_package": {
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      },
+      "stop": {
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      },
+      "sweep": {
+        "passed": 22,
+        "failed": 0,
+        "ignored": 0
+      },
+      "taskqueue_process": {
+        "passed": 9,
+        "failed": 0,
+        "ignored": 0
+      },
+      "verifier": {
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0
+      },
+      "watchdog": {
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      },
+      "work": {
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      },
+      "workspace_process": {
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0
+      },
+      "xcrun": {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      }
+    }
+  },
+  "source_identity_check": {
+    "changed_recorded_sources": [],
+    "catalog": {
+      "scripts/verify-peer-transports.sh": "sha256:7039b0831133d6f3fced8a9219bb85487802c1149162e43e3f56d108a1565bb2",
+      "crates/agalma-conductor/src/harness_process.rs": "sha256:41196012bce8788220f4c4670fba33f68d82c550f5eca1ee84624c4690508c7a",
+      "crates/agalma-conductor/src/phases.rs": "sha256:f955d21337e50f577d6d8e7888458240a74846e1983f659011dfb0572e36b001",
+      "crates/agalma-conductor/src/ledger_process.rs": "sha256:5fe15859e26499d91cf64e3407dce4c72ed79de37fabc33714e3d38ee169844d",
+      "crates/agalma-conductor/src/workspace_process.rs": "sha256:bbbb3a0e454f2fa7a38654f48ff99b7ed75d24272258d7a87cd9e1a06c9bd591",
+      "crates/agalma-conductor/src/taskqueue_process.rs": "sha256:ae6b84719ab439b3727cc6bddca96cbebcff49ae31585b98271571215a9bbccf",
+      "crates/agalma-conductor/src/execution_process.rs": "sha256:50ed71b0b9a0f36d7b625cf7ba760cc59af353580fec63d59881288e2fff7089",
+      "crates/agalma-conductor/src/sandbox_process.rs": "sha256:48fe8553f1ca34a3515526ad233108be08dcc60dd2d0a7360fd73278957f6a39",
+      "crates/agalma-conductor/tests/ledger_process.rs": "sha256:4c22c68121675ba3e4b67e4f44dc39aa59fe7d95d652a7cbc587963724b2d63a",
+      "crates/agalma-conductor/tests/workspace_process.rs": "sha256:9be4c51184a599ad6a64c8b14077d4ef522892bcecacf0cf9291469e0b72c49e",
+      "crates/agalma-conductor/tests/taskqueue_process.rs": "sha256:db6ad8ba7681e8cf77aa4c12eaa606beffeca2dc06bc56ac09a37a8a9a59a2d0",
+      "crates/agalma-conductor/tests/execution_process.rs": "sha256:288ba264da9e1253260848aca29416d2ff6bc9267766d229fb4f791e6e62f186",
+      "crates/agalma-conductor/tests/sandbox_process.rs": "sha256:1a416d529f896dcd7ee1c30f27298aaf07a95eacbfa4ddc5ba6558182eda343d",
+      "crates/agalma-ipc/src/connect.rs": "sha256:51ee49fe481f85c1c9537211ad9f60459a1ce06e0d1af24e9a89c4bca9c48b02"
+    },
+    "scope": "FEZ receipt source catalog; SF.2 working changes are now committed at HEAD"
+  },
+  "preflight": {
+    "ledger": {
+      "path": "target/debug/agalma-ledger-server",
+      "digest": "sha256:974eeb596499c8b7b2b01cc181f431a58cf373aae89237d7710fc80bae5af65f",
+      "unchanged_after_run": true
+    },
+    "workspace": {
+      "path": "target/debug/agalma-workspace-server",
+      "digest": "sha256:2aa8708879b1ba70b834f605a298a4318fb9f74885b2880aea28335efd9aeeb4",
+      "unchanged_after_run": true
+    },
+    "taskqueue": {
+      "path": "target/debug/agalma-taskqueue-server",
+      "digest": "sha256:8e4028bcd32d62c14e3f25eff173edc010134871742d9d176fde97be2e7793b3",
+      "unchanged_after_run": true
+    },
+    "kernel": {
+      "path": "target/debug/agalma-kernel-server",
+      "digest": "sha256:629aad93a48c4f4cd57b22c167f40ae99546f143562cdbea1078aee1fb8681e7",
+      "unchanged_after_run": true
+    },
+    "sandbox": {
+      "path": "target/debug/agalma-sandbox-server",
+      "digest": "sha256:ba8d68d07ae4df4d207323f70fe2daea29ae093f28c97bbe3a73da28f77b7aba",
+      "unchanged_after_run": true
+    }
+  },
+  "prior_missing_binary_checks": {
+    "artifact": "target/test-runs/fez-repair/results.json",
+    "artifact_digest": "sha256:06ca471d1b21e6000a9cd4a60f4edf403978db2eee0880f51a92dc0f04c4e707",
+    "checks": [
+      {
+        "case": "ledger",
+        "exit_code": 101,
+        "expected_failure_observed": true
+      },
+      {
+        "case": "workspace",
+        "exit_code": 101,
+        "expected_failure_observed": true
+      },
+      {
+        "case": "taskqueue",
+        "exit_code": 101,
+        "expected_failure_observed": true
+      },
+      {
+        "case": "execution",
+        "exit_code": 101,
+        "expected_failure_observed": true
+      },
+      {
+        "case": "sandbox",
+        "exit_code": 101,
+        "expected_failure_observed": true
+      },
+      {
+        "case": "execution-with-kernel",
+        "exit_code": 101,
+        "expected_failure_observed": true
+      }
+    ]
+  },
+  "cold_launch_failure": {
+    "sandbox_pid": 94623,
+    "launch_time_local": "2026-10-12 22:30:16.176 EDT",
+    "sample": "target/test-runs/fez-repair/sandbox-1-server-94623-sample.txt",
+    "sample_digest": "sha256:36da746542741a4c3131753766f8d97def6d01953bf3e6ba6982d70d48827e65",
+    "observed_stack": "779 observations at _dyld_start + 0, before Rust main",
+    "policy_log": "target/test-runs/fez-repair/sandbox-execution-policy.log",
+    "policy_log_digest": "sha256:f7daefdea634b176c4ef2c1dfb89947068e207504180c4374254abe186de5440",
+    "assessment_observations_local": [
+      "22:30:30.828",
+      "22:30:44.590"
+    ],
+    "classification": "Evidence supports host execution-assessment delay for this launch; not proof of every historical timeout"
+  },
+  "limits": [
+    "Cold, previously unassessed executables may exceed 20s startup; acceptance follows explicit build qualification",
+    "Execution/kernel default remains in-process pending CV.1 production integration",
+    "These checks do not establish full plugin installation, durable descendant settlement, or paid model quality"
+  ],
+  "wire": "connect",
+  "transport_overrides": "unset",
+  "paid_live_override": "unset",
+  "ready_timeout_seconds": 20,
+  "reported_independent_run": {
+    "artifact": "target/worker-output/agalma-fez.md",
+    "reported_passes": 335,
+    "note": "Worker report; consolidated acceptance here uses the saved checkpoint and resume logs"
+  }
+}

@@ -2448,14 +2448,17 @@ pub fn record_provider_health(
     Ok(())
 }
 
-/// `max_attempts` recorded in the `execution_created` event.
+/// `max_attempts` recorded in the execution's preparation/creation event.
 fn execution_max_attempts(
     state_dir: &Path,
     execution: &agalma_contracts::ExecutionId,
 ) -> Result<u32, ActivityError> {
     let ledger = SqliteLedger::open(state_dir.join("ledger.sqlite")).map_err(contract_err)?;
     for event in ledger.events(execution).map_err(contract_err)? {
-        if event.kind == "execution_created" {
+        if matches!(
+            event.kind.as_str(),
+            "execution_prepared" | "execution_created" | "execution_activated"
+        ) {
             return Ok(event
                 .payload
                 .get("max_attempts")
@@ -2464,7 +2467,7 @@ fn execution_max_attempts(
         }
     }
     Err(ActivityError::KnownFailure(
-        "no execution_created event for retry decision".to_string(),
+        "no execution preparation/creation event for retry decision".to_string(),
     ))
 }
 

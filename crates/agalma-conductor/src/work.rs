@@ -31,11 +31,13 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::rc::Rc;
 
+use agalma_contracts::digest::{sha256_digest, FailureCode};
 use agalma_contracts::{
-    ClaimEvidence, CommitBatch, ContractError, DecisionApi, DecisionAttempt, DecisionKind,
-    DecisionOption, DecisionOutcome, DecisionPin, DecisionRequest, ExecutionApi, ExecutionEvent,
-    ExecutionId, ExecutionPhase, ExecutionState, LedgerApi, OperationId, StepOutcome, Task, TaskId,
-    TaskPriority, TaskQueueApi, DECISION_API_VERSION,
+    AuthorizationOrigin, BindingPin, ClaimEvidence, CommitBatch, ContractError, DecisionApi,
+    DecisionAttempt, DecisionKind, DecisionOption, DecisionOutcome, DecisionPin, DecisionRequest,
+    DirectiveRef, ExecutionApi, ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord,
+    ExecutionState, LedgerApi, OperationId, Role, StepOutcome, Task, TaskFamily, TaskId,
+    TaskPackage, TaskPriority, TaskQueueApi, DECISION_API_VERSION,
 };
 use agalma_decision::{StaticDecider, TRIAGE_PICK_NEXT_BASELINE};
 use agalma_execution::{
@@ -50,11 +52,20 @@ use agalma_ipc::TaskQueueOps;
 use crate::cli::WorkArgs;
 use crate::composition::{toolchain, BUILDER_PROMPT, DEFAULT_TURN_TIMEOUT, DEFAULT_VERIFY_TIMEOUT};
 use crate::config::resolve_state_dir;
-use crate::harness_binding::{harness_handle, resolve_selection, HarnessHandle};
+use crate::harness_binding::{
+    harness_handle, plan_binding, resolve_selection, HarnessHandle, HarnessKind,
+};
 use crate::ledger_process::{LedgerHandle, LedgerTransport};
-use crate::phases::{activities_with_mode, ActivityMode, PhaseDeps, RepoMode, RunState};
+use crate::phases::{
+    activities_with_mode, ActivityMode, PhaseDeps, RepoMode, RunState, VERIFIER_PROMPT,
+};
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
 use crate::routing::{self, RouteSelection};
+use crate::task_package::{
+    build_package, gather_admission_context, legacy_park, load_admitted_package,
+    load_frozen_or_legacy, persist_package, read_artifact, AuthorizationInput, PackageInputs,
+    PackageRef, RoleInput, ADMITTED_EVENT_KIND,
+};
 use crate::taskqueue_process::{TaskQueueHandle, TaskQueueTransport};
 use crate::workspace_process::{WorkspaceHandle, WorkspaceTransport};
 use crate::LockGuard;
@@ -161,12 +172,12 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
     let harness = harness_handle(resolve_selection(args.harness.as_deref())?);
 
     // Boot recovery: drive any non-terminal execution to a terminal state before
-    // admitting new work (recovery ordering).
+    // admitting new work (recovery ordering). Each execution is reconstructed
+    // from its frozen `TaskPackage/v1`, never from current bd contents.
     recover_inflight(
         &repo,
         &state_dir,
         &ledger,
-        override_model.as_deref(),
         paid_available,
         proxy_url.clone(),
         &mut queue,
@@ -404,25 +415,63 @@ fn run_task(
     harness: HarnessHandle,
 ) -> Result<Terminal, ContractError> {
     let (builder, verifier) = task_routes(state_dir, task, override_model, paid_available)?;
+    let plan = RolePlan {
+        builder_model: builder.model.clone(),
+        builder_route: builder.label(),
+        verifier_model: verifier.model.clone(),
+        verifier_route: verifier.label(),
+    };
+
+    // Allocate a genuinely non-dispatchable preparation: execution identity and
+    // lease are durable, but no dispatch intent is announced until activation.
+    let mut lifecycle = Executor::new(
+        ledger.clone(),
+        ExecutorConfig {
+            max_attempts: task.max_attempts,
+            execution_definition_version: EXECUTION_DEFINITION_VERSION,
+        },
+    );
+    let preparation = lifecycle.prepare(&task.task_id)?;
+    let execution = preparation.execution_id.clone();
+    let generation = preparation.generation;
+    let lease = preparation.lease_generation;
+
+    // Freeze and persist the immutable package, then commit the admission
+    // reference with activation in one atomic batch. No dispatch intent precedes
+    // package admission.
+    let (persisted, admission) = admit_task(
+        state_dir,
+        repo,
+        task,
+        &execution,
+        generation,
+        lease,
+        &plan,
+        &harness,
+        evidence,
+    )?;
+    lifecycle.activate(&preparation, admission)?;
+    package_crash("after_admit");
+
+    record_claim(&mut lifecycle, &execution, evidence, generation, lease)?;
+
+    // First dispatch consumes the frozen admitted values, not the live task.
+    let package = load_admitted_package(state_dir, &persisted.digest)?;
+    verify_recovered_pins(state_dir, &package, &harness)?;
+    let admitted_task = task_from_package(&package, &task.task_id);
+    let admitted_plan = role_plan_from_package(&package)?;
+    let builder_prompt = builder_prompt_bytes(state_dir, &package)?;
     let mut executor = build_executor(
         ledger,
         state_dir,
-        &builder,
-        &verifier,
+        &admitted_plan,
         paid_available,
         proxy_url,
-        task,
+        &admitted_task,
         repo,
         harness,
+        &builder_prompt,
     )?;
-    let execution = executor.start(&task.task_id)?;
-    let generation = executor
-        .ledger()
-        .execution(&execution)?
-        .map(|record| record.generation)
-        .unwrap_or(1);
-    let lease = execution_lease(&executor, &execution, generation);
-    record_claim(&mut executor, &execution, evidence, generation, lease)?;
 
     let terminal = drive_task(
         &mut executor,
@@ -431,15 +480,17 @@ fn run_task(
         queue,
         &task.task_id,
         lease,
+        false,
     )?;
     finalize(
         state_dir,
         queue,
         &execution,
         task,
-        &builder.model,
+        &admitted_plan.builder_model,
         lease,
         &terminal,
+        false,
     )?;
     Ok(terminal)
 }
@@ -476,7 +527,10 @@ fn task_routes(
 
 /// Project a terminal outcome to the backlog and record the execution digest
 /// (M1.4). The digest summary line rides a `bd comment` on done/parked;
-/// `Blocked` records nothing.
+/// `Blocked` records nothing. `best_effort` is set by recovery, where the source
+/// issue may have been edited or removed: the durable ledger terminal state is
+/// then authoritative and a failed projection is logged, not fatal.
+#[allow(clippy::too_many_arguments)]
 fn finalize(
     state_dir: &Path,
     queue: &mut TaskQueueHandle,
@@ -485,6 +539,7 @@ fn finalize(
     model: &str,
     lease: u32,
     terminal: &Terminal,
+    best_effort: bool,
 ) -> Result<(), ContractError> {
     let verdict = match terminal {
         Terminal::Done => Some(crate::digest::Verdict::Green),
@@ -499,10 +554,38 @@ fn finalize(
         }
     }
 
+    let projection = project_terminal(queue, execution, task, &summary, lease, terminal);
+    match projection {
+        Ok(()) => {}
+        Err(err) if best_effort => eprintln!(
+            "agalma: recovery projection for {} failed (best-effort): {err}",
+            task.task_id.as_str()
+        ),
+        Err(err) => return Err(err),
+    }
+
+    // Reap the execution's heavy scratch now that it is terminal. Covers both
+    // fresh paths and executions driven by `recover_inflight`. Best-effort.
+    if matches!(terminal, Terminal::Done | Terminal::Parked(_)) {
+        let reap = crate::reap::reap_execution(state_dir, execution);
+        eprintln!("agalma: reap {}", crate::reap::summary_line(&reap));
+    }
+    Ok(())
+}
+
+/// Apply the terminal projection to the backlog (see [`finalize`]).
+fn project_terminal(
+    queue: &mut TaskQueueHandle,
+    execution: &ExecutionId,
+    task: &Task,
+    summary: &Option<String>,
+    lease: u32,
+    terminal: &Terminal,
+) -> Result<(), ContractError> {
     match terminal {
         Terminal::Done => {
             // Comment before closing so the digest rides the issue.
-            if let Some(summary) = &summary {
+            if let Some(summary) = summary {
                 queue.comment(&task.task_id, summary)?;
             }
             queue.close_task(&task.task_id, "done: green")?;
@@ -516,25 +599,20 @@ fn finalize(
             // `in_progress`) plus the `parked` label (H1 park projection).
             queue.set_status(&task.task_id, "blocked")?;
             queue.add_label(&task.task_id, PARKED_LABEL)?;
-            if let Some(summary) = &summary {
+            if let Some(summary) = summary {
                 queue.comment(&task.task_id, summary)?;
             }
             queue.comment(&task.task_id, &format!("parked: {reason}"))?;
         }
         Terminal::Blocked => {}
     }
-
-    // Reap the execution's heavy scratch now that it is terminal. Covers both
-    // fresh paths and executions driven by `recover_inflight`. Best-effort.
-    if matches!(terminal, Terminal::Done | Terminal::Parked(_)) {
-        let reap = crate::reap::reap_execution(state_dir, execution);
-        eprintln!("agalma: reap {}", crate::reap::summary_line(&reap));
-    }
     Ok(())
 }
 
 /// Drive one execution to a terminal state, projecting each phase transition to
-/// the backlog and honoring the `STOP` sentinel.
+/// the backlog and honoring the `STOP` sentinel. `best_effort` (recovery) makes
+/// the phase comment non-fatal when the source issue has been removed.
+#[allow(clippy::too_many_arguments)]
 fn drive_task(
     executor: &mut Executor<LedgerHandle>,
     execution: &ExecutionId,
@@ -542,6 +620,7 @@ fn drive_task(
     queue: &mut TaskQueueHandle,
     task_id: &TaskId,
     lease: u32,
+    best_effort: bool,
 ) -> Result<Terminal, ContractError> {
     let stop = state_dir.join("STOP");
     let mut last_phase: Option<ExecutionPhase> = None;
@@ -553,7 +632,7 @@ fn drive_task(
         }
         let status = executor.status(execution)?;
         if last_phase != Some(status.phase) {
-            queue.comment(
+            let projection = queue.comment(
                 task_id,
                 &format!(
                     "phase={} execution={} lease={}",
@@ -561,7 +640,16 @@ fn drive_task(
                     execution,
                     lease
                 ),
-            )?;
+            );
+            if let Err(err) = projection {
+                if !best_effort {
+                    return Err(err);
+                }
+                eprintln!(
+                    "agalma: recovery phase projection for {} failed (best-effort): {err}",
+                    task_id.as_str()
+                );
+            }
             last_phase = Some(status.phase);
         }
         match executor.step(execution)? {
@@ -613,14 +701,15 @@ fn record_claim(
     Ok(())
 }
 
-/// Recover executions left non-terminal by a previous run: rebuild the task's
-/// repo-mode activities and drive each to a terminal state.
-#[allow(clippy::too_many_arguments)]
+/// Recover executions left non-terminal by a previous run. Each execution is
+/// reconstructed from its frozen `TaskPackage/v1` (loaded by the digest recorded
+/// in its `task.package_admitted` event) — never from the current backlog, which
+/// may have been edited or removed. A missing reference or unreadable/corrupt/
+/// incompatible package parks the execution explicitly with no new effects.
 fn recover_inflight(
     repo: &Path,
     state_dir: &Path,
     ledger: &LedgerHandle,
-    override_model: Option<&str>,
     paid_available: bool,
     proxy_url: Option<String>,
     queue: &mut TaskQueueHandle,
@@ -635,27 +724,65 @@ fn recover_inflight(
         if terminal {
             continue;
         }
-        let task = match queue.get(&record.task_id) {
-            Ok(task) => task,
+
+        // Recovery reads the frozen package; it never refreshes the definition
+        // from bd. No admission reference -> explicit legacy park.
+        let reference = admission_digest(ledger, &record.execution_id)?;
+        let package =
+            match load_frozen_or_legacy(state_dir, reference.as_deref(), record.execution_id.as_str())
+            {
+                Ok(package) => package,
+                Err(err) => {
+                    eprintln!("agalma: recovery parks {}: {err}", record.execution_id);
+                    park_execution(ledger, &record, &err.to_string(), queue)?;
+                    continue;
+                }
+            };
+
+        if package.execution_id != record.execution_id.as_str() {
+            let reason = format!(
+                "frozen package {} does not match execution {}",
+                package.execution_id, record.execution_id
+            );
+            eprintln!("agalma: recovery parks {}: {reason}", record.execution_id);
+            park_execution(ledger, &record, &reason, queue)?;
+            continue;
+        }
+
+        let plan = match role_plan_from_package(&package) {
+            Ok(plan) => plan,
             Err(err) => {
-                eprintln!(
-                    "agalma: cannot recover {}: task {} unavailable: {err}",
-                    record.execution_id, record.task_id
-                );
+                eprintln!("agalma: recovery parks {}: {err}", record.execution_id);
+                park_execution(ledger, &record, &err.to_string(), queue)?;
                 continue;
             }
         };
-        let (builder, verifier) = task_routes(state_dir, &task, override_model, paid_available)?;
+
+        let task_id = TaskId::new(package.task_id.clone());
+        let task = task_from_package(&package, &task_id);
+        if let Err(err) = verify_recovered_pins(state_dir, &package, &harness) {
+            eprintln!("agalma: recovery parks {}: {err}", record.execution_id);
+            park_execution(ledger, &record, &err.to_string(), queue)?;
+            continue;
+        }
+        let builder_prompt = match builder_prompt_bytes(state_dir, &package) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                eprintln!("agalma: recovery parks {}: {err}", record.execution_id);
+                park_execution(ledger, &record, &err.to_string(), queue)?;
+                continue;
+            }
+        };
         let mut executor = build_executor(
             ledger,
             state_dir,
-            &builder,
-            &verifier,
+            &plan,
             paid_available,
             proxy_url.clone(),
             &task,
             repo,
             harness.clone(),
+            &builder_prompt,
         )?;
         let lease = execution_lease(&executor, &record.execution_id, record.generation);
         let terminal = drive_task(
@@ -663,20 +790,397 @@ fn recover_inflight(
             &record.execution_id,
             state_dir,
             queue,
-            &record.task_id,
+            &task_id,
             lease,
+            true,
         )?;
         finalize(
             state_dir,
             queue,
             &record.execution_id,
             &task,
-            &builder.model,
+            &plan.builder_model,
             lease,
             &terminal,
+            true,
         )?;
     }
     Ok(())
+}
+
+/// The route pins an executor run selected (models and route labels). A fresh
+/// admission resolves them from routing; recovery reads the pins from the frozen
+/// package so a recovered run reuses its original routes rather than re-deciding
+/// them against possibly-changed live inputs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RolePlan {
+    builder_model: String,
+    builder_route: String,
+    verifier_model: String,
+    verifier_route: String,
+}
+
+/// Test-only crash injection at the admission boundary. `before_admit` fires
+/// once the package objects and document are durable but before the reference
+/// commit (leaving harmless unreferenced objects); `after_admit` fires after the
+/// reference commit but before any phase handler runs.
+const PACKAGE_CRASH_ENV: &str = "AGALMA_PACKAGE_CRASH_AT";
+
+fn package_crash(point: &str) {
+    if std::env::var(PACKAGE_CRASH_ENV).ok().as_deref() == Some(point) {
+        // SIGABRT: deliberately abnormal so nothing after this point executes.
+        std::process::abort();
+    }
+}
+
+/// Build and persist the frozen `TaskPackage/v1` for `task`, returning its
+/// reference and the package-admission event the caller commits with activation.
+///
+/// Ordering follows `docs/self-mutation-contracts.md` §SF: the execution
+/// identity/lease exist (allocated by [`Executor::prepare`], a non-dispatchable
+/// preparation), source SHA/scope/directive/role pins and every context object
+/// are resolved once, objects are written and fsynced, and only then is the
+/// package reference committed — atomically with activation and the first
+/// dispatch intent, so no dispatch intent precedes package admission. A crash
+/// after persistence but before activation leaves only unreferenced objects and
+/// a non-dispatchable preparation that recovery parks.
+fn admit_task(
+    state_dir: &Path,
+    repo: &Path,
+    task: &Task,
+    execution: &ExecutionId,
+    generation: u32,
+    lease: u32,
+    plan: &RolePlan,
+    harness: &HarnessHandle,
+    evidence: &ClaimEvidence,
+) -> Result<(PackageRef, ExecutionEvent), ContractError> {
+    let definitions = BdTaskQueue::new(repo);
+    let definition = definitions.task_definition(&task.task_id)?;
+    let context = gather_admission_context(repo, &definitions, &definition)?;
+    let inputs = PackageInputs {
+        execution_id: execution.as_str().to_string(),
+        generation: generation as u64,
+        lease_generation: lease as u64,
+        repository_identity: repo
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "agalma".to_string()),
+        base_sha: resolve_base_sha(repo, &task.base_ref)?,
+        directive: directive_ref(task),
+        authorization: authorization_input(task, evidence),
+        roles: role_inputs(plan, harness, generation)?,
+        instructions: context.instructions,
+        shared_design: context.shared_design,
+        parent_design: context.parent_design,
+        dependency_handoffs: context.dependency_handoffs,
+        allowed_paths: Vec::new(),
+        protected_paths: Vec::new(),
+        readable_artifacts: Vec::new(),
+        oracle_bytes: Vec::new(),
+        oracle_media_type: "text/plain".to_string(),
+        max_attempts: task.max_attempts as u64,
+        allowance_nusd: budget_nusd(task.budget_usd),
+        quota_policy_digest: sha256_digest(b"quota-policy/v1:unknown-usage-deny"),
+        recorded_at_unix_ms: now_ms(),
+    };
+    let built = build_package(&definition, inputs)?;
+    let persisted = persist_package(state_dir, &built)?;
+    package_crash("before_admit");
+
+    let event = ExecutionEvent {
+        execution_id: execution.clone(),
+        sequence: 0,
+        kind: ADMITTED_EVENT_KIND.to_string(),
+        payload: json!({
+            "package_digest": persisted.digest,
+            "package_path": persisted.path,
+            "task_id": task.task_id.as_str(),
+            "generation": generation,
+            "lease_generation": lease,
+        }),
+        recorded_at_unix_ms: now_ms(),
+    };
+    Ok((persisted, event))
+}
+
+/// The package digest recorded in an execution's `task.package_admitted` event.
+fn admission_digest(
+    ledger: &LedgerHandle,
+    execution: &ExecutionId,
+) -> Result<Option<String>, ContractError> {
+    let events = ledger.events(execution)?;
+    Ok(events
+        .iter()
+        .rev()
+        .find(|event| event.kind == ADMITTED_EVENT_KIND)
+        .and_then(|event| {
+            event
+                .payload
+                .get("package_digest")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        }))
+}
+
+/// Park an execution that cannot be reconstructed, durably in the ledger, with a
+/// best-effort backlog projection (the source issue may be gone).
+fn park_execution(
+    ledger: &LedgerHandle,
+    record: &ExecutionRecord,
+    reason: &str,
+    queue: &mut TaskQueueHandle,
+) -> Result<(), ContractError> {
+    let state = ExecutionRecord {
+        phase: ExecutionPhase::Parked,
+        state: ExecutionState::Parked,
+        ..record.clone()
+    };
+    let event = ExecutionEvent {
+        execution_id: record.execution_id.clone(),
+        sequence: 0,
+        kind: "parked".to_string(),
+        payload: json!({ "recovery": true, "reason": reason }),
+        recorded_at_unix_ms: now_ms(),
+    };
+    // A cloned handle shares the same backend; `commit` needs a mutable handle.
+    let mut ledger = ledger.clone();
+    ledger.commit(CommitBatch {
+        expected_revision: Some(record.revision),
+        state: Some(state),
+        events: vec![event],
+        receipts: vec![],
+        intents: vec![],
+    })?;
+
+    let _ = queue.comment(
+        &record.task_id,
+        &format!("phase=parked execution={} recovery-park", record.execution_id),
+    );
+    let _ = queue.set_status(&record.task_id, "blocked");
+    let _ = queue.add_label(&record.task_id, PARKED_LABEL);
+    let _ = queue.comment(&record.task_id, &format!("parked: {reason}"));
+    Ok(())
+}
+
+/// Read the frozen builder prompt bytes from a package.
+fn builder_prompt_bytes(
+    state_dir: &Path,
+    package: &TaskPackage,
+) -> Result<Vec<u8>, ContractError> {
+    let builder = package
+        .roles
+        .iter()
+        .find(|pin| pin.role == Role::Builder)
+        .ok_or_else(|| {
+            legacy_park(
+                package.task_id.as_str(),
+                "frozen package has no builder role pin",
+            )
+        })?;
+    read_artifact(state_dir, &builder.prompt)
+}
+
+/// Extract the builder/verifier route pins from a frozen package.
+fn role_plan_from_package(package: &TaskPackage) -> Result<RolePlan, ContractError> {
+    let builder = package
+        .roles
+        .iter()
+        .find(|pin| pin.role == Role::Builder)
+        .ok_or_else(|| {
+            legacy_park(
+                package.task_id.as_str(),
+                "frozen package has no builder role pin",
+            )
+        })?;
+    let verifier = package
+        .roles
+        .iter()
+        .find(|pin| pin.role == Role::Verifier)
+        .ok_or_else(|| {
+            legacy_park(
+                package.task_id.as_str(),
+                "frozen package has no verifier role pin",
+            )
+        })?;
+    Ok(RolePlan {
+        builder_model: builder.model.clone(),
+        builder_route: builder.route_id.clone(),
+        verifier_model: verifier.model.clone(),
+        verifier_route: verifier.route_id.clone(),
+    })
+}
+
+/// Rebuild the phase-facing task view from a frozen package. The base ref is the
+/// frozen `repository.base_sha` (a commit-ish `git rev-parse` resolves), so
+/// recovery never re-resolves the base from the live repository.
+fn task_from_package(package: &TaskPackage, task_id: &TaskId) -> Task {
+    Task {
+        task_id: task_id.clone(),
+        title: package.definition.title.clone(),
+        directive: package.directive.id.clone(),
+        target: "agalma".to_string(),
+        base_ref: package.repository.base_sha.clone(),
+        acceptance: package.definition.acceptance.clone(),
+        budget_usd: Some(package.budget.allowance_nusd as f64 / 1e9),
+        priority: TaskPriority::Normal,
+        family: TaskFamily::Feature,
+        max_attempts: package.max_attempts as u32,
+        raw_block: package.definition.machine_block.clone(),
+    }
+}
+
+/// Resolve `base_ref` to a commit SHA in `repo` (frozen into the package).
+fn resolve_base_sha(repo: &Path, base_ref: &str) -> Result<String, ContractError> {
+    let rev = if base_ref.trim().is_empty() {
+        "HEAD"
+    } else {
+        base_ref
+    };
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", rev])
+        .current_dir(repo)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|e| ContractError::KnownFailure(format!("git rev-parse {rev}: {e}")))?;
+    if !out.status.success() {
+        return Err(ContractError::KnownFailure(format!(
+            "git rev-parse {rev} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The directive reference for `task` (id, parsed version, id digest).
+fn directive_ref(task: &Task) -> DirectiveRef {
+    let version = task
+        .directive
+        .rsplit_once("/v")
+        .and_then(|(_, version)| version.parse::<u64>().ok())
+        .unwrap_or(1);
+    DirectiveRef {
+        id: task.directive.clone(),
+        version,
+        digest: sha256_digest(task.directive.as_bytes()),
+    }
+}
+
+/// The authorization input: a human-bootstrap origin with the claim evidence as
+/// its receipt. Receipt provenance is recorded, not trusted as authority.
+fn authorization_input(task: &Task, evidence: &ClaimEvidence) -> AuthorizationInput {
+    let receipt = json!({
+        "format": "AuthorizationReceipt/v1",
+        "origin": "human_bootstrap",
+        "task_id": task.task_id.as_str(),
+        "status": evidence.status,
+        "assignee": evidence.assignee,
+        "started_at": evidence.started_at,
+    });
+    AuthorizationInput {
+        origin: AuthorizationOrigin::HumanBootstrap,
+        policy_digest: sha256_digest(b"human-bootstrap/v1"),
+        receipt_source: format!("bd:{}/claim", task.task_id.as_str()),
+        receipt_media_type: "application/json".to_string(),
+        receipt_bytes: serde_json::to_vec(&receipt).unwrap_or_default(),
+    }
+}
+
+/// The builder/verifier role pins for a fresh admission, carrying the actual
+/// selected harness binding (identity, API, API version, implementation version,
+/// real prepared generation, and config digest) and the compiled prompt bytes.
+fn role_inputs(
+    plan: &RolePlan,
+    harness: &HarnessHandle,
+    generation: u32,
+) -> Result<Vec<RoleInput>, ContractError> {
+    let kind = harness.borrow().kind();
+    Ok(vec![
+        RoleInput::new(
+            Role::Builder,
+            plan.builder_route.clone(),
+            plan.builder_model.clone(),
+            binding_pin(kind, generation, &plan.builder_model)?,
+            BUILDER_PROMPT.as_bytes().to_vec(),
+            "text/plain",
+        ),
+        RoleInput::new(
+            Role::Verifier,
+            plan.verifier_route.clone(),
+            plan.verifier_model.clone(),
+            binding_pin(kind, generation, &plan.verifier_model)?,
+            VERIFIER_PROMPT.as_bytes().to_vec(),
+            "text/plain",
+        ),
+    ])
+}
+
+/// The binding pin for `kind`/`model` at `generation`, taken from the real
+/// static binding plan (identity, API/version, implementation version,
+/// generation, and config digest) rather than a synthetic placeholder.
+pub fn binding_pin(
+    kind: HarnessKind,
+    generation: u32,
+    model: &str,
+) -> Result<BindingPin, ContractError> {
+    let plan = plan_binding(kind, generation, model)?;
+    Ok(BindingPin {
+        binding_id: plan.binding.binding_id.as_str().to_string(),
+        api: plan.binding.component_api,
+        api_version: plan.binding.api_version as u64,
+        implementation_version: plan.binding.implementation_version,
+        generation: plan.binding.generation,
+        config_digest: plan.binding.config_hash,
+    })
+}
+
+/// Verify a recovered package's pinned roles against the current process
+/// selection before any dispatch. Every required pin field is validated
+/// (identity, API, API version, implementation version, generation, config
+/// digest); a changed harness selector or a changed compiled verifier prompt
+/// must refuse dispatch, not silently substitute.
+pub fn verify_recovered_pins(
+    state_dir: &Path,
+    package: &TaskPackage,
+    harness: &HarnessHandle,
+) -> Result<(), ContractError> {
+    let kind = harness.borrow().kind();
+    for pin in &package.roles {
+        let expected = binding_pin(kind, pin.harness.generation as u32, &pin.model)?;
+        if expected != pin.harness {
+            return Err(FailureCode::StateUnavailable.failure(
+                package.task_id.as_str(),
+                format!(
+                    "frozen {:?} binding pin {:?} is incompatible with the current harness selection",
+                    pin.role, pin.harness.binding_id
+                ),
+            ));
+        }
+    }
+    let verifier = package
+        .roles
+        .iter()
+        .find(|pin| pin.role == Role::Verifier)
+        .ok_or_else(|| {
+            legacy_park(
+                package.task_id.as_str(),
+                "frozen package has no verifier role pin",
+            )
+        })?;
+    if read_artifact(state_dir, &verifier.prompt)? != VERIFIER_PROMPT.as_bytes() {
+        return Err(FailureCode::StateUnavailable.failure(
+            package.task_id.as_str(),
+            "frozen verifier prompt does not match the compiled prompt",
+        ));
+    }
+    Ok(())
+}
+
+/// Convert an optional USD budget into the package's nano-USD allowance.
+fn budget_nusd(budget_usd: Option<f64>) -> u64 {
+    budget_usd
+        .map(|usd| (usd * 1e9).round().max(0.0) as u64)
+        .unwrap_or(0)
 }
 
 /// Build a per-task executor with repo-mode activities and the same ledger.
@@ -684,13 +1188,13 @@ fn recover_inflight(
 fn build_executor(
     ledger: &LedgerHandle,
     state_dir: &Path,
-    builder: &RouteSelection,
-    verifier: &RouteSelection,
+    plan: &RolePlan,
     paid_available: bool,
     proxy_url: Option<String>,
     task: &Task,
     repo: &Path,
     harness: HarnessHandle,
+    builder_prompt_bytes: &[u8],
 ) -> Result<Executor<LedgerHandle>, ContractError> {
     let mut executor = Executor::new(
         ledger.clone(),
@@ -701,13 +1205,13 @@ fn build_executor(
     );
     let deps = phase_deps(
         state_dir,
-        builder,
-        verifier,
+        plan,
         paid_available,
         proxy_url,
         task,
         repo,
         harness,
+        builder_prompt_bytes,
     )?;
     let workspace = Rc::new(RefCell::new(WorkspaceHandle::from_transport(
         state_dir,
@@ -728,13 +1232,13 @@ fn build_executor(
 #[allow(clippy::too_many_arguments)]
 fn phase_deps(
     state_dir: &Path,
-    builder: &RouteSelection,
-    verifier: &RouteSelection,
+    plan: &RolePlan,
     paid_available: bool,
     proxy_url: Option<String>,
     task: &Task,
     repo: &Path,
     harness: HarnessHandle,
+    builder_prompt_bytes: &[u8],
 ) -> Result<PhaseDeps, ContractError> {
     let profile_path = state_dir.join("worker.sb");
     std::fs::write(&profile_path, PRODUCT_PROFILE).map_err(|e| {
@@ -748,23 +1252,24 @@ fn phase_deps(
     std::fs::create_dir_all(&prompts_dir)
         .map_err(|e| ContractError::KnownFailure(format!("cannot create prompts dir: {e}")))?;
     let builder_prompt = prompts_dir.join("builder.md");
-    if !builder_prompt.exists() {
-        std::fs::write(&builder_prompt, BUILDER_PROMPT).map_err(|e| {
-            ContractError::KnownFailure(format!(
-                "cannot write builder prompt {}: {e}",
-                builder_prompt.display()
-            ))
-        })?;
-    }
+    // Always write the pinned prompt bytes: a fresh admission writes the compiled
+    // base prompt, recovery writes the frozen prompt bytes, so a mutated file
+    // cannot substitute a different prompt.
+    std::fs::write(&builder_prompt, builder_prompt_bytes).map_err(|e| {
+        ContractError::KnownFailure(format!(
+            "cannot write builder prompt {}: {e}",
+            builder_prompt.display()
+        ))
+    })?;
 
     let (extra_ro_roots, toolchain_env) = toolchain()?;
     Ok(PhaseDeps {
         state_dir: state_dir.to_path_buf(),
         fixture: repo.to_path_buf(),
-        model: builder.model.clone(),
-        verifier_model: verifier.model.clone(),
-        route: builder.label(),
-        verifier_route: verifier.label(),
+        model: plan.builder_model.clone(),
+        verifier_model: plan.verifier_model.clone(),
+        route: plan.builder_route.clone(),
+        verifier_route: plan.verifier_route.clone(),
         role: "builder".to_string(),
         profile_path,
         builder_prompt,
@@ -785,8 +1290,9 @@ fn phase_deps(
     })
 }
 
-/// Lease generation pinned in an execution's `execution_created` event
-/// (fallback: its task generation).
+/// Lease generation pinned in an execution's `execution_prepared` /
+/// `execution_created` / `execution_activated` event (fallback: its task
+/// generation).
 fn execution_lease(
     executor: &Executor<LedgerHandle>,
     execution: &ExecutionId,
@@ -798,7 +1304,10 @@ fn execution_lease(
         .ok()
         .and_then(|events| {
             events.iter().find_map(|event| {
-                if event.kind != "execution_created" {
+                if !matches!(
+                    event.kind.as_str(),
+                    "execution_prepared" | "execution_created" | "execution_activated"
+                ) {
                     return None;
                 }
                 event

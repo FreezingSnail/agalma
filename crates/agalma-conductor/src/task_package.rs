@@ -29,10 +29,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use agalma_contracts::digest::{canonical_json, sha256_digest, validate_digest, FailureCode};
 use agalma_contracts::{
     Authorization, AuthorizationOrigin, BindingPin, Budget, ContextItem, ContextKind, ContractError,
-    Definition, DirectiveRef, PackageArtifactRef, RepositoryRef, Role, RolePin, Scope, TaskPackage,
-    TextObject, UnknownUsage, TASK_PACKAGE_FORMAT,
+    Definition, DirectiveRef, PackageArtifactRef, RepositoryRef, Role, RolePin, Scope, TaskId,
+    TaskPackage, TextObject, UnknownUsage, TASK_PACKAGE_FORMAT,
 };
-use agalma_taskqueue::{parse_task_block, TaskDefinition};
+use agalma_taskqueue::{parse_task_block, BdTaskQueue, TaskDefinition};
+
+/// Ledger event kind carrying the durable package reference (SF.2 admission).
+pub const ADMITTED_EVENT_KIND: &str = "task.package_admitted";
+/// Repository instruction files frozen into every admitted package.
+pub const INSTRUCTION_SOURCES: &[&str] = &["AGENTS.md"];
+/// Repository shared-design documents frozen into every admitted package.
+pub const SHARED_DESIGN_SOURCES: &[&str] = &["docs/self-mutation-contracts.md"];
 
 /// Store directory name under the state dir.
 pub const PACKAGE_STORE_DIR: &str = "packages";
@@ -43,41 +50,35 @@ pub const PACKAGE_HASH_SUBDIR: &str = "sha256";
 /// Media type of a stored package document.
 pub const PACKAGE_MEDIA_TYPE: &str = "application/json";
 
-/// A role pin to embed in a package.
+/// A role pin to embed in a package. The prompt bytes are materialized as a
+/// content-addressed object by [`build_package`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoleInput {
     pub role: Role,
     pub route_id: String,
     pub model: String,
     pub harness: BindingPin,
-    pub prompt: PackageArtifactRef,
+    pub prompt_bytes: Vec<u8>,
+    pub prompt_media_type: String,
 }
 
 impl RoleInput {
-    /// Pin `role` to a route/model, harness binding, and immutable prompt.
+    /// Pin `role` to a route/model, harness binding, and immutable prompt bytes.
     pub fn new(
         role: Role,
         route_id: impl Into<String>,
         model: impl Into<String>,
         harness: BindingPin,
-        prompt: PackageArtifactRef,
+        prompt_bytes: impl Into<Vec<u8>>,
+        prompt_media_type: impl Into<String>,
     ) -> Self {
         Self {
             role,
             route_id: route_id.into(),
             model: model.into(),
             harness,
-            prompt,
-        }
-    }
-
-    fn into_pin(self) -> RolePin {
-        RolePin {
-            role: self.role,
-            route_id: self.route_id,
-            model: self.model,
-            harness: self.harness,
-            prompt: self.prompt,
+            prompt_bytes: prompt_bytes.into(),
+            prompt_media_type: prompt_media_type.into(),
         }
     }
 }
@@ -136,7 +137,8 @@ pub struct PackageInputs {
     pub allowed_paths: Vec<String>,
     pub protected_paths: Vec<String>,
     pub readable_artifacts: Vec<String>,
-    pub oracle: PackageArtifactRef,
+    pub oracle_bytes: Vec<u8>,
+    pub oracle_media_type: String,
     pub max_attempts: u64,
     pub allowance_nusd: u64,
     pub quota_policy_digest: String,
@@ -225,15 +227,55 @@ pub fn build_package(
             "at least one role pin is required",
         ));
     }
-    for role in &inputs.roles {
-        readable.push(role.prompt.digest.clone());
+    // Materialize each role prompt and the oracle as content-addressed objects so
+    // the referenced bytes are durable and recoverable, not just referenced.
+    let mut roles: Vec<RolePin> = Vec::new();
+    for role in inputs.roles {
+        let prompt = store_object(
+            &task_id,
+            &ContextInput::new(
+                ContextKind::Instruction,
+                format!("role:{}/prompt", role.route_id),
+                role.prompt_media_type,
+                role.prompt_bytes,
+            ),
+            &mut objects,
+        )?;
+        readable.push(prompt.digest.clone());
+        roles.push(RolePin {
+            role: role.role,
+            route_id: role.route_id,
+            model: role.model,
+            harness: role.harness,
+            prompt,
+        });
+    }
+    let oracle = store_object(
+        &task_id,
+        &ContextInput::new(
+            ContextKind::Instruction,
+            "scope/oracle",
+            inputs.oracle_media_type,
+            inputs.oracle_bytes,
+        ),
+        &mut objects,
+    )?;
+    // The held-out oracle is never a builder-readable artifact: it stays durable
+    // and reachable only through its explicit `scope.oracle` reference. A
+    // caller-supplied grant of the same oracle is refused.
+    if inputs
+        .readable_artifacts
+        .iter()
+        .any(|digest| digest == &oracle.digest)
+    {
+        return Err(FailureCode::ScopeDenied.failure(
+            &task_id,
+            "held-out oracle may not be granted as a builder-readable artifact",
+        ));
     }
     readable.extend(inputs.readable_artifacts.iter().cloned());
-    readable.push(inputs.oracle.digest.clone());
     readable.sort();
     readable.dedup();
-
-    let roles: Vec<RolePin> = inputs.roles.into_iter().map(RoleInput::into_pin).collect();
 
     let package = TaskPackage {
         format: TASK_PACKAGE_FORMAT.to_string(),
@@ -273,7 +315,7 @@ pub fn build_package(
             allowed_paths: inputs.allowed_paths,
             protected_paths: inputs.protected_paths,
             readable_artifacts: readable,
-            oracle: inputs.oracle,
+            oracle,
         },
         max_attempts: inputs.max_attempts,
         budget: Budget {
@@ -363,8 +405,10 @@ pub fn persist_package(
 
 /// Load and verify a frozen package by digest.
 ///
-/// Missing file → `LegacyInputsMissing`; unparsable → `InvalidRecord`; digest
-/// mismatch → `IntegrityMismatch`; version → `UnsupportedVersion`.
+/// Missing file → `LegacyInputsMissing`; unparsable → `InvalidRecord`; version →
+/// `UnsupportedVersion`; a document whose own digest does not match the
+/// *requested* digest → `IntegrityMismatch` (a self-consistent rewrite under the
+/// requested store path is still refused).
 pub fn load_package(state_dir: &Path, digest: &str) -> Result<TaskPackage, ContractError> {
     let path = package_path(state_dir, digest)?;
     let text = fs::read_to_string(&path).map_err(|e| {
@@ -377,7 +421,77 @@ pub fn load_package(state_dir: &Path, digest: &str) -> Result<TaskPackage, Contr
         FailureCode::InvalidRecord.failure(digest, format!("frozen package is malformed: {e}"))
     })?;
     package.verify()?;
+    if package.package_digest != digest {
+        return Err(FailureCode::IntegrityMismatch.failure(
+            digest,
+            format!(
+                "stored document digest {} does not match the requested digest {digest}",
+                package.package_digest
+            ),
+        ));
+    }
     Ok(package)
+}
+
+/// Load a frozen package and verify every referenced immutable input object
+/// before any effect. Recovery uses this: a missing or corrupt referenced object
+/// parks rather than dispatching.
+pub fn load_admitted_package(state_dir: &Path, digest: &str) -> Result<TaskPackage, ContractError> {
+    let package = load_package(state_dir, digest)?;
+    verify_references(state_dir, &package)?;
+    Ok(package)
+}
+
+/// Verify every required referenced object (context, authorization receipt, role
+/// prompts, oracle, and readable-artifact digests) resolves and matches its
+/// recorded digest/size.
+///
+/// Also refuses a stored admitted package whose builder-readable list grants its
+/// own held-out oracle. This is the common bounded validation for both first
+/// dispatch and recovery (`load_admitted_package`); it is read-only and never
+/// rewrites a stored package.
+pub fn verify_references(state_dir: &Path, package: &TaskPackage) -> Result<(), ContractError> {
+    if package
+        .scope
+        .readable_artifacts
+        .iter()
+        .any(|digest| digest == &package.scope.oracle.digest)
+    {
+        return Err(FailureCode::ScopeDenied.failure(
+            &package.task_id,
+            "stored package grants its held-out oracle as a builder-readable artifact",
+        ));
+    }
+    for item in &package.context {
+        read_artifact(state_dir, &item.artifact)?;
+    }
+    read_artifact(state_dir, &package.authorization.receipt)?;
+    for role in &package.roles {
+        read_artifact(state_dir, &role.prompt)?;
+    }
+    read_artifact(state_dir, &package.scope.oracle)?;
+    for digest in &package.scope.readable_artifacts {
+        verify_object_digest(state_dir, digest)?;
+    }
+    Ok(())
+}
+
+/// Read a content-addressed object by digest and verify its bytes match.
+fn verify_object_digest(state_dir: &Path, digest: &str) -> Result<(), ContractError> {
+    let path = object_path(state_dir, digest)?;
+    let bytes = fs::read(&path).map_err(|e| {
+        FailureCode::LegacyInputsMissing.failure(
+            digest,
+            format!("referenced object {} unreadable: {e}", path.display()),
+        )
+    })?;
+    if sha256_digest(&bytes) != digest {
+        return Err(FailureCode::IntegrityMismatch.failure(
+            digest,
+            "referenced object bytes do not match the recorded digest",
+        ));
+    }
+    Ok(())
 }
 
 /// Recovery entry: load the frozen package, or park an execution that has none.
@@ -390,7 +504,7 @@ pub fn load_frozen_or_legacy(
     subject: &str,
 ) -> Result<TaskPackage, ContractError> {
     match reference {
-        Some(digest) => load_package(state_dir, digest),
+        Some(digest) => load_admitted_package(state_dir, digest),
         None => Err(legacy_park(
             subject,
             "no frozen TaskPackage reference (legacy in-flight execution)",
@@ -401,6 +515,225 @@ pub fn load_frozen_or_legacy(
 /// The explicit park for unreconstructable legacy inputs.
 pub fn legacy_park(subject: &str, reason: &str) -> ContractError {
     FailureCode::LegacyInputsMissing.failure(subject, reason)
+}
+
+/// The production context bundle frozen into an admitted package.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AdmissionContext {
+    pub instructions: Vec<ContextInput>,
+    pub shared_design: Vec<ContextInput>,
+    pub parent_design: Vec<ContextInput>,
+    pub dependency_handoffs: Vec<ContextInput>,
+}
+
+/// Gather the immutable context for `definition` from the repository and
+/// backlog once, at admission (SF.2).
+///
+/// Repository instruction and shared-design documents are captured verbatim when
+/// present; instruction documents referenced by `AGENTS.md` are also frozen. The
+/// parent epic design and each declared dependency's handoff are **required**: a
+/// declared source that cannot be captured refuses admission rather than
+/// silently dropping context. The fenced directive block is frozen as a builder
+/// instruction so a task with no repository context still admits (context must be
+/// non-empty). Nothing here reads a live backlog during recovery: this is the
+/// one-time capture that recovery later reads back from the store.
+pub fn gather_admission_context(
+    repo: &Path,
+    definitions: &BdTaskQueue,
+    definition: &TaskDefinition,
+) -> Result<AdmissionContext, ContractError> {
+    let mut context = AdmissionContext::default();
+    let mut instruction_sources: Vec<String> = Vec::new();
+
+    for source in INSTRUCTION_SOURCES {
+        if let Some(bytes) = observe_repo_file(repo, source)? {
+            instruction_sources.push((*source).to_string());
+            let referenced = referenced_markdown(&String::from_utf8_lossy(&bytes));
+            context.instructions.push(ContextInput::new(
+                ContextKind::Instruction,
+                *source,
+                "text/plain",
+                bytes,
+            ));
+            // Instruction documents the repository policy references are
+            // required: a missing, non-file, or unreadable one refuses admission
+            // rather than admitting a package without its governing instructions.
+            for referenced_source in referenced {
+                if instruction_sources.iter().any(|s| s == &referenced_source) {
+                    continue;
+                }
+                let referenced_bytes = read_required_repo_file(repo, &referenced_source)?;
+                instruction_sources.push(referenced_source.clone());
+                context.instructions.push(ContextInput::new(
+                    ContextKind::Instruction,
+                    referenced_source,
+                    "text/plain",
+                    referenced_bytes,
+                ));
+            }
+        }
+    }
+    for source in SHARED_DESIGN_SOURCES {
+        if let Some(bytes) = observe_repo_file(repo, source)? {
+            context.shared_design.push(ContextInput::new(
+                ContextKind::SharedDesign,
+                *source,
+                "text/plain",
+                bytes,
+            ));
+        }
+    }
+    if let Ok(Some(block)) = parse_task_block(&definition.description) {
+        context.instructions.push(ContextInput::new(
+            ContextKind::Instruction,
+            format!("bd:{}/block", definition.task_id.as_str()),
+            "text/plain",
+            block.raw_block.into_bytes(),
+        ));
+    }
+    // A declared parent design is required: refusing admission beats dispatching
+    // with a missing design.
+    if let Some(parent) = &definition.parent {
+        let parent_def = definitions
+            .task_definition(&TaskId::new(parent.as_str()))
+            .map_err(|err| {
+                FailureCode::LegacyInputsMissing.failure(
+                    format!("bd:{parent}/design"),
+                    format!("declared parent design unavailable: {err}"),
+                )
+            })?;
+        let bytes = parent_def
+            .design
+            .clone()
+            .unwrap_or(parent_def.description)
+            .into_bytes();
+        context.parent_design.push(ContextInput::new(
+            ContextKind::ParentDesign,
+            format!("bd:{parent}/design"),
+            "text/plain",
+            bytes,
+        ));
+    }
+    // Every declared dependency handoff is required for the same reason.
+    for dep in &definition.dependencies {
+        let dep_def = definitions
+            .task_definition(&TaskId::new(dep.id.as_str()))
+            .map_err(|err| {
+                FailureCode::LegacyInputsMissing.failure(
+                    format!("bd:{}/handoff", dep.id),
+                    format!("declared dependency handoff unavailable: {err}"),
+                )
+            })?;
+        context.dependency_handoffs.push(ContextInput::new(
+            ContextKind::DependencyHandoff,
+            format!("bd:{}/handoff", dep.id),
+            "text/plain",
+            render_handoff(&dep_def, dep.kind.as_deref()).into_bytes(),
+        ));
+    }
+    Ok(context)
+}
+
+/// Repository-relative `.md` paths referenced by an instruction document.
+///
+/// Bounded, deterministic scan: whitespace/quote/paren-delimited tokens ending in
+/// `.md`. Every referenced document is required: [`gather_admission_context`]
+/// refuses admission when a referenced `.md` is missing, a non-file, or
+/// unreadable.
+fn referenced_markdown(text: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    for token in text.split(|c: char| {
+        c.is_whitespace() || matches!(c, '(' | ')' | '[' | ']' | '"' | '\'' | '`' | ',' | '<' | '>')
+    }) {
+        let token = token.trim_matches(|c: char| matches!(c, ':' | '*' | ';' | '.'));
+        let candidate = token
+            .strip_prefix("./")
+            .unwrap_or(token);
+        if candidate.ends_with(".md")
+            && !candidate.starts_with('/')
+            && !candidate.starts_with("http")
+            && !candidate.contains("://")
+            && !found.iter().any(|s| s == candidate)
+        {
+            found.push(candidate.to_string());
+        }
+    }
+    found
+}
+
+/// Observe an optional repository source: `Ok(Some(bytes))` for a readable
+/// regular file, `Ok(None)` for a genuine absence, and an error for a metadata
+/// or read failure (a stat/permission failure must not be treated as absence).
+fn observe_repo_file(repo: &Path, source: &str) -> Result<Option<Vec<u8>>, ContractError> {
+    let path = repo.join(source);
+    match fs::metadata(&path) {
+        Ok(meta) => {
+            if !meta.is_file() {
+                return Ok(None);
+            }
+            fs::read(&path).map(Some).map_err(|e| {
+                FailureCode::StateUnavailable.failure(
+                    source,
+                    format!("cannot read {}: {e}", path.display()),
+                )
+            })
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(FailureCode::StateUnavailable.failure(
+            source,
+            format!("cannot stat {}: {e}", path.display()),
+        )),
+    }
+}
+
+/// Read a **required** repository source: a missing, non-file, or unreadable
+/// source refuses admission.
+fn read_required_repo_file(repo: &Path, source: &str) -> Result<Vec<u8>, ContractError> {
+    let path = repo.join(source);
+    let meta = fs::metadata(&path).map_err(|e| {
+        FailureCode::LegacyInputsMissing.failure(
+            source,
+            format!("required instruction {} unavailable: {e}", path.display()),
+        )
+    })?;
+    if !meta.is_file() {
+        return Err(FailureCode::LegacyInputsMissing.failure(
+            source,
+            format!("required instruction {} is not a regular file", path.display()),
+        ));
+    }
+    fs::read(&path).map_err(|e| {
+        FailureCode::StateUnavailable.failure(
+            source,
+            format!("cannot read required instruction {}: {e}", path.display()),
+        )
+    })
+}
+
+/// Deterministic text form of a dependency issue captured as a handoff.
+fn render_handoff(def: &TaskDefinition, kind: Option<&str>) -> String {
+    let mut out = format!("# {}\n", def.title);
+    if let Some(kind) = kind {
+        out.push_str(&format!("edge: {kind}\n"));
+    }
+    out.push('\n');
+    out.push_str(&def.description);
+    if let Some(design) = &def.design {
+        out.push_str("\n\n## design\n");
+        out.push_str(design);
+    }
+    if let Some(notes) = &def.notes {
+        out.push_str("\n\n## notes\n");
+        out.push_str(notes);
+    }
+    if !def.comments.is_empty() {
+        out.push_str("\n\n## handoff\n");
+        for comment in &def.comments {
+            out.push_str(comment);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Read and digest-verify a referenced object.
@@ -483,9 +816,14 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), ContractError> {
     fs::rename(&tmp, path).map_err(|e| {
         FailureCode::InvalidRecord.failure(path.display().to_string(), format!("rename: {e}"))
     })?;
-    if let Ok(dir_file) = fs::File::open(dir) {
-        let _ = dir_file.sync_all();
-    }
+    // Directory fsync makes the rename durable; an ignored failure here would
+    // let admission report success without a durable reference.
+    let dir_file = fs::File::open(dir).map_err(|e| {
+        FailureCode::InvalidRecord.failure(dir.display().to_string(), format!("open dir: {e}"))
+    })?;
+    dir_file.sync_all().map_err(|e| {
+        FailureCode::InvalidRecord.failure(dir.display().to_string(), format!("fsync dir: {e}"))
+    })?;
     Ok(())
 }
 
@@ -548,7 +886,8 @@ mod tests {
                     generation: 1,
                     config_digest: sha256_digest(b"{}"),
                 },
-                PackageArtifactRef::new("objects/builder-prompt.txt", b"prompt", "text/plain"),
+                b"prompt",
+                "text/plain",
             )],
             instructions: Vec::new(),
             shared_design: vec![ContextInput::new(
@@ -567,11 +906,8 @@ mod tests {
             allowed_paths: vec!["crates/fixture".to_string()],
             protected_paths: vec!["fixtures/protected/".to_string()],
             readable_artifacts: Vec::new(),
-            oracle: PackageArtifactRef::new(
-                "objects/oracle.txt",
-                b"oracle",
-                "text/plain",
-            ),
+            oracle_bytes: b"oracle".to_vec(),
+            oracle_media_type: "text/plain".to_string(),
             max_attempts: 2,
             allowance_nusd: 2_000_000_000,
             quota_policy_digest: sha256_digest(b"quota"),

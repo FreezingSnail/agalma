@@ -31,6 +31,7 @@
 
 use std::process;
 
+use agalma_contracts::digest::FailureCode;
 use agalma_contracts::{
     CommitBatch, ContractError, DispatchIntent, ExecutionApi, ExecutionEvent, ExecutionId,
     ExecutionPhase, ExecutionRecord, ExecutionState, ExecutionStatus, LedgerApi, OperationId,
@@ -73,6 +74,23 @@ impl Default for ExecutorConfig {
             execution_definition_version: EXECUTION_DEFINITION_VERSION,
         }
     }
+}
+
+/// A non-dispatchable execution preparation allocated by [`Executor::prepare`].
+///
+/// The prepared execution has a durable `Pending`/Intake row, a `Pending`
+/// `execution_prepared` event, and its allocated generation/lease — but **no**
+/// dispatch intent. It cannot dispatch or advance until [`Executor::activate`]
+/// commits the Running transition, the caller's package-admission event, and the
+/// first dispatch intent in one atomic batch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Preparation {
+    /// The prepared execution identity (`exec:<task>:<generation>`).
+    pub execution_id: ExecutionId,
+    /// The allocated execution generation.
+    pub generation: u32,
+    /// The allocated lease generation (fences later operations).
+    pub lease_generation: u32,
 }
 
 /// Outcome of delivering one logical operation by id (ports S0c `Delivery`).
@@ -180,6 +198,13 @@ impl<L: LedgerApi> Executor<L> {
             .ledger
             .execution(&execution)?
             .ok_or_else(|| ContractError::KnownFailure(format!("unknown execution {execution}")))?;
+
+        // A preparation is not dispatchable until activated.
+        if record.state == ExecutionState::Pending {
+            return Ok(DispatchOutcome::Parked {
+                reason: "preparation not activated".to_string(),
+            });
+        }
 
         if self.ledger.schema_version()? != LEDGER_SCHEMA_VERSION {
             return Ok(DispatchOutcome::Parked {
@@ -293,7 +318,10 @@ impl<L: LedgerApi> Executor<L> {
     /// event (`0` when absent, which never equals the product version).
     fn definition_version(&self, execution: &ExecutionId) -> Result<u32, ContractError> {
         for event in self.ledger.events(execution)? {
-            if event.kind == "execution_created" {
+            if matches!(
+                event.kind.as_str(),
+                "execution_created" | "execution_prepared" | "execution_activated"
+            ) {
                 return Ok(event
                     .payload
                     .get("execution_version")
@@ -308,7 +336,10 @@ impl<L: LedgerApi> Executor<L> {
     /// execution row's `generation`, so pre-M1.6 records stay fenceable).
     fn lease_for(&self, execution: &ExecutionId) -> Result<u32, ContractError> {
         for event in self.ledger.events(execution)? {
-            if event.kind == "execution_created" {
+            if matches!(
+                event.kind.as_str(),
+                "execution_created" | "execution_prepared" | "execution_activated"
+            ) {
                 if let Some(lease) = event
                     .payload
                     .get("lease_generation")
@@ -328,7 +359,10 @@ impl<L: LedgerApi> Executor<L> {
 
     fn max_attempts(&self, execution: &ExecutionId) -> Result<u32, ContractError> {
         for event in self.ledger.events(execution)? {
-            if event.kind == "execution_created" {
+            if matches!(
+                event.kind.as_str(),
+                "execution_created" | "execution_prepared" | "execution_activated"
+            ) {
                 return Ok(event
                     .payload
                     .get("max_attempts")
@@ -698,6 +732,15 @@ impl<L: LedgerApi> ExecutionApi for Executor<L> {
             });
         }
 
+        // A preparation is not dispatchable: it has no intent and must be
+        // activated first. Refuse without committing a park so recovery decides
+        // (and parks a preparation whose package admission never completed).
+        if record.state == ExecutionState::Pending {
+            return Ok(StepOutcome::Parked {
+                reason: "preparation not activated".to_string(),
+            });
+        }
+
         if self.ledger.schema_version()? != LEDGER_SCHEMA_VERSION {
             return Ok(StepOutcome::Parked {
                 reason: "incompatible schema version".to_string(),
@@ -886,6 +929,214 @@ impl<L: LedgerApi> ExecutionApi for Executor<L> {
     }
 }
 
+/// Admission-safe preparation/activation seam (SF.2).
+///
+/// [`Executor::start`] keeps its legacy one-step semantics (execution row +
+/// `execution_created` + first dispatch intent). Admission instead uses
+/// [`Executor::prepare`] to commit a genuinely non-dispatchable `Pending`
+/// preparation with **no** dispatch intent, then [`Executor::activate`] to
+/// commit the Running transition, the caller's package-admission event, and the
+/// first dispatch intent in one atomic batch. `Pending` never dispatches or
+/// advances through `step`/`deliver_operation`/`recover`, so a crash before
+/// activation leaves a preparation that recovery parks rather than dispatching.
+impl<L: LedgerApi> Executor<L> {
+    /// Allocate an execution identity and lease and commit a non-dispatchable
+    /// `Pending`/Intake preparation with no dispatch intent.
+    pub fn prepare(&mut self, task: &TaskId) -> Result<Preparation, ContractError> {
+        let generation = self.next_generation(task)?;
+        let lease_generation = self.ledger.begin_lease(task)?;
+        let execution = ExecutionId::derive(task, generation);
+        let now = now_ms();
+        let record = ExecutionRecord {
+            execution_id: execution.clone(),
+            task_id: task.clone(),
+            generation,
+            phase: ExecutionPhase::Intake,
+            state: ExecutionState::Pending,
+            attempt: 1,
+            revision: 0,
+        };
+        let prepared = ExecutionEvent {
+            execution_id: execution.clone(),
+            sequence: 0,
+            kind: "execution_prepared".to_string(),
+            payload: json!({
+                "task_id": task,
+                "generation": generation,
+                "lease_generation": lease_generation,
+                "attempt": 1,
+                "max_attempts": self.config.max_attempts,
+                "execution_version": self.config.execution_definition_version,
+            }),
+            recorded_at_unix_ms: now,
+        };
+        // One atomic commit: the Pending row + the preparation event. No intent.
+        self.ledger.commit(CommitBatch {
+            expected_revision: None,
+            state: Some(record),
+            events: vec![prepared],
+            receipts: vec![],
+            intents: vec![],
+        })?;
+        maybe_crash("after_prepare_commit");
+        Ok(Preparation {
+            execution_id: execution,
+            generation,
+            lease_generation,
+        })
+    }
+
+    /// Atomically activate `preparation`: the Running transition, `admission`
+    /// (the caller's package-admission event/reference), and the first dispatch
+    /// intent in one batch.
+    ///
+    /// Validates the prepared identity, generation, the recorded preparation
+    /// lease, and the current task lease before accepting either branch. A
+    /// genuine matching recorded activation + admission (matched by the identity
+    /// recorded in the activation event) replays idempotently (no second intent);
+    /// a missing activation, a changed event kind, altered admission inputs, or a
+    /// forged or superseded lease is refused ([`ContractError::Conflict`] /
+    /// [`FailureCode::StaleGeneration`]) without committing a new intent, event,
+    /// or transition.
+    pub fn activate(
+        &mut self,
+        preparation: &Preparation,
+        admission: ExecutionEvent,
+    ) -> Result<OperationId, ContractError> {
+        if admission.execution_id != preparation.execution_id {
+            return Err(ContractError::Conflict(format!(
+                "admission event execution {} does not match preparation {}",
+                admission.execution_id, preparation.execution_id
+            )));
+        }
+        let record = self
+            .ledger
+            .execution(&preparation.execution_id)?
+            .ok_or_else(|| {
+                ContractError::KnownFailure(format!(
+                    "unknown preparation {}",
+                    preparation.execution_id
+                ))
+            })?;
+        if record.generation != preparation.generation {
+            return Err(FailureCode::StaleGeneration.failure(
+                preparation.execution_id.as_str(),
+                format!(
+                    "prepared generation {} is not current ({})",
+                    preparation.generation, record.generation
+                ),
+            ));
+        }
+        let operation = operation_for(&preparation.execution_id, ExecutionPhase::Intake, 1);
+
+        // Validate BOTH leases before accepting either branch:
+        // - the historical lease recorded when the preparation was committed
+        //   (refuses a preparation whose recorded lease was forged/altered), and
+        // - the current task lease (refuses a preparation superseded by another
+        //   preparation that advanced the task lease).
+        if self.lease_for(&preparation.execution_id)? != preparation.lease_generation {
+            return Err(FailureCode::StaleGeneration.failure(
+                preparation.execution_id.as_str(),
+                "prepared lease generation is not the recorded preparation lease",
+            ));
+        }
+        let current_lease = self.ledger.lease_generation(&record.task_id)?;
+        if current_lease != preparation.lease_generation {
+            return Err(FailureCode::StaleGeneration.failure(
+                preparation.execution_id.as_str(),
+                format!(
+                    "prepared lease {} is not the current task lease {current_lease}",
+                    preparation.lease_generation
+                ),
+            ));
+        }
+
+        if record.state != ExecutionState::Pending {
+            // Idempotent replay must supply the exact admission previously
+            // activated, identified by the identity recorded in the
+            // `execution_activated` event (kind + payload). A missing activation,
+            // a changed kind (even one that names an existing event), or changed
+            // inputs is refused without committing a new intent, event, or
+            // transition.
+            let events = self.ledger.events(&preparation.execution_id)?;
+            let activated = events
+                .iter()
+                .find(|event| event.kind == "execution_activated")
+                .ok_or_else(|| {
+                    ContractError::Conflict(format!(
+                        "no recorded activation evidence for {}",
+                        preparation.execution_id
+                    ))
+                })?;
+            let recorded_kind = activated
+                .payload
+                .get("admission_kind")
+                .and_then(Value::as_str);
+            let recorded_payload = activated.payload.get("admission");
+            if recorded_kind == Some(admission.kind.as_str())
+                && recorded_payload == Some(&admission.payload)
+            {
+                return Ok(operation);
+            }
+            return Err(ContractError::Conflict(format!(
+                "replay for {} does not match the recorded admission (kind {} / recorded {:?})",
+                preparation.execution_id, admission.kind, recorded_kind
+            )));
+        }
+
+        let now = now_ms();
+        let state = ExecutionRecord {
+            phase: ExecutionPhase::Intake,
+            state: ExecutionState::Running,
+            ..record.clone()
+        };
+        let activated = ExecutionEvent {
+            execution_id: preparation.execution_id.clone(),
+            sequence: 0,
+            kind: "execution_activated".to_string(),
+            payload: json!({
+                "task_id": record.task_id,
+                "generation": record.generation,
+                "lease_generation": preparation.lease_generation,
+                "attempt": record.attempt,
+                // The exact admission identity supplied at activation, so replay
+                // can be matched against it rather than any existing event.
+                "admission_kind": admission.kind.clone(),
+                "admission": admission.payload.clone(),
+            }),
+            recorded_at_unix_ms: now,
+        };
+        let intent = DispatchIntent {
+            operation_id: operation.clone(),
+            execution_id: preparation.execution_id.clone(),
+            payload: serde_json::to_value(IntentPayload {
+                kind: phase_str(ExecutionPhase::Intake).to_string(),
+                step: step_of(ExecutionPhase::Intake, 1),
+                attempt: 1,
+                lease_generation: preparation.lease_generation,
+                inputs: json!({
+                    "task_id": record.task_id,
+                    "generation": record.generation,
+                }),
+            })
+            .map_err(json_err)?,
+            enqueued_at_unix_ms: now,
+            consumed: false,
+        };
+        // One atomic batch: Running transition + activation event + admission
+        // event/reference + first dispatch intent.
+        self.ledger.commit(CommitBatch {
+            expected_revision: Some(record.revision),
+            state: Some(state),
+            events: vec![activated, admission],
+            receipts: vec![],
+            intents: vec![intent],
+        })?;
+        maybe_crash("after_transition_commit");
+        Ok(operation)
+    }
+}
+
 impl<L: LedgerApi> Executor<L> {
     fn next_generation(&self, task: &TaskId) -> Result<u32, ContractError> {
         let mut generation = 1u32;
@@ -953,7 +1204,17 @@ fn fold_events(events: &[ExecutionEvent]) -> (ExecutionPhase, ExecutionState, u3
     let mut attempt = 1u32;
     for event in events {
         match event.kind.as_str() {
-            "execution_created" => {
+            "execution_prepared" => {
+                phase = ExecutionPhase::Intake;
+                state = ExecutionState::Pending;
+                attempt = event
+                    .payload
+                    .get("attempt")
+                    .and_then(Value::as_u64)
+                    .map(|v| v as u32)
+                    .unwrap_or(1);
+            }
+            "execution_created" | "execution_activated" => {
                 phase = ExecutionPhase::Intake;
                 state = ExecutionState::Running;
                 attempt = event

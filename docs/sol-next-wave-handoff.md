@@ -99,6 +99,26 @@ preserves the accepted SF.2/SF.5/FEZ behavior, and stops for Sol review with raw
 focused logs and exact exits. No task commit precedes approval and a serialized
 index window; no successor release, live-provider acceptance, or push is granted.
 
+**First SF.3 review — 2026-10-14: evidence needs changes.** The scoped executor
+filter and production call ordering are consistent with the assigned contract.
+The supplied four executor-level cases pass, with passing execution and existing
+recovery/package/stop regressions. They do not yet establish the complete
+production acceptance:
+
+- Add a real work/recover_inflight restart case proving a history-preserving
+  projection mismatch prevents subsequent effects at that production seam.
+- The two-context fixture uses different workspace paths but identical activity
+  outcomes and no distinct acceptance inputs. Prove each recovered execution
+  uses genuinely different frozen acceptance/workspace context.
+- A fake `terminated` vector appended on `Present` does not prove a real survivor
+  stopped. Assert process death and durable stop evidence before redispatch using
+  the existing recorded-worker recovery tools.
+
+These findings were returned to the same DeepSeek session within its existing
+three-file ownership. Preserve the executor-level assertions, frozen inputs and
+historical receipts; use a distinct focused repair log. No task approval or
+commit window has been granted.
+
 ## agalma-5fy.8 — builder-only model selection
 
 Add the accepted builder-only CLI/config selector. Explicit builder selection

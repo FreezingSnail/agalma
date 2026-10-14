@@ -163,3 +163,26 @@ and consumed by the factory.
   never confuses human-deferred work, still-deferred staged children, or
   rejected work with an authorized child; the `staged` label alone authorizes
   nothing.
+
+## Planned prompt/skill release extension
+
+The implemented CP gate above remains the bootstrap default. SM.9
+(`agalma-cg9.9`) adds a distinct, directive-authorized automatic release service
+for allowlisted builder prompts and builder-context skills, per
+`docs/self-mutation-contracts.md`. It journals a release receipt before queue
+projection and revalidates source digest, active directive, scope and budget at
+claim. Decomposition approval and a cleared defer date alone do not grant this
+automated authority. Plugin packages follow a later explicit allowlist; bootstrap
+code keeps transitional oversight until P1. This amendment is a future contract,
+not a claim that the current queue gate already implements automated release.
+
+The closed TUI pilot proved authored/validated/staged decomposition. SF.10
+(`agalma-5fy.10`) owns a fresh goal -> design -> staging -> authorized execution
+-> independent review -> epic closure proof; retired duplicate TUI work cannot
+substitute for that evidence.
+
+SF.11 (`agalma-5fy.11`) adds prerequisite-aware epic review. The current CP.5
+implementation only checks staged child closure; it can prematurely review an
+epic whose blocking prerequisite remains open. Revision-1 contracts require
+visible waiting with no paid reviewer/drift mutation, all-child closure and
+graph/design revalidation before approval. SF.10 exercises this guard.

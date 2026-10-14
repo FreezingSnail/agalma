@@ -447,6 +447,82 @@ diagnosis. Sol reviews before transfer or closure. Following the user's commit
 question, completed tasks receive a bounded commit after review approval;
 unreviewed repairs and unrelated edits must not be included in that commit.
 
+### Review and commit pass — 2026-10-13
+
+The user explicitly requested review, approval and commits of the remaining
+work. Commits are scoped to reviewed task hunks, with no push or successor
+release. Source and historical acceptance receipts are preserved.
+
+The final SF.2 activation repair passes review: historical and current task
+leases are checked before either activation branch; replay pins the actual
+admission kind and payload, and changed/forged/superseded inputs refuse before
+commit. Sol read the negative assertions and raw sf_task_package-activate.log
+(28 passed, zero failed/ignored), plus the recorded command exit 0. The full
+SF.2 package still needs one bounded correction before approval:
+`build_package` in task_package.rs automatically appends the held-out oracle
+digest to `scope.readable_artifacts`. Remove that automatic grant and refuse a
+caller-supplied grant of the same oracle. Keep its immutable object durable and
+parent/verifier readable through its explicit oracle reference. Add independent
+assertions for both exclusion and refusal in existing sf_task_package; do not
+implement SF.6 scope enforcement. Lane A retains work.rs until commit/review.
+
+SF.5 non-work.rs changes pass review within their delivered scope. Sol inspected
+the selected open-existing path, marker durability barrier on initial publication
+and retry, metadata failures, shared session control and post-reviewer refusal.
+The existing sf_stop-wave3.log has 22 passing cases and recorded exit 0. Held
+work.rs/composition.rs integration is still incomplete; the bead remains open.
+
+The remaining FEZ transport hunks pass review against their existing accepted
+scope: bounded socket addresses, process defaults with explicit overrides,
+nested-runtime-safe Connect clients, parent EOF and startup cleanup, and five
+real required smokes. Reuse the frozen acceptance receipt (335 conductor
+unit/integration passes and five smokes; two live cases ignored; no resumed
+doctest claim). Its identity catalog is historical, not a hash of the combined
+SF.2/SF.5 working state. The previously accepted designer_payload regression is
+also approved for its own bounded commit under agalma-6w8.
+
+Git index ownership is serialized: reviewed designer payload, FEZ transport,
+then SF.2 after its final correction, followed by SF.5 delivery/integration.
+No unreviewed shared-file hunk may be swept into another task's commit.
+
+**Held SF.5 integration contract:** after SF.2 is approved/committed and releases
+work.rs/phases.rs, transfer both to Lane B for stop wiring only. Also assign
+composition.rs and lib.rs for the existing fixture/run caller's explicit
+admission opening and stop checks. Inspection found the live phase polls still
+construct FileStopControl; inject the same bound control through PhaseDeps and
+use it in those three polls. Adapt PhaseDeps construction in the existing
+conductor, recovery, fencing, cargo_home, rebind and xcrun tests solely to provide
+that control; preserve every behavioral assertion and frozen recovery artifact.
+This is a bounded caller/trait-shape amendment, not a new workflow or supervisor.
+
+Work and fixture composition must open through open_admission_ledger and check
+Running before proxy/session construction or task admission. Preserve metadata
+uncertainty as Unavailable, and use the same Rc bound ledger control for the
+sweep, reviewer, work/phase boundary checks and live turn polls. No second stop
+database/service may be opened by those paths. Preserve ordinary stop/latch,
+explicit resume, crash/recovery and legacy start semantics. SF.4 retains durable
+cancellation settlement; make only the existing bounded interrupt/cleanup calls.
+
+The final inspection also found that metadata's NotFound may describe an
+unresolved present symlink, not absence of the entry. A dangling establishment
+marker plus lost database currently classifies Fresh, while a dangling STOP is
+ignored. Distinguish entry absence with native symlink_metadata or equivalent:
+a present STOP entry denies, and an unresolved marker/database/temp entry refuses
+as Ambiguous/Unavailable instead of bootstrap. Cover both zero-effect cases in
+sf_stop. This completes the existing genuine-absence/uncertainty contract and
+does not introduce a broader plugin or path policy.
+
+Lane B's required command remains cargo test --offline -p agalma-conductor
+--test sf_stop. Extend it with real production work/run refusal for lost
+established state, corrupt/incompatible/read/metadata uncertainty, fresh bootstrap
+and explicit resume, plus evidence that phase polls reuse the injected control.
+Use stub/reference/mock harnesses with no paid provider. Scoped regression
+targets are permitted only for the changed constructors/callers. Build missing
+required binaries through make build once, with no concurrent shared-cache test.
+Do not rerun a full suite, change task acceptance or implement SF.3/SF.4/SF.6.
+Stop for Sol review before commit/closure, or at one reproducible external
+blocker with at most 30 minutes of diagnosis. No successor release or push.
+
 ## Lane A: agalma-5fy.2 — finish immutable task admission/recovery
 
 Preserve wave one at commit `1726298`: canonical digest helpers, complete task

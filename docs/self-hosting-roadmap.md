@@ -1,134 +1,66 @@
-# Self-hosting roadmap — "strapping itself up"
+# Self-hosting roadmap
 
-Status: orchestrator draft, 2026-10-12. Scope: the path from *agalma works its own
-data/docs backlog with human gates* to *agalma decomposes, builds, verifies, and
-promotes its own work unattended* (M2 → M3 → P1), with the near-term enablers that
-unblock each stage.
+Planning snapshot 2026-10-12. The path is reliable self-build -> hub plugins -> measured
+prompt/skill improvement -> remaining M2 services -> M3 operation -> P1 core
+autonomy. Exact first-tranche contracts are in
+[self-mutation-contracts.md](self-mutation-contracts.md); later implementation
+contracts and acceptance are in [self-mutation-roadmap.md](self-mutation-roadmap.md).
+The original architecture milestone requirements remain in force.
 
-Refs: `docs/architecture.md` §13 (milestones), `docs/ipc-exit-evidence.md`,
-`docs/b1-f3-evidence.md`, `docs/tui-design.md`, `docs/planning-pipeline.md`,
-`docs/paid-route-evidence.md`.
+## Current evidence and gaps
 
-## Where the factory stands (2026-10-12)
-
-| Capability | State | Evidence |
+| Area | Observed state | Required successor |
 |---|---|---|
-| Conductor loop, ledger, kernel, crash recovery | ✅ M0/B0 | `docs/m0-exit-evidence.md`, `docs/b0-exit-evidence.md` |
-| Queue-driven loop over real repos, merge-on-green | ✅ M1 | `docs/m1-exit-evidence.md` (2/4 merged, $0.00 free tier) |
-| Tier-1 seams behind replaceable boundaries, dual-binding parity + rebind/rollback | ✅ B1, now all on ConnectRPC over UDS | `docs/b1-exit-evidence.md`, `docs/ipc-exit-evidence.md` |
-| Live paid-route process smoke (OpenCode harness) | ✅ | `docs/b1-f3-evidence.md` (1 attempt, $0.0058) |
-| Pipeline: goal → concierge → epic + design → staged decomposition → approval → fleet | ✅ implemented; pilot pending | CP.1–CP.5 landed; `agalma-i5h.7` pilot open |
-| Review gate (post-merge drift vs epic design, blocking drift-fix) | ✅ | `agalma-i5h.6`, `docs/planning-pipeline.md` |
-| TUI control plane (read model, watch, components, economics, controls, ratatui) | ✅ | `agalma-3kr` epic; ledger v4 control receipts |
-| Bench + promotion + genome/memory | ❌ | `agalma-cg9` (M2 epic, no children) |
-| Scheduler, budgets enforcement, always-on | ❌ | `agalma-3q5` (M3, blocked by M2) |
-| Autonomy gate (no human review) | ❌ | `agalma-52v` (P1, blocked by M3) |
+| M0/B0/M1, replaceable B1 seams and Connect transport | Existing delivery/evidence; isolated boundary parity does not establish every production binding | CV production service convergence |
+| Harness readiness/socket path/process default | `agalma-qww`, `agalma-acs`, `agalma-3ej`, `agalma-ud1` closed | Reuse receipts; SF.9 uses the real current path |
+| Planning pipeline | CP implementation landed; `agalma-i5h.7` closed for authored/validated/staged decomposition | SF.10 fresh goal through execution/review/closure; SF.11 prerequisite-aware review |
+| TUI | `agalma-3kr` closed; duplicate pilot reconciled with 38 passing focused tests | HP.6 dynamic plugin content; SF.4 durable cancellation |
+| Reliable self-build | Missing immutable inputs, protected oracle, settled cancellation, fail-closed stop and pre-request spending admission | SF, `agalma-5fy`, 11 staged tasks |
+| Independently installed plugins | Common platform is planned, not implemented | HP, `agalma-jmr`, 8 staged tasks |
+| Measured first mutation | User selected builder prompts/context skills first, task success with regression/spending limits | SM, `agalma-cg9`, 9 staged tasks |
+| Remaining M2 | Nerve/context/repair, memory, model onboarding and evaluated deciders remain required | MX, `agalma-xlw`, 8 staged tasks |
+| Production API convergence | Current work still uses concrete seed; auxiliary SQLite deviation remains historical | CV, `agalma-pob`, 8 staged tasks |
+| Always-on operation | No complete 72-hour operations proof | M3, `agalma-3q5`, 9 staged tasks |
+| Core autonomy | Transitional human code oversight remains | P1, `agalma-52v`, 8 staged tasks |
 
-Key constraint today: the loop builds tasks whose acceptance runs offline, and the
-M1 mutation ladder keeps tasks in data/docs scope. Rust/pipeline self-modification
-stays behind transitional human oversight **until the promotion + autonomy gates
-exist** (architecture §13: "Code stays under transitional oversight until P1").
+## Sequencing and release
 
-## Gap analysis — what "strapping up" requires
+The shared first-tranche design gate is `agalma-fjq`; its design receipt records
+schemas, examples, failure/compatibility semantics, ownership and decomposition
+checks. Closing that design gate does not release implementation tasks.
+At that design audit, all 61 planned children were staged/deferred. Subsequent
+explicit operator releases and implementation reviews are recorded in bd and
+[the batch handoff](opencode-parallel-batch-1.md); this planning snapshot does not
+override their current status. Later MX/CV/M3/P1 work also blocks
+on `agalma-16k`, which freezes those seams against actual HP/SM runtime evidence.
+See [standup beads](self-mutation-standup-beads.md) and
+[later roadmap beads](self-mutation-roadmap-beads.md) for exact IDs/dependencies.
 
-1. **Pipeline pilot never exercised end to end** (`i5h.7`): no proof yet that a goal
-   travels intake → design → decomposition → approval → execution → review → close.
-2. **Transport defaults still in-process** (harness/ledger selectors `_ => InProcess`).
-   Live smoke passed with `=process`; the flip was deferred on a real blocker
-   (`SUN_LEN` on `<state>/harness-ref-N.sock` for reference runs). Connect is the wire
-   default, so the flip is now a path-length fix + re-smoke, not new machinery.
-3. **Flaky verification undermines unattended trust**: `agalma-qww` (harness_connect
-   `Connection refused` under parallel load) is one instance of a class — readiness
-   races in spawn/connect paths must be deterministic before always-on.
-4. **No promotion machinery**: bench fixtures/history replay, paired candidate-vs-
-   baseline evaluation, immutable candidate SHAs, regression veto, auto-rollback
-   tagging, genome/prompt versioning (M2, `agalma-cg9`).
-5. **No scheduler/cadence/budget enforcement**: per-task `budget_usd` is recorded but
-   not enforced; no unattended 72h operation, supervision, backups, retention (M3).
-6. **Human review is still the gate**: decomposition approval (`undefer`) and code
-   oversight are manual until the P1 gate proves the required list.
+1. SF builds reliable immutable task delivery, execution-scoped recovery,
+   cancellation, stop/scope enforcement, request liability reservations and
+   independently selected builder/planner/reviewer routes. SF.9 and SF.10 prove
+   self-build and the fresh full pipeline under bootstrap oversight.
+2. HP supplies independent packages, discovery, registry/supervision, common IPC,
+   ledger namespaces, declarative UI and durable actions. Its exit installs an
+   unfamiliar plugin without rebuilding the hub.
+3. SM proposes and directive-authorizes prompt/skill tasks, compares immutable
+   baseline/candidate on protected paired trials, qualifies success gains with
+   regression/economic limits, canaries and retains or rolls back an improvement.
+   Screening never substitutes for qualification. Plugins follow an allowlist.
+4. MX completes remaining M2 obligations; CV migrates actual consumers onto the
+   common platform. M2 cannot close solely because its first SM children close.
+5. M3 extends release policy with cadence, durable scheduling, aggregate
+   cash/quota/local limits, supervision, complete backups, restore/fault drills
+   and genuine 72-hour evidence. Display-only or post-spend budget checks do not
+   satisfy admission enforcement.
+6. P1 adds reproducible immutable core candidates, an external recovery owner,
+   isolated shadow/canary, fenced drain/activation and automatic compatible
+   rollback. Initial autonomous core updates preserve the ledger schema. Binary
+   rollback never rewinds the live database. Enable code autonomy only after the
+   original protected acceptance/evaluator, budget, reconciliation and rollback
+   requirements have independent evidence.
 
-## Staged roadmap
-
-### R0 — close the self-referential loop (now; days)
-
-Goal: agalma processes **its own planning backlog** with one human touch (goal spec +
-undefer) and zero per-task handholding.
-
-- `agalma-i5h.7` pilot: run concierge/designer over the TUI epic, approve, let the
-  fleet consume staged children (proves the full CP path).
-- `agalma-qww` + readiness-race sweep: make spawn/connect waits deterministic
-  (poll-connect or READY-line gating) so parallel/unattended runs don't flake.
-- Transport flip package: bound the per-run socket paths (fix `SUN_LEN`), flip
-  `HarnessTransport` default to process, re-run the live smoke on Connect, then
-  evaluate peer boundaries for the same flip (record deferrals where unsafe).
-- Expose the pipeline loop as a conductor command cadence (concierge sweep already
-  exists; wire goal list → staging → dispatch as one `agalma` flow).
-
-Exit: one goal spec → staged beads → fleet executes → review gate runs → epic closed,
-with the ledger + digests showing every step.
-
-### R1 — factory runs its own data/docs backlog unattended (M2 part 1)
-
-- Directive ingestion (goal list file) + staged approval policy: auto-`undefer`
-  for classes the policy marks safe (docs, planning, prompts) with review gate.
-- Budget enforcement minimal: hard-fail a task when recorded spend crosses
-  `budget_usd` (needed before unattended code work).
-- Postmortem mining: turn parked executions into new candidate tasks
-  (`docs/planning-pipeline.md` CP.5 review flow).
-
-Exit: a batch of agalma's own data/docs beads completes with the human only seeding
-goals; failure classes land in postmortems instead of dropping work.
-
-### R2 — self-modification behind promotion gates (M2 core; `agalma-cg9`)
-
-Decompose M2 into children modeled on the B1 recipe (each with acceptance + evidence):
-
-- **Bench**: fixtures + history replay; paired candidate vs baseline (K trials,
-  statistics per architecture §6.6); anti-gaming (pristine ref, read-only tests).
-- **Promotion pipeline**: candidate → deterministic acceptance → independent
-  evaluation → paired bench → promote (commit + tag) | reject/revert (memory);
-  immutable candidate SHAs; regression veto; auto-rollback of bad promotions.
-- **Mutation ladder**: data/docs (done) → prompts/skills (genome versioning,
-  auto-promotion of wins) → pipeline Rust behind the promotion gate.
-- **Nerve core**: repair, context injection, permission bridge, compaction
-  summarizer (OpenCode TS plugin; spike: `spikes/s0a/probe-plugin.js`).
-- **Model onboarding**: screen + full eval + routing mutation under policy;
-  decider candidates in shadow mode before activation.
-
-Exit (M2): factory improves its own prompt/skill unattended, keeps the win, and the
-ledger shows it — under transitional oversight for code, automatic for genome.
-
-### R3 — always-on baseline (M3; `agalma-3q5`)
-
-- Scheduler + cadence; recon/mining; digest cadence; degradation alerts (TUI
-  economics/alerts already surface the data).
-- Budget enforcement full: failed, local, and remote inference.
-- Conductor supervision (launchd/service), SQLite backups/restore, retention,
-  schema-upgrade procedure; recovery drills.
-
-Exit (M3, MVP): 72h unattended; budget respected; clean kill/resume; alerts fire;
-restore drill reconciles execution state, receipts, bd, and Git before dispatch.
-
-### R4 — autonomy gate (P1; `agalma-52v`)
-
-Prove the §13 list — protected acceptance/evaluator fixtures, reproducible
-verification against immutable SHAs, paired bench + regression veto, directive and
-budget enforcement, crash/lease/cancellation reconciliation, automatic rollback,
-directive-bounded actions — via shadow + canary, then enable autonomous code/kernel
-integration under the active directive. Regressions disable promotion and revert
-without human review.
-
-## Immediate bead plan
-
-| Action | Bead | State |
-|---|---|---|
-| Pipeline pilot | `agalma-i5h.7` | ready (live, needs undefer) |
-| Flake fix (readiness race) | `agalma-qww` | ready |
-| Socket-path bound + transport default flip + re-smoke | *to file* (R0) | new |
-| M2 decomposition (bench/promotion/nerve/model onboarding) | `agalma-cg9` children | *to file* (design first) |
-| M3 / P1 | `agalma-3q5`, `agalma-52v` | epics exist, blocked |
-
-Sequencing law: **verification determinism → transport parity → promotion gates →
-always-on → autonomy**. Skipping ahead (unattended code edits without bench/promotion/
-rollback) is the failure mode this roadmap exists to prevent.
+Live provider prices/request limits are not certified by this planning session.
+Unsupported profiles deny paid dispatch until SF.7 records reviewed evidence.
+Future test names in beads are implementation deliverables, not current passing
+tests. This session neither releases tasks nor performs paid inference.

@@ -1,6 +1,6 @@
 # Agalma
 
-> An always-running software factory. It evaluates, builds, and ships its target — and never stops.
+> A software factory designed for continuous operation. It evaluates, builds, and ships its target.
 
 Named after *Agalma*, a genus of siphonophore: colonial deep-sea organisms built from specialized parts that are continuously replaced, so the colony itself persists indefinitely. Agalma the factory borrows the model, not the vocabulary.
 
@@ -10,7 +10,7 @@ Named after *Agalma*, a genus of siphonophore: colonial deep-sea organisms built
 recon → design → build → verify → ship → iterate
 ```
 
-The loop never terminates. Each pass evaluates the current state of the target, decides the next task, and executes it.
+The intended loop continually evaluates the target, chooses work, and executes it. Current runs are supervised and do not yet operate unattended.
 
 ## Roles
 
@@ -26,7 +26,7 @@ Canonical role definitions (`docs/architecture.md` §3.5):
 
 ## What exists today
 
-A Rust workspace implementing the factory core. The conductor drives a queue of tasks from `bd`, executes them in confined sandboxed checkouts via OpenCode, verifies acceptance, merges on green, and records every step in a durable SQLite ledger. Every Tier-1 component (harness, sandbox, workspace, task queue, ledger, execution) implements a versioned Agalma contract and can run behind a process boundary over framed JSON (`agalma-ipc`).
+A Rust workspace implementing the factory core. The conductor drives tasks from `bd`, executes them in confined sandboxed checkouts via OpenCode, verifies acceptance, merges on green, and records steps in a durable SQLite ledger. Tier-1 components (harness, sandbox, workspace, task queue, ledger, execution) have versioned Agalma contracts and can run behind framed-JSON process boundaries (`agalma-ipc`).
 
 | Crate | Responsibility |
 |---|---|
@@ -64,20 +64,26 @@ agalma gc         Reap terminal executions' heavy scratch from a state dir
 | M1 — working loop | ✅ | `docs/m1-exit-evidence.md` (seeded batch on a scratch clone, metrics, digest) |
 | B0 — durable execution kernel | ✅ | `docs/b0-exit-evidence.md` (protected recovery pack 10/10, upgrade/rollback, resource baseline) |
 | B1 — component extraction | ✅ | `docs/b1-exit-evidence.md` (Tier-1 seams behind process boundaries; parity/rebind/rollback per boundary) |
-| M2 — bench + promotion + nerve | next | unblocked by B1 |
+| M2 — bench + promotion + nerve | remaining work | [self-hosting roadmap](docs/self-hosting-roadmap.md) |
 | M3 — always-on baseline | planned | MVP exit |
 | P1 — autonomy gate | planned | removes transitional human review |
 
-Operational posture: extraction is complete — components are replaceable through their
-declared APIs with dual-binding parity, staged rebind, and rollback evidence. Production
-transports default to process for harness, ledger, workspace, and task queue;
-`AGALMA_*_TRANSPORT=in-process` retains the explicit override. Sandbox always uses
-a process. The execution/kernel transport keeps its in-process default while
-production integration remains planned in CV.1 (`agalma-pob.1`). Execution is
-supervised, one task at a time, on a scratch clone — the factory does not yet run
-unattended. Peer socket bounds and smoke evidence are recorded in
-`docs/b1-f3-evidence.md` §6 (`agalma-fez`); auxiliary ledger connections remain
-migration work (`agalma-1o3`).
+Operational posture: the current production defaults use process transports for the
+harness, ledger, workspace, and task queue; `AGALMA_*_TRANSPORT=in-process` retains
+the in-process override. Sandbox always uses a process. Execution/kernel remains
+in-process by default; its production integration is planned in CV.1
+(`agalma-pob.1`). Work is supervised, one task at a time, on a scratch clone; the
+factory does not yet run unattended. Peer socket bounds and smoke evidence are in
+[`docs/b1-f3-evidence.md`](docs/b1-f3-evidence.md) §6 (`agalma-fez`); auxiliary
+ledger connections remain migration work (`agalma-1o3`).
+
+The next architecture is a hub with independently installable plugins, registry
+discovery/supervision, and common reporting rendered dynamically in the control
+plane. That platform is planned, not the current runtime. The browser dashboard
+design is accepted for decomposition, but its implementation is prerequisite-gated;
+unknown-plugin end-to-end acceptance has not been established. See the
+[self-hosting roadmap](docs/self-hosting-roadmap.md) and
+[browser dashboard design](docs/web-dashboard-design.md).
 
 ## Verified behavior
 
@@ -98,15 +104,20 @@ All code implementation goes to GPT-6 Luna or DeepSeek Flash through OpenCode.
 Build every product workspace target with the root Makefile:
 
 ```sh
-make             # debug; same as make all / make build
-make release     # release profile
-make help        # usage and Cargo/cache overrides
+make             # same as make all / make build; debug profile
+make all         # same debug build
+make build       # same debug build
+make release     # same targets in the release profile
+make help        # targets, scope, outputs, and overrides
 ```
 
-Builds use `--offline --locked`, reuse `target/`, and include all workspace
-libraries, binaries, examples, tests, and benches without executing tests.
-Standalone spikes and fixture projects are excluded. `CARGO`, `CARGO_FLAGS`, and
-`CARGO_TARGET_DIR` can be overridden; see the development workflow for details.
+These compile all Cargo workspace targets (libraries, binaries, examples, tests,
+and benches); they do not execute tests. Standalone spikes and fixture projects
+are excluded. Defaults are `--offline --locked`; builds reuse Cargo's normal
+`target/debug/` or `target/release/` outputs. `CARGO` selects the Cargo executable,
+`CARGO_FLAGS` replaces the default flags as a whole, and `CARGO_TARGET_DIR` selects
+an alternate cache. See the [development workflow](docs/development-workflow.md)
+for details.
 
 Choose and state a focused, peer, or full test scope before running checks. The
 workflow defines the unified `scripts/test.sh` entry point, which is pending
@@ -121,7 +132,14 @@ cargo run --offline -p agalma-conductor -- run \
   --state-dir target/test-runs/e2e
 ```
 
-All run artifacts live under `target/test-runs/` — never a system temp directory. Dependency versions are pinned exactly in `Cargo.toml`; no new crates without explicit approval (`docs/m0-dependencies.md`).
+Verification runs belong under `target/test-runs/`; worker reports and handoffs
+are retained under `target/worker-output/`. Treat both as evidence, including
+frozen records. `target/debug/` and `target/release/` are active build outputs;
+do not remove all of `target/` while sessions may be using its binaries. An
+obsolete isolated cache may be removed only after confirming no active session
+uses it, and without discarding retained evidence. Dependency versions are
+pinned exactly in `Cargo.toml`; no new crates without explicit approval
+([`docs/m0-dependencies.md`](docs/m0-dependencies.md)).
 
 OpenCode attempts disable native snapshots; Agalma uses workspace Git for rollback.
 The harness clears stale runtime folders before launch and removes them after stop
@@ -139,6 +157,9 @@ as `opencode-log-<unique-id>/`; workspace files are preserved. Set
 - `docs/b1-extraction.md` — B1 design (transport, shadow parity, serial order); `docs/b1-exit-evidence.md` — per-boundary extraction evidence
 - `docs/reliability-hardening.md`, `docs/hardening-evidence.md` — watchdog, routing, xcrun/TMPDIR
 - `docs/research/`, `docs/spikes/` — recon and spike reports
+- [Self-hosting roadmap](docs/self-hosting-roadmap.md) — current gaps and planned platform sequence
+- [Browser dashboard design](docs/web-dashboard-design.md) — accepted design and gated implementation plan
+- [Development workflow](docs/development-workflow.md) — build and verification guidance
 
 ## License
 

@@ -7,22 +7,23 @@ criteria are in [the batch handoff](opencode-parallel-batch-1.md).
 
 ## Readiness and shared ownership
 
-2026-10-13 next-wave update: the completed repair review found SF.2/SF.5 still
-incomplete. The user's next DeepSeek wave resumes those two existing sessions
-under the bounded ownership amendments in docs/opencode-parallel-batch-1.md,
-Next repair wave authorization and ownership. That resolves the executor
-preparation and established-ledger opening blockers before the new SF lanes
-below. No deferred SF/HP/WEB child is released by this repair dispatch.
+At preparation on 2026-10-13, SF.2/SF.5 were incomplete and the next repair wave
+resumed their existing sessions under the bounded amendments in
+docs/opencode-parallel-batch-1.md. SF.1, SF.3, SF.6 and SF.8 were staged/deferred;
+their shared design gate agalma-fjq was closed. That planning snapshot did not
+release any new child.
 
-SF.1, SF.3, SF.6 and SF.8 are deferred/staged and each has a direct SF.2 blocker.
-Their shared design gate agalma-fjq is closed. Preparation does not release them.
-Before a new dispatch, refresh compact blocker/release state and use SF.2's
-reviewed public package surface. Do not guess an interface while Lane A edits it.
+Current reviewed status on 2026-10-14: SF.2 (`ca4d068`), SF.5 (`6deb43b`), and
+the subsequently operator-released SF.3 (`38aa9cb`) are committed and closed.
+SF.1, SF.6 and SF.8 remain staged/deferred. Before another dispatch, refresh
+compact blocker/release state, use the reviewed public package surface, and
+explicitly transfer any shared integration ownership. Closing a prerequisite
+does not itself release its successors.
 
 | Task | Work that can be separated after SF.2 | Integration ownership |
 |---|---|---|
 | agalma-5fy.1 / SF.1 | Repository/fixture prompt text, composition and prompt tests | phases.rs exclusive to SF.1 during its integration |
-| agalma-5fy.3 / SF.3 | Execution-scoped executor recovery and recovery tests | work.rs after the current SF.5 integration is reviewed |
+| agalma-5fy.3 / SF.3 | Completed execution-scoped recovery gate and tests (`38aa9cb`) | work.rs returned to Sol after reviewed commit |
 | agalma-5fy.8 / SF.8 | CLI/config/routing selection and route tests | work.rs after SF.3; task_package.rs after SF.2 releases it |
 | agalma-5fy.6 / SF.6 | Scope guard, typed Workspace inspection with IPC parity and independent tests | work.rs after SF.8; phases.rs after SF.1 |
 
@@ -116,8 +117,32 @@ production acceptance:
 
 These findings were returned to the same DeepSeek session within its existing
 three-file ownership. Preserve the executor-level assertions, frozen inputs and
-historical receipts; use a distinct focused repair log. No task approval or
-commit window has been granted.
+historical receipts; use a distinct focused repair log. At that point no task
+approval or commit window had been granted.
+
+**Final SF.3 review — 2026-10-14: APPROVED.** The repaired focused target
+executes seven cases, including real `work` restart with a frozen admitted
+package, projection tamper that records the specific history-disagreement park
+without new receipts/intents/effects, distinct per-task acceptance output, and
+a recorded live worker stopped with durable evidence before redispatch.
+The executor fixtures separately refuse cross-task probes, reconcile a landed
+effect without repetition, and park ambiguous evidence before a later step.
+
+Sol read `target/test-runs/agalma-5fy.3/sf_recovery_gate.repair2.log`: seven
+passed, zero failed or ignored, exit 0. Earlier unchanged-source regressions
+executed eleven execution cases and six recovery, thirty package, and thirty-five
+stop cases, all exit 0. These are scoped results, not full-workspace or
+live-provider acceptance. The gate-removal diagnostic failed the production
+tamper case as expected; its raw log is retained separately. Sol's native
+comparison confirmed the gate-enabled source was restored byte-for-byte.
+
+Because that diagnostic compiled a binary with the gate removed after the green
+run, DeepSeek refreshed the restored build outputs once via `make build`, exit 0,
+before committing. Its raw output is retained in `make-build.log` alongside the
+focused evidence. The three reviewed SF.3 files are committed as `38aa9cb`;
+Sol confirmed the file list and closed the bead with implementation attribution
+to `opencode-go/deepseek-v4.1-flash`. Index and shared-file ownership returned to
+Sol. No successor release or push followed this approval.
 
 ## agalma-5fy.8 — builder-only model selection
 

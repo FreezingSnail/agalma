@@ -554,6 +554,45 @@ dispatch; they do not block the explicit commit windows recorded here.
 
 No push, successor release, or broader platform acceptance is recorded here.
 
+### Final SF.5 review — 2026-10-14
+
+**Lane B / agalma-5fy.5: APPROVED for the complete assigned scope.** The final
+production work/run paths observe STOP before ledger initialization and use one
+shared bound stop control before normal composition, planning/review, queue
+admission, task driving, and live phase polls. Missing or uncertain established
+state refuses without replacement authority or new dispatch. A latched boot
+retains the existing bounded worker cleanup before refusing normal composition;
+it does not construct the provider proxy or materialize prompts. This cleanup
+reuses the legacy probe implementation and does not establish sandbox boundary
+migration or SF.3/SF.4 recovery acceptance.
+
+Sol reviewed the source and the implementer's distinct final raw logs under
+`target/test-runs/opencode-batch-1/agalma-5fy.5/`:
+
+| Focused command selection | Passed | Final log |
+|---|---:|---|
+| `--test sf_stop` | 35 | `sf_stop-integration-final5.log` |
+| `--test recovery` | 6 | `recovery-integration-final3.log` |
+| `--lib injected_stop_control_drives_poll_terminal` | 1 | `phases-injected-control-final2.log` |
+| `--test work --test xcrun` | 5 + 1 | `work-xcrun-final.log` |
+
+Each selection used `cargo test --offline -p agalma-conductor`, recorded exit 0,
+and executed its required cases with zero failures or ignored cases. The library
+selection filtered 159 other cases. These are focused results, not a coherent
+full-workspace run or live-provider acceptance. A single `make build` refreshed
+the changed ledger-server binary before the final process recovery check.
+
+Earlier failures and the interrupted caller run remain distinct in the handoff.
+The first failed SF.5 raw log was overwritten by the implementer; that evidence
+loss is disclosed in `sf_stop-integration-FAILED-run-DISCLOSURE.txt`, with the
+OpenCode tool record retained as the available account. It is not reconstructed
+or counted as a pass. Historical frozen receipts remain unchanged.
+
+DeepSeek Flash committed the 21 reviewed SF.5 files as `6deb43b`, exit 0,
+and returned the empty index to Sol. The bead closes with implementation
+attribution to `opencode-go/deepseek-v4.1-flash`. No successor release or push
+is authorized by this approval.
+
 ## Lane A: agalma-5fy.2 — finish immutable task admission/recovery
 
 Preserve wave one at commit `1726298`: canonical digest helpers, complete task

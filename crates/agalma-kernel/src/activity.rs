@@ -376,6 +376,11 @@ pub fn run_activity<L: LedgerApi>(
     if state.kill_latched {
         return Ok(OperationResult::Blocked { operation_id });
     }
+    // A recorded cancellation blocks new dispatch/advancement: a cancelled
+    // pending operation must never merge or run a fresh effect.
+    if engine.cancellation_settlement(execution_id)?.is_some() {
+        return Ok(OperationResult::Blocked { operation_id });
+    }
 
     if let Some(record) = state.operations.get(&operation_id) {
         if record.inputs_hash != inputs_hash {
@@ -437,6 +442,11 @@ pub fn recover_pending<L: LedgerApi>(
         // blocks recovered dispatch exactly as it blocks new work.
         let state = engine.load(execution_id)?;
         if state.state == ExecState::Parked || state.kill_latched {
+            break;
+        }
+        // A recorded cancellation (requested/settling/settled) dominates
+        // recovery: a cancelled execution never re-dispatches a pending effect.
+        if engine.cancellation_settlement(execution_id)?.is_some() {
             break;
         }
         let Some(mut meta) = PendingMeta::from_intent(&intent) else {

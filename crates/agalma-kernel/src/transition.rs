@@ -480,7 +480,9 @@ fn cancel(state: &KernelState, command: &Command, inputs: &Inputs) -> StepResult
     }
     let mut next = state.clone();
     next.state = ExecState::Cancelled;
-    next.parked_reason = None;
+    // Frozen public projection: `Failed`/`Parked` with reason `Cancelled`.
+    next.phase = agalma_contracts::ExecutionPhase::Parked;
+    next.parked_reason = Some("Cancelled".to_string());
     for record in next.operations.values_mut() {
         if !matches!(
             record.state,

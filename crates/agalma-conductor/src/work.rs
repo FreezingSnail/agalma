@@ -33,11 +33,11 @@ use std::rc::Rc;
 
 use agalma_contracts::digest::{sha256_digest, FailureCode};
 use agalma_contracts::{
-    AuthorizationOrigin, BindingPin, ClaimEvidence, CommitBatch, ContractError, DecisionApi,
-    DecisionAttempt, DecisionKind, DecisionOption, DecisionOutcome, DecisionPin, DecisionRequest,
-    DirectiveRef, ExecutionApi, ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord,
-    ExecutionState, LedgerApi, OperationId, Role, StepOutcome, Task, TaskFamily, TaskId,
-    TaskPackage, TaskPriority, TaskQueueApi, DECISION_API_VERSION,
+    AuthorizationOrigin, BindingPin, CancellationState, ClaimEvidence, CommitBatch, ContractError,
+    DecisionApi, DecisionAttempt, DecisionKind, DecisionOption, DecisionOutcome, DecisionPin,
+    DecisionRequest, DirectiveRef, ExecutionApi, ExecutionEvent, ExecutionId, ExecutionPhase,
+    ExecutionRecord, ExecutionState, LedgerApi, OperationId, Role, StepOutcome, Task, TaskFamily,
+    TaskId, TaskPackage, TaskPriority, TaskQueueApi, DECISION_API_VERSION,
 };
 use agalma_decision::{StaticDecider, TRIAGE_PICK_NEXT_BASELINE};
 use agalma_execution::{
@@ -769,6 +769,34 @@ fn recover_inflight(
 ) -> Result<(), ContractError> {
     let executions = ledger.executions()?;
     for record in executions {
+        // Per-execution cancellation survives factory resume. It is settled
+        // BEFORE any terminal/`continue` decision, because a cancellation request
+        // (and a retryable settling) must be reconciled even when the coarse row
+        // already looks parked. Resume only clears the global latch; it never
+        // removes cancellation.
+        let cancellation = cancellation_state_of(ledger, &record.execution_id)?;
+        match cancellation {
+            CancellationState::Requested | CancellationState::Settling => {
+                settle_cancelled_execution(
+                    repo,
+                    state_dir,
+                    ledger,
+                    paid_available,
+                    proxy_url.clone(),
+                    queue,
+                    harness.clone(),
+                    Rc::clone(&stop),
+                    &record,
+                )?;
+                continue;
+            }
+            CancellationState::Settled => {
+                // Already settled and projected on an earlier boot.
+                continue;
+            }
+            CancellationState::None => {}
+        }
+
         let terminal = matches!(
             record.state,
             ExecutionState::Completed | ExecutionState::Parked | ExecutionState::Failed
@@ -870,6 +898,124 @@ fn recover_inflight(
         )?;
     }
     Ok(())
+}
+
+/// The cancellation settlement state of one execution, read from the ledger
+/// event log through a bare executor (no activities needed).
+fn cancellation_state_of(
+    ledger: &LedgerHandle,
+    execution: &ExecutionId,
+) -> Result<CancellationState, ContractError> {
+    let bare = Executor::new(
+        ledger.clone(),
+        ExecutorConfig {
+            max_attempts: 2,
+            execution_definition_version: EXECUTION_DEFINITION_VERSION,
+        },
+    );
+    bare.cancellation_state(execution)
+}
+
+/// Settle a cancelled execution during recovery and project it to the backlog.
+///
+/// The settlement probes run on the pinned activities reconstructed from the
+/// frozen package so survivor reconciliation uses the right bindings. If the
+/// frozen package cannot be reconstructed, a **bare** executor is used: its
+/// probes are unconfirmed (conservative) and never dispatch a fresh effect.
+#[allow(clippy::too_many_arguments)]
+fn settle_cancelled_execution(
+    repo: &Path,
+    state_dir: &Path,
+    ledger: &LedgerHandle,
+    paid_available: bool,
+    proxy_url: Option<String>,
+    queue: &mut TaskQueueHandle,
+    harness: HarnessHandle,
+    stop: Rc<dyn StopControl>,
+    record: &ExecutionRecord,
+) -> Result<(), ContractError> {
+    let mut executor = match build_recovery_executor(
+        ledger, state_dir, repo, paid_available, proxy_url, harness, stop, record,
+    ) {
+        Ok(executor) => executor,
+        Err(err) => {
+            eprintln!(
+                "agalma: cancellation settle {} uses a bare executor \
+                 (probes unconfirmed): {err}",
+                record.execution_id
+            );
+            Executor::new(
+                ledger.clone(),
+                ExecutorConfig {
+                    max_attempts: 2,
+                    execution_definition_version: EXECUTION_DEFINITION_VERSION,
+                },
+            )
+        }
+    };
+    let state = executor.settle_cancellation(&record.execution_id)?;
+    let label = match state {
+        CancellationState::Settled => "settled",
+        CancellationState::Settling => "settling",
+        CancellationState::Requested => "requested",
+        CancellationState::None => "none",
+    };
+    let _ = queue.comment(
+        &record.task_id,
+        &format!(
+            "phase=parked execution={} cancellation={label}",
+            record.execution_id
+        ),
+    );
+    let _ = queue.set_status(&record.task_id, "blocked");
+    let _ = queue.add_label(&record.task_id, PARKED_LABEL);
+    let _ = queue.comment(&record.task_id, "parked: Cancelled");
+    Ok(())
+}
+
+/// Reconstruct a recovery executor bound to `record`'s frozen package and its
+/// pinned activities. Errors when the package/role pins cannot be resolved; the
+/// caller falls back to a bare (unconfirmed-probe) executor rather than driving.
+#[allow(clippy::too_many_arguments)]
+fn build_recovery_executor(
+    ledger: &LedgerHandle,
+    state_dir: &Path,
+    repo: &Path,
+    paid_available: bool,
+    proxy_url: Option<String>,
+    harness: HarnessHandle,
+    stop: Rc<dyn StopControl>,
+    record: &ExecutionRecord,
+) -> Result<Executor<LedgerHandle>, ContractError> {
+    let reference = admission_digest(ledger, &record.execution_id)?;
+    let package = load_frozen_or_legacy(
+        state_dir,
+        reference.as_deref(),
+        record.execution_id.as_str(),
+    )?;
+    if package.execution_id != record.execution_id.as_str() {
+        return Err(ContractError::KnownFailure(format!(
+            "frozen package {} does not match execution {}",
+            package.execution_id, record.execution_id
+        )));
+    }
+    let plan = role_plan_from_package(&package)?;
+    let task_id = TaskId::new(package.task_id.clone());
+    let task = task_from_package(&package, &task_id);
+    verify_recovered_pins(state_dir, &package, &harness)?;
+    let builder_prompt = builder_prompt_bytes(state_dir, &package)?;
+    build_executor(
+        ledger,
+        state_dir,
+        &plan,
+        paid_available,
+        proxy_url,
+        &task,
+        repo,
+        harness,
+        &builder_prompt,
+        stop,
+    )
 }
 
 /// The route pins an executor run selected (models and route labels). A fresh

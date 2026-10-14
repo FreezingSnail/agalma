@@ -51,6 +51,9 @@ pub const CHILD_ENV: &str = "KERNEL_RECOVERY_CHILD";
 pub const BEFORE_PERSISTENCE: &str = "before_persistence";
 /// After the transition commit returned, before dispatch (fixture case 1).
 pub const AFTER_TRANSITION_COMMIT: &str = "after_transition_commit";
+/// After a cancellation request's durable settlement intent committed, before
+/// the `Cancel` transition/cleanup runs (SF.4 crash window).
+pub const AFTER_CANCEL_REQUEST: &str = "after_cancel_request";
 /// Immediately before handing work to an adapter/handler.
 pub const BEFORE_DISPATCH: &str = "before_dispatch";
 /// After dispatch returned, before the completion record.

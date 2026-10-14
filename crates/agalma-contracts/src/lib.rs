@@ -37,7 +37,10 @@ pub use digest::{
     validate_digest, FailureCode, CANONICAL_JSON_FORMAT, FAILURE_DETAIL_FORMAT, SHA256_PREFIX,
 };
 pub use error::ContractError;
-pub use execution::{ExecutionApi, ExecutionPhase, ExecutionState, ExecutionStatus, StepOutcome};
+pub use execution::{
+    CancellationSettlement, CancellationState, ExecutionApi, ExecutionPhase, ExecutionState,
+    ExecutionStatus, StepOutcome,
+};
 pub use harness::{
     mvp_baseline_required, optional_capabilities, AttemptHandle, CancelAck, Completeness,
     CreateSessionRequest, Describe, Event, HarnessApi, Limits, OperationHandle, OperationState,

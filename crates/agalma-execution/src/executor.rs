@@ -33,9 +33,9 @@ use std::process;
 
 use agalma_contracts::digest::FailureCode;
 use agalma_contracts::{
-    CommitBatch, ContractError, DispatchIntent, ExecutionApi, ExecutionEvent, ExecutionId,
-    ExecutionPhase, ExecutionRecord, ExecutionState, ExecutionStatus, LedgerApi, OperationId,
-    OperationReceipt, StepOutcome, TaskId,
+    CancellationSettlement, CancellationState, CommitBatch, ContractError, DispatchIntent,
+    ExecutionApi, ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState,
+    ExecutionStatus, LedgerApi, OperationId, OperationReceipt, StepOutcome, TaskId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -174,6 +174,281 @@ impl<L: LedgerApi> Executor<L> {
         Ok(fold_events(&events))
     }
 
+    /// The per-execution cancellation settlement state derived from recorded
+    /// events (SF.4). Pure read: no I/O beyond the event log, no effect.
+    ///
+    /// Priority is by presence, not order: `cancel_settled` wins over
+    /// `cancel_settling`, which wins over `cancel_requested`. A `cancel_noop`
+    /// receipt (already-terminal work) does not change the state.
+    pub fn cancellation_state(
+        &self,
+        execution: &ExecutionId,
+    ) -> Result<CancellationState, ContractError> {
+        let mut requested = false;
+        let mut settling = false;
+        for event in self.ledger.events(execution)? {
+            match event.kind.as_str() {
+                "cancel_settled" => return Ok(CancellationState::Settled),
+                "cancel_settling" => settling = true,
+                "cancel_requested" => requested = true,
+                _ => {}
+            }
+        }
+        Ok(if settling {
+            CancellationState::Settling
+        } else if requested {
+            CancellationState::Requested
+        } else {
+            CancellationState::None
+        })
+    }
+
+    /// Whether a no-op cancel receipt has already been recorded for `execution`.
+    fn has_cancel_noop(&self, execution: &ExecutionId) -> Result<bool, ContractError> {
+        Ok(self
+            .ledger
+            .events(execution)?
+            .iter()
+            .any(|event| event.kind == "cancel_noop"))
+    }
+
+    /// The durable cancellation settlement record reconstructed from events.
+    ///
+    /// Returns `None` when no cancellation was requested. The request identity
+    /// and timestamps are recovered from the recorded `cancel_requested` event;
+    /// when the settling record cannot supply them (e.g. a tampered/partial
+    /// history), a deterministic fallback derived from the execution id is used.
+    pub fn cancellation_settlement(
+        &self,
+        execution: &ExecutionId,
+    ) -> Result<Option<CancellationSettlement>, ContractError> {
+        let events = self.ledger.events(execution)?;
+        let state = cancellation_state_from_events(&events);
+        if state == CancellationState::None {
+            return Ok(None);
+        }
+        let mut request_operation_id = format!("{execution}/cancel");
+        let mut requested_at_unix_ms = 0u64;
+        let mut settled_at_unix_ms = None;
+        let mut unconfirmed_operations = Vec::new();
+        for event in &events {
+            match event.kind.as_str() {
+                "cancel_requested" => {
+                    if let Some(id) = event
+                        .payload
+                        .get("request_operation_id")
+                        .and_then(Value::as_str)
+                    {
+                        request_operation_id = id.to_string();
+                    }
+                    requested_at_unix_ms = event
+                        .payload
+                        .get("requested_at_unix_ms")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(event.recorded_at_unix_ms);
+                }
+                "cancel_settling" => {
+                    unconfirmed_operations = parse_unconfirmed(&event.payload);
+                }
+                "cancel_settled" => {
+                    settled_at_unix_ms = Some(
+                        event
+                            .payload
+                            .get("settled_at_unix_ms")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(event.recorded_at_unix_ms),
+                    );
+                    unconfirmed_operations.clear();
+                }
+                _ => {}
+            }
+        }
+        Ok(Some(CancellationSettlement {
+            execution_id: execution.clone(),
+            state,
+            request_operation_id,
+            requested_at_unix_ms,
+            settled_at_unix_ms,
+            unconfirmed_operations,
+        }))
+    }
+
+    /// Settle `execution`'s cancellation: journal intent, reconcile only this
+    /// execution's unconsumed dispatch intents against the registered
+    /// activities, park it durably as the frozen `Failed`/`Parked`/`Cancelled`
+    /// projection, and report the monotonic settlement state (SF.4).
+    ///
+    /// Idempotent: an already-`Settled` execution returns `Settled` without a
+    /// new effect. Cancellation never undoes an already-completed effect and
+    /// never implies a provider refund. An operation whose outcome cannot be
+    /// confirmed stays pending (never redispatched) and keeps the settlement
+    /// `Settling`.
+    pub fn settle_cancellation(
+        &mut self,
+        execution: &ExecutionId,
+    ) -> Result<CancellationState, ContractError> {
+        let state = self.cancellation_state(execution)?;
+        if state == CancellationState::None {
+            return Ok(CancellationState::None);
+        }
+        if state == CancellationState::Settled {
+            return Ok(CancellationState::Settled);
+        }
+        let record = self
+            .ledger
+            .execution(execution)?
+            .ok_or_else(|| ContractError::KnownFailure(format!("unknown execution {execution}")))?;
+
+        // Journal settling before cleanup (durable intent ahead of effects), but
+        // only once: recovery may call this repeatedly.
+        if state == CancellationState::Requested {
+            self.commit_cancel_event(
+                execution,
+                "cancel_settling",
+                json!({ "unconfirmed": [] }),
+            )?;
+        }
+
+        // Reconcile ONLY this execution's unconsumed dispatch intents.
+        let mut unconfirmed: Vec<OperationId> = Vec::new();
+        let pending: Vec<DispatchIntent> = self
+            .ledger
+            .pending_intents()?
+            .into_iter()
+            .filter(|intent| &intent.execution_id == execution)
+            .collect();
+        for intent in pending {
+            if self
+                .ledger
+                .operation_receipt(&intent.operation_id)?
+                .is_some()
+            {
+                // An effect already landed: consume the intent without repeating.
+                self.ledger.consume_dispatch_intent(&intent.operation_id)?;
+                continue;
+            }
+            let ctx = build_context(&record, &intent)?;
+            match self.probe(&ctx) {
+                Ok(EffectProbe::Present) => {
+                    // Record the already-present effect (never repeat a merge);
+                    // do NOT advance the phase.
+                    let outcome = self.reconcile(&ctx)?;
+                    self.complete(&ctx, &outcome, true)?;
+                    self.ledger.consume_dispatch_intent(&intent.operation_id)?;
+                }
+                Ok(EffectProbe::Absent) => {
+                    // Cancelled before it could merge/dispatch: consume it.
+                    self.ledger.consume_dispatch_intent(&intent.operation_id)?;
+                }
+                // Ambiguous, a probe error, or a missing activity: the outcome is
+                // unknown. Leave the intent pending and record it unconfirmed so
+                // it can never be redispatched.
+                Ok(EffectProbe::Ambiguous) | Err(_) => {
+                    unconfirmed.push(intent.operation_id.clone());
+                }
+            }
+        }
+
+        // Park the execution durably once: `Failed`/`Parked` with reason
+        // `Cancelled`, folding to the frozen public projection.
+        self.park_cancelled(&record, &unconfirmed)?;
+
+        if unconfirmed.is_empty() {
+            self.commit_cancel_event(
+                execution,
+                "cancel_settled",
+                json!({
+                    "settled_at_unix_ms": now_ms(),
+                    "unconfirmed": [],
+                }),
+            )?;
+            Ok(CancellationState::Settled)
+        } else {
+            self.commit_cancel_event(
+                execution,
+                "cancel_settling",
+                json!({ "unconfirmed": unconfirmed }),
+            )?;
+            Ok(CancellationState::Settling)
+        }
+    }
+
+    /// Commit a cancellation lifecycle event with no state change.
+    fn commit_cancel_event(
+        &mut self,
+        execution: &ExecutionId,
+        kind: &str,
+        payload: Value,
+    ) -> Result<(), ContractError> {
+        self.ledger.commit(CommitBatch {
+            expected_revision: None,
+            state: None,
+            events: vec![ExecutionEvent {
+                execution_id: execution.clone(),
+                sequence: 0,
+                kind: kind.to_string(),
+                payload,
+                recorded_at_unix_ms: now_ms(),
+            }],
+            receipts: vec![],
+            intents: vec![],
+        })?;
+        Ok(())
+    }
+
+    /// Park a cancelled execution as `Failed`/`Parked` with reason `Cancelled`.
+    ///
+    /// Idempotent: skipped when the row is already `Failed`/`Parked` with a
+    /// recorded `cancel_parked` event. The `unconfirmed` operation ids ride the
+    /// event payload for durable inspection.
+    fn park_cancelled(
+        &mut self,
+        record: &ExecutionRecord,
+        unconfirmed: &[OperationId],
+    ) -> Result<(), ContractError> {
+        let already = self.ledger.execution(&record.execution_id)?.is_some_and(|row| {
+            row.state == ExecutionState::Failed
+                && row.phase == ExecutionPhase::Parked
+                && self
+                    .ledger
+                    .events(&record.execution_id)
+                    .map(|events| events.iter().any(|e| e.kind == "cancel_parked"))
+                    .unwrap_or(false)
+        });
+        if already {
+            return Ok(());
+        }
+        let now = now_ms();
+        let state = ExecutionRecord {
+            phase: ExecutionPhase::Parked,
+            state: ExecutionState::Failed,
+            ..record.clone()
+        };
+        let event = ExecutionEvent {
+            execution_id: record.execution_id.clone(),
+            sequence: 0,
+            kind: "cancel_parked".to_string(),
+            payload: json!({
+                "reason": "Cancelled",
+                "phase": phase_str(record.phase),
+                "attempt": record.attempt,
+                "unconfirmed": unconfirmed
+                    .iter()
+                    .map(|op| op.as_str())
+                    .collect::<Vec<_>>(),
+            }),
+            recorded_at_unix_ms: now,
+        };
+        self.ledger.commit(CommitBatch {
+            expected_revision: Some(record.revision),
+            state: Some(state),
+            events: vec![event],
+            receipts: vec![],
+            intents: vec![],
+        })?;
+        Ok(())
+    }
+
     /// Require one execution's recorded history to agree with its durable
     /// projection. Pure read: performs no effect and commits nothing, so a
     /// disagreement (a tampered projection with preserved history) refuses
@@ -261,6 +536,11 @@ impl<L: LedgerApi> Executor<L> {
             .ledger
             .execution(&execution)?
             .ok_or_else(|| ContractError::KnownFailure(format!("unknown execution {execution}")))?;
+
+        // A cancelled execution never dispatches, advances, or merges again.
+        if self.cancellation_state(&execution)? != CancellationState::None {
+            return Ok(DispatchOutcome::Blocked);
+        }
 
         // A preparation is not dispatchable until activated.
         if record.state == ExecutionState::Pending {
@@ -795,6 +1075,13 @@ impl<L: LedgerApi> ExecutionApi for Executor<L> {
             });
         }
 
+        // Once cancellation is requested (or settling), no further advancement
+        // or dispatch is permitted; the pending operation is surfaced, not run.
+        if self.cancellation_state(execution)? != CancellationState::None {
+            let operation = self.pending_for(execution)?;
+            return Ok(StepOutcome::Blocked { operation });
+        }
+
         // A preparation is not dispatchable: it has no intent and must be
         // activated first. Refuse without committing a park so recovery decides
         // (and parks a preparation whose package admission never completed).
@@ -895,27 +1182,37 @@ impl<L: LedgerApi> ExecutionApi for Executor<L> {
     }
 
     fn cancel(&mut self, execution: &ExecutionId) -> Result<(), ContractError> {
-        if self.ledger.execution(execution)?.is_none() {
+        let Some(record) = self.ledger.execution(execution)? else {
             return Err(ContractError::KnownFailure(format!(
                 "unknown execution {execution}"
             )));
+        };
+        // Idempotent: a request (or settlement) already recorded changes nothing.
+        if self.cancellation_state(execution)? != CancellationState::None {
+            return Ok(());
         }
-        // Persist the request as the kill latch (honored before every dispatch)
-        // and record it as an event.
-        self.ledger.set_kill_latch(true)?;
-        self.ledger.commit(CommitBatch {
-            expected_revision: None,
-            state: None,
-            events: vec![ExecutionEvent {
-                execution_id: execution.clone(),
-                sequence: 0,
-                kind: "cancel_requested".to_string(),
-                payload: json!({ "reason": "cancel requested" }),
-                recorded_at_unix_ms: now_ms(),
-            }],
-            receipts: vec![],
-            intents: vec![],
-        })?;
+        // Already-terminal work keeps its completed outcome: record ONE no-op
+        // cancel receipt (no state change), never a request.
+        if record_phase_terminal(&record) {
+            if !self.has_cancel_noop(execution)? {
+                self.commit_cancel_event(
+                    execution,
+                    "cancel_noop",
+                    json!({ "outcome": "completed-or-terminal" }),
+                )?;
+            }
+            return Ok(());
+        }
+        // Journal the durable cancellation intent BEFORE any cleanup. This is
+        // per-execution; it deliberately does NOT set the global pause latch.
+        self.commit_cancel_event(
+            execution,
+            "cancel_requested",
+            json!({
+                "request_operation_id": format!("{execution}/cancel"),
+                "requested_at_unix_ms": now_ms(),
+            }),
+        )?;
         Ok(())
     }
 
@@ -931,23 +1228,37 @@ impl<L: LedgerApi> ExecutionApi for Executor<L> {
             .filter(|i| &i.execution_id == execution)
             .map(|i| i.operation_id)
             .collect();
+        let cancellation = self.cancellation_state(execution)?;
         if self.ledger.schema_version()? != LEDGER_SCHEMA_VERSION {
             return Ok(ExecutionStatus {
                 execution_id: execution.clone(),
-                phase: record.phase,
+                phase: ExecutionPhase::Parked,
                 state: ExecutionState::Parked,
                 attempt: record.attempt,
                 pending_operations,
                 parked_reason: Some("incompatible schema version".to_string()),
+                cancellation,
             });
+        }
+        let mut phase = record.phase;
+        let mut state = record.state;
+        let mut parked_reason = self.parked_reason(execution)?;
+        if cancellation == CancellationState::Settled {
+            // Frozen public projection for a settled cancellation.
+            phase = ExecutionPhase::Parked;
+            state = ExecutionState::Failed;
+            parked_reason = Some("Cancelled".to_string());
+        } else if cancellation != CancellationState::None && phase == ExecutionPhase::Parked {
+            parked_reason = Some("Cancelled".to_string());
         }
         Ok(ExecutionStatus {
             execution_id: execution.clone(),
-            phase: record.phase,
-            state: record.state,
+            phase,
+            state,
             attempt: record.attempt,
             pending_operations,
-            parked_reason: self.parked_reason(execution)?,
+            parked_reason,
+            cancellation,
         })
     }
 }
@@ -1258,6 +1569,52 @@ fn build_context(
     })
 }
 
+/// The cancellation settlement state derived from a recorded event slice
+/// (shared by [`Executor::cancellation_state`] and the settlement rebuild).
+fn cancellation_state_from_events(events: &[ExecutionEvent]) -> CancellationState {
+    let mut requested = false;
+    let mut settling = false;
+    for event in events {
+        match event.kind.as_str() {
+            "cancel_settled" => return CancellationState::Settled,
+            "cancel_settling" => settling = true,
+            "cancel_requested" => requested = true,
+            _ => {}
+        }
+    }
+    if settling {
+        CancellationState::Settling
+    } else if requested {
+        CancellationState::Requested
+    } else {
+        CancellationState::None
+    }
+}
+
+/// Parse the `unconfirmed` operation ids recorded on a cancellation event.
+fn parse_unconfirmed(payload: &Value) -> Vec<OperationId> {
+    payload
+        .get("unconfirmed")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(OperationId::new)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether an execution record is in a terminal phase/state.
+fn record_phase_terminal(record: &ExecutionRecord) -> bool {
+    record.phase == ExecutionPhase::Parked
+        || matches!(
+            record.state,
+            ExecutionState::Completed | ExecutionState::Failed | ExecutionState::Parked
+        )
+}
+
 /// Fold recorded events into `(phase, state, attempt)` — pure, no I/O.
 fn fold_events(events: &[ExecutionEvent]) -> (ExecutionPhase, ExecutionState, u32) {
     let mut phase = ExecutionPhase::Intake;
@@ -1303,6 +1660,18 @@ fn fold_events(events: &[ExecutionEvent]) -> (ExecutionPhase, ExecutionState, u3
             "parked" => {
                 phase = ExecutionPhase::Parked;
                 state = ExecutionState::Parked;
+            }
+            // Cancellation settlement folds to the frozen public projection:
+            // Failed/Parked with reason/discriminator `Cancelled`. The request
+            // and settling events do not change the fold (the execution stays
+            // Running until it is parked).
+            "cancel_parked" => {
+                phase = ExecutionPhase::Parked;
+                state = ExecutionState::Failed;
+            }
+            "cancel_settled" => {
+                phase = ExecutionPhase::Parked;
+                state = ExecutionState::Failed;
             }
             _ => {}
         }

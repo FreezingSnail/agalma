@@ -32,8 +32,9 @@
 use std::path::Path;
 
 use agalma_contracts::{
-    ContractError, DispatchIntent, ExecutionApi, ExecutionId, ExecutionStatus, LedgerApi,
-    OperationId, OperationReceipt, StateSnapshot, StepOutcome, TaskId, TimerRecord,
+    CancellationState, ContractError, DispatchIntent, ExecutionApi, ExecutionId, ExecutionPhase,
+    ExecutionState, ExecutionStatus, LedgerApi, OperationId, OperationReceipt, StateSnapshot,
+    StepOutcome, TaskId, TimerRecord,
 };
 use agalma_ipc::{
     EffectContext, EffectMode, EffectReport, ExecutionOps, HandlerKey, StepBegin,
@@ -141,13 +142,42 @@ impl<L: LedgerApi> ExecutionApi for KernelEngine<L> {
             .filter(|intent| &intent.execution_id == execution)
             .map(|intent| intent.operation_id)
             .collect();
+        let settlement = KernelEngine::cancellation_settlement(self, execution)?;
+        let cancelled = state.state == ExecState::Cancelled;
+        let settled = settlement
+            .as_ref()
+            .is_some_and(|record| record.state == CancellationState::Settled);
+        // Frozen projection: a kernel-native `Cancelled`, or a settled
+        // cancellation, reports Failed/Parked with reason `Cancelled`. Completed
+        // work keeps its completed outcome even when cancellation was a no-op.
+        let (phase, exec_state, parked_reason) =
+            if cancelled || (settled && state.state != ExecState::Completed) {
+                (
+                    ExecutionPhase::Parked,
+                    ExecutionState::Failed,
+                    Some("Cancelled".to_string()),
+                )
+            } else {
+                (
+                    state.phase,
+                    coarse_state(state.state),
+                    state.parked_reason.clone(),
+                )
+            };
+        let cancellation = match settlement.as_ref().map(|record| record.state) {
+            Some(CancellationState::Settled) => CancellationState::Settled,
+            Some(CancellationState::Settling) => CancellationState::Settling,
+            Some(CancellationState::Requested) => CancellationState::Requested,
+            _ => CancellationState::None,
+        };
         Ok(ExecutionStatus {
             execution_id: execution.clone(),
-            phase: state.phase,
-            state: coarse_state(state.state),
+            phase,
+            state: exec_state,
             attempt: state.attempt,
             pending_operations,
-            parked_reason: state.parked_reason.clone(),
+            parked_reason,
+            cancellation,
         })
     }
 }

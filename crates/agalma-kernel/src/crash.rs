@@ -11,6 +11,9 @@ pub const CRASH_ENV: &str = "AGALMA_KERNEL_CRASH_AT";
 
 /// After the transition commit returned, before dispatch (fixture case 1).
 pub const AFTER_TRANSITION_COMMIT: &str = "after_transition_commit";
+/// After a cancellation request's durable settlement intent committed, before
+/// the `Cancel` transition/cleanup runs (SF.4 crash window).
+pub const AFTER_CANCEL_REQUEST: &str = "after_cancel_request";
 /// Immediately before handing work to an activity handler.
 pub const BEFORE_DISPATCH: &str = "before_dispatch";
 /// After a handler returned, before the completion record.

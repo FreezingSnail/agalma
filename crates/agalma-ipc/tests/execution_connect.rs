@@ -22,8 +22,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use agalma_contracts::{
-    ArtifactRef, ContractError, DispatchIntent, ExecutionApi, ExecutionId, ExecutionPhase,
-    ExecutionState, ExecutionStatus, OperationId, OperationReceipt, StepOutcome, TaskId,
+    ArtifactRef, CancellationState, ContractError, DispatchIntent, ExecutionApi, ExecutionId,
+    ExecutionPhase, ExecutionState, ExecutionStatus, OperationId, OperationReceipt, StepOutcome,
+    TaskId,
 };
 use agalma_ipc::execution_client::ExecutionOps;
 use agalma_ipc::execution_server::{ensure_all_handlers, register_execution, serve_execution};
@@ -118,6 +119,7 @@ impl ExecutionApi for StubExecution {
                 Vec::new()
             },
             parked_reason: None,
+            cancellation: CancellationState::None,
         })
     }
 }

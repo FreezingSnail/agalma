@@ -31,6 +31,40 @@ pub enum ExecutionState {
     Parked,
 }
 
+/// Monotonic per-execution cancellation settlement state (SF.4).
+///
+/// This is **distinct** from the global pause latch (kill latch): cancellation
+/// is per execution, journaled before cleanup, and never cleared by resume.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CancellationState {
+    /// No cancellation request recorded.
+    #[default]
+    None,
+    /// Durable `cancel_requested` recorded; new dispatch/advancement denied.
+    Requested,
+    /// Cleanup/reconciliation underway; some outcomes may still be unknown.
+    Settling,
+    /// All survivors confirmed terminal and pending intents consumed.
+    Settled,
+}
+
+/// Durable cancellation settlement record for one execution (SF.4).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancellationSettlement {
+    /// The execution this settlement belongs to.
+    pub execution_id: ExecutionId,
+    /// Monotonic settlement state.
+    pub state: CancellationState,
+    /// Stable operation id of the cancellation request.
+    pub request_operation_id: String,
+    /// When the cancellation was requested (epoch ms).
+    pub requested_at_unix_ms: u64,
+    /// When settlement completed (epoch ms), if settled.
+    pub settled_at_unix_ms: Option<u64>,
+    /// Operations whose outcome could not be confirmed (kept pending).
+    pub unconfirmed_operations: Vec<OperationId>,
+}
+
 /// Projection of an execution's durable status.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionStatus {
@@ -43,6 +77,10 @@ pub struct ExecutionStatus {
     pub pending_operations: Vec<OperationId>,
     /// Reason recorded when the execution parked, if any.
     pub parked_reason: Option<String>,
+    /// Per-execution cancellation settlement state (SF.4). Additive with a
+    /// serde default so existing readers/writers stay compatible.
+    #[serde(default)]
+    pub cancellation: CancellationState,
 }
 
 /// Outcome of one logical step.

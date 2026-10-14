@@ -6,8 +6,10 @@
 //! Every attempt — applied or denied — is recorded as exactly one durable
 //! [`ControlReceipt`]. Nothing here rewinds Git or the ledger: pause/resume only
 //! set/clear the durable kill latch (resume also removes the `STOP` sentinel);
-//! cancel requests cancellation through [`ExecutionApi::cancel`] (kill latch +
-//! `cancel_requested` event). No silent rewinds, no schema rewinds.
+//! cancel requests **per-execution** cancellation through
+//! [`ExecutionApi::cancel`] (a durable `cancel_requested` intent on that
+//! execution) and deliberately does **not** touch the global pause latch. No
+//! silent rewinds, no schema rewinds.
 //!
 //! - **Pause** sets the kill latch (stops new claims/dispatch; in-flight work is
 //!   not interrupted).
@@ -168,7 +170,8 @@ pub fn new_action_id(action: &ControlAction) -> String {
 /// The cancellation seam: production uses [`agalma_execution::Executor`] through
 /// the blanket impl below; tests may substitute a double.
 pub trait ExecutionCancel {
-    /// Request cancellation (kill latch + `cancel_requested` event).
+    /// Request per-execution cancellation (durable `cancel_requested` intent;
+    /// does not set the global pause latch).
     fn request_cancel(&mut self, execution: &ExecutionId) -> Result<(), ContractError>;
 
     /// Current durable state, for the pre-cancel policy check.
@@ -431,8 +434,9 @@ mod tests {
         assert_eq!(receipts[0].target, "");
     }
 
-    // Cancel: the typed confirmation runs the real [`ExecutionApi::cancel`] —
-    // kill latch + `cancel_requested` event — and records an applied receipt.
+    // Cancel: the typed confirmation runs the real [`ExecutionApi::cancel`],
+    // recording a durable `cancel_requested` intent on that execution and an
+    // applied receipt — WITHOUT touching the global pause latch.
     #[test]
     fn cancel_with_confirmation_records_receipt_and_requests_cancellation() {
         let dir = scratch("cancel");
@@ -457,8 +461,12 @@ mod tests {
         };
         assert_eq!(outcome, ControlOutcome::Applied);
 
-        // Cancellation is durable: latch set + `cancel_requested` event.
-        assert!(plane_ledger.kill_latch().expect("latch"), "cancel latched");
+        // Cancellation is a durable per-execution intent; the global pause
+        // latch is UNCHANGED (pause owns the latch, not cancel).
+        assert!(
+            !plane_ledger.kill_latch().expect("latch"),
+            "cancel must not set the global pause latch"
+        );
         let events = plane_ledger.events(&execution).expect("events");
         assert!(
             events.iter().any(|e| e.kind == "cancel_requested"),

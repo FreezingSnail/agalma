@@ -134,7 +134,8 @@ pub trait ControlDriver {
 /// Production [`ControlDriver`]: opens the state-dir ledger per action and runs
 /// it through [`ControlPlane`] (guards + policy + durable receipt), mirroring
 /// the CLI `pause`/`resume`/`cancel` paths. Pause/resume never touch the cancel
-/// seam; cancel reuses the real [`Executor`] (kill latch + `cancel_requested`).
+/// seam; cancel reuses the real [`Executor`], recording a durable per-execution
+/// `cancel_requested` intent and leaving the global pause latch unchanged.
 pub struct LedgerControlDriver {
     state_dir: PathBuf,
 }
@@ -1716,7 +1717,10 @@ mod tests {
             .contains("cancel: applied"));
 
         let ledger = SqliteLedger::open(dir.join("ledger.sqlite")).expect("reopen ledger");
-        assert!(ledger.kill_latch().expect("latch"), "cancel latched");
+        assert!(
+            !ledger.kill_latch().expect("latch"),
+            "cancel must not set the global pause latch"
+        );
         let events = ledger.events(&execution).expect("events");
         assert!(
             events.iter().any(|e| e.kind == "cancel_requested"),

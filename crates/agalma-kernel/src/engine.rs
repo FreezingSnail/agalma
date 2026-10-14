@@ -9,15 +9,17 @@
 //! rather than trusting the projection.
 
 use agalma_contracts::{
-    ContractError, DirectiveRow, DirectiveState, DispatchIntent, ExecutionEvent, ExecutionId,
-    LedgerApi, OperationId, OperationReceipt, SandboxApi, StopEvidence, TaskId, TimerRecord,
+    CancellationSettlement, CancellationState, ContractError, DirectiveRow, DirectiveState,
+    DispatchIntent, ExecutionEvent, ExecutionId, LedgerApi, OperationId, OperationReceipt,
+    SandboxApi, StopEvidence, TaskId, TimerRecord,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::crash::{
-    crash_hook, AFTER_DIRECTIVE_COMMIT, AFTER_TIMER_COMMIT, AFTER_TRANSITION_COMMIT,
+    crash_hook, AFTER_CANCEL_REQUEST, AFTER_DIRECTIVE_COMMIT, AFTER_TIMER_COMMIT,
+    AFTER_TRANSITION_COMMIT,
 };
 use crate::exec_def::{
     decode_event, DirectivePlan, ExecDef, ExecState, OperationState, EXEC_DEF_VERSION,
@@ -35,6 +37,10 @@ use crate::transition::{step, Conflict, Effect};
 pub const META_EXEC_DEF_VERSION: &str = "exec_def_version";
 /// Ledger key holding the persisted kernel implementation version.
 pub const META_KERNEL_VERSION: &str = "kernel_version";
+
+/// Ledger `kernel_meta` key prefix holding the per-execution cancellation
+/// settlement JSON (`cancellation_settlement:<execution_id>`).
+pub const META_CANCELLATION_SETTLEMENT: &str = "cancellation_settlement:";
 
 /// Physical ledger schema version this kernel build understands.
 ///
@@ -675,15 +681,123 @@ impl<L: LedgerApi> KernelEngine<L> {
         })
     }
 
-    /// Persist a cancellation request as a kernel command.
+    /// Persist a cancellation request as a kernel command (SF.4).
     ///
-    /// Idempotent and terminal-aware: a second cancel, or a cancel of already
-    /// terminal work, is a harmless no-op ([`crate::transition`]).
+    /// Idempotent and terminal-aware. The durable settlement record is written
+    /// `Requested` **before** the `Cancel` transition/cleanup (intent precedes
+    /// effects), then updated to `Settled`/`Settling` from the recorded
+    /// termination evidence. A second cancel, or a cancel of already-terminal
+    /// work, is a harmless no-op: the existing settlement is returned as-is.
     pub fn cancel(
         &mut self,
         execution_id: &ExecutionId,
         now_unix_ms: u64,
     ) -> Result<ApplyOutcome, ContractError> {
+        // Idempotent: an existing settlement changes nothing.
+        if self.cancellation_settlement(execution_id)?.is_some() {
+            return Ok(ApplyOutcome {
+                state: self.load(execution_id)?,
+                dispatches: Vec::new(),
+                conflict: None,
+                stale_lease: None,
+            });
+        }
+        let pre = self.load(execution_id)?;
+        let settlement = CancellationSettlement {
+            execution_id: execution_id.clone(),
+            state: CancellationState::Requested,
+            request_operation_id: format!("{execution_id}/cancel"),
+            requested_at_unix_ms: now_unix_ms,
+            settled_at_unix_ms: None,
+            unconfirmed_operations: Vec::new(),
+        };
+        // Durable intent BEFORE the transition/cleanup runs.
+        self.write_settlement(&settlement)?;
+        // A crash here (intent durable, `Cancel` not yet applied) is recovered
+        // by `settle_cancellation`, which replays the transition and consumes
+        // the pending intents itself.
+        crash_hook(AFTER_CANCEL_REQUEST);
+
+        let outcome = self.apply(
+            execution_id,
+            &crate::exec_def::Command::Cancel,
+            &crate::exec_def::Inputs {
+                now_unix_ms,
+                ..crate::exec_def::Inputs::default()
+            },
+        )?;
+
+        let mut next = settlement;
+        if pre.is_terminal() {
+            // Completed/terminal-before-cancel work keeps its recorded outcome;
+            // cancellation is a no-op receipt only.
+            next.state = CancellationState::Settled;
+            next.settled_at_unix_ms = Some(now_unix_ms);
+            self.write_settlement(&next)?;
+            return Ok(outcome);
+        }
+
+        // The post-commit cleanup consumed cancelled intents and recorded
+        // termination evidence. Confirm each recorded worker/operation.
+        let unconfirmed = self.unconfirmed_operations(execution_id)?;
+        next.unconfirmed_operations = unconfirmed;
+        if next.unconfirmed_operations.is_empty() {
+            next.state = CancellationState::Settled;
+            next.settled_at_unix_ms = Some(now_unix_ms);
+        } else {
+            next.state = CancellationState::Settling;
+        }
+        self.write_settlement(&next)?;
+        Ok(outcome)
+    }
+
+    /// The durable cancellation settlement for `execution_id`, if recorded.
+    pub fn cancellation_settlement(
+        &self,
+        execution_id: &ExecutionId,
+    ) -> Result<Option<CancellationSettlement>, ContractError> {
+        let key = settlement_key(execution_id);
+        match self.ledger.kernel_meta_get(&key)? {
+            Some(raw) => {
+                let parsed: CancellationSettlement = serde_json::from_str(&raw).map_err(|err| {
+                    ContractError::KnownFailure(format!("cancellation settlement {key}: {err}"))
+                })?;
+                Ok(Some(parsed))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Finish a pending cancellation settlement (boot/recovery).
+    ///
+    /// Loads the settlement; an already-`Settled` record is returned as-is.
+    /// Otherwise it **replays the `Cancel` transition first**: a crash may have
+    /// journaled the durable request (`Requested`) before the transition
+    /// committed, or committed `Cancelled` but crashed before its post-commit
+    /// cleanup. `Cancel` is idempotent (a terminal execution is a no-op), so
+    /// this either applies the cancellation now or converges an
+    /// already-cancelled row. It then re-runs the terminate pass over any
+    /// still-recorded worker and **accounts for every dispatch intent still
+    /// pending** for the execution: an already-completed or cancelled
+    /// operation's intent is consumed (never dispatched), and any intent that
+    /// cannot be accounted for keeps the record `Settling`. A `Settled` record
+    /// therefore never leaves a dispatchable pending intent.
+    pub fn settle_cancellation(
+        &mut self,
+        execution_id: &ExecutionId,
+        now_unix_ms: u64,
+    ) -> Result<Option<CancellationSettlement>, ContractError> {
+        let Some(mut settlement) = self.cancellation_settlement(execution_id)? else {
+            return Ok(None);
+        };
+        if settlement.state == CancellationState::Settled {
+            return Ok(Some(settlement));
+        }
+
+        // 1. Replay cancellation. For a crashed-before-apply request this
+        //    transitions the execution to `Cancelled` and consumes its
+        //    cancelled operations' intents; for an already-committed cancel it
+        //    is a terminal no-op.
         self.apply(
             execution_id,
             &crate::exec_def::Command::Cancel,
@@ -691,7 +805,98 @@ impl<L: LedgerApi> KernelEngine<L> {
                 now_unix_ms,
                 ..crate::exec_def::Inputs::default()
             },
-        )
+        )?;
+
+        // 2. Re-run the terminate pass over recorded workers (a sandbox that is
+        //    now bound can confirm termination a no-sandbox cancel could not).
+        for worker in self.workers(execution_id)? {
+            self.terminate_worker_for(execution_id, &worker.operation_id, now_unix_ms)?;
+        }
+
+        // 3. Account for every pending dispatch intent before settlement.
+        let mut unconfirmed = self.settle_cancelled_intents(execution_id)?;
+        for operation in self.unconfirmed_operations(execution_id)? {
+            if !unconfirmed.contains(&operation) {
+                unconfirmed.push(operation);
+            }
+        }
+        unconfirmed.sort();
+        unconfirmed.dedup();
+
+        settlement.unconfirmed_operations = unconfirmed.clone();
+        if unconfirmed.is_empty() {
+            settlement.state = CancellationState::Settled;
+            settlement.settled_at_unix_ms = Some(now_unix_ms);
+        } else {
+            settlement.state = CancellationState::Settling;
+        }
+        self.write_settlement(&settlement)?;
+        Ok(Some(settlement))
+    }
+
+    /// Consume the dispatch intents that cancellation has accounted for and
+    /// return the operations whose pending intent cannot be settled.
+    ///
+    /// A recorded receipt means the effect already landed (never repeated); a
+    /// cancelled operation — or any terminal execution — must never dispatch, so
+    /// its queued intent is dropped. An intent for a still-live, non-cancelled
+    /// operation in a non-terminal execution is left pending and reported
+    /// unconfirmed, so the settlement can never claim `Settled` over it.
+    fn settle_cancelled_intents(
+        &mut self,
+        execution_id: &ExecutionId,
+    ) -> Result<Vec<OperationId>, ContractError> {
+        let state = self.load(execution_id)?;
+        let mut unconfirmed = Vec::new();
+        for intent in self.pending_dispatch()? {
+            if &intent.execution_id != execution_id {
+                continue;
+            }
+            let operation_cancelled = state
+                .operations
+                .get(&intent.operation_id)
+                .map(|record| record.state == OperationState::Cancelled)
+                .unwrap_or(false);
+            let accounted = operation_cancelled
+                || state.is_terminal()
+                || self.receipt(&intent.operation_id)?.is_some();
+            if accounted {
+                self.ledger.consume_dispatch_intent(&intent.operation_id)?;
+            } else {
+                unconfirmed.push(intent.operation_id.clone());
+            }
+        }
+        Ok(unconfirmed)
+    }
+
+    /// Operations of `execution_id` whose outcome is unconfirmed: any recorded
+    /// termination whose process group was not confirmed gone, plus any still
+    /// recorded worker.
+    fn unconfirmed_operations(
+        &self,
+        execution_id: &ExecutionId,
+    ) -> Result<Vec<OperationId>, ContractError> {
+        let mut out: Vec<OperationId> = Vec::new();
+        for term in self.termination_evidence(execution_id)? {
+            if !term.evidence.process_group_gone && !out.contains(&term.worker.operation_id) {
+                out.push(term.worker.operation_id.clone());
+            }
+        }
+        for worker in self.workers(execution_id)? {
+            if !out.contains(&worker.operation_id) {
+                out.push(worker.operation_id.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    fn write_settlement(
+        &mut self,
+        settlement: &CancellationSettlement,
+    ) -> Result<(), ContractError> {
+        let key = settlement_key(&settlement.execution_id);
+        let raw = serde_json::to_string(settlement).map_err(json_err)?;
+        self.ledger.kernel_meta_set(&key, &raw)
     }
 
     /// Ownership fence: `Some(stale)` when `inputs` carries a lease older than
@@ -842,6 +1047,11 @@ impl<L: LedgerApi> KernelEngine<L> {
             .map_err(|err| ContractError::KnownFailure(format!("kernel meta {key}: {err}")))?;
         self.ledger.kernel_meta_set(key, &raw)
     }
+}
+
+/// The `kernel_meta` key holding an execution's cancellation settlement.
+fn settlement_key(execution_id: &ExecutionId) -> String {
+    format!("{META_CANCELLATION_SETTLEMENT}{execution_id}")
 }
 
 /// The signal id a command carries, for fence evidence.

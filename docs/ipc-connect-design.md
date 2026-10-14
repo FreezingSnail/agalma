@@ -6,7 +6,7 @@ orchestrator-authored; gates all IPC v2 beads. Refs:
 contract rules, §Runtime replacement), `docs/b1-extraction.md` (recipe,
 evidence, D1 superseded), `docs/m0-dependencies.md`, `docs/tui-design.md`
 (live transport), `agalma-www` (head-of-line), `agalma-5de` (execution gap),
-`agalma-rvj` (default flip).
+`agalma-rvj`/`agalma-ud1`/`agalma-fez` (default flips).
 
 ## Goal
 
@@ -153,10 +153,12 @@ artifacts under `target/test-runs/ipcx/<boundary>/<run>/`; evidence doc
 | 6 | `ExecutionApi` | largest boundary, last; folds in the `agalma-5de` handler-registry resolution |
 
 Extraction stays strictly one boundary per bead, chained by `blocks` deps.
-In-process remains the default (`agalma-rvj`); the process transport selector
-(`AGALMA_*_TRANSPORT=process`) selects which transport backs a process binding —
-during migration a per-boundary selector picks framed-JSON or Connect so parity
-runs can compare both.
+Current defaults after `agalma-ud1`/`agalma-fez`: harness, ledger, workspace and
+task queue use process transport; sandbox always uses a process. Execution keeps
+its in-process default pending production integration (`agalma-pob.1`). The
+`AGALMA_*_TRANSPORT=in-process` override retains direct embedding, while
+`AGALMA_IPC_WIRE=framed` selects framed JSON for process-wire parity. Process
+bindings otherwise use Connect. Evidence: `docs/b1-f3-evidence.md` §§5–6.
 
 ## Bead plan
 

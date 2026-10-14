@@ -251,3 +251,159 @@ default. Deferred to **`agalma-fez`**: their sockets still use the raw unbounded
 agalma-acs — the always-process sandbox socket is also unbounded), and none has
 a live process smoke. Flip each only after the bounded-socket scheme is
 generalised and a live smoke per boundary proves the production path.
+
+## 6. agalma-fez — peer boundary flips: bounded sockets + live smokes (GREEN)
+
+Date 2026-10-12, base HEAD `3ddcd98` (on top of agalma-ud1). Design frozen by
+the orchestrator. Full detail: `target/worker-output/agalma-fez.md`.
+
+The peer boundaries now share the bounded socket scheme and their transport
+defaults are flipped where a production consumer exists. `ledger`, `workspace`,
+and `taskqueue` default to `Process` (mirroring the agalma-ud1 harness pattern:
+`Some("in-process") => InProcess, _ => Process`). `execution` keeps `InProcess`
+(deferral — no production consumer). `sandbox` has no transport selector and is
+always process.
+
+### 6.1 Per-boundary result
+
+| Boundary | Bounded socket | Live process smoke | Default after flip | Notes |
+|---|---|---|---|---|
+| ledger | `ledger_socket` → `bounded_socket_path` | `live_process_smoke_ledger_long_state_dir` | **`Process`** | spawn + handle + lib.rs signal handler all use `ledger_socket` |
+| workspace | `WorkspaceProcess::spawn` | `live_process_smoke_workspace_long_state_dir` | **`Process`** | `WorkspaceHandle::process` spawns through it |
+| taskqueue | `TaskQueueProcess::spawn` | `live_process_smoke_taskqueue_long_state_dir` | **`Process`** | `TaskQueueHandle::process` spawns through it |
+| execution | `execution_socket` | `live_process_smoke_execution_long_state_dir` | `InProcess` (**deferred**) | kernel binding is a candidate with **no production consumer**; a flip would change nothing on the production path |
+| sandbox | `SandboxSource::socket` | `live_process_smoke_sandbox_long_state_dir` | n/a (always process) | no transport selector; bounded now |
+| session harness | `session_harness_socket` (Process only) | `session_harness_socket_is_bounded_for_long_state_dirs` (unit) | `Process` (agalma-ud1) | designer/concierge/reviewer harness socket is bounded on the production path |
+
+Each smoke spawns the **real** server through the production spawn path
+(`LedgerProcess::spawn` / `WorkspaceProcess::spawn` / `TaskQueueProcess::spawn` /
+`ExecutionProcess::spawn` / `SandboxSource::ensure`) under a **long** state dir
+(so the direct `<state_dir>/<name>.sock` path exceeds `SUN_LEN`), round-trips one
+real call, and asserts the socket file exists at `<state_dir>/<name>.sock`
+through the alias. Smokes are ungated, local-only, and never mutate the process
+environment (defaults are asserted by unit tests; smokes run with the explicit
+`Process` path).
+
+### 6.2 Alias mechanics
+
+`crate::phases::bounded_socket_path(state_dir, name)` returns the direct
+`<state_dir>/<name>` when `as_os_str().len() < SUN_LEN_LIMIT` (104), else
+`<temp_dir>/agalma-sock/<8hex-state-hash>/<name>`. The bounded parent is a
+**symlink to the state dir**, so the socket file still lands in `state_dir` —
+components.rs liveness/watch/GC (`state_dir.join("<name>.sock").exists()` and the
+`harness*.sock` glob) stay valid. Alias construction failure falls back to the
+direct path (unchanged semantics; the caller reports the bind error).
+`harness_socket_path` delegates: `InProcess` → direct, `Process` →
+`bounded_socket_path`. Unit tests: `process_harness_socket_path_is_bounded_for_long_state_dirs`
+(long dir canonicalize proof, short dir direct, in-process direct) and
+`bounded_socket_path_reuses_alias_and_bounds_long_dirs` (alias reuse/stable base).
+
+### 6.3 Required follow-on fixes (agalma-ipc)
+
+Flipping the defaults exposed two latent defects on the Connect client path that
+the in-process defaults had masked (the same class agalma-ud1 fixed for the
+harness/sandbox clients):
+
+1. **Nested-runtime connect/call.** `ledger`/`workspace`/`taskqueue`/`execution`
+   `connect_wire` and `workspace`/`taskqueue` `call` used a raw `Runtime::block_on`
+   from inside the conductor's Tokio runtime → "Cannot start a runtime from within
+   a runtime". Routed through the existing `block_on_nested` helper (mirrors
+   harness/sandbox clients).
+2. **Blocking runtime drop.** `ConnectBackend` dropped a multithread `Runtime`
+   inside the async conductor → "Cannot drop a runtime in a context where blocking
+   is not allowed". Added the agalma-ud1 `runtime: Option<Runtime>` +
+   `shutdown_background()` `Drop` to the four clients.
+3. **Orphaned supervised servers on conductor `SIGKILL`.** A supervised server
+   outlived a hard-killed conductor and kept its state-dir lock, so a restart
+   (`recovery` case 1/4) could not rebind. `spawn_supervised` now spawns the
+   server with a **piped stdin** held open for the server's lifetime and sets
+   `AGALMA_SERVER_PARENT_DEATH_STDIN`; `agalma_ipc::serve_wire` watches stdin for
+   EOF and exits, so a server never outlives its supervisor. (Also fixed the
+   signal-handler wire: `LedgerClient::connect` now uses the env-selected wire —
+   Connect default — matching the server, so the kill latch persists under the
+   flipped default.)
+
+### 6.4 Commands + results
+
+```text
+cargo test -p agalma-conductor --test ledger_process      # 11 passed; 0 failed
+cargo test -p agalma-conductor --test workspace_process   # 8 passed; 0 failed
+cargo test -p agalma-conductor --test taskqueue_process   # 9 passed; 0 failed
+cargo test -p agalma-conductor --test execution_process   # 11 passed; 0 failed
+cargo test -p agalma-conductor --test sandbox_process     # 8 passed; 0 failed
+cargo test -p agalma-conductor --lib                      # 153 passed; 0 failed
+cargo test -p agalma-ipc                                  # 49 + 14 + 9 + … passed; 0 failed
+cargo test -p agalma-conductor                            # (full) green with the new defaults
+cargo build --workspace --offline                         # clean
+```
+
+### 6.5 Deferrals
+
+- **Execution default flip** — the kernel binding is a candidate with no
+  production consumer; `ExecutionTransport::from_env` keeps `InProcess`. The
+  socket is bounded and the smoke proves the spawn path, so the flip can follow
+  once a production caller selects the kernel binding.
+- **`docs/self-hosting-roadmap.md` and `docs/self-mutation-*.md`** — carry
+  uncommitted user edits; not touched by this bead.
+
+### 6.6 Sol repair verification and cold executable launches
+
+The required five smoke cases now fail when their real server binary is missing;
+they report the binary, state directory, addressed socket, wire and PID, require
+an addressed path shorter than 104 bytes, and check server cleanup. Execution
+also checks its ledger's stop evidence; sandbox checks both its launched child
+and server teardown. Six isolated missing-binary checks passed, including a
+kernel-present/ledger-missing execution case. They are recorded in
+`target/test-runs/fez-repair/results.json`, with the earlier smoke failures retained.
+
+Shared startup diagnostics distinguish stdout EOF/read failure from an actual
+READY timeout and include executable, socket, PID and exit status. The new EOF
+regression case checks that failed startup reaps the child. The production
+READY timeout remains 20 seconds.
+
+The raw verification run reproduced READY timeouts, so those failures are not
+counted as passing evidence. The captured sandbox failure provides a concrete
+host-side explanation for that instance: PID 94623 launched at
+2026-10-12 22:30:16.176 EDT; its sample contains 779 observations at
+`_dyld_start + 0`, before Rust `main`. macOS execution-policy logs assess the
+same executable at 22:30:30.828 and report its provenance at 22:30:44.590,
+after the service deadline. This supports execution assessment as the delay in
+that cold launch; it does not establish the cause of every historical timeout.
+Artifacts: `sandbox-1-server-94623-sample.txt`, `sandbox-smoke-1.log`, and
+`sandbox-execution-policy.log` under `target/test-runs/fez-repair/`.
+
+The explicit offline verification recipe is:
+
+```sh
+bash scripts/verify-peer-transports.sh
+```
+
+It builds the workspace binaries, records their SHA-256 hashes, invokes each
+peer executable without arguments and requires its missing-socket rejection,
+then runs the five required smokes and the full conductor suite with transport,
+wire and paid-live overrides unset. The argument-parser preflight has no socket
+or task effects and lets host assessment finish before the measured service
+startup. It changes no macOS security settings. The runner rejects zero executed
+smokes and skipped cases, and propagates a failed test command.
+
+Final outcome and counts are in `docs/fez-acceptance-receipt.json`; the complete
+log is `target/test-runs/fez-repair/qualified-acceptance.log`. Qualified acceptance
+does not claim that a previously unassessed executable can always start within
+20 seconds. Binary-install qualification belongs in the later plugin lifecycle;
+durable cancellation and descendant settlement remain SF.4/SF.5 work.
+
+Historical stopping point: the user requested a stop to conserve usage. The qualified run
+passed all five required smokes and 231 conductor checks without failures, then
+was interrupted with exit 130 before the full suite completed. This supersedes
+any full-green claim in §6.4 for that interrupted run. The original receipt is
+retained as `docs/fez-interrupted-receipt.json`.
+
+Resumed 2026-10-13: all recorded FEZ source hashes matched the checkpoint, while
+the rebuilt server binaries were explicitly preflighted and smoke-tested again.
+All five fresh smokes passed. The saved checkpoint and resumed targets together
+cover every conductor unit/integration target: **335 passed, zero failed, two
+live-provider tests ignored**. The resumed command exited 0, and all five server
+hashes remained stable. Doctests were not rerun in this resumption. The
+consolidated receipt is `docs/fez-acceptance-receipt.json`; the resumed output is
+`target/test-runs/fez-repair/resumed-acceptance.log`. FEZ is closed, and no
+unit/integration verification targets remain outstanding.

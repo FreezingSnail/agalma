@@ -70,11 +70,14 @@ agalma gc         Reap terminal executions' heavy scratch from a state dir
 
 Operational posture: extraction is complete — components are replaceable through their
 declared APIs with dual-binding parity, staged rebind, and rollback evidence. Production
-transports default to in-process (process transport is selectable via `AGALMA_*_TRANSPORT`
-env vars). Execution is supervised, one task at a time, on a scratch clone — the factory
-does not yet run unattended. Open follow-ups: the kernel candidate's `step`/`recover`
-adapter gap (`agalma-5de`), auxiliary ledger connections (`agalma-1o3`), and the live
-process-transport smoke + default flip (`agalma-rvj`).
+transports default to process for harness, ledger, workspace, and task queue;
+`AGALMA_*_TRANSPORT=in-process` retains the explicit override. Sandbox always uses
+a process. The execution/kernel transport keeps its in-process default while
+production integration remains planned in CV.1 (`agalma-pob.1`). Execution is
+supervised, one task at a time, on a scratch clone — the factory does not yet run
+unattended. Peer socket bounds and smoke evidence are recorded in
+`docs/b1-f3-evidence.md` §6 (`agalma-fez`); auxiliary ledger connections remain
+migration work (`agalma-1o3`).
 
 ## Verified behavior
 

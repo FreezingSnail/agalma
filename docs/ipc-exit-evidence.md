@@ -138,8 +138,9 @@ match the in-process transcript (counts recorded at each bead landing):
   `git diff --name-only` proof).
 - Conductor changes are construction-site/wiring only: private wire selection,
   `spawn_with_spec_wire`s, client construction. Phase/activity logic is
-  unchanged; the process transport remains exercised only by boundary tests, so
-  the Connect wire default changes no production path.
+  unchanged during IPCX. Subsequent `agalma-ud1` and `agalma-fez` work makes the
+  Connect process transport the default for harness, ledger, workspace and task
+  queue; sandbox already uses a process. See `docs/b1-f3-evidence.md` §§5–6.
 - Envelope semantics are preserved verbatim — the Connect path reuses
   `Server::dispatch`; no envelope code was forked.
 
@@ -170,11 +171,13 @@ match the in-process transcript (counts recorded at each bead landing):
    steps the worker aside so the peer reactor progresses; `ledger_client::call`
    uses it, and the execution client applies it defensively. Other Connect
    clients are not nested today and were left untouched.
-5. **Process transport still opt-in / in-process default (tracked:
-   `agalma-rvj`, B1-F3).** All boundaries keep `AGALMA_*_TRANSPORT=in-process`
-   as the production default; `process` is selectable and test-proven. Under a
-   process binding the wire now defaults to Connect. A default flip to process
-   requires a live OpenCode process-transport smoke and is deferred.
+5. **Execution default still deferred.** Harness's default process flip is live
+   proven by `agalma-ud1`; ledger, workspace and task queue switch to process in
+   `agalma-fez`, with bounded production sockets and local server smokes. Sandbox
+   is always process. Process bindings default to Connect, with framed wire and
+   `in-process` transport overrides retained. Execution/kernel remains
+   in-process by default until production selection/integration in CV.1
+   (`agalma-pob.1`). See `docs/b1-f3-evidence.md` §§5–6.
 6. **`ExecutionApi` adapter gap resolved, not residual.** The `agalma-5de`
    B1-F1 gap (`step`/`recover` returning `UnsupportedCapability` over the
    process boundary) is closed by caller-side effect dispatch (commit
@@ -195,5 +198,5 @@ the per-boundary docs above. The `agalma-www` head-of-line constraint is gone
 the Connect stack is confined to `agalma-ipc` at the manifest and source levels
 (9 architecture tests green). Builds are offline (`cargo fetch --offline`
 empty; `cargo build --offline --workspace` clean). Residual items are tracked
-(`agalma-rvj` default flip; the reserved `Stream` RPC for TUI push). Epic
+(`agalma-pob.1` production kernel integration; the reserved `Stream` RPC for TUI push). Epic
 `agalma-ebg` closes on this record.

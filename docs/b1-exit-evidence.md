@@ -57,12 +57,16 @@ boundary — the B0 kernel is the process-ready execution boundary.
    short-lived conductor helpers still open direct SQLite (secondary WAL)
    connections under `AGALMA_LEDGER_TRANSPORT=process`; the durable-state owner
    and export/import generation remain the supervised server.
-3. **Defaults stay in-process (tracked: `agalma-rvj`, B1-F3).** All boundaries
-   default to `in-process`; process transport is selectable and test-proven. A
-   default flip requires a live OpenCode process-transport smoke and is deferred.
-4. **Live OpenCode process path.** Offline suites exercise the reference harness
-   process path; the OpenCode server path is constructed and compiles but its
-   live e2e belongs to F3/M2.
+3. **Process defaults and the execution deferral.** Harness defaults to process
+   after `agalma-ud1`'s live Connect smoke. `agalma-fez` bounds peer sockets and
+   changes ledger, workspace, and task queue to process defaults; sandbox is
+   always process. Explicit `in-process` overrides remain available. Execution
+   keeps its in-process default until CV.1 (`agalma-pob.1`) integrates the kernel
+   into the production work loop. See `docs/b1-f3-evidence.md` §§5–6.
+4. **Live OpenCode process path.** `agalma-ud1` proved the default process path
+   with a paid Connect-wire run on an isolated scratch clone. FEZ peer smokes
+   exercise real local server processes without inference; they do not establish
+   unattended operation or the later plugin platform acceptance.
 
 ## Verdict
 

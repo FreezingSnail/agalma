@@ -7,7 +7,9 @@
 //! /api/session/<id>/prompt`) for two distinct crate/epic requests, in both
 //! harness transports:
 //!
-//! - **in-process**: `OpenCodeHarness` driven directly;
+//! - **in-process**: built through the production `open_opencode_harness`
+//!   factory, whose sandbox client uses the sandbox boundary's env-selected
+//!   wire (`Connect` by default, `agalma-6w8`);
 //! - **process**: the real `agalma-harness-opencode-server` supervised through
 //!   `ProcessBinding`.
 //!
@@ -27,7 +29,11 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agalma_conductor::harness_process::{resolve_server_binary, ProcessBinding, READY_TIMEOUT};
+use agalma_conductor::harness_process::{
+    open_opencode_harness, resolve_server_binary, HarnessTransport, OpenCodeHarnessInit,
+    ProcessBinding, READY_TIMEOUT,
+};
+use agalma_conductor::sandbox_process::sandbox_wire;
 use agalma_conductor::sweep::{designer_prompt, RetryContext};
 use agalma_contracts::harness::{
     CreateSessionRequest, HarnessApi, Limits, RunTurnRequest, StartAttemptRequest, StopEvidence,
@@ -36,8 +42,7 @@ use agalma_contracts::ids::{ArtifactRef, OperationId};
 use agalma_contracts::sandbox::{LaunchSpec, SandboxApi, SandboxChild};
 use agalma_contracts::ContractError;
 use agalma_harness_opencode::{
-    server_command, OpenCodeHarness, OpenCodeHarnessConfig, PROFILE_PATH_ENV, ROOT_ENV,
-    SANDBOX_SOCKET_ENV,
+    server_command, OpenCodeHarnessConfig, PROFILE_PATH_ENV, ROOT_ENV, SANDBOX_SOCKET_ENV,
 };
 use agalma_ipc::Wire;
 use agalma_ipc::{register_sandbox, SandboxClient, Server, ServerInfo};
@@ -129,9 +134,10 @@ static SESSION_SEQ: AtomicU32 = AtomicU32::new(0);
 /// the shared record log the mock vendor appends posted bodies to.
 ///
 /// The wire must match the client the harness under test uses: the in-process
-/// harness connects with the legacy `SandboxClient::connect` (framed), while the
-/// supervised OpenCode server env-selects the wire (`Connect` by default since
-/// `agalma-3ej`) for its outbound sandbox client.
+/// harness (`open_opencode_harness`) connects with the sandbox boundary's
+/// env-selected wire (`sandbox_wire()`: `Connect` by default), while the
+/// supervised OpenCode server env-selects the same wire for its outbound sandbox
+/// client.
 fn start_mock_sandbox(socket: &Path, wire: Wire) -> Arc<Mutex<Vec<Posted>>> {
     let records: Arc<Mutex<Vec<Posted>>> = Arc::new(Mutex::new(Vec::new()));
     let mut server = Server::new(ServerInfo {
@@ -432,11 +438,24 @@ fn harness_config(dir: &Path, attempt: &Path) -> OpenCodeHarnessConfig {
 fn in_process_vendor_payload_identifies_epic_and_repo() {
     let (_guard, dir) = fresh("in-process");
     let sandbox_socket = dir.join("sandbox.sock");
-    let records = start_mock_sandbox(&sandbox_socket, Wire::Framed);
+    // Default env (AGALMA_IPC_WIRE unset): the sandbox boundary selects Connect.
+    // The mock server serves the same env-selected wire the production in-process
+    // harness client connects with, so a Framed client here would mismatch the
+    // Connect server (`agalma-6w8`).
+    std::env::remove_var(agalma_ipc::WIRE_ENV);
+    let records = start_mock_sandbox(&sandbox_socket, sandbox_wire());
 
-    let sandbox = SandboxClient::connect(&sandbox_socket).expect("connect mock sandbox");
     let config = harness_config(&dir, &dir.join("attempt"));
-    let mut harness = OpenCodeHarness::new(Box::new(sandbox), config);
+    let mut harness = open_opencode_harness(OpenCodeHarnessInit {
+        transport: HarnessTransport::InProcess,
+        config,
+        root: dir.clone(),
+        model: MODEL.to_string(),
+        generation: 1,
+        sandbox_socket: sandbox_socket.clone(),
+        harness_socket: dir.join("harness.sock"),
+    })
+    .expect("build in-process harness");
 
     let all = rounds();
     let mut fixtures = Vec::new();

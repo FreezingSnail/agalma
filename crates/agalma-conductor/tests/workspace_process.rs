@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use agalma_contracts::{Checkout, ContractError, ExecutionId};
+use agalma_contracts::{Checkout, ContractError, ExecutionId, WorkspaceApi};
 use agalma_ipc::{
     CheckoutCall, Client, CommandSpec, IntegrateOriginParams, IpcError, PrepareRepoParams, Wire,
     WorkspaceClient, WorkspaceOps,
@@ -145,6 +145,64 @@ fn workspace_server_child() {
     };
     let base = std::env::var(CHILD_BASE_ENV).expect("child base dir");
     let _ = agalma_workspace::server::serve(Path::new(&socket), Path::new(&base));
+}
+
+/// Live process smoke under a **long** state dir: the production
+/// [`WorkspaceProcess::spawn`] binds through the bounded alias so
+/// `<base_dir>/workspace.sock` fits `SUN_LEN`, while the socket file still lands
+/// under the base dir. One real call round-trips.
+#[test]
+fn live_process_smoke_workspace_long_state_dir() {
+    let binary = resolve_server_binary(SERVER_BIN).expect(
+        "required workspace smoke binary missing; run cargo build --offline --workspace --bins",
+    );
+    let dir = fresh();
+    let state = dir.join("n".repeat(60));
+    std::fs::create_dir_all(&state).expect("long state dir");
+    assert!(
+        state.join("workspace.sock").as_os_str().len() >= 104,
+        "direct socket path must exceed SUN_LEN"
+    );
+
+    let template = dir.join("template");
+    std::fs::create_dir_all(&template).expect("template");
+    std::fs::write(template.join("hello.txt"), "hello\n").expect("template file");
+    let exec = ExecutionId::new("exec:wp-smoke:1");
+
+    let mut process = WorkspaceProcess::spawn(&state, READY_TIMEOUT)
+        .unwrap_or_else(|e| panic!("production workspace spawn: {e}"));
+    eprintln!(
+        "workspace smoke: binary={} state={} socket={} wire={} pid={}",
+        binary.display(),
+        state.display(),
+        process.socket().display(),
+        process.wire().as_str(),
+        process.pid()
+    );
+    assert!(
+        process.socket().as_os_str().len() < 104,
+        "bounded socket path"
+    );
+    let mut client = process.client().expect("connect workspace client");
+    let checkout = client
+        .prepare(template.to_str().expect("template utf8"), &exec)
+        .expect("prepare");
+    assert!(
+        Path::new(&checkout.path).join("hello.txt").is_file(),
+        "checkout carries the template file"
+    );
+    assert!(
+        state.join("workspace.sock").exists(),
+        "socket file lands under the state dir through the alias"
+    );
+
+    drop(client);
+    let evidence = process.stop();
+    eprintln!("workspace smoke cleanup: {evidence:?}");
+    assert!(
+        evidence.process_group_gone,
+        "server stop evidence: {evidence:?}"
+    );
 }
 
 fn pid_alive(pid: u32) -> bool {

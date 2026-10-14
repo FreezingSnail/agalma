@@ -641,7 +641,8 @@ fn ledger_client_duplicate_id_replay_and_connection_loss() {
     // state dir and confirm the recorded state is what was committed.
     let socket2 = dir.join("d2.sock");
     let mut server2 = spawn_server_wire(&socket2, &dir, Wire::Framed);
-    let mut reconciled = LedgerClient::connect(&socket2, &dir).expect("reconnect");
+    let mut reconciled =
+        LedgerClient::connect_wire(&socket2, &dir, Wire::Framed).expect("reconnect");
     assert_eq!(
         reconciled
             .executions()
@@ -689,13 +690,64 @@ fn ledger_client_duplicate_id_replay_and_connection_loss() {
     let _ = server2.stop();
 }
 
-/// The transport selector used by the conductor defaults to in-process and maps
-/// `process` when selected (mirrors the conductor factory).
+/// The transport selector used by the conductor defaults to process and maps
+/// `in-process` when selected (mirrors the conductor factory; `agalma-fez`).
 #[test]
-fn transport_defaults_to_in_process() {
-    assert_eq!(LedgerTransport::from_env(), LedgerTransport::InProcess);
+fn transport_defaults_to_process() {
+    assert_eq!(LedgerTransport::from_env(), LedgerTransport::Process);
     assert_eq!(LedgerTransport::InProcess.as_str(), "in-process");
     assert_eq!(LedgerTransport::Process.as_str(), "process");
+}
+
+/// Live process smoke under a **long** state dir: the production
+/// [`LedgerProcess::spawn`] path binds through the bounded alias so
+/// `<state_dir>/ledger.sock` fits `SUN_LEN`, while the socket file still lands
+/// under the state dir. One real call round-trips.
+#[test]
+fn live_process_smoke_ledger_long_state_dir() {
+    let binary = resolve_server_binary(SERVER_BIN).expect(
+        "required ledger smoke binary missing; run cargo build --offline --workspace --bins",
+    );
+    let dir = fresh();
+    let state = dir.join("n".repeat(60));
+    std::fs::create_dir_all(&state).expect("long state dir");
+    assert!(
+        state.join("ledger.sock").as_os_str().len() >= 104,
+        "direct socket path must exceed SUN_LEN"
+    );
+
+    let mut server = LedgerProcess::spawn(&state, READY_TIMEOUT)
+        .unwrap_or_else(|e| panic!("production ledger spawn: {e}"));
+    eprintln!(
+        "ledger smoke: binary={} state={} socket={} wire={} pid={}",
+        binary.display(),
+        state.display(),
+        server.socket().display(),
+        server.wire().as_str(),
+        server.pid()
+    );
+    assert!(
+        server.socket().as_os_str().len() < 104,
+        "bounded socket path"
+    );
+    let client = server.client().expect("connect ledger client");
+    assert_eq!(
+        client.schema_version().expect("schema_version"),
+        agalma_ledger::SCHEMA_VERSION
+    );
+
+    assert!(
+        state.join("ledger.sock").exists(),
+        "socket file lands under the state dir through the alias"
+    );
+
+    drop(client);
+    let evidence = server.stop();
+    eprintln!("ledger smoke cleanup: {evidence:?}");
+    assert!(
+        evidence.process_group_gone,
+        "server stop evidence: {evidence:?}"
+    );
 }
 
 // ===========================================================================

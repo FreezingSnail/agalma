@@ -181,8 +181,21 @@ enum Backend {
 
 /// Connect transport state: the async client and the runtime that drives it.
 struct ConnectBackend {
-    runtime: tokio::runtime::Runtime,
+    /// The runtime driving `client`; `None` after [`Drop`] tears it down.
+    runtime: Option<tokio::runtime::Runtime>,
     client: ConnectClient,
+}
+
+impl Drop for ConnectBackend {
+    fn drop(&mut self) {
+        // The conductor builds and drops these clients from within its own Tokio
+        // runtime (the async `agalma` binary). A blocking runtime drop is
+        // forbidden in an async context, so shut the runtime down without
+        // blocking; its transport tasks are abandoned with it.
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 /// A [`WorkspaceApi`]/[`WorkspaceOps`] implementation backed by a workspace
@@ -209,9 +222,12 @@ impl WorkspaceClient {
                     .enable_all()
                     .build()
                     .map_err(|e| IpcError::unavailable(format!("tokio runtime: {e}")))?;
-                let client = runtime.block_on(ConnectClient::connect(socket))?;
+                let client = crate::block_on_nested(&runtime, ConnectClient::connect(socket))?;
                 Ok(WorkspaceClient {
-                    backend: RefCell::new(Backend::Connect(ConnectBackend { runtime, client })),
+                    backend: RefCell::new(Backend::Connect(ConnectBackend {
+                        runtime: Some(runtime),
+                        client,
+                    })),
                 })
             }
         }
@@ -232,10 +248,11 @@ impl WorkspaceClient {
     ) -> Result<R, ContractError> {
         match &mut *self.backend.borrow_mut() {
             Backend::Framed(client) => client.call_typed(method, params).map_err(map_ipc_error),
-            Backend::Connect(backend) => backend
-                .runtime
-                .block_on(backend.client.call_typed(method, params))
-                .map_err(map_ipc_error),
+            Backend::Connect(backend) => crate::block_on_nested(
+                backend.runtime.as_ref().expect("runtime present until drop"),
+                backend.client.call_typed(method, params),
+            )
+            .map_err(map_ipc_error),
         }
     }
 }

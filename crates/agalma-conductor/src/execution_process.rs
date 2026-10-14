@@ -12,8 +12,18 @@
 //! `AGALMA_EXECUTION_TRANSPORT` (`in-process` default, `process` optional); the
 //! kernel process binding is selected only by a caller/test that asks for it.
 //!
-//! The socket lives directly under the run state dir (`execution.sock`) to stay
-//! within `SUN_LEN`.
+//! **Default flip deferred (`agalma-fez`).** Unlike the ledger/workspace/
+//! taskqueue boundaries, this binding has **no production consumer** yet — the
+//! kernel remains a *candidate* replacement for the seed executor, so flipping
+//! the default to `process` would change nothing on the production path. The
+//! socket is nonetheless bounded (below) and a live process smoke proves the
+//! production spawn path, so the flip can follow once a production caller
+//! selects the kernel binding.
+//!
+//! The socket lives under the run state dir (`execution.sock`); [`execution_socket`]
+//! bounds the addressed path to `SUN_LEN` via
+//! [`crate::phases::bounded_socket_path`] while the socket file still lands in
+//! the state dir.
 
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -36,6 +46,8 @@ pub const EXECUTION_SOCKET_NAME: &str = "execution.sock";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecutionTransport {
     /// Direct in-process `KernelEngine` call (the candidate's in-process form).
+    /// This remains the default: the kernel binding has no production consumer
+    /// yet (`agalma-fez` deferral).
     InProcess,
     /// Supervised kernel component server over the framed transport.
     Process,
@@ -43,6 +55,10 @@ pub enum ExecutionTransport {
 
 impl ExecutionTransport {
     /// Read the transport from [`TRANSPORT_ENV`]; unknown/empty is `InProcess`.
+    ///
+    /// The default is **not** flipped here (unlike ledger/workspace/taskqueue):
+    /// the kernel binding is a candidate with no production consumer, so a flip
+    /// would change nothing on the production path (`agalma-fez` deferral).
     pub fn from_env() -> Self {
         match std::env::var(TRANSPORT_ENV).ok().as_deref() {
             Some("process") => ExecutionTransport::Process,
@@ -60,8 +76,12 @@ impl ExecutionTransport {
 }
 
 /// The socket a kernel server binds under `state_dir`.
+///
+/// Bounded to `SUN_LEN` for long state dirs: when `<state_dir>/execution.sock`
+/// is too long the addressed path goes through a short alias, but the socket
+/// file still lands under `state_dir` ([`crate::phases::bounded_socket_path`]).
 pub fn execution_socket(state_dir: &Path) -> PathBuf {
-    state_dir.join(EXECUTION_SOCKET_NAME)
+    crate::phases::bounded_socket_path(state_dir, EXECUTION_SOCKET_NAME)
 }
 
 /// The wire transport the execution/kernel process boundary uses (IPCX.7).

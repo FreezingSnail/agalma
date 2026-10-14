@@ -56,7 +56,7 @@ use agalma_conductor::execution_process::{
     execution_server_spec, execution_socket, execution_wire, ExecutionProcess, ExecutionTransport,
 };
 use agalma_conductor::harness_process::resolve_server_binary;
-use agalma_conductor::ledger_process::{ledger_server_spec, LedgerProcess};
+use agalma_conductor::ledger_process::{ledger_server_spec, ledger_socket, LedgerProcess};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -225,6 +225,68 @@ fn kernel_server_child() {
         Path::new(&state_dir),
         Path::new(&ledger_socket),
         None,
+    );
+}
+
+/// Live process smoke under a **long** state dir: the production
+/// [`ExecutionProcess::spawn`] binds through the bounded alias so
+/// `<state_dir>/execution.sock` fits `SUN_LEN`, while the socket file still
+/// lands under the state dir. One real call round-trips. (The kernel binding
+/// keeps its `in-process` default — `agalma-fez` deferral — so this smoke
+/// exercises the production spawn path explicitly.)
+#[test]
+fn live_process_smoke_execution_long_state_dir() {
+    let binary = resolve_server_binary(agalma_kernel::server::SERVER_BIN).expect(
+        "required kernel smoke binary missing; run cargo build --offline --workspace --bins",
+    );
+    resolve_server_binary(agalma_ledger::server::SERVER_BIN).expect(
+        "required ledger smoke binary missing; run cargo build --offline --workspace --bins",
+    );
+    let dir = fresh();
+    let state = dir.join("n".repeat(60));
+    std::fs::create_dir_all(&state).expect("long state dir");
+    assert!(
+        state.join("execution.sock").as_os_str().len() >= 104,
+        "direct socket path must exceed SUN_LEN"
+    );
+
+    let ledger = ledger_socket(&state);
+    let mut ledger_server = LedgerProcess::spawn(&state, READY_TIMEOUT)
+        .unwrap_or_else(|e| panic!("production ledger spawn: {e}"));
+    let mut kernel = ExecutionProcess::spawn(&state, &ledger, None, READY_TIMEOUT)
+        .unwrap_or_else(|e| panic!("production kernel spawn: {e}"));
+    eprintln!(
+        "execution smoke: binary={} state={} socket={} wire={} pid={}",
+        binary.display(),
+        state.display(),
+        kernel.socket().display(),
+        kernel.wire().as_str(),
+        kernel.pid()
+    );
+    assert!(
+        kernel.socket().as_os_str().len() < 104,
+        "bounded socket path"
+    );
+    let mut client = kernel.client().expect("connect execution client");
+    let execution = client.start(&task()).expect("start");
+    assert_eq!(execution, exec());
+
+    assert!(
+        state.join("execution.sock").exists(),
+        "socket file lands under the state dir through the alias"
+    );
+
+    drop(client);
+    let evidence = kernel.stop();
+    eprintln!("execution smoke cleanup: {evidence:?}");
+    assert!(
+        evidence.process_group_gone,
+        "kernel stop evidence: {evidence:?}"
+    );
+    let ledger_evidence = ledger_server.stop();
+    assert!(
+        ledger_evidence.process_group_gone,
+        "ledger stop evidence: {ledger_evidence:?}"
     );
 }
 

@@ -82,7 +82,7 @@ where
 
 pub use client::Client;
 pub use command::CommandSpec;
-pub use connect::{serve_wire, ConnectClient, IpcDispatcher, Wire, WIRE_ENV};
+pub use connect::{serve_wire, ConnectClient, IpcDispatcher, Wire, PARENT_DEATH_STDIN_ENV, WIRE_ENV};
 pub use envelope::{Request, Response, ResponseError, PROTOCOL_VERSION};
 pub use error::{IpcError, CODE_PROTOCOL, CODE_UNAVAILABLE};
 pub use execution_client::{

@@ -601,22 +601,34 @@ fn read_ready(
         loop {
             line.clear();
             match reader.read_line(&mut line) {
-                Ok(0) => break,
+                Ok(0) => {
+                    let _ = tx.send(Err("server stdout closed before READY".to_string()));
+                    break;
+                }
                 Ok(_) => {
                     if let Some(json) = ready_json(&line) {
-                        let _ = tx.send(json.to_string());
+                        let _ = tx.send(Ok(json.to_string()));
                         break;
                     }
                 }
-                Err(_) => break,
+                Err(e) => {
+                    let _ = tx.send(Err(format!("read server READY: {e}")));
+                    break;
+                }
             }
         }
     });
     match rx.recv_timeout(timeout) {
-        Ok(json) => {
+        Ok(Ok(json)) => {
             serde_json::from_str(&json).map_err(|e| format!("malformed READY line: {e} ({json})"))
         }
-        Err(_) => Err(format!("server did not announce READY within {timeout:?}")),
+        Ok(Err(error)) => Err(error),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            Err(format!("server did not announce READY within {timeout:?}"))
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err("server READY reader disconnected".to_string())
+        }
     }
 }
 
@@ -672,7 +684,12 @@ pub(crate) fn spawn_supervised(
     command
         .args(&spec.args)
         .envs(&spec.env)
-        .stdin(Stdio::null())
+        // Piped stdin is held open by the supervisor for the server's lifetime
+        // and doubles as a parent-death channel: the server watches it for EOF
+        // (see `agalma_ipc::PARENT_DEATH_STDIN_ENV`) and exits when the
+        // conductor dies, so a supervised server never outlives its supervisor.
+        .env(agalma_ipc::PARENT_DEATH_STDIN_ENV, "1")
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
     #[cfg(unix)]
@@ -695,7 +712,16 @@ pub(crate) fn spawn_supervised(
         .take()
         .ok_or_else(|| "server stdout not captured".to_string())?;
     let reader = BufReader::new(stdout);
-    let info = read_ready(reader, timeout)?;
+    let info = read_ready(reader, timeout).map_err(|error| {
+        let child = guard.child_mut();
+        format!(
+            "{error} (program={}, socket={}, pid={}, exit_status={:?})",
+            program.display(),
+            socket.display(),
+            child.id(),
+            child.try_wait()
+        )
+    })?;
     Ok((guard, info))
 }
 
@@ -808,6 +834,34 @@ mod tests {
         // conductor tests, so it must resolve.
         let resolved = resolve_server_binary("agalma").expect("agalma binary resolves");
         assert!(resolved.is_file(), "{}", resolved.display());
+    }
+
+    #[test]
+    fn ready_eof_reports_startup_context_and_reaps_child() {
+        let dir = agalma_testkit::ScratchDir::new("ready-eof");
+        let socket = dir.join("server.sock");
+        let spec = CommandSpec::new("/bin/sh").args(["-c", "printf 'starting\\n'; exit 42"]);
+        let error = match spawn_supervised(&spec, Path::new("/bin/sh"), &socket, READY_TIMEOUT) {
+            Ok(_) => panic!("server without READY must fail"),
+            Err(error) => error,
+        };
+        assert!(error.contains("stdout closed before READY"), "{error}");
+        assert!(error.contains("program=/bin/sh"), "{error}");
+        assert!(
+            error.contains(&format!("socket={}", socket.display())),
+            "{error}"
+        );
+        assert!(error.contains("exit_status="), "{error}");
+        let pid = error
+            .split("pid=")
+            .nth(1)
+            .unwrap()
+            .split(',')
+            .next()
+            .unwrap()
+            .parse::<u32>()
+            .expect("diagnostic includes child PID");
+        assert!(!pid_alive(pid), "failed-startup child {pid} survived");
     }
 
     /// The process branch must transmit the explicit launch config — the extra

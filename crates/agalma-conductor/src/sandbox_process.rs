@@ -9,8 +9,12 @@
 //! not duplicated.
 //!
 //! [`SandboxSource`] owns the supervisor lazily: the server is started on first
-//! use and kept alive for the conductor process. Component sockets live under
-//! the run state dir; the socket path must stay within `SUN_LEN`.
+//! use and kept alive for the conductor process. The sandbox boundary has no
+//! transport selector — it is **always process** (every confined launch goes
+//! through the component server). Component sockets live under the run state
+//! dir; [`SandboxSource::socket`] bounds the addressed path to `SUN_LEN` via
+//! [`crate::phases::bounded_socket_path`] while the socket file still lands in
+//! the state dir.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -157,8 +161,12 @@ impl SandboxSource {
     }
 
     /// The sandbox socket path under the state dir.
+    ///
+    /// Always process (no transport selector), so it is bounded to `SUN_LEN`
+    /// for long state dirs; the socket file still lands under the state dir
+    /// ([`crate::phases::bounded_socket_path`]).
     pub fn socket(&self) -> PathBuf {
-        self.state_dir.join(SANDBOX_SOCKET_NAME)
+        crate::phases::bounded_socket_path(&self.state_dir, SANDBOX_SOCKET_NAME)
     }
 
     /// Start the sandbox server if needed and return its socket path.

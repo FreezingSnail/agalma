@@ -301,27 +301,40 @@ fn canonical_dir(path: &Path) -> Result<PathBuf, ActivityError> {
 
 /// Maximum Unix socket path length (`SUN_LEN`) we will address directly. The
 /// platform limit is 104 bytes on macOS; a path must be strictly shorter.
-const SUN_LEN_LIMIT: usize = 104;
+pub(crate) const SUN_LEN_LIMIT: usize = 104;
 
-/// A harness server socket path for `state_dir` that always fits `SUN_LEN`.
+/// A component-socket path for `name` under `state_dir` that always fits
+/// `SUN_LEN`.
 ///
 /// Unix socket `bind`/`connect` paths are capped at `SUN_LEN` (~104 bytes).
-/// `state_dir` can be arbitrarily long (test scratch dirs especially), so the
-/// historical `<state_dir>/harness-*.sock` path could overflow and the server
-/// failed to bind. When a direct path fits we keep it (no behavior change).
-/// When it does not, the socket is addressed through a short symlink alias of
-/// the state dir under a bounded directory: the socket file still lands in the
-/// state dir (so discovery and cleanup are unchanged), but the path stays
-/// within the limit. `InProcess` never binds, so it keeps the direct path.
-fn harness_socket_path(state_dir: &Path, transport: HarnessTransport, name: &str) -> PathBuf {
+/// `state_dir` can be arbitrarily long (test scratch dirs especially), so a
+/// raw `<state_dir>/<name>` path can overflow and the server fails to bind.
+/// When a direct path fits we keep it (no behavior change). When it does not,
+/// the socket is addressed through a short symlink alias of the state dir under
+/// a bounded directory: the socket file still lands in the state dir (so
+/// discovery, liveness/watch, and cleanup are unchanged), but the path stays
+/// within the limit. Alias construction failure falls back to the direct path
+/// (the caller reports the bind error, unchanged semantics).
+pub(crate) fn bounded_socket_path(state_dir: &Path, name: &str) -> PathBuf {
     let direct = state_dir.join(name);
-    if transport == HarnessTransport::InProcess || direct.as_os_str().len() < SUN_LEN_LIMIT {
+    if direct.as_os_str().len() < SUN_LEN_LIMIT {
         return direct;
     }
     match bounded_socket_alias(state_dir) {
         Ok(alias) => alias.join(name),
         // Fall back to the direct path: the caller reports the bind error.
         Err(_) => direct,
+    }
+}
+
+/// A harness server socket path for `state_dir` that always fits `SUN_LEN`.
+///
+/// `InProcess` never binds, so it keeps the direct path; `Process` goes through
+/// the shared bounded scheme ([`bounded_socket_path`]).
+fn harness_socket_path(state_dir: &Path, transport: HarnessTransport, name: &str) -> PathBuf {
+    match transport {
+        HarnessTransport::InProcess => state_dir.join(name),
+        HarnessTransport::Process => bounded_socket_path(state_dir, name),
     }
 }
 
@@ -332,7 +345,7 @@ fn harness_socket_path(state_dir: &Path, transport: HarnessTransport, name: &str
 /// `state_dir` is and every run gets a distinct bounded base. Binding through
 /// the alias creates the socket in `state_dir`, so the on-disk layout is
 /// unchanged.
-fn bounded_socket_alias(state_dir: &Path) -> std::io::Result<PathBuf> {
+pub(crate) fn bounded_socket_alias(state_dir: &Path) -> std::io::Result<PathBuf> {
     let root = std::env::temp_dir().join("agalma-sock");
     std::fs::create_dir_all(&root)?;
     let alias = root.join(short_hash(&state_dir.to_string_lossy()));
@@ -356,7 +369,7 @@ fn bounded_socket_alias(state_dir: &Path) -> std::io::Result<PathBuf> {
 }
 
 /// FNV-1a 8-hex digest, used for bounded directory names.
-fn short_hash(text: &str) -> String {
+pub(crate) fn short_hash(text: &str) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in text.as_bytes() {
         hash ^= *byte as u64;
@@ -3036,6 +3049,48 @@ mod tests {
         assert_eq!(
             harness_socket_path(short, HarnessTransport::Process, "harness-ref-1.sock"),
             short.join("harness-ref-1.sock")
+        );
+    }
+
+    /// `bounded_socket_path` keeps a short direct path, bounds a long one, and
+    /// reuses the same symlink alias across calls (stable bounded base).
+    #[test]
+    fn bounded_socket_path_reuses_alias_and_bounds_long_dirs() {
+        let dir = ScratchDir::new("phases-bounded-reuse");
+        let long = dir.join("s").join("t".repeat(180));
+        std::fs::create_dir_all(&long).expect("long state dir");
+
+        let first = bounded_socket_path(&long, "ledger.sock");
+        let second = bounded_socket_path(&long, "workspace.sock");
+        assert!(first.as_os_str().len() < SUN_LEN_LIMIT, "{}", first.display());
+        assert!(
+            second.as_os_str().len() < SUN_LEN_LIMIT,
+            "{}",
+            second.display()
+        );
+        assert_eq!(
+            first.parent().unwrap(),
+            second.parent().unwrap(),
+            "both sockets share the same bounded alias"
+        );
+
+        // The alias is a symlink that resolves into the state dir; a repeated
+        // call reuses the same link (stable per-run base).
+        let alias = first.parent().unwrap();
+        let meta = std::fs::symlink_metadata(alias).expect("alias metadata");
+        assert!(meta.file_type().is_symlink(), "alias is a symlink");
+        assert_eq!(std::fs::read_link(alias).unwrap(), long);
+        assert_eq!(
+            std::fs::canonicalize(alias).unwrap(),
+            std::fs::canonicalize(&long).unwrap(),
+            "alias resolves into the state dir"
+        );
+
+        // A short state dir is untouched (no alias, no behavior change).
+        let short = Path::new("/agalma/state");
+        assert_eq!(
+            bounded_socket_path(short, "ledger.sock"),
+            short.join("ledger.sock")
         );
     }
 

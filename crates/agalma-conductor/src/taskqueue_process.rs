@@ -9,15 +9,17 @@
 //! not duplicated.
 //!
 //! Transport selection is [`TaskQueueTransport`] (`AGALMA_TASKQUEUE_TRANSPORT`):
-//! `in-process` (default) or `process`. [`TaskQueueHandle`] exposes the full
+//! `process` (default) or `in-process`. [`TaskQueueHandle`] exposes the full
 //! task-queue operation surface ([`TaskQueueOps`] + `TaskQueueApi`) by delegating
 //! to whichever backend is bound, so work/reconcile logic is unchanged (D5) —
 //! only the construction sites change. The process wire defaults to
 //! [`Wire::Connect`] (IPCX.5); `AGALMA_IPC_WIRE=framed` restores framed for
 //! parity runs.
 //!
-//! The socket lives directly under the run state dir (`taskqueue.sock`) to stay
-//! within `SUN_LEN`.
+//! The socket lives under the run state dir (`taskqueue.sock`);
+//! [`TaskQueueProcess::spawn`] bounds the addressed path to `SUN_LEN` via
+//! [`crate::phases::bounded_socket_path`] while the socket file still lands in
+//! the state dir.
 
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -55,16 +57,23 @@ pub fn taskqueue_wire() -> Wire {
 pub enum TaskQueueTransport {
     /// Direct in-process trait call (unchanged work/reconcile logic).
     InProcess,
-    /// Supervised component server over the selected wire transport.
+    /// Supervised component server over the selected wire transport. This is the
+    /// default.
     Process,
 }
 
 impl TaskQueueTransport {
-    /// Read the transport from [`TRANSPORT_ENV`]; unknown/empty is `InProcess`.
+    /// Read the transport from [`TRANSPORT_ENV`]; default `Process`, with an
+    /// explicit `in-process` override (unknown/empty keeps the default).
+    ///
+    /// The default flipped to `Process` once the bounded socket scheme
+    /// ([`crate::phases::bounded_socket_path`]) covered this boundary and a live
+    /// process smoke proved the production spawn path (`agalma-fez`).
+    /// `in-process` remains the opt-out for tests and direct in-process embedding.
     pub fn from_env() -> Self {
         match std::env::var(TRANSPORT_ENV).ok().as_deref() {
-            Some("process") => TaskQueueTransport::Process,
-            _ => TaskQueueTransport::InProcess,
+            Some("in-process") => TaskQueueTransport::InProcess,
+            _ => TaskQueueTransport::Process,
         }
     }
 
@@ -98,12 +107,16 @@ pub struct TaskQueueProcess {
 impl TaskQueueProcess {
     /// Spawn a task-queue server serving `repo`'s backlog and listen on
     /// `<state_dir>/taskqueue.sock` (over [`taskqueue_wire`]); wait for `READY`.
+    ///
+    /// The addressed socket path is bounded to `SUN_LEN` for long `state_dir`
+    /// values; the socket file still lands under `state_dir`
+    /// ([`crate::phases::bounded_socket_path`]).
     pub fn spawn(
         state_dir: &Path,
         repo: &Path,
         timeout: Duration,
     ) -> Result<TaskQueueProcess, String> {
-        let socket = state_dir.join(TASKQUEUE_SOCKET_NAME);
+        let socket = crate::phases::bounded_socket_path(state_dir, TASKQUEUE_SOCKET_NAME);
         let spec = taskqueue_server_spec(&socket, repo);
         let program = resolve_server_binary(&spec.program)?;
         TaskQueueProcess::spawn_with_spec_wire(spec, program, socket, taskqueue_wire(), timeout)
@@ -294,12 +307,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn transport_from_env_defaults_to_in_process() {
+    fn transport_from_env_defaults_to_process() {
+        // Absent -> Process (post-B1-F3 default); explicit `in-process` overrides;
+        // an unknown value keeps the default.
         std::env::remove_var(TRANSPORT_ENV);
+        assert_eq!(
+            TaskQueueTransport::from_env(),
+            TaskQueueTransport::Process
+        );
+        std::env::set_var(TRANSPORT_ENV, "in-process");
         assert_eq!(
             TaskQueueTransport::from_env(),
             TaskQueueTransport::InProcess
         );
+        std::env::set_var(TRANSPORT_ENV, "bogus");
+        assert_eq!(
+            TaskQueueTransport::from_env(),
+            TaskQueueTransport::Process
+        );
+        std::env::remove_var(TRANSPORT_ENV);
     }
 
     #[test]

@@ -177,8 +177,21 @@ enum Backend {
 
 /// Connect transport state: the async client and the runtime that drives it.
 struct ConnectBackend {
-    runtime: tokio::runtime::Runtime,
+    /// The runtime driving `client`; `None` after [`Drop`] tears it down.
+    runtime: Option<tokio::runtime::Runtime>,
     client: ConnectClient,
+}
+
+impl Drop for ConnectBackend {
+    fn drop(&mut self) {
+        // The conductor builds and drops these clients from within its own Tokio
+        // runtime (the async `agalma` binary). A blocking runtime drop is
+        // forbidden in an async context, so shut the runtime down without
+        // blocking; its transport tasks are abandoned with it.
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 /// A [`LedgerApi`]/[`LedgerOps`] implementation backed by a ledger component
@@ -196,11 +209,13 @@ pub struct LedgerClient {
 }
 
 impl LedgerClient {
-    /// Connect to the ledger server listening on `socket` over the framed
-    /// transport; snapshot files live under `snapshot_dir` (the run state dir
-    /// shared with the server).
+    /// Connect to the ledger server listening on `socket` over the
+    /// environment-selected wire ([`Wire::from_env`], `Connect` default since
+    /// IPCX.6) — the same wire the supervised server serves by default. Snapshot
+    /// files live under `snapshot_dir` (the run state dir shared with the
+    /// server). Use [`LedgerClient::connect_wire`] to pin a wire explicitly.
     pub fn connect(socket: &Path, snapshot_dir: &Path) -> Result<LedgerClient, IpcError> {
-        LedgerClient::connect_wire(socket, snapshot_dir, Wire::Framed)
+        LedgerClient::connect_wire(socket, snapshot_dir, Wire::from_env(Wire::Connect))
     }
 
     /// Connect to the ledger server listening on `socket` over `wire`; snapshot
@@ -218,8 +233,11 @@ impl LedgerClient {
                     .enable_all()
                     .build()
                     .map_err(|e| IpcError::unavailable(format!("tokio runtime: {e}")))?;
-                let client = runtime.block_on(ConnectClient::connect(socket))?;
-                Backend::Connect(ConnectBackend { runtime, client })
+                let client = crate::block_on_nested(&runtime, ConnectClient::connect(socket))?;
+                Backend::Connect(ConnectBackend {
+                    runtime: Some(runtime),
+                    client,
+                })
             }
         };
         Ok(LedgerClient {
@@ -249,7 +267,10 @@ impl LedgerClient {
         match &mut *self.backend.borrow_mut() {
             Backend::Framed(client) => client.call_typed(method, params).map_err(map_ipc_error),
             Backend::Connect(backend) => {
-                crate::block_on_nested(&backend.runtime, backend.client.call_typed(method, params))
+                crate::block_on_nested(
+                    backend.runtime.as_ref().expect("runtime present until drop"),
+                    backend.client.call_typed(method, params),
+                )
                     .map_err(map_ipc_error)
             }
         }

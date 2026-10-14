@@ -251,6 +251,58 @@ fn taskqueue_server_child() {
     let _ = agalma_taskqueue::server::serve(Path::new(&socket), Path::new(&repo));
 }
 
+/// Live process smoke under a **long** state dir: the production
+/// [`TaskQueueProcess::spawn`] binds through the bounded alias so
+/// `<state_dir>/taskqueue.sock` fits `SUN_LEN`, while the socket file still
+/// lands under the state dir. One real call round-trips.
+#[test]
+fn live_process_smoke_taskqueue_long_state_dir() {
+    let binary = resolve_server_binary(SERVER_BIN).expect(
+        "required taskqueue smoke binary missing; run cargo build --offline --workspace --bins",
+    );
+    let scratch = Scratch::new(fresh());
+    let state = scratch.repo().join("n".repeat(60));
+    std::fs::create_dir_all(&state).expect("long state dir");
+    assert!(
+        state.join("taskqueue.sock").as_os_str().len() >= 104,
+        "direct socket path must exceed SUN_LEN"
+    );
+
+    let id = scratch.create("Smoke", VALID);
+    let mut process = TaskQueueProcess::spawn(&state, scratch.repo(), READY_TIMEOUT)
+        .unwrap_or_else(|e| panic!("production taskqueue spawn: {e}"));
+    eprintln!(
+        "taskqueue smoke: binary={} state={} socket={} wire={} pid={}",
+        binary.display(),
+        state.display(),
+        process.socket().display(),
+        process.wire().as_str(),
+        process.pid()
+    );
+    assert!(
+        process.socket().as_os_str().len() < 104,
+        "bounded socket path"
+    );
+    let client = process.client().expect("connect taskqueue client");
+    let ready = client.ready_tasks().expect("ready_tasks");
+    assert!(
+        ready.tasks.iter().any(|t| t.task_id.as_str() == id),
+        "the created task is ready: {ready:?}"
+    );
+    assert!(
+        state.join("taskqueue.sock").exists(),
+        "socket file lands under the state dir through the alias"
+    );
+
+    drop(client);
+    let evidence = process.stop();
+    eprintln!("taskqueue smoke cleanup: {evidence:?}");
+    assert!(
+        evidence.process_group_gone,
+        "server stop evidence: {evidence:?}"
+    );
+}
+
 fn pid_alive(pid: u32) -> bool {
     Command::new("/bin/kill")
         .arg("-0")

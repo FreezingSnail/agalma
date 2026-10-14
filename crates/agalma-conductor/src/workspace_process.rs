@@ -9,14 +9,16 @@
 //! not duplicated.
 //!
 //! Transport selection is [`WorkspaceTransport`] (`AGALMA_WORKSPACE_TRANSPORT`):
-//! `in-process` (default) or `process`. [`WorkspaceHandle`] exposes the full
+//! `process` (default) or `in-process`. [`WorkspaceHandle`] exposes the full
 //! workspace operation surface ([`WorkspaceOps`] + `WorkspaceApi`) by
 //! delegating to whichever backend is bound, so phase/work logic is unchanged
 //! (D5) — only the construction sites change. When bound to a process, the
 //! boundary speaks [`workspace_wire`] (Connect by default; IPCX.4).
 //!
-//! The socket lives directly under the run state dir (`workspace.sock`) to stay
-//! within `SUN_LEN`.
+//! The socket lives under the run state dir (`workspace.sock`);
+//! [`WorkspaceProcess::spawn`] bounds the addressed path to `SUN_LEN` via
+//! [`crate::phases::bounded_socket_path`] while the socket file still lands in
+//! the state dir.
 
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -55,16 +57,23 @@ pub enum WorkspaceTransport {
     /// Direct in-process trait call (unchanged phase logic).
     InProcess,
     /// Supervised component server over the selected wire transport
-    /// ([`workspace_wire`], Connect by default since IPCX.4).
+    /// ([`workspace_wire`], Connect by default since IPCX.4). This is the
+    /// default.
     Process,
 }
 
 impl WorkspaceTransport {
-    /// Read the transport from [`TRANSPORT_ENV`]; unknown/empty is `InProcess`.
+    /// Read the transport from [`TRANSPORT_ENV`]; default `Process`, with an
+    /// explicit `in-process` override (unknown/empty keeps the default).
+    ///
+    /// The default flipped to `Process` once the bounded socket scheme
+    /// ([`crate::phases::bounded_socket_path`]) covered this boundary and a live
+    /// process smoke proved the production spawn path (`agalma-fez`).
+    /// `in-process` remains the opt-out for tests and direct in-process embedding.
     pub fn from_env() -> Self {
         match std::env::var(TRANSPORT_ENV).ok().as_deref() {
-            Some("process") => WorkspaceTransport::Process,
-            _ => WorkspaceTransport::InProcess,
+            Some("in-process") => WorkspaceTransport::InProcess,
+            _ => WorkspaceTransport::Process,
         }
     }
 
@@ -97,8 +106,12 @@ pub struct WorkspaceProcess {
 impl WorkspaceProcess {
     /// Spawn a workspace server rooted at `base_dir` and listen on
     /// `<base_dir>/workspace.sock` (over [`workspace_wire`]); wait for `READY`.
+    ///
+    /// The addressed socket path is bounded to `SUN_LEN` for long `base_dir`
+    /// values; the socket file still lands under `base_dir`
+    /// ([`crate::phases::bounded_socket_path`]).
     pub fn spawn(base_dir: &Path, timeout: Duration) -> Result<WorkspaceProcess, String> {
-        let socket = base_dir.join(WORKSPACE_SOCKET_NAME);
+        let socket = crate::phases::bounded_socket_path(base_dir, WORKSPACE_SOCKET_NAME);
         let spec = workspace_server_spec(&socket, base_dir);
         let program = resolve_server_binary(&spec.program)?;
         WorkspaceProcess::spawn_with_spec_wire(spec, program, socket, workspace_wire(), timeout)
@@ -347,12 +360,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn transport_from_env_defaults_to_in_process() {
+    fn transport_from_env_defaults_to_process() {
+        // Absent -> Process (post-B1-F3 default); explicit `in-process` overrides;
+        // an unknown value keeps the default.
         std::env::remove_var(TRANSPORT_ENV);
+        assert_eq!(
+            WorkspaceTransport::from_env(),
+            WorkspaceTransport::Process
+        );
+        std::env::set_var(TRANSPORT_ENV, "in-process");
         assert_eq!(
             WorkspaceTransport::from_env(),
             WorkspaceTransport::InProcess
         );
+        std::env::set_var(TRANSPORT_ENV, "bogus");
+        assert_eq!(
+            WorkspaceTransport::from_env(),
+            WorkspaceTransport::Process
+        );
+        std::env::remove_var(TRANSPORT_ENV);
     }
 
     #[test]

@@ -227,9 +227,10 @@ pub fn run_session_end(
 
     let sandbox = SandboxSource::new(live.state_dir.clone());
     let sandbox_socket = sandbox.ensure()?;
-    let harness_socket = live.state_dir.join(&spec.socket_name);
+    let transport = HarnessTransport::from_env();
+    let harness_socket = session_harness_socket(&live.state_dir, transport, &spec.socket_name);
     let mut harness = harness_process::open_opencode_harness(OpenCodeHarnessInit {
-        transport: HarnessTransport::from_env(),
+        transport,
         config,
         root: root.clone(),
         model: spec.model.clone(),
@@ -345,6 +346,19 @@ pub fn attempt_root(state_dir: &Path, dir_key: &str) -> PathBuf {
     state_dir.join(dir_key).join("attempt")
 }
 
+/// The harness socket path for one session.
+///
+/// `InProcess` never binds, so it keeps the direct `<state_dir>/<name>` path;
+/// `Process` (the default) goes through the bounded scheme so a long state dir
+/// still binds within `SUN_LEN` ([`crate::phases::bounded_socket_path`]). The
+/// socket file still lands under the state dir through the alias.
+fn session_harness_socket(state_dir: &Path, transport: HarnessTransport, name: &str) -> PathBuf {
+    match transport {
+        HarnessTransport::InProcess => state_dir.join(name),
+        HarnessTransport::Process => crate::phases::bounded_socket_path(state_dir, name),
+    }
+}
+
 /// Directory containing the `bd` binary (resolved from the conductor's PATH).
 fn bd_bin_dir() -> Option<PathBuf> {
     std::env::var_os("PATH")
@@ -414,6 +428,37 @@ mod tests {
         assert_eq!(root, Path::new("/state/concierge/abc/attempt"));
         assert!(root.starts_with(state));
         assert!(!root.starts_with("/repo"));
+    }
+
+    /// The session harness socket is bounded under a long state dir (process
+    /// transport), and direct under in-process (`agalma-fez`).
+    #[test]
+    fn session_harness_socket_is_bounded_for_long_state_dirs() {
+        let dir = scratch_dir("bounded-harness-sock");
+        let long = dir.join("s").join("t".repeat(180));
+        std::fs::create_dir_all(&long).expect("long state dir");
+        let name = "harness-designer.sock";
+
+        let path = session_harness_socket(&long, HarnessTransport::Process, name);
+        assert!(
+            path.as_os_str().len() < crate::phases::SUN_LEN_LIMIT,
+            "{} bytes ({})",
+            path.as_os_str().len(),
+            path.display()
+        );
+        assert_eq!(path.file_name().unwrap().to_string_lossy(), name);
+        // The real socket file still lands under the state dir through the alias.
+        assert_eq!(
+            std::fs::canonicalize(path.parent().unwrap()).unwrap(),
+            std::fs::canonicalize(&long).unwrap(),
+            "alias resolves into the state dir"
+        );
+
+        // In-process never binds: the direct path is kept.
+        assert_eq!(
+            session_harness_socket(&long, HarnessTransport::InProcess, name),
+            long.join(name)
+        );
     }
 
     #[test]

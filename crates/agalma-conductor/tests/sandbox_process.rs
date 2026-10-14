@@ -26,7 +26,9 @@ use agalma_ipc::{Client, CommandSpec, SandboxClient, Wire};
 use agalma_sandbox::{SeatbeltSandbox, PRODUCT_PROFILE, SERVER_BIN};
 
 use agalma_conductor::harness_process::{ready_json, resolve_server_binary};
-use agalma_conductor::sandbox_process::{sandbox_server_spec, sandbox_wire, SandboxProcess};
+use agalma_conductor::sandbox_process::{
+    sandbox_server_spec, sandbox_wire, SandboxProcess, SandboxSource,
+};
 use agalma_testkit::ScratchDir;
 
 const CHILD_SOCKET_ENV: &str = "AGALMA_TEST_SANDBOX_SOCKET";
@@ -196,6 +198,65 @@ fn sandbox_server_child() {
         return;
     };
     let _ = agalma_sandbox::serve(Path::new(&socket));
+}
+
+/// Live process smoke under a **long** state dir: the production
+/// [`SandboxSource::ensure`] binds through the bounded alias so
+/// `<state_dir>/sandbox.sock` fits `SUN_LEN`, while the socket file still lands
+/// under the state dir. One real confined launch round-trips. (Sandbox has no
+/// transport selector — it is always process.)
+#[test]
+fn live_process_smoke_sandbox_long_state_dir() {
+    let binary = resolve_server_binary(SERVER_BIN).expect(
+        "required sandbox smoke binary missing; run cargo build --offline --workspace --bins",
+    );
+    let dir = fresh();
+    let state = dir.join("n".repeat(60));
+    std::fs::create_dir_all(&state).expect("long state dir");
+    assert!(
+        state.join("sandbox.sock").as_os_str().len() >= 104,
+        "direct socket path must exceed SUN_LEN"
+    );
+
+    let source = SandboxSource::new(state.clone());
+    source.ensure().expect("production sandbox ensure");
+    eprintln!(
+        "sandbox smoke: binary={} state={} socket={} wire={} pid={}",
+        binary.display(),
+        state.display(),
+        source.socket().display(),
+        sandbox_wire().as_str(),
+        source.pid().expect("server started")
+    );
+    assert!(
+        source.socket().as_os_str().len() < 104,
+        "bounded socket path"
+    );
+    let server_pid = source.pid().expect("server started");
+    let mut client = source.client().expect("connect sandbox client");
+
+    let run = Run::new(&dir, "smoke");
+    let child = client.launch(run.spec()).expect("confined launch");
+    assert!(client.alive(&child).expect("alive"), "child is alive");
+    let evidence = client.terminate(&child).expect("terminate");
+    eprintln!("sandbox smoke child cleanup: {evidence:?}");
+    assert!(
+        evidence.process_group_gone,
+        "termination evidence: {}",
+        evidence.detail
+    );
+
+    assert!(
+        state.join("sandbox.sock").exists(),
+        "socket file lands under the state dir through the alias"
+    );
+    drop(client);
+    drop(source);
+    assert!(
+        !pid_alive(server_pid),
+        "sandbox server is gone after source drop"
+    );
+    eprintln!("sandbox smoke server cleanup: pid {server_pid} gone");
 }
 
 // ===========================================================================

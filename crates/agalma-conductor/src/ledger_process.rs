@@ -9,7 +9,7 @@
 //! pair), not duplicated.
 //!
 //! Transport selection is [`LedgerTransport`] (`AGALMA_LEDGER_TRANSPORT`):
-//! `in-process` (default) or `process`. When a process binding is selected, its
+//! `process` (default) or `in-process`. When a process binding is selected, its
 //! wire is [`ledger_wire`] (`AGALMA_IPC_WIRE`): `Connect` (default, IPCX.6) or
 //! `framed` for parity runs. [`LedgerHandle`] exposes the full
 //! durable-state surface ([`LedgerApi`] + [`LedgerOps`]) by delegating to
@@ -18,8 +18,9 @@
 //! shares one backend, so every per-task executor in a work loop uses the same
 //! durable-state owner (single writer per state generation).
 //!
-//! The socket lives directly under the run state dir (`ledger.sock`) to stay
-//! within `SUN_LEN`.
+//! The socket lives under the run state dir (`ledger.sock`); [`ledger_socket`]
+//! bounds the addressed path to `SUN_LEN` via [`crate::phases::bounded_socket_path`]
+//! while the socket file still lands in the state dir.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -51,16 +52,23 @@ pub const LEDGER_SOCKET_NAME: &str = "ledger.sock";
 pub enum LedgerTransport {
     /// Direct in-process trait call (unchanged executor/kernel logic).
     InProcess,
-    /// Supervised component server over the selected wire transport.
+    /// Supervised component server over the selected wire transport
+    /// ([`ledger_wire`], Connect by default since IPCX.6). This is the default.
     Process,
 }
 
 impl LedgerTransport {
-    /// Read the transport from [`TRANSPORT_ENV`]; unknown/empty is `InProcess`.
+    /// Read the transport from [`TRANSPORT_ENV`]; default `Process`, with an
+    /// explicit `in-process` override (unknown/empty keeps the default).
+    ///
+    /// The default flipped to `Process` once the bounded socket scheme
+    /// ([`crate::phases::bounded_socket_path`]) covered this boundary and a live
+    /// process smoke proved the production spawn path (`agalma-fez`).
+    /// `in-process` remains the opt-out for tests and direct in-process embedding.
     pub fn from_env() -> Self {
         match std::env::var(TRANSPORT_ENV).ok().as_deref() {
-            Some("process") => LedgerTransport::Process,
-            _ => LedgerTransport::InProcess,
+            Some("in-process") => LedgerTransport::InProcess,
+            _ => LedgerTransport::Process,
         }
     }
 
@@ -74,8 +82,12 @@ impl LedgerTransport {
 }
 
 /// The socket the conductor's ledger server binds under `state_dir`.
+///
+/// Bounded to `SUN_LEN` for long state dirs: when `<state_dir>/ledger.sock` is
+/// too long the addressed path goes through a short alias, but the socket file
+/// still lands under `state_dir` ([`crate::phases::bounded_socket_path`]).
 pub fn ledger_socket(state_dir: &Path) -> PathBuf {
-    state_dir.join(LEDGER_SOCKET_NAME)
+    crate::phases::bounded_socket_path(state_dir, LEDGER_SOCKET_NAME)
 }
 
 /// The wire transport the ledger process boundary uses (IPCX.6).
@@ -556,9 +568,16 @@ mod tests {
     use agalma_testkit::ScratchDir;
 
     #[test]
-    fn transport_from_env_defaults_to_in_process() {
+    fn transport_from_env_defaults_to_process() {
+        // Absent -> Process (post-B1-F3 default); explicit `in-process` overrides;
+        // an unknown value keeps the default.
         std::env::remove_var(TRANSPORT_ENV);
+        assert_eq!(LedgerTransport::from_env(), LedgerTransport::Process);
+        std::env::set_var(TRANSPORT_ENV, "in-process");
         assert_eq!(LedgerTransport::from_env(), LedgerTransport::InProcess);
+        std::env::set_var(TRANSPORT_ENV, "bogus");
+        assert_eq!(LedgerTransport::from_env(), LedgerTransport::Process);
+        std::env::remove_var(TRANSPORT_ENV);
     }
 
     #[test]

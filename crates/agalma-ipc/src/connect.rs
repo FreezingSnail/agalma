@@ -69,6 +69,13 @@ pub enum Wire {
 /// (`framed` | `connect`). Absent or unrecognized uses the caller's default.
 pub const WIRE_ENV: &str = "AGALMA_IPC_WIRE";
 
+/// Environment variable set by the supervisor on a supervised component
+/// server. When present, the server watches its stdin for EOF and exits when
+/// the supervisor closes it — i.e. when the conductor dies (even on `SIGKILL`),
+/// so a supervised server never outlives its supervisor. Absent (a raw/embedded
+/// serve) keeps the historical blocking serve with no stdin watch.
+pub const PARENT_DEATH_STDIN_ENV: &str = "AGALMA_SERVER_PARENT_DEATH_STDIN";
+
 impl Wire {
     /// Stable selector string (the [`WIRE_ENV`] value).
     pub fn as_str(self) -> &'static str {
@@ -104,6 +111,7 @@ impl Wire {
 /// multithread Tokio runtime is installed for both branches because
 /// server-hosted implementations (e.g. the OpenCode harness) may need a reactor.
 pub fn serve_wire(mut server: Server, socket: &Path, wire: Wire) -> std::io::Result<()> {
+    watch_stdin_for_parent_death();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -112,6 +120,31 @@ pub fn serve_wire(mut server: Server, socket: &Path, wire: Wire) -> std::io::Res
         Wire::Framed => runtime.block_on(async move { server.serve(socket) }),
         Wire::Connect => runtime.block_on(serve(server, socket)),
     }
+}
+
+/// Exit the process when the supervisor closes the server's stdin.
+///
+/// Active only when [`PARENT_DEATH_STDIN_ENV`] is set (the supervisor spawns
+/// the server with a piped stdin it holds open for the server's lifetime). On
+/// supervisor death the OS closes that write end; this thread observes EOF and
+/// exits, so an orphaned server cannot outlive a `SIGKILL`ed conductor and keep
+/// a state lock (or leak) after it.
+fn watch_stdin_for_parent_death() {
+    if std::env::var_os(PARENT_DEATH_STDIN_ENV).is_none() {
+        return;
+    }
+    std::thread::spawn(|| {
+        use std::io::Read;
+        let mut byte = [0u8; 1];
+        loop {
+            match std::io::stdin().read(&mut byte) {
+                // EOF (or a read error) means the supervisor is gone.
+                Ok(0) | Err(_) => std::process::exit(0),
+                // Ignore any input; the pipe exists only as a liveness channel.
+                Ok(_) => {}
+            }
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------

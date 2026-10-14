@@ -74,8 +74,9 @@ survivors on pinned bindings. Confirm survivor termination; ambiguous evidence
 parks without redispatch. Preserve version gates, leases and protected recovery
 fixtures. Keep the existing driver; production kernel replacement belongs to CV.
 
-Own crates/agalma-execution/src/executor.rs and conductor tests/sf_recovery_gate.rs.
-The bead's conductor src/work.rs integration is held until SF.5 releases it.
+Own crates/agalma-execution/src/executor.rs, conductor src/work.rs and conductor
+tests/sf_recovery_gate.rs. Sol explicitly transferred work.rs to SF.3 on
+2026-10-14 after SF.5 was approved, committed as `6deb43b`, and closed.
 Do not implement SF.4 cancellation or alter another execution's context.
 
 Focused command: `cargo test --offline -p agalma-conductor --test sf_recovery_gate`.
@@ -83,6 +84,20 @@ Review requires a history-preserving projection tamper with zero later effects,
 two executions with distinct workspaces/acceptance and task-scoped probes,
 crash-after-effect reconciliation without repetition, and ambiguous survivor
 refusal. A call to a global recover method or a compile-only result is insufficient.
+
+**Operator release and dispatch — 2026-10-14:** the user explicitly requested
+dispatch of SF.3. Sol cleared this bead's defer date and staged label after
+checking its closed prerequisites. OpenCode started session
+`ses_ec6380526ffeU495zZvVKNbqKf` with model
+`opencode-go/deepseek-v4.1-flash` in `/Users/connorfranc/code/agalma`; the
+subsequent status reported `idle: false` and no completion outcome. This is
+observed active dispatch, not implementation or acceptance completion.
+
+The complete task input, SHA-256, and source base commit `6b2c1cc` are retained
+under `target/test-runs/agalma-5fy.3/`. The implementer reads that frozen input,
+preserves the accepted SF.2/SF.5/FEZ behavior, and stops for Sol review with raw
+focused logs and exact exits. No task commit precedes approval and a serialized
+index window; no successor release, live-provider acceptance, or push is granted.
 
 ## agalma-5fy.8 — builder-only model selection
 

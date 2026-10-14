@@ -491,17 +491,26 @@ impl HarnessApi for LiveHarness {
 /// Build the live OpenCode harness under `transport`.
 ///
 /// `InProcess` constructs an [`OpenCodeHarness`] whose confined launch goes
-/// through a [`SandboxClient`] connected to `sandbox_socket`. `Process` spawns
-/// the `agalma-harness-opencode-server` component server (which itself uses the
-/// sandbox client via `AGALMA_SANDBOX_SOCKET`) and returns the supervised
-/// [`ProcessBinding`]. The process branch is not exercised against a live
-/// OpenCode install offline; the reference transport is proven by the boundary
-/// tests.
+/// through a [`SandboxClient`] connected to `sandbox_socket` over
+/// [`crate::sandbox_process::sandbox_wire`] (the sandbox server's own
+/// env-selected wire: `Connect` by default, `framed` for parity). `Process`
+/// spawns the `agalma-harness-opencode-server` component server (which itself
+/// env-selects the sandbox client wire via `AGALMA_SANDBOX_SOCKET`) and returns
+/// the supervised [`ProcessBinding`]. The process branch is not exercised
+/// against a live OpenCode install offline; the reference transport is proven
+/// by the boundary tests.
 pub fn open_opencode_harness(init: OpenCodeHarnessInit) -> Result<LiveHarness, String> {
     match init.transport {
         HarnessTransport::InProcess => {
-            let sandbox =
-                SandboxClient::connect(&init.sandbox_socket).map_err(|e| e.to_string())?;
+            // Pair with the sandbox server spawned by `SandboxSource::ensure`
+            // (`agalma-6w8`): it serves `sandbox_wire()` (env-selected, default
+            // `Connect`), so a client on the legacy `SandboxClient::connect`
+            // framed default would mismatch under an unset `AGALMA_IPC_WIRE`.
+            let sandbox = SandboxClient::connect_wire(
+                &init.sandbox_socket,
+                crate::sandbox_process::sandbox_wire(),
+            )
+            .map_err(|e| e.to_string())?;
             Ok(LiveHarness::InProcess(OpenCodeHarness::new(
                 Box::new(sandbox),
                 init.config,

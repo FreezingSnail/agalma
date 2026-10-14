@@ -174,6 +174,69 @@ impl<L: LedgerApi> Executor<L> {
         Ok(fold_events(&events))
     }
 
+    /// Require one execution's recorded history to agree with its durable
+    /// projection. Pure read: performs no effect and commits nothing, so a
+    /// disagreement (a tampered projection with preserved history) refuses
+    /// dispatch without leaving a partial effect ([`ContractError::Conflict`]).
+    fn require_projection_agreement(
+        &self,
+        record: &ExecutionRecord,
+    ) -> Result<(), ContractError> {
+        let (phase, state, attempt) = self.reconstruct(&record.execution_id)?;
+        if phase != record.phase || state != record.state || attempt != record.attempt {
+            return Err(ContractError::Conflict(format!(
+                "reconstructed state disagrees with projection for {}: \
+                 derived=({phase:?},{state:?},{attempt}) projected=({:?},{:?},{})",
+                record.execution_id, record.phase, record.state, record.attempt
+            )));
+        }
+        Ok(())
+    }
+
+    /// Reconcile a set of already-announced operations: complete an effect that
+    /// survived a crash without repeating it (`Present`), park an undecidable
+    /// effect (`Ambiguous`), and leave an absent effect pending for dispatch.
+    /// Never executes a fresh effect.
+    fn reconcile_intents(
+        &mut self,
+        pending: Vec<DispatchIntent>,
+    ) -> Result<(), ContractError> {
+        for intent in pending {
+            if self
+                .ledger
+                .operation_receipt(&intent.operation_id)?
+                .is_some()
+            {
+                continue;
+            }
+            let execution = intent.execution_id.clone();
+            let record = match self.ledger.execution(&execution)? {
+                Some(record) => record,
+                None => continue,
+            };
+            if self.definition_version(&execution)? != self.config.execution_definition_version {
+                continue; // dispatch will park it
+            }
+            let ctx = build_context(&record, &intent)?;
+            match self.probe(&ctx)? {
+                EffectProbe::Absent => {}
+                EffectProbe::Ambiguous => {
+                    let reason = format!(
+                        "ambiguous effect for {}; parked for manual reconciliation",
+                        intent.operation_id
+                    );
+                    self.park(&execution, &record, Some(&intent.operation_id), &reason)?;
+                }
+                EffectProbe::Present => {
+                    let outcome = self.reconcile(&ctx)?;
+                    self.complete(&ctx, &outcome, true)?;
+                    self.advance(&execution, &record, &outcome, &intent.operation_id)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Deliver one logical operation by id. Safe to call more than once: a
     /// completed operation returns its recorded receipt with no effect.
     pub fn deliver_operation(
@@ -822,53 +885,13 @@ impl<L: LedgerApi> ExecutionApi for Executor<L> {
         //    the projection.
         let executions = self.ledger.executions()?;
         for record in &executions {
-            let (phase, state, attempt) = self.reconstruct(&record.execution_id)?;
-            if phase != record.phase || state != record.state || attempt != record.attempt {
-                return Err(ContractError::Conflict(format!(
-                    "reconstructed state disagrees with projection for {}: \
-                     derived=({phase:?},{state:?},{attempt}) projected=({:?},{:?},{})",
-                    record.execution_id, record.phase, record.state, record.attempt
-                )));
-            }
+            self.require_projection_agreement(record)?;
         }
 
         // 2. Reconcile pending intents: complete an effect that survived a crash
         //    (or is ambiguous -> park). Absent effects stay pending for dispatch.
         let pending = self.ledger.pending_intents()?;
-        for intent in pending {
-            if self
-                .ledger
-                .operation_receipt(&intent.operation_id)?
-                .is_some()
-            {
-                continue;
-            }
-            let execution = intent.execution_id.clone();
-            let record = match self.ledger.execution(&execution)? {
-                Some(record) => record,
-                None => continue,
-            };
-            if self.definition_version(&execution)? != self.config.execution_definition_version {
-                continue; // dispatch will park it
-            }
-            let ctx = build_context(&record, &intent)?;
-            match self.probe(&ctx)? {
-                EffectProbe::Absent => {}
-                EffectProbe::Ambiguous => {
-                    let reason = format!(
-                        "ambiguous effect for {}; parked for manual reconciliation",
-                        intent.operation_id
-                    );
-                    self.park(&execution, &record, Some(&intent.operation_id), &reason)?;
-                }
-                EffectProbe::Present => {
-                    let outcome = self.reconcile(&ctx)?;
-                    self.complete(&ctx, &outcome, true)?;
-                    self.advance(&execution, &record, &outcome, &intent.operation_id)?;
-                }
-            }
-        }
-        Ok(())
+        self.reconcile_intents(pending)
     }
 
     fn cancel(&mut self, execution: &ExecutionId) -> Result<(), ContractError> {
@@ -1134,6 +1157,44 @@ impl<L: LedgerApi> Executor<L> {
         })?;
         maybe_crash("after_transition_commit");
         Ok(operation)
+    }
+
+    /// Execution-scoped recovery gate (SF.3). Replays **one** execution's
+    /// recorded history, requires it to agree with the durable projection, and
+    /// reconciles only that execution's pending intents on the currently
+    /// registered (pinned) bindings — a *confirmed* survivor is completed
+    /// without repetition and an *ambiguous* survivor parks. No unrelated
+    /// execution is probed, so an activity set bound to a different task
+    /// context never sees this execution's operations through the wrong
+    /// workspace/acceptance.
+    ///
+    /// A projection that disagrees with its preserved history returns
+    /// [`ContractError::Conflict`] with no effect and no commit, so the caller
+    /// must refuse dispatch (see the work-loop gate). Called after
+    /// [`Executor::activate`]/`prepare` and before recovered `step` dispatch.
+    pub fn recover_execution(
+        &mut self,
+        execution: &ExecutionId,
+    ) -> Result<(), ContractError> {
+        if self.ledger.schema_version()? != LEDGER_SCHEMA_VERSION {
+            // Cannot persist anything under an incompatible schema; leave
+            // dispatch gated. Never auto-migrate.
+            return Ok(());
+        }
+        let record = match self.ledger.execution(execution)? {
+            Some(record) => record,
+            None => return Ok(()),
+        };
+        // 1. Replay this execution from events only and require agreement.
+        self.require_projection_agreement(&record)?;
+        // 2. Reconcile only this execution's pending intents.
+        let pending = self
+            .ledger
+            .pending_intents()?
+            .into_iter()
+            .filter(|intent| &intent.execution_id == execution)
+            .collect();
+        self.reconcile_intents(pending)
     }
 }
 

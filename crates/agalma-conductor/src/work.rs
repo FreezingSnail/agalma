@@ -838,6 +838,17 @@ fn recover_inflight(
             Rc::clone(&stop),
         )?;
         let lease = execution_lease(&executor, &record.execution_id, record.generation);
+        // SF.3 execution-scoped recovery gate: replay THIS execution's recorded
+        // history, require projection agreement, and reconcile only its pending
+        // intents/survivors on the pinned bindings (the activities just
+        // registered from its frozen package). A projection that disagrees with
+        // preserved history refuses the gate with no effect; refuse dispatch by
+        // parking rather than driving `step`.
+        if let Err(err) = executor.recover_execution(&record.execution_id) {
+            eprintln!("agalma: recovery gate parks {}: {err}", record.execution_id);
+            park_execution(ledger, &record, &err.to_string(), queue)?;
+            continue;
+        }
         let terminal = drive_task(
             &mut executor,
             &record.execution_id,

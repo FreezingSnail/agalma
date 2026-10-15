@@ -38,6 +38,8 @@ use agalma_conductor::phases::{activities_with_mode, ActivityMode, PhaseDeps, Re
 use agalma_conductor::reconcile::reconcile_projection;
 use agalma_conductor::taskqueue_process::TaskQueueHandle;
 
+mod common;
+
 const TASK: &str = "fence-task";
 
 fn task() -> TaskId {
@@ -126,6 +128,9 @@ struct Harness {
 
 fn build_harness(origin: &Origin, acceptance: &[&str]) -> Harness {
     std::fs::create_dir_all(&origin.state_dir).expect("state dir");
+    // SF.1: repository mode requires the recorded package; seed valid fixtures
+    // for every generation this drill can dispatch (gen1, gen2).
+    common::seed_recorded_packages(&origin.state_dir, TASK, 2);
     let deps = PhaseDeps {
         state_dir: origin.state_dir.clone(),
         fixture: origin.origin.clone(),

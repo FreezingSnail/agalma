@@ -42,6 +42,8 @@ use agalma_conductor::phases::{
     activities_with_mode, ensure_cargo_home, run_root, ActivityMode, PhaseDeps, RepoMode, RunState,
 };
 
+mod common;
+
 /// Resolution-only acceptance command: must exit 0 and print metadata JSON when
 /// the seeded registry link works offline.
 const ACCEPT: &str = "cargo metadata --offline --format-version 1";
@@ -186,6 +188,10 @@ fn sandboxed_acceptance_resolves_cargo_offline() {
     let origin = seed_origin(&dir);
     let state_dir = dir.join("state");
     fs::create_dir_all(&state_dir).expect("state dir");
+    // SF.1: repository mode requires the recorded package. This test executes
+    // only checkout+verify, but seed the valid fixture so the repo-mode harness
+    // invariant holds if it ever dispatches build.
+    common::seed_recorded_package(&state_dir, "cargo-home-accept", 1);
 
     // Render the real product profile (the one the conductor ships) to a file.
     let profile = state_dir.join("worker.sb");

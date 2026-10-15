@@ -37,6 +37,8 @@ use agalma_conductor::harness_binding::{
 use agalma_conductor::phases::{activities_with_mode, ActivityMode, PhaseDeps, RepoMode, RunState};
 use agalma_testkit::ScratchDir;
 
+mod common;
+
 const TASK: &str = "rebind-task";
 const ACCEPTANCE: &str = "sh -c 'test -f .agalma/reference-ok'";
 
@@ -121,6 +123,9 @@ fn build_harness(
     choice: HarnessChoice,
 ) -> (Executor<SqliteLedger>, HarnessHandle) {
     std::fs::create_dir_all(&origin.state_dir).expect("state dir");
+    // SF.1: repository mode requires the recorded package; seed valid fixtures
+    // for every generation this drill can dispatch (gen1, gen2).
+    common::seed_recorded_packages(&origin.state_dir, TASK, 2);
     let handle = harness_handle(choice);
     let deps = PhaseDeps {
         state_dir: origin.state_dir.clone(),

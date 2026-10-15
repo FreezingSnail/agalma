@@ -18,9 +18,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use agalma_conductor::routing::{self, RoleModelOverride, RouteClass, RouteOrigin};
+use agalma_conductor::scope_guard::{
+    BaselineFile, ProtectedBaseline, ProtectedEntry, ProtectedInputs, PROTECTED_BASELINE_FORMAT,
+    PROTECTED_INPUTS_FORMAT, PROTECTED_INPUTS_FILE,
+};
 use agalma_conductor::task_package::{
-    build_package, load_package, persist_package, AuthorizationInput, ContextInput, PackageInputs,
-    RoleInput,
+    build_package, load_admitted_package, load_package, persist_package, AuthorizationInput,
+    ContextInput, PackageInputs, RoleInput,
 };
 use agalma_contracts::digest::sha256_digest;
 use agalma_contracts::{
@@ -31,7 +35,7 @@ use agalma_ledger::SqliteLedger;
 use agalma_taskqueue::TaskDefinition;
 use agalma_testkit::ScratchDir;
 use rusqlite::OptionalExtension;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// Test scratch retained on disk for review evidence (`ScratchDir::keep`).
 fn scratch(name: &str) -> ScratchDir {
@@ -460,6 +464,223 @@ fn frozen_role_pins_survive_reload_for_every_builder_selector() {
 }
 
 // ---------------------------------------------------------------------------
+// SF.6 operator protected inputs the production fixture seeds
+// ---------------------------------------------------------------------------
+const ENTRY_TASK: &str = "fixture.protected";
+const ENTRY_BASE: &str = "1111111111111111111111111111111111111111";
+
+/// A valid operator `ProtectedEntry/v1` rooted at a synthetic origin.
+fn entry_with(task: &str, base: &str) -> ProtectedEntry {
+    let marker = "protected marker\n";
+    ProtectedEntry {
+        task_id: task.to_string(),
+        repository_root: "/agalma-entry".to_string(),
+        base_sha: base.to_string(),
+        allowed_paths: vec!["src".to_string(), "docs".to_string(), "AGENTS.md".to_string()],
+        protected_paths: vec!["tests".to_string()],
+        baseline: ProtectedBaseline {
+            format: PROTECTED_BASELINE_FORMAT.to_string(),
+            files: vec![BaselineFile {
+                path: "protected/marker.txt".to_string(),
+                mode: "100644".to_string(),
+                digest: sha256_digest(marker.as_bytes()),
+                bytes: marker.len() as u64,
+                text: marker.to_string(),
+            }],
+            commands: vec!["sh -c 'true'".to_string()],
+        },
+    }
+}
+
+fn protected_definition(task: &str) -> TaskDefinition {
+    TaskDefinition {
+        task_id: TaskId::new(task),
+        title: "Protected entry fixture".to_string(),
+        description: "Body.\n".to_string(),
+        design: Some("Design.\n".to_string()),
+        notes: None,
+        acceptance_criteria: Some("sh -c 'true'".to_string()),
+        parent: None,
+        dependencies: Vec::new(),
+        comments: Vec::new(),
+    }
+}
+
+/// Record a frozen package with the given scope/oracle and return its digest.
+fn frozen_package(
+    state_dir: &Path,
+    package_task: &str,
+    package_base: &str,
+    allowed: Vec<String>,
+    protected: Vec<String>,
+    oracle_bytes: Vec<u8>,
+) -> String {
+    let inputs = PackageInputs {
+        execution_id: format!("exec:{package_task}:1"),
+        generation: 1,
+        lease_generation: 1,
+        repository_identity: "agalma-entry-fixture".to_string(),
+        base_sha: package_base.to_string(),
+        directive: DirectiveRef {
+            id: "directive/v0".to_string(),
+            version: 1,
+            digest: sha256_digest(b"directive/v0"),
+        },
+        authorization: AuthorizationInput {
+            origin: AuthorizationOrigin::HumanBootstrap,
+            policy_digest: sha256_digest(b"policy"),
+            receipt_source: "objects/authorization.json".to_string(),
+            receipt_media_type: "application/json".to_string(),
+            receipt_bytes: b"{}".to_vec(),
+        },
+        roles: vec![RoleInput::new(
+            Role::Builder,
+            "builder:feature",
+            FREE_A,
+            pin_binding(),
+            b"builder prompt".to_vec(),
+            "text/plain",
+        )],
+        instructions: vec![ContextInput::new(
+            ContextKind::Instruction,
+            "AGENTS.md",
+            "text/plain",
+            b"repo rules".to_vec(),
+        )],
+        shared_design: Vec::new(),
+        parent_design: Vec::new(),
+        dependency_handoffs: Vec::new(),
+        allowed_paths: allowed,
+        protected_paths: protected,
+        readable_artifacts: Vec::new(),
+        oracle_bytes,
+        oracle_media_type: "application/json".to_string(),
+        max_attempts: 2,
+        allowance_nusd: 0,
+        quota_policy_digest: sha256_digest(b"quota"),
+        recorded_at_unix_ms: 1_791_820_800_000,
+    };
+    let built = build_package(&protected_definition(package_task), inputs).expect("build package");
+    persist_package(state_dir, &built).expect("persist package");
+    built.package.package_digest
+}
+
+/// Deterministic property (fixed enumerated budget: 6 package/oracle
+/// agreement cases + 3 manifest cases = 9 assertions; no randomness) over the
+/// SF.6 contract the production fixture relies on: a frozen package whose oracle
+/// is the selected complete `ProtectedEntry/v1` loads only when the entry and
+/// package scope agree; every identity-, base-, scope-, or oracle-malformed
+/// variant refuses. Replay:
+/// `cargo test --offline --locked -p agalma-conductor --test sf_builder_route`.
+#[test]
+fn frozen_protected_entry_agreement_property() {
+    let dir = scratch("sf-builder-entry");
+    let entry = entry_with(ENTRY_TASK, ENTRY_BASE);
+    let allowed = entry.allowed_paths.clone();
+    let protected = entry.protected_paths.clone();
+
+    let mut cases: Vec<(&str, String, String, Vec<String>, Vec<String>, Vec<u8>, bool)> = Vec::new();
+    cases.push((
+        "valid",
+        ENTRY_TASK.to_string(),
+        ENTRY_BASE.to_string(),
+        allowed.clone(),
+        protected.clone(),
+        entry.freeze().expect("freeze"),
+        true,
+    ));
+    cases.push((
+        "task_mismatch",
+        ENTRY_TASK.to_string(),
+        ENTRY_BASE.to_string(),
+        allowed.clone(),
+        protected.clone(),
+        entry_with("other.task", ENTRY_BASE).freeze().expect("freeze"),
+        false,
+    ));
+    cases.push((
+        "base_mismatch",
+        ENTRY_TASK.to_string(),
+        ENTRY_BASE.to_string(),
+        allowed.clone(),
+        protected.clone(),
+        entry_with(ENTRY_TASK, "2222222222222222222222222222222222222222")
+            .freeze()
+            .expect("freeze"),
+        false,
+    ));
+    cases.push((
+        "allowed_disagree",
+        ENTRY_TASK.to_string(),
+        ENTRY_BASE.to_string(),
+        vec!["different".to_string()],
+        protected.clone(),
+        entry.freeze().expect("freeze"),
+        false,
+    ));
+    cases.push((
+        "protected_disagree",
+        ENTRY_TASK.to_string(),
+        ENTRY_BASE.to_string(),
+        allowed.clone(),
+        vec!["different".to_string()],
+        entry.freeze().expect("freeze"),
+        false,
+    ));
+    cases.push((
+        "opaque_oracle",
+        ENTRY_TASK.to_string(),
+        ENTRY_BASE.to_string(),
+        allowed.clone(),
+        protected.clone(),
+        b"harness-oracle".to_vec(),
+        false,
+    ));
+
+    let mut executed = 0usize;
+    for (label, pkg_task, pkg_base, allow, prot, oracle, expect_ok) in &cases {
+        executed += 1;
+        let case_dir = dir.child(&format!("case-{executed}"));
+        let digest = frozen_package(
+            &case_dir,
+            pkg_task,
+            pkg_base,
+            allow.clone(),
+            prot.clone(),
+            oracle.clone(),
+        );
+        let result = load_admitted_package(&case_dir, &digest);
+        assert_eq!(
+            result.is_ok(),
+            *expect_ok,
+            "case {label:?}: recorded-package validity must be {expect_ok} ({result:?})"
+        );
+    }
+    assert_eq!(executed, 6, "fixed deterministic case budget is exercised");
+
+    // The operator manifest the fixture writes parses, selects its frozen
+    // identity, and an absent manifest refuses.
+    let doc = json!({
+        "format": PROTECTED_INPUTS_FORMAT,
+        "entries": [entry.clone()],
+    });
+    let bytes = serde_json::to_vec(&doc).expect("json");
+    let parsed = ProtectedInputs::parse(&bytes).expect("manifest parses");
+    assert!(
+        parsed.select(ENTRY_TASK, "/agalma-entry", ENTRY_BASE).is_ok(),
+        "the frozen identity selects"
+    );
+    assert!(
+        parsed.select(ENTRY_TASK, "/other", ENTRY_BASE).is_err(),
+        "a repository identity mismatch refuses"
+    );
+    assert!(
+        ProtectedInputs::load(&dir).is_err(),
+        "an absent operator manifest refuses repository work"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Production: immutable pin through `agalma work`, and restart preservation
 // ---------------------------------------------------------------------------
 fn bin() -> &'static str {
@@ -628,7 +849,62 @@ impl Prod {
                 "Original acceptance text.",
             ],
         );
+        // SF.6: production admission requires the operator `ProtectedInputs/v1`
+        // entry for the task; missing/mismatched inputs stop repository work.
+        self.protect(&id);
         id
+    }
+
+    fn head(&self) -> String {
+        let out = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&self.origin)
+            .output()
+            .expect("git rev-parse");
+        assert!(out.status.success(), "git rev-parse HEAD");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Write/merge the operator `ProtectedInputs/v1` entry for `task_id` into
+    /// `<state_dir>/protected-inputs.json` (SF.6), mirroring production
+    /// admission: canonical repository root, resolved base SHA, a nonempty
+    /// allow/protect scope, and a `ProtectedBaseline/v1` with one file + command.
+    fn protect(&self, task_id: &str) {
+        let root = fs::canonicalize(&self.origin).expect("canonical origin");
+        let marker = "ok\n";
+        let entry = json!({
+            "task_id": task_id,
+            "repository_root": root.to_string_lossy(),
+            "base_sha": self.head(),
+            "allowed_paths": ["src", "docs", "AGENTS.md"],
+            "protected_paths": ["tests"],
+            "baseline": {
+                "format": PROTECTED_BASELINE_FORMAT,
+                "files": [{
+                    "path": "protected/marker.txt",
+                    "mode": "100644",
+                    "digest": sha256_digest(marker.as_bytes()),
+                    "bytes": marker.len() as u64,
+                    "text": marker,
+                }],
+                "commands": ["sh -c 'true'"],
+            },
+        });
+        let path = self.state_dir.join(PROTECTED_INPUTS_FILE);
+        let mut entries: Vec<Value> = fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .and_then(|v| v.get("entries").cloned())
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default();
+        entries.retain(|e| e.get("task_id").and_then(Value::as_str) != Some(task_id));
+        entries.push(entry);
+        fs::create_dir_all(&self.state_dir).expect("state dir");
+        let doc = json!({ "format": PROTECTED_INPUTS_FORMAT, "entries": entries });
+        let bytes = serde_json::to_vec_pretty(&doc).expect("json");
+        // Validate through the production contract before persisting.
+        ProtectedInputs::parse(&bytes).expect("seeded operator manifest must be valid");
+        fs::write(&path, bytes).expect("write manifest");
     }
 
     /// Run `agalma work --once` against the scratch origin in scripted mode.
@@ -839,4 +1115,181 @@ fn work_refuses_ineligible_paid_builder_selector() {
         !prod.has_execution(&format!("exec:{id}:1")),
         "the run refuses before claiming/dispatching the task"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic generation over the protected-input contract (fixed seed)
+// ---------------------------------------------------------------------------
+
+/// SplitMix64 generator (same algorithm as `agalma-testkit`; deterministic,
+/// no runtime randomness). Replay: fixed seeds below, fixed case budgets.
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Self {
+        Rng(seed)
+    }
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next_u64() % n
+    }
+}
+
+/// Independent property: for generated `ProtectedEntry` mutations, a case is
+/// valid **iff** its mutation class is the valid class; valid cases round-trip
+/// `freeze`/`parse` identically and every malformed / missing-identity /
+/// bad-path / baseline-boundary case refuses. Expected validity derives from the
+/// class, not the implementation. Deterministic seed `0x5F8B_0000_0012`, fixed
+/// budget 256; every class is asserted generated.
+#[test]
+fn generated_protected_entry_mutations_round_trip_or_refuse() {
+    const SEED: u64 = 0x5F8B_0000_0012;
+    const BUDGET: u64 = 256;
+    let mut rng = Rng::new(SEED);
+    let mut class_hits = [0u64; 8];
+    for case in 0..BUDGET {
+        let mut entry = entry_with(ENTRY_TASK, ENTRY_BASE);
+        let class = rng.below(class_hits.len() as u64) as usize;
+        class_hits[class] += 1;
+        let expected_valid = match class {
+            0 => true,
+            1 => {
+                match rng.below(3) {
+                    0 => entry.task_id.clear(),
+                    1 => entry.repository_root.clear(),
+                    _ => entry.base_sha.clear(),
+                }
+                false
+            }
+            2 => {
+                let bad = ["/abs", "..", "a/../b", "a//b", "."][rng.below(5) as usize].to_string();
+                if rng.next_u64() & 1 == 0 {
+                    entry.allowed_paths = vec![bad];
+                } else {
+                    entry.protected_paths = vec![bad];
+                }
+                false
+            }
+            3 => {
+                entry.baseline.format = "ProtectedBaseline/v0".to_string();
+                false
+            }
+            4 => {
+                entry.baseline.files.clear();
+                false
+            }
+            5 => {
+                entry.baseline.commands.clear();
+                false
+            }
+            6 => {
+                if rng.next_u64() & 1 == 0 {
+                    entry.baseline.files[0].digest = sha256_digest(b"other");
+                } else {
+                    entry.baseline.files[0].mode = "120000".to_string();
+                }
+                false
+            }
+            _ => {
+                entry.baseline.files.push(entry.baseline.files[0].clone());
+                false
+            }
+        };
+        let bytes = entry.freeze().expect("freeze");
+        let parsed = ProtectedEntry::parse(&bytes);
+        assert_eq!(
+            parsed.is_ok(),
+            expected_valid,
+            "case {case}: class {class} validity must be {expected_valid}"
+        );
+        if expected_valid {
+            assert_eq!(
+                parsed.expect("valid entry parses"),
+                entry,
+                "case {case}: a valid entry round-trips identically"
+            );
+        }
+    }
+    let total: u64 = class_hits.iter().sum();
+    assert_eq!(total, BUDGET, "fixed generated case budget is exercised");
+    for (class, hits) in class_hits.iter().enumerate() {
+        assert!(*hits > 0, "mutation class {class} was generated");
+    }
+}
+
+/// Independent property over generated `ProtectedInputs/v1` manifest
+/// mutations: a valid manifest parses and selects the frozen identity; a
+/// duplicate-entry, wrong-format, empty, unknown-field, or identity-mismatched
+/// manifest refuses. Deterministic seed `0x5F8B_0000_0013`, fixed budget 128;
+/// every class is asserted generated.
+#[test]
+fn generated_protected_manifest_mutations_select_or_refuse() {
+    const SEED: u64 = 0x5F8B_0000_0013;
+    const BUDGET: u64 = 128;
+    let base = entry_with(ENTRY_TASK, ENTRY_BASE);
+    let mut rng = Rng::new(SEED);
+    let mut class_hits = [0u64; 6];
+    for case in 0..BUDGET {
+        let class = rng.below(class_hits.len() as u64) as usize;
+        class_hits[class] += 1;
+        let expect_parse_ok = class == 0 || class == 5;
+        let refuse_selection = class == 5;
+        let doc = match class {
+            0 => json!({
+                "format": PROTECTED_INPUTS_FORMAT,
+                "entries": [serde_json::to_value(&base).unwrap()],
+            }),
+            1 => json!({
+                "format": PROTECTED_INPUTS_FORMAT,
+                "entries": [serde_json::to_value(&base).unwrap(), serde_json::to_value(&base).unwrap()],
+            }),
+            2 => json!({
+                "format": "ProtectedInputs/v2",
+                "entries": [serde_json::to_value(&base).unwrap()],
+            }),
+            3 => json!({ "format": PROTECTED_INPUTS_FORMAT, "entries": [] }),
+            4 => json!({
+                "format": PROTECTED_INPUTS_FORMAT,
+                "entries": [serde_json::to_value(&base).unwrap()],
+                "extra": 1,
+            }),
+            _ => json!({
+                "format": PROTECTED_INPUTS_FORMAT,
+                "entries": [serde_json::to_value(&base).unwrap()],
+            }),
+        };
+        let bytes = serde_json::to_vec(&doc).expect("json");
+        match ProtectedInputs::parse(&bytes) {
+            Ok(parsed) => {
+                assert!(expect_parse_ok, "case {case}: class {class} must refuse parsing");
+                if refuse_selection {
+                    assert!(
+                        parsed.select("missing.task", "/agalma-entry", ENTRY_BASE).is_err(),
+                        "case {case}: a missing task entry refuses selection"
+                    );
+                    assert!(
+                        parsed.select(ENTRY_TASK, "/other", ENTRY_BASE).is_err(),
+                        "case {case}: a repository identity mismatch refuses selection"
+                    );
+                } else {
+                    assert!(
+                        parsed.select(ENTRY_TASK, "/agalma-entry", ENTRY_BASE).is_ok(),
+                        "case {case}: the frozen identity selects"
+                    );
+                }
+            }
+            Err(_) => assert!(!expect_parse_ok, "case {case}: class {class} must parse"),
+        }
+    }
+    let total: u64 = class_hits.iter().sum();
+    assert_eq!(total, BUDGET, "fixed generated case budget is exercised");
+    for (class, hits) in class_hits.iter().enumerate() {
+        assert!(*hits > 0, "manifest mutation class {class} was generated");
+    }
 }

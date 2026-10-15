@@ -38,6 +38,13 @@ schema and authorization rules. Model selection alone does not release work or
 authorize spending. If the permitted route is unavailable, keep the handoff ready
 and report that condition instead of changing implementation ownership.
 
+Implementation and repairs use a named Git worktree and task branch, retained
+across attempts. Record the bead, worktree path, branch, and base commit before
+editing. Do not implement in the shared primary checkout or a disposable temp
+directory. Preserve the worktree through review and delivery; cleanup requires
+explicit user direction. Test sources and fixtures belong in the reviewed changes;
+run evidence belongs in a persistent artifact root that survives worktree removal.
+
 The session-resume ownership policy from the retrospective's item 1 is deferred.
 Do not introduce a new closed-bead resume policy as part of this amendment.
 
@@ -69,13 +76,18 @@ Makefile does not implement the pending unified test runner.
 
 ## Unified test entry point
 
+Test selection and concurrency follow [testing-strategy.md](testing-strategy.md).
+Each handoff names affected behavior, explicit test targets/modules, prerequisites,
+resource conflicts, and the reason for any broader acceptance. Whole-crate baseline
+and post-change runs are not routine requirements.
+
 The target entry point is `bash scripts/test.sh <scope> [selection]`.
 **It is not implemented yet.** Building it is a Luna/Flash task. This document
 defines its contract without claiming that documentation creates a working tool.
 
 | Scope | Selection and purpose | Limits |
 |---|---|---|
-| `focused` | Explicit crate and optional target/test; verifies behavior relevant to the change | Does not establish workspace acceptance or unselected process boundaries |
+| `focused` | Explicit crate and required target or unit-test module selection; verifies changed behavior and affected consumers | Does not establish workspace acceptance or unselected process boundaries |
 | `peers` | The five required ledger, workspace, taskqueue, execution, and sandbox local process smokes | Does not establish paid-provider behavior, all process failure paths, or full conductor acceptance |
 | `full` | Workspace tests, including doctests, with necessary binary prerequisites | Does not establish ignored live-provider checks or any other unexecuted acceptance |
 
@@ -93,6 +105,9 @@ The runner must:
   `target/test-runs/`. Propagate failures and mark interrupted runs incomplete.
 - Build only required prerequisites. Reuse a stable build cache; separate caches
   when concurrent tasks would overwrite required executables, then reuse them.
+- Compile the selected targets in a coordinated phase, then run independent
+  selected test binaries concurrently with bounded jobs and per-binary threads.
+  Conflicting resource groups serialize. See testing-strategy.md for the contract.
 - Run the five `peers` smokes against real local binaries on the default Connect
   transport. A missing binary, skipped required case, or zero-case selection must
   fail. Preserve the production READY deadline and explicit qualification checks.
@@ -106,7 +121,8 @@ The runner must:
 
 During the transition, choose one existing documented command per scope:
 
-- Focused: `cargo test --offline -p <crate> [target/filter]`, with required binary
+- Focused: `cargo test --offline --locked -p <crate> --test <target> [filter]`
+  or `cargo test --offline --locked -p <crate> --lib <module/filter>`, with required binary
   prerequisites stated separately. This command alone does not build sibling
   server binaries or prove that a selection executed a required case.
 - Peer acceptance: `bash scripts/verify-peer-transports.sh`. The existing script
@@ -134,6 +150,21 @@ fresh temp checkouts, build caches, or disposable Python programs to repeat the
 same logging, counting, hashing, or handoff work. Use native commands for ordinary
 inspection; recurring executable logic belongs in a reusable repository tool
 implemented by Luna/Flash. Ephemeral data is not a reason to build another tool.
+
+Behavioral changes require property tests with independent invariant assertions,
+generated inputs or operation sequences, bounded case counts, and reproducible
+seeds or deterministic generation. Include applicable invalid/boundary inputs and
+recovery/idempotency properties. Persist failing inputs and retain concrete
+regression cases. Reuse existing infrastructure; dependency/framework additions
+require an explicit design decision. Documentation-only changes need content review.
+
+Retain evidence for every run under `target/test-runs/<bead-id>/<run-id>/` at a
+recorded persistent root: exact commands/environment, source identity, raw logs,
+exit status, case budgets/seeds, results, and fixture data. Passing and interrupted
+runs are retained too. Use ScratchDir's retention APIs where necessary; never
+overwrite prior runs or delete evidence without explicit user direction. Delivery
+includes all new test sources, generators, and fixtures; worktree removal requires
+confirming those sources and run evidence survive outside the removed worktree.
 
 Run focused checks first. Broaden to full acceptance once when the task requires
 it or a concrete integration risk justifies it. After checks pass, repeat only

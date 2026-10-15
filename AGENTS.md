@@ -23,6 +23,12 @@ factory's runtime routing table, task-release authority, or promotion policy.
 - Use this cycle: discuss -> Sol prepares a bounded bead -> Luna/Flash implements
   and tests -> Sol reviews -> the implementer repairs findings -> close when the
   agreed acceptance is satisfied.
+- Implementation and repair take place in a named Git worktree on a task branch,
+  with the bead ID in the worktree name. Record its path, branch, and base commit
+  before editing. Reuse that worktree for retries and review repairs; do not use
+  one-off temporary directories, disposable clones, or the shared primary checkout
+  for implementation. Coordinate owned files and shared build outputs. Retain the
+  worktree through review and delivery; cleanup follows explicit user direction.
 - After Sol approves acceptance, commit the completed task's reviewed changes
   before marking delivery complete. Stage only that task's files or hunks;
   preserve unrelated and unreviewed work. A shared dirty workspace is not a
@@ -64,19 +70,60 @@ factory's runtime routing table, task-release authority, or promotion policy.
   scope, as specified in `docs/development-workflow.md`. The unified runner is
   pending implementation; until then, use one documented existing command for
   the chosen scope. Do not create another temporary wrapper.
-- Run focused checks first. Run a full suite once when acceptance or a concrete
-  integration risk requires it. Repeat or broaden checks only after a relevant
-  change, failure, or unresolved finding. Paid live-provider checks are separate
-  and require the applicable explicit authorization.
+- Select checks from changed behavior and affected consumers. Name explicit
+  test targets or unit-test modules; a whole crate is not the default focused
+  selection. Follow docs/testing-strategy.md for selection and safe concurrency.
+  Each implementation handoff names the behavior, selected targets/filters,
+  required binaries, resource conflicts, and stopping condition. Shared contract
+  changes include relevant consumer and recovery tests even in unchanged files.
+- Do not routinely run whole-crate or workspace suites before or after editing.
+  Use a baseline only to reproduce a concrete failure or satisfy required paired
+  evidence, with the necessary selection. A whole-crate run needs a recorded
+  coverage reason; a full suite runs once when acceptance or a named integration
+  risk requires it. Preserve frozen acceptance and protected promotion checks;
+  narrowing them requires the existing amendment authority.
+- Run independent selected checks concurrently where isolation is established,
+  with a bounded CPU and process budget. Coordinate prerequisite compilation in
+  the shared Cargo cache before overlapping test execution. Competing Cargo
+  builds against one cache are not the concurrency strategy. Serialize unknown
+  or conflicting ports, fixture paths, services, and executable ownership.
+  Case-level serialization does not prevent conflicts between test binaries.
+  Use existing supported commands until the unified runner is implemented.
+- After repair, rerun failed checks and checks affected by the repair. Repeat
+  passing checks only when their inputs or prerequisites changed or a named
+  unresolved finding requires it. Paid live-provider checks are separate and
+  require the applicable explicit authorization.
 - Required cases must execute; a missing executable, a skipped required case,
   or a zero-case selection is not a pass. Keep partial, interrupted, and complete
   results distinct. Claim only the behavior covered by the recorded evidence.
+- Every behavioral implementation or repair includes property tests for its
+  changed invariants, alongside concrete regression cases. Define the property
+  independently of the implementation and exercise generated inputs or operation
+  sequences, including invalid inputs and boundary cases. For durable execution,
+  cover applicable retry, duplicate delivery, cancellation, and restart invariants.
+  Save the generators and assertions as repository tests; record the case budget,
+  seed or deterministic generation scheme, and any failing/minimized input so it
+  can be replayed. Do not substitute random examples or assertions that duplicate
+  implementation logic. Reuse existing test infrastructure; a new dependency or
+  framework requires an explicit design decision. Documentation-only changes need
+  content review rather than executable property tests.
 - Bound failure investigation to one reproducible example and a stated stopping
   condition. Turn a larger environment or build problem into a separate bounded
   implementation task instead of repeatedly sampling, rebuilding, or retrying.
 - Reuse build caches and established artifact directories. Isolate build outputs
   when concurrent work would overwrite binaries; reuse that isolated cache.
-  Put run artifacts under `target/test-runs/`, not new system-temp structures.
+  Put run artifacts under `target/test-runs/<bead-id>/<run-id>/`, not new
+  system-temp structures. Record a persistent artifact root outside any worktree
+  scheduled for removal, and include its absolute path in the handoff.
+- Save every new test, generator, and regression fixture in the task's reviewed
+  repository changes. Retain raw logs, exact commands/environment, source revision
+  and pending change identity, seeds, results, and fixture data for every test run,
+  including passing, failed, and interrupted runs. Keep run outputs separate so
+  retries cannot overwrite earlier evidence. Use ScratchDir retention APIs where
+  needed; automatic fixture cleanup must not discard required run evidence.
+  Before worktree removal, confirm all test sources are delivered and all run
+  artifacts remain at the recorded persistent root. Do not delete test evidence
+  without explicit user direction.
 - Prefer existing tools and native commands. Recurring executable logic belongs
   in a reusable repository tool implemented by Luna/Flash. Sol does not write
   disposable Python or shell helpers for logging, counting, hashing, or handoffs.

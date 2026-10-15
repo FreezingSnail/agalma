@@ -29,10 +29,11 @@ Use `bd prime` for current, version-matched CLI guidance and `bd <command>
 `AGENTS.md` controls actor stamping, release authority, ownership, and review.
 In particular, a task appearing ready in `bd prime` does not authorize release.
 
-The upstream [Beads Codex plugin](https://github.com/gastownhall/beads/tree/main/plugins/beads/.codex-plugin)
-packages `plugin.json` and lifecycle hooks separately from its `beads` skill.
-This repository guide is intentionally repo-specific and does not install those
-hooks or copy that skill.
+The canonical upstream [Beads Codex plugin](https://github.com/gastownhall/beads/tree/main/plugins/beads)
+is installed as `beads@agalma-local`. Its skill and lifecycle hooks provide
+general Beads guidance and context refresh. This repository guide adds local
+workflow constraints; where generic plugin guidance differs, `AGENTS.md` and
+the development workflow remain authoritative.
 
 ## Update, release, and close
 

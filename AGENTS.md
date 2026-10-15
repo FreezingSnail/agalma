@@ -24,21 +24,27 @@ factory's runtime routing table, task-release authority, or promotion policy.
   and tests -> Sol reviews -> the implementer repairs findings -> close when the
   agreed acceptance is satisfied.
 - Implementation and repair take place in a named Git worktree on a task branch,
-  with the bead ID in the worktree name. Record its path, branch, and base commit
+  with the bead ID in the worktree name: `target/worktrees/<bead>` on
+  `task/<bead>`, with its redirected Cargo cache at
+  `target/worktree-caches/<bead>/target`. Record its path, branch, and base commit
   before editing. Reuse that worktree for retries and review repairs; do not use
   one-off temporary directories, disposable clones, or the shared primary checkout
   for implementation. Coordinate owned files and shared build outputs. Retain the
   worktree through review and repair. After the reviewed task changes are committed
   and merged into `main`, remove its clean task worktree and reclaim its redirected
-  build cache as part of delivery; no further confirmation is needed. First confirm
-  all test sources are delivered and preserve all run evidence outside the worktree.
-  Preserve dirty or unmerged worktrees and report the remaining work; never force
-  removal or discard changes.
+  build cache as part of delivery; no further confirmation is needed. Prefer
+  `make worktree-remove BEAD=<id>`, which refuses a dirty or unmerged worktree and
+  refuses while Cargo is running. First confirm all test sources are delivered and
+  preserve all run evidence outside the worktree. Preserve dirty or unmerged
+  worktrees and report the remaining work; never force removal or discard changes.
 - After Sol approves acceptance, commit the completed task's reviewed changes
   before marking delivery complete. Stage only that task's files or hunks;
   preserve unrelated and unreviewed work. A shared dirty workspace is not a
-  reason to commit every pending file. Report overlapping ownership that prevents
-  a clean task commit. Sol may commit reviewed documentation and instructions.
+  reason to commit every pending file. Commit with an explicit pathspec
+  (`git commit -- <paths>`) whenever the index may already hold another session's
+  staged files, and restore any such entry during retries rather than dropping it.
+  Report overlapping ownership that prevents a clean task commit. Sol may commit
+  reviewed documentation and instructions.
 - Stamp bd authorship: a model session that creates or updates a bead passes
   `--actor <model-id>` (or exports `BEADS_ACTOR`), using its canonical model ID
   such as `opencode-go/gpt-6-luna` or `opencode-go/deepseek-v4.1-flash`. The
@@ -55,6 +61,12 @@ factory's runtime routing table, task-release authority, or promotion policy.
 - Use the root [Makefile](Makefile) for routine workspace builds. `make`,
   `make all`, and `make build` compile all product workspace targets, including
   libraries, server binaries, examples, tests, and benches. They do not run tests.
+- The same Makefile is the single entry point for scoped checks and build-artifact
+  hygiene: `make test-focused SELECTION=...`, `make test-peers`, `make test-full`,
+  `make report`, `make sweep` and `make sweep-apply`,
+  `make worktree-remove BEAD=<id>`, `make clean-build`, and `make clean-caches`.
+  Add new build, test, or hygiene entry points here rather than as per-task
+  wrapper scripts.
 - Use `make release` for the same targets in the release profile and `make help`
   for usage. Cargo discovers workspace members; do not add per-component build
   lists when a new module joins the workspace. Standalone spikes and fixture
@@ -66,21 +78,18 @@ factory's runtime routing table, task-release authority, or promotion policy.
 - Coordinate builds with sessions using shared server binaries. Reuse caches;
   isolate outputs only when concurrent work would overwrite required binaries.
   Build success establishes compilation; choose test scope separately below.
-- The root [Makefile](Makefile) is the single entry point for routine builds,
-  scoped checks, and build-artifact hygiene: `make test-focused SELECTION=...`,
-  `make test-peers`, `make test-full`, `make report`, `make sweep` and
-  `make sweep-apply`, `make worktree-remove BEAD=<id>`, `make clean-build`, and
-  `make clean-caches`. Add new build, test, or hygiene entry points here rather
-  than as per-task wrapper scripts.
 - Build inside an implementation worktree only with a redirected cache:
   `CARGO_TARGET_DIR=target/worktree-caches/<bead>/target`. Do not compile into
   `<worktree>/target/`; that duplicates a multi-gigabyte cache per worktree.
   Evidence runs default to `CARGO_INCREMENTAL=0` through the Makefile; set
   `CARGO_INCREMENTAL=1` only for fast local iteration.
-- Reclaim caches when work lands: `make report` shows consumption, `make sweep`
-  classifies caches, and `make sweep-apply` removes caches whose worktree is gone
-  or whose task branch is merged into `main`. Never remove a registered, dirty,
-  or unmerged worktree or its cache, and never sweep `target/test-runs` evidence.
+- A redirected cache and `<worktree>/target/` are build output, not evidence: a
+  cold one is 0.5-4 GiB because it holds the full dependency graph, native test
+  executables, and (unless disabled) incremental IR. `make report` shows
+  consumption, `make sweep` classifies caches, and `make sweep-apply` removes
+  caches whose worktree is gone or whose task branch is merged into `main`.
+  Never remove a registered, dirty, or unmerged worktree or its cache, and never
+  sweep `target/test-runs` evidence.
 
 ## Verification and session discipline
 

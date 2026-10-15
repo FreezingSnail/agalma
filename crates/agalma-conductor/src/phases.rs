@@ -54,8 +54,9 @@ use agalma_contracts::harness::{
 use agalma_contracts::ids::{ArtifactRef, AttemptId};
 use agalma_contracts::sandbox::LaunchSpec;
 use agalma_contracts::{
-    Checkout, ContractError, DecisionApi, DecisionAttempt, DecisionKind, DecisionOption,
-    DecisionPin, DecisionRequest, LedgerApi, OperationId, WorkspaceApi, DECISION_API_VERSION,
+    Checkout, ContextItem, ContextKind, ContractError, DecisionApi, DecisionAttempt, DecisionKind,
+    DecisionOption, DecisionPin, DecisionRequest, LedgerApi, OperationId, TaskPackage, WorkspaceApi,
+    DECISION_API_VERSION,
 };
 use agalma_decision::{StaticDecider, RETRY_ESCALATE_BASELINE};
 use agalma_execution::{
@@ -2189,15 +2190,31 @@ fn apply_scripted_fix(checkout_path: &str) -> Result<(), ActivityError> {
 }
 
 /// Write the per-attempt builder prompt under `<run>/prompts/` and return its
-/// path. The base prompt (`prompts/builder.md`) is the M0 text; repo mode appends
-/// the task title, acceptance commands, and any prior failure/diagnosis artifact.
+/// path.
+///
+/// In fixture mode (`repo == None`) the base prompt file is the explicit fixture
+/// prompt and is returned unchanged. In repository mode the recorded immutable
+/// `TaskPackage/v1` is resolved for this execution from the frozen package store
+/// (never a live backlog read) and its full context is rendered (`agalma-5fy.1`).
 fn write_builder_prompt(
     deps: &PhaseDeps,
     root: &Path,
     ctx: &OperationContext,
 ) -> Result<PathBuf, ActivityError> {
     let base = std::fs::read_to_string(&deps.builder_prompt).unwrap_or_default();
-    let text = render_builder_prompt(&base, deps, root, ctx.attempt);
+    let package = if deps.repo.is_some() {
+        resolve_recorded_package(&deps.state_dir, &ctx.execution_id)?
+    } else {
+        None
+    };
+    let text = render_builder_prompt(
+        &deps.state_dir,
+        &base,
+        deps.repo.as_ref(),
+        package.as_ref(),
+        root,
+        ctx.attempt,
+    )?;
     let dir = root.join("prompts");
     std::fs::create_dir_all(&dir)
         .map_err(|e| ActivityError::KnownFailure(format!("create prompt dir: {e}")))?;
@@ -2235,48 +2252,293 @@ fn usage_from_result(result: &serde_json::Value) -> Usage {
     }
 }
 
-/// Render the per-attempt builder prompt: the base prompt plus (in repo mode)
-/// the task title, acceptance commands, and the prior failure/diagnosis artifacts
-/// (both inlined and referenced by path, so the builder can re-read them).
-fn render_builder_prompt(base: &str, deps: &PhaseDeps, root: &Path, attempt: u32) -> String {
-    let Some(repo) = &deps.repo else {
-        return base.to_string();
+/// Resolve the recorded immutable `TaskPackage/v1` for an execution from the
+/// frozen package store (`<state_dir>/packages/`), never from a live backlog
+/// lookup (`agalma-5fy.1`).
+///
+/// Returns `Ok(None)` when the store holds no package for this execution (a
+/// legacy or harness-driven repository build); an ambiguous store (two distinct
+/// recorded packages for one execution) is a known failure rather than a guess.
+/// A package that fails reference verification is also a known failure.
+pub fn resolve_recorded_package(
+    state_dir: &Path,
+    execution: &agalma_contracts::ExecutionId,
+) -> Result<Option<TaskPackage>, ActivityError> {
+    use crate::task_package::{load_admitted_package, store_root, PACKAGE_HASH_SUBDIR};
+
+    let dir = store_root(state_dir).join(PACKAGE_HASH_SUBDIR);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(ActivityError::KnownFailure(format!(
+                "cannot read package store {}: {err}",
+                dir.display()
+            )))
+        }
     };
+    let target = execution.as_str();
+    let mut digest: Option<String> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let Ok(document) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        if document.get("execution_id").and_then(|v| v.as_str()) != Some(target) {
+            continue;
+        }
+        let Some(found) = document.get("package_digest").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        match &digest {
+            Some(existing) if existing != found => {
+                return Err(ActivityError::KnownFailure(format!(
+                    "multiple distinct recorded packages for execution {target}; refusing to guess"
+                )));
+            }
+            _ => digest = Some(found.to_string()),
+        }
+    }
+    match digest {
+        Some(digest) => load_admitted_package(state_dir, &digest)
+            .map(Some)
+            .map_err(|err| ActivityError::KnownFailure(err.to_string())),
+        None => Ok(None),
+    }
+}
+
+/// Render the per-attempt builder prompt for one dispatch.
+///
+/// In repository mode this *receives* the recorded immutable `TaskPackage/v1`
+/// (`agalma-5fy.1`); it never re-reads a live backlog and never falls back to
+/// the M0 fixture prompt or a partial title/acceptance prompt. Required context
+/// is the recorded package plus, within it, the frozen task title and at least
+/// one frozen repository instruction object; a missing package or missing
+/// required section is a known failure. An explicitly empty optional section
+/// (design, notes, handoffs) is valid and renders as an explicit marker.
+///
+/// `repo == None` is the explicit fixture path: the base prompt text (the
+/// fixture prompt materialized by the composition root) is returned unchanged.
+pub fn render_builder_prompt(
+    state_dir: &Path,
+    base: &str,
+    repo: Option<&RepoMode>,
+    package: Option<&TaskPackage>,
+    root: &Path,
+    attempt: u32,
+) -> Result<String, ActivityError> {
+    if repo.is_none() {
+        return Ok(base.to_string());
+    }
+    let Some(package) = package else {
+        return Err(ActivityError::KnownFailure(
+            "repository-mode build has no recorded TaskPackage; refusing to dispatch without \
+             immutable inputs"
+                .to_string(),
+        ));
+    };
+    render_repository_builder_prompt(state_dir, base, package, root, attempt)
+}
+
+/// Render the full frozen task context onto the repository base prompt.
+fn render_repository_builder_prompt(
+    state_dir: &Path,
+    base: &str,
+    package: &TaskPackage,
+    root: &Path,
+    attempt: u32,
+) -> Result<String, ActivityError> {
+    if package.definition.title.trim().is_empty() {
+        return Err(ActivityError::KnownFailure(
+            "recorded TaskPackage has no task title; refusing to render the builder prompt"
+                .to_string(),
+        ));
+    }
+    let instructions: Vec<&ContextItem> = package
+        .context
+        .iter()
+        .filter(|item| item.kind == ContextKind::Instruction)
+        .collect();
+    if instructions.is_empty() {
+        return Err(ActivityError::KnownFailure(
+            "recorded TaskPackage has no frozen repository instructions; refusing to substitute \
+             the M0 base prompt"
+                .to_string(),
+        ));
+    }
+
     let mut out = String::new();
     out.push_str(base);
-    out.push_str("\n\n---\n\n## Task\n\n");
-    out.push_str(&format!("Title: {}\n", repo.task_title));
-    out.push_str("\nAcceptance commands (run by the conductor; every one must exit 0):\n\n");
-    for (index, command) in repo.acceptance.iter().enumerate() {
-        out.push_str(&format!("{}. `{command}`\n", index + 1));
+    out.push_str("\n\n---\n\n# Frozen task context\n\n");
+    out.push_str(
+        "This context was recorded before dispatch and is immutable. Do not re-read the \
+         backlog, and do not infer the task from its title. The sections below are \
+         authoritative.\n\n",
+    );
+
+    out.push_str("## Task identity\n\n");
+    out.push_str(&format!("- task: `{}`\n", package.task_id));
+    out.push_str(&format!("- execution: `{}`\n", package.execution_id));
+    out.push_str(&format!(
+        "- directive: `{}` v{}\n",
+        package.directive.id, package.directive.version
+    ));
+    out.push_str(&format!(
+        "- repository: `{}` at `{}`\n\n",
+        package.repository.identity, package.repository.base_sha
+    ));
+
+    out.push_str("## Scope, files, contract, invariants, and non-goals\n\n");
+    out.push_str(package.definition.description.text.trim_end());
+    out.push_str("\n\n");
+
+    render_optional_section(&mut out, "## Design", &package.definition.design.text);
+    render_optional_section(&mut out, "## Notes", &package.definition.notes.text);
+
+    for (heading, kind) in [
+        ("## Shared design", ContextKind::SharedDesign),
+        ("## Dependency handoffs", ContextKind::DependencyHandoff),
+        ("## Parent design", ContextKind::ParentDesign),
+    ] {
+        let items: Vec<&ContextItem> = package
+            .context
+            .iter()
+            .filter(|item| item.kind == kind)
+            .collect();
+        render_context_items(state_dir, &mut out, heading, &items)?;
     }
+
+    render_context_items(
+        state_dir,
+        &mut out,
+        "## Repository rules and instructions (immutable)",
+        &instructions,
+    )?;
+
+    out.push_str("## Permitted change scope\n\n");
+    render_path_list(&mut out, "Allowed paths", &package.scope.allowed_paths);
+    render_path_list(
+        &mut out,
+        "Protected paths (do not modify)",
+        &package.scope.protected_paths,
+    );
+    render_path_list(
+        &mut out,
+        "Readable artifacts (immutable)",
+        &package.scope.readable_artifacts,
+    );
+    out.push('\n');
+
+    out.push_str("## Acceptance commands (each must exit 0)\n\n");
+    if package.definition.acceptance.is_empty() {
+        out.push_str("(no acceptance commands recorded)\n\n");
+    } else {
+        for (index, command) in package.definition.acceptance.iter().enumerate() {
+            out.push_str(&format!("{}. `{command}`\n", index + 1));
+        }
+        out.push('\n');
+    }
+
+    if !package.definition.machine_block.trim().is_empty() {
+        out.push_str("## Frozen directive block\n\n```yaml\n");
+        out.push_str(package.definition.machine_block.trim_end());
+        out.push_str("\n```\n\n");
+    }
+
     if attempt > 1 {
-        let failure = root
-            .join("artifacts")
-            .join(format!("failure@{}.txt", attempt - 1));
-        if let Ok(text) = std::fs::read_to_string(&failure) {
-            out.push_str(&format!(
-                "\n## Previous attempt failure\n\nArtifact: `{}`\n\n```text\n",
-                failure.display()
-            ));
-            out.push_str(text.trim_end());
-            out.push_str("\n```\n");
-        }
-        let diagnosis = root
-            .join("artifacts")
-            .join(format!("diagnosis@{}.md", attempt - 1));
-        if let Ok(text) = std::fs::read_to_string(&diagnosis) {
-            out.push_str(&format!(
-                "\n## Verifier diagnosis\n\nArtifact: `{}`\n\n",
-                diagnosis.display()
-            ));
-            out.push_str(&text);
-            if !text.ends_with('\n') {
-                out.push('\n');
-            }
+        render_retry_context(&mut out, root, attempt);
+    }
+
+    Ok(out)
+}
+
+/// Render one optional inline section, marking an explicitly empty one.
+fn render_optional_section(out: &mut String, heading: &str, text: &str) {
+    out.push_str(heading);
+    out.push_str("\n\n");
+    if text.trim().is_empty() {
+        out.push_str("(empty; none was recorded)\n\n");
+    } else {
+        out.push_str(text.trim_end());
+        out.push_str("\n\n");
+    }
+}
+
+/// Render a group of by-reference context objects, verifying each object digest.
+fn render_context_items(
+    state_dir: &Path,
+    out: &mut String,
+    heading: &str,
+    items: &[&ContextItem],
+) -> Result<(), ActivityError> {
+    out.push_str(heading);
+    out.push_str("\n\n");
+    if items.is_empty() {
+        out.push_str("(none recorded)\n\n");
+        return Ok(());
+    }
+    for item in items {
+        let bytes = crate::task_package::read_artifact(state_dir, &item.artifact).map_err(|err| {
+            ActivityError::KnownFailure(format!(
+                "required context object `{}` is unreadable: {err}",
+                item.artifact.path
+            ))
+        })?;
+        out.push_str(&format!(
+            "### `{}` (artifact `{}`, sha256 `{}`)\n\n",
+            item.source, item.artifact.path, item.artifact.digest
+        ));
+        out.push_str("```text\n");
+        out.push_str(String::from_utf8_lossy(&bytes).trim_end());
+        out.push_str("\n```\n\n");
+    }
+    Ok(())
+}
+
+/// Render a labelled list of paths (an empty list is stated explicitly).
+fn render_path_list(out: &mut String, label: &str, paths: &[String]) {
+    if paths.is_empty() {
+        out.push_str(&format!("- {label}: (none)\n"));
+    } else {
+        out.push_str(&format!("- {label}:\n"));
+        for path in paths {
+            out.push_str(&format!("  - `{path}`\n"));
         }
     }
-    out
+}
+
+/// Append the file-only retry handoff: the prior captured failure and verifier
+/// diagnosis, referenced by path and inlined so the builder can re-read them.
+fn render_retry_context(out: &mut String, root: &Path, attempt: u32) {
+    let previous = attempt - 1;
+    let failure = root
+        .join("artifacts")
+        .join(format!("failure@{previous}.txt"));
+    if let Ok(text) = std::fs::read_to_string(&failure) {
+        out.push_str(&format!(
+            "## Previous attempt failure\n\nArtifact (read it directly): `{}`\n\n```text\n",
+            failure.display()
+        ));
+        out.push_str(text.trim_end());
+        out.push_str("\n```\n\n");
+    }
+    let diagnosis = root
+        .join("artifacts")
+        .join(format!("diagnosis@{previous}.md"));
+    if let Ok(text) = std::fs::read_to_string(&diagnosis) {
+        out.push_str(&format!(
+            "## Verifier diagnosis\n\nArtifact (read it directly): `{}`\n\n",
+            diagnosis.display()
+        ));
+        out.push_str(text.trim_end());
+        out.push_str("\n\n");
+    }
 }
 
 /// Render the per-attempt verifier prompt: the base verifier prompt plus the
@@ -3175,46 +3437,29 @@ mod tests {
     #[test]
     fn render_prompt_without_repo_returns_base() {
         let base = "base prompt";
-        let text = render_builder_prompt(base, &deps(None), Path::new("."), 1);
+        let text = render_builder_prompt(Path::new("."), base, None, None, Path::new("."), 1)
+            .expect("fixture render");
         assert_eq!(text, base);
     }
 
     #[test]
-    fn render_prompt_repo_mode_includes_title_and_acceptance() {
-        let deps = deps(Some(RepoMode {
+    fn render_prompt_repo_mode_without_package_is_a_known_failure() {
+        let repo = RepoMode {
             origin: PathBuf::from("origin"),
             base_ref: "main".to_string(),
             task_title: "Fix the thing".to_string(),
             acceptance: vec!["sh -c 'true'".to_string(), "cargo test".to_string()],
-        }));
-        let text = render_builder_prompt("base", &deps, Path::new("."), 1);
-        assert!(text.contains("Fix the thing"), "{text}");
-        assert!(text.contains("sh -c 'true'"), "{text}");
-        assert!(text.contains("cargo test"), "{text}");
-    }
-
-    #[test]
-    fn render_prompt_retry_includes_captured_failure_and_diagnosis() {
-        let dir = scratch_dir("prompt-retry");
-        std::fs::write(
-            dir.join("artifacts").join("failure@1.txt"),
-            "command 0 failed: grep MAGIC",
+        };
+        let err = render_builder_prompt(
+            Path::new("."),
+            "base",
+            Some(&repo),
+            None,
+            Path::new("."),
+            1,
         )
-        .unwrap();
-        std::fs::write(
-            dir.join("artifacts").join("diagnosis@1.md"),
-            "the function returns 0",
-        )
-        .unwrap();
-        let deps = deps(Some(RepoMode {
-            origin: PathBuf::from("origin"),
-            base_ref: "main".to_string(),
-            task_title: "Fix".to_string(),
-            acceptance: vec!["sh -c 'true'".to_string()],
-        }));
-        let text = render_builder_prompt("base", &deps, &dir, 2);
-        assert!(text.contains("grep MAGIC"), "{text}");
-        assert!(text.contains("the function returns 0"), "{text}");
+        .expect_err("repository mode without a recorded package must refuse");
+        assert!(matches!(err, ActivityError::KnownFailure(_)), "got {err:?}");
     }
 
     // -----------------------------------------------------------------------

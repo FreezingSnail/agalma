@@ -25,9 +25,17 @@ use crate::stop::{BoundStopControl, StopControl};
 use crate::task::{self, TaskDescriptor};
 use crate::workspace_process::{WorkspaceHandle, WorkspaceTransport};
 
-/// Builder prompt shipped with the conductor and materialized into the state
-/// dir at boot.
+/// Repository-mode builder prompt shipped with the conductor. It is the base
+/// text for every repository (`agalma work`) build; the per-attempt render adds
+/// the frozen task context (`agalma-5fy.1`). Pinned as the builder role prompt
+/// bytes at admission (`work::role_inputs`).
 pub const BUILDER_PROMPT: &str = include_str!("../prompts/builder.md");
+
+/// Fixture-mode builder prompt (M0): the deliberate one-line broken-function
+/// exercise driven by `agalma run --fixture`. Kept on its own prompt path so a
+/// repository feature build never inherits the fixture's one-line instruction
+/// (`agalma-5fy.1`).
+pub const BUILDER_FIXTURE_PROMPT: &str = include_str!("../prompts/builder-fixture.md");
 
 /// Default bound on one model turn (free model can be slow; M0 allows minutes).
 pub const DEFAULT_TURN_TIMEOUT: Duration = Duration::from_secs(600);
@@ -230,7 +238,10 @@ impl Composition {
         std::fs::create_dir_all(&prompts_dir)
             .map_err(|e| ContractError::KnownFailure(format!("cannot create prompts dir: {e}")))?;
         let builder_prompt = prompts_dir.join("builder.md");
-        std::fs::write(&builder_prompt, BUILDER_PROMPT).map_err(|e| {
+        // Fixture runs (`agalma run --fixture`) use the explicit fixture prompt;
+        // repository runs materialize the frozen repository prompt through
+        // `work::phase_deps` instead (`agalma-5fy.1`).
+        std::fs::write(&builder_prompt, BUILDER_FIXTURE_PROMPT).map_err(|e| {
             ContractError::KnownFailure(format!(
                 "cannot write builder prompt {}: {e}",
                 builder_prompt.display()

@@ -37,6 +37,8 @@ use agalma_conductor::phases::{
     activities_with_mode, run_root, ActivityMode, PhaseDeps, RepoMode, RunState,
 };
 
+mod common;
+
 /// The seed scope-guard from the M1 acceptance suite: green iff the candidate
 /// diff touches no `Cargo.toml` and no crate `src/**/*.rs`.
 const GUARD: &str =
@@ -90,6 +92,10 @@ fn sandboxed_git_guard_runs_without_xcrun_noise() {
     let origin = seed_origin(&dir);
     let state_dir = dir.join("state");
     fs::create_dir_all(&state_dir).expect("state dir");
+    // SF.1: repository mode requires the recorded package. This test executes
+    // only checkout+verify, but seed the valid fixture so the repo-mode harness
+    // invariant holds if it ever dispatches build.
+    common::seed_recorded_package(&state_dir, "xcrun-guard", 1);
 
     // Render the real product profile (the one the conductor ships) to a file.
     let profile = state_dir.join("worker.sb");

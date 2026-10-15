@@ -70,4 +70,4 @@ pub use taskqueue::{
     ClaimEvidence, ReadyTasks, SkipReason, SkippedIssue, Task, TaskFamily, TaskPriority,
     TaskQueueApi,
 };
-pub use workspace::{Checkout, MergeReceipt, WorkspaceApi};
+pub use workspace::{ChangeKind, Checkout, FileChange, MergeReceipt, WorkspaceApi};

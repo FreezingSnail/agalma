@@ -25,11 +25,17 @@ pub const SERVER_BIN: &str = "agalma-workspace-server";
 /// Announced API name (matches the contract trait).
 pub const API_NAME: &str = "WorkspaceApi";
 /// Announced API version.
-pub const API_VERSION: u32 = 0;
+///
+/// Bumped to 1 for the SF.6 `integrate_origin_verified` method so a peer can
+/// distinguish a verified-integration server from a legacy one; older peers
+/// additionally fail closed because they do not register the method.
+pub const API_VERSION: u32 = 1;
 /// Announced implementation name.
 pub const IMPL_NAME: &str = "git";
 /// Announced implementation version.
 pub const IMPL_VERSION: &str = "git/v1";
+/// Capability advertised by a server that enforces the verified integration.
+pub const CAP_VERIFIED_INTEGRATION: &str = "workspace.integrate_origin_verified";
 
 /// Identity announced in the `READY` handshake line.
 pub fn server_info() -> ServerInfo {
@@ -38,7 +44,7 @@ pub fn server_info() -> ServerInfo {
         api_version: API_VERSION,
         impl_name: IMPL_NAME.to_string(),
         impl_version: IMPL_VERSION.to_string(),
-        capabilities: BTreeSet::new(),
+        capabilities: BTreeSet::from([CAP_VERIFIED_INTEGRATION.to_string()]),
     }
 }
 

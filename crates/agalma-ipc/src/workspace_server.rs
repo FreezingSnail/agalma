@@ -15,9 +15,9 @@ use crate::connect::{serve_wire, Wire};
 use crate::harness_client::{decode_params, encode_result};
 use crate::server::Server;
 use crate::workspace_client::{
-    CheckoutCall, IntegrateOriginParams, IntegrateParams, OriginReceiptParams, PrepareParams,
-    PrepareRepoParams, PrepareVerifyParams, RevertOriginParams, RevertParams, TagParams,
-    WorkspaceOps,
+    CheckoutCall, IntegrateOriginParams, IntegrateOriginVerifiedParams, IntegrateParams,
+    OriginReceiptParams, PrepareParams, PrepareRepoParams, PrepareVerifyParams, RevertOriginParams,
+    RevertParams, TagParams, WorkspaceOps,
 };
 
 /// Serve a workspace [`Server`] over the selected wire transport (IPCX.4).
@@ -42,6 +42,24 @@ pub fn register_workspace<S>(server: &mut Server, workspace: S)
 where
     S: WorkspaceOps + Send + 'static,
 {
+    register_workspace_inner(server, workspace, true)
+}
+
+/// Register the **legacy** workspace surface: every operation except the SF.6
+/// `integrate_origin_verified` method. Reproduces a pre-SF.6 server so a test
+/// can prove an old peer fails closed on the verified call instead of silently
+/// ignoring the expected candidate.
+pub fn register_workspace_legacy<S>(server: &mut Server, workspace: S)
+where
+    S: WorkspaceOps + Send + 'static,
+{
+    register_workspace_inner(server, workspace, false)
+}
+
+fn register_workspace_inner<S>(server: &mut Server, workspace: S, verified: bool)
+where
+    S: WorkspaceOps + Send + 'static,
+{
     let shared = Arc::new(Mutex::new(workspace));
 
     {
@@ -57,6 +75,14 @@ where
         server.on("diff", move |params: Value| {
             let call: CheckoutCall = decode_params(params)?;
             let result = lock(&shared).diff(&call.checkout)?;
+            encode_result(result)
+        });
+    }
+    {
+        let shared = Arc::clone(&shared);
+        server.on("changes", move |params: Value| {
+            let call: CheckoutCall = decode_params(params)?;
+            let result = lock(&shared).changes(&call.checkout)?;
             encode_result(result)
         });
     }
@@ -113,6 +139,19 @@ where
                 &call.checkout,
                 std::path::Path::new(&call.origin_path),
                 &call.expected_main_sha,
+            )?;
+            encode_result(result)
+        });
+    }
+    if verified {
+        let shared = Arc::clone(&shared);
+        server.on("integrate_origin_verified", move |params: Value| {
+            let call: IntegrateOriginVerifiedParams = decode_params(params)?;
+            let result = lock(&shared).integrate_origin_verified(
+                &call.checkout,
+                std::path::Path::new(&call.origin_path),
+                &call.expected_main_sha,
+                &call.expected_candidate_sha,
             )?;
             encode_result(result)
         });
@@ -183,15 +222,17 @@ fn lock<S>(shared: &Arc<Mutex<S>>) -> std::sync::MutexGuard<'_, S> {
 }
 
 /// The workspace operation names, in the order the server shares them.
-pub const WORKSPACE_METHODS: [&str; 14] = [
+pub const WORKSPACE_METHODS: [&str; 16] = [
     "prepare",
     "diff",
+    "changes",
     "integrate",
     "tag",
     "reconcile",
     "revert",
     "prepare_repo",
     "integrate_origin",
+    "integrate_origin_verified",
     "candidate_sha",
     "commit_candidate",
     "prepare_verify_checkout",

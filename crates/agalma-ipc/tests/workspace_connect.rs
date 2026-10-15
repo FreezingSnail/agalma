@@ -14,10 +14,14 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use agalma_contracts::{Checkout, ContractError, ExecutionId, MergeReceipt, WorkspaceApi};
+use agalma_contracts::{
+    ChangeKind, Checkout, ContractError, ExecutionId, FileChange, MergeReceipt, WorkspaceApi,
+};
 use agalma_ipc::server::{Server, ServerInfo};
 use agalma_ipc::workspace_client::WorkspaceOps;
-use agalma_ipc::workspace_server::{register_workspace, serve_workspace};
+use agalma_ipc::workspace_server::{
+    register_workspace, register_workspace_legacy, serve_workspace,
+};
 use agalma_ipc::{Wire, WorkspaceClient};
 use agalma_testkit::{retry_connect, ScratchDir};
 
@@ -42,6 +46,27 @@ impl WorkspaceApi for StubWorkspace {
 
     fn diff(&self, _checkout: &Checkout) -> Result<String, ContractError> {
         Ok("+stub change\n".to_string())
+    }
+
+    fn changes(&self, _checkout: &Checkout) -> Result<Vec<FileChange>, ContractError> {
+        Ok(vec![
+            FileChange {
+                kind: ChangeKind::Added,
+                path: "src/lib.rs".to_string(),
+                old_path: None,
+                old_mode: Some("000000".to_string()),
+                new_mode: Some("100644".to_string()),
+                symlink_target: None,
+            },
+            FileChange {
+                kind: ChangeKind::Renamed,
+                path: "src/new.rs".to_string(),
+                old_path: Some("src/old.rs".to_string()),
+                old_mode: Some("100644".to_string()),
+                new_mode: Some("100644".to_string()),
+                symlink_target: None,
+            },
+        ])
     }
 
     fn integrate(
@@ -96,6 +121,27 @@ impl WorkspaceOps for StubWorkspace {
         _origin_path: &Path,
         expected_main_sha: &str,
     ) -> Result<MergeReceipt, ContractError> {
+        Ok(MergeReceipt {
+            expected_main_sha: expected_main_sha.to_string(),
+            candidate_sha: "cand0000".to_string(),
+            result_sha: "cand0000".to_string(),
+        })
+    }
+
+    fn integrate_origin_verified(
+        &self,
+        _checkout: &Checkout,
+        _origin_path: &Path,
+        expected_main_sha: &str,
+        expected_candidate_sha: &str,
+    ) -> Result<MergeReceipt, ContractError> {
+        // Enforce the expected candidate: a mismatch is refused with no effect,
+        // so a wrong parameter cannot pass parity on both wires.
+        if expected_candidate_sha != "cand0000" {
+            return Err(ContractError::Conflict(format!(
+                "stub: expected candidate {expected_candidate_sha} does not match cand0000"
+            )));
+        }
         Ok(MergeReceipt {
             expected_main_sha: expected_main_sha.to_string(),
             candidate_sha: "cand0000".to_string(),
@@ -191,6 +237,7 @@ fn run_stub_scenario(mut client: WorkspaceClient) -> Vec<String> {
 
     let checkout = client.prepare(template, &exec).expect("prepare");
     let diff = client.diff(&checkout).expect("diff");
+    let changes = client.changes(&checkout).expect("changes");
     let receipt = client
         .integrate(&checkout, &checkout.base_sha)
         .expect("integrate");
@@ -215,6 +262,19 @@ fn run_stub_scenario(mut client: WorkspaceClient) -> Vec<String> {
     let origin_receipt = client
         .integrate_origin(&repo_checkout, origin, &repo_checkout.base_sha)
         .expect("integrate_origin");
+    let verified = client
+        .integrate_origin_verified(&repo_checkout, origin, &repo_checkout.base_sha, &candidate)
+        .expect("integrate_origin_verified");
+    // A mismatched expected candidate must be refused with no effect.
+    let mismatch = client
+        .integrate_origin_verified(
+            &repo_checkout,
+            origin,
+            &repo_checkout.base_sha,
+            "not-the-verified-candidate",
+        )
+        .expect_err("mismatched candidate refused");
+    let mismatch_is_conflict = matches!(mismatch, ContractError::Conflict(_));
     let after = client
         .origin_receipt(&repo_checkout, origin)
         .expect("origin_receipt after");
@@ -228,6 +288,7 @@ fn run_stub_scenario(mut client: WorkspaceClient) -> Vec<String> {
     vec![
         format!("checkout={checkout:?}"),
         format!("diff={diff:?}"),
+        format!("changes={changes:?}"),
         format!("integrate={receipt:?}"),
         format!("reconcile={reconciled}"),
         format!("repo_checkout={repo_checkout:?}"),
@@ -237,6 +298,8 @@ fn run_stub_scenario(mut client: WorkspaceClient) -> Vec<String> {
         format!("candidate={candidate:?}"),
         format!("verify={verify:?}"),
         format!("origin_receipt={origin_receipt:?}"),
+        format!("verified={verified:?}"),
+        format!("verified_mismatch_is_conflict={mismatch_is_conflict}"),
         format!("after={after:?}"),
         format!("integrated={integrated:?}"),
     ]
@@ -244,7 +307,7 @@ fn run_stub_scenario(mut client: WorkspaceClient) -> Vec<String> {
 
 #[test]
 fn workspace_api_over_connect_matches_framed() {
-    let dir = ScratchDir::new("ipcx-workspace");
+    let dir = ScratchDir::new("f6wc");
     let framed_socket = dir.join("framed.sock");
     let connect_socket = dir.join("connect.sock");
 
@@ -262,9 +325,50 @@ fn workspace_api_over_connect_matches_framed() {
     assert_eq!(run_stub_scenario(framed), run_stub_scenario(connect),);
 }
 
+/// SF.6: an old (legacy) server that implements only `integrate_origin` must
+/// fail closed on `integrate_origin_verified` — it cannot silently ignore the
+/// expected candidate SHA. The legacy call still works (old-generation
+/// reconciliation is preserved).
+#[test]
+fn legacy_peer_refuses_verified_integration() {
+    let dir = ScratchDir::new("f6wcl");
+    let socket = dir.join("legacy.sock");
+    {
+        let mut server = Server::new(workspace_info());
+        register_workspace_legacy(&mut server, StubWorkspace { prepared: 0 });
+        let socket = socket.clone();
+        std::thread::spawn(move || {
+            let _ = serve_workspace(server, &socket, Wire::Framed);
+        });
+    }
+    wait_for_socket(&socket);
+    let mut client = retry_connect(|| WorkspaceClient::connect_wire(&socket, Wire::Framed))
+        .expect("legacy connect");
+    let exec = ExecutionId::new("exec:legacy:1");
+    let origin = Path::new("/ws/origin");
+    let state = Path::new("/ws/state");
+    let checkout = client
+        .prepare_repo(origin, "main", &exec, state)
+        .expect("prepare_repo");
+
+    // The legacy method still works.
+    client
+        .integrate_origin(&checkout, origin, &checkout.base_sha)
+        .expect("legacy integrate_origin");
+
+    // The verified method fails closed (unsupported method, no effect).
+    let err = client
+        .integrate_origin_verified(&checkout, origin, &checkout.base_sha, "cand0000")
+        .expect_err("a legacy peer must refuse the verified call");
+    assert!(
+        matches!(err, ContractError::UnsupportedCapability(_)),
+        "expected UnsupportedCapability from a legacy peer, got {err:?}"
+    );
+}
+
 #[test]
 fn workspace_connect_missing_socket_is_unavailable() {
-    let dir = ScratchDir::new("ipcx-workspace-miss");
+    let dir = ScratchDir::new("f6wcm");
     let err = WorkspaceClient::connect_wire(&dir.join("nope.sock"), Wire::Connect)
         .err()
         .expect("connect to a missing socket must fail");

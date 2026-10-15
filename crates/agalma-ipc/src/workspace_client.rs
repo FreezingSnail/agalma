@@ -25,7 +25,9 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
-use agalma_contracts::{Checkout, ContractError, ExecutionId, MergeReceipt, WorkspaceApi};
+use agalma_contracts::{
+    Checkout, ContractError, ExecutionId, FileChange, MergeReceipt, WorkspaceApi,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -69,6 +71,16 @@ pub struct IntegrateOriginParams {
     pub checkout: Checkout,
     pub origin_path: String,
     pub expected_main_sha: String,
+}
+
+/// Params for `integrate_origin_verified` (repo mode, SF.6).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IntegrateOriginVerifiedParams {
+    pub checkout: Checkout,
+    pub origin_path: String,
+    pub expected_main_sha: String,
+    /// The verified candidate SHA; the server refuses a mismatch.
+    pub expected_candidate_sha: String,
 }
 
 /// Params for `tag`.
@@ -131,6 +143,20 @@ pub trait WorkspaceOps: WorkspaceApi {
         checkout: &Checkout,
         origin_path: &Path,
         expected_main_sha: &str,
+    ) -> Result<MergeReceipt, ContractError>;
+
+    /// Verified repo-mode integration (SF.6).
+    ///
+    /// A **distinct method**: an older server that implements only
+    /// `integrate_origin` refuses this call as an unsupported method rather than
+    /// silently ignoring `expected_candidate_sha`. The implementation refuses to
+    /// move `main` when the committed candidate differs from the verified SHA.
+    fn integrate_origin_verified(
+        &self,
+        checkout: &Checkout,
+        origin_path: &Path,
+        expected_main_sha: &str,
+        expected_candidate_sha: &str,
     ) -> Result<MergeReceipt, ContractError>;
 
     /// The candidate branch HEAD SHA in `checkout`'s repository.
@@ -249,7 +275,10 @@ impl WorkspaceClient {
         match &mut *self.backend.borrow_mut() {
             Backend::Framed(client) => client.call_typed(method, params).map_err(map_ipc_error),
             Backend::Connect(backend) => crate::block_on_nested(
-                backend.runtime.as_ref().expect("runtime present until drop"),
+                backend
+                    .runtime
+                    .as_ref()
+                    .expect("runtime present until drop"),
                 backend.client.call_typed(method, params),
             )
             .map_err(map_ipc_error),
@@ -292,6 +321,15 @@ impl WorkspaceApi for WorkspaceClient {
     fn diff(&self, checkout: &Checkout) -> Result<String, ContractError> {
         self.call(
             "diff",
+            &CheckoutCall {
+                checkout: checkout.clone(),
+            },
+        )
+    }
+
+    fn changes(&self, checkout: &Checkout) -> Result<Vec<FileChange>, ContractError> {
+        self.call(
+            "changes",
             &CheckoutCall {
                 checkout: checkout.clone(),
             },
@@ -372,6 +410,24 @@ impl WorkspaceOps for WorkspaceClient {
                 checkout: checkout.clone(),
                 origin_path: origin_path.to_string_lossy().into_owned(),
                 expected_main_sha: expected_main_sha.to_string(),
+            },
+        )
+    }
+
+    fn integrate_origin_verified(
+        &self,
+        checkout: &Checkout,
+        origin_path: &Path,
+        expected_main_sha: &str,
+        expected_candidate_sha: &str,
+    ) -> Result<MergeReceipt, ContractError> {
+        self.call(
+            "integrate_origin_verified",
+            &IntegrateOriginVerifiedParams {
+                checkout: checkout.clone(),
+                origin_path: origin_path.to_string_lossy().into_owned(),
+                expected_main_sha: expected_main_sha.to_string(),
+                expected_candidate_sha: expected_candidate_sha.to_string(),
             },
         )
     }

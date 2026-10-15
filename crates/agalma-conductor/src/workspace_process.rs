@@ -26,7 +26,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use agalma_contracts::harness::StopEvidence;
-use agalma_contracts::{Checkout, ContractError, ExecutionId, MergeReceipt, WorkspaceApi};
+use agalma_contracts::{
+    Checkout, ContractError, ExecutionId, FileChange, MergeReceipt, WorkspaceApi,
+};
 use agalma_ipc::{CommandSpec, Wire, WorkspaceClient, WorkspaceOps, WIRE_ENV};
 use agalma_workspace::server::server_command;
 use agalma_workspace::Workspace;
@@ -268,6 +270,10 @@ impl WorkspaceApi for WorkspaceHandle {
         self.backend().diff(checkout)
     }
 
+    fn changes(&self, checkout: &Checkout) -> Result<Vec<FileChange>, ContractError> {
+        self.backend().changes(checkout)
+    }
+
     fn integrate(
         &mut self,
         checkout: &Checkout,
@@ -309,6 +315,21 @@ impl WorkspaceOps for WorkspaceHandle {
     ) -> Result<MergeReceipt, ContractError> {
         self.backend()
             .integrate_origin(checkout, origin_path, expected_main_sha)
+    }
+
+    fn integrate_origin_verified(
+        &self,
+        checkout: &Checkout,
+        origin_path: &Path,
+        expected_main_sha: &str,
+        expected_candidate_sha: &str,
+    ) -> Result<MergeReceipt, ContractError> {
+        self.backend().integrate_origin_verified(
+            checkout,
+            origin_path,
+            expected_main_sha,
+            expected_candidate_sha,
+        )
     }
 
     fn candidate_sha(&self, checkout: &Checkout) -> Result<String, ContractError> {
@@ -364,20 +385,14 @@ mod tests {
         // Absent -> Process (post-B1-F3 default); explicit `in-process` overrides;
         // an unknown value keeps the default.
         std::env::remove_var(TRANSPORT_ENV);
-        assert_eq!(
-            WorkspaceTransport::from_env(),
-            WorkspaceTransport::Process
-        );
+        assert_eq!(WorkspaceTransport::from_env(), WorkspaceTransport::Process);
         std::env::set_var(TRANSPORT_ENV, "in-process");
         assert_eq!(
             WorkspaceTransport::from_env(),
             WorkspaceTransport::InProcess
         );
         std::env::set_var(TRANSPORT_ENV, "bogus");
-        assert_eq!(
-            WorkspaceTransport::from_env(),
-            WorkspaceTransport::Process
-        );
+        assert_eq!(WorkspaceTransport::from_env(), WorkspaceTransport::Process);
         std::env::remove_var(TRANSPORT_ENV);
     }
 

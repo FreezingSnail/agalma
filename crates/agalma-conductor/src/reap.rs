@@ -27,15 +27,21 @@ use crate::phases::run_root;
 /// Heavy scratch subdirectories under a run root, safe to delete on terminal.
 ///
 /// Mirrors the union of the workspace checkout (`checkout`), the confined
-/// build (`agent-target`, `cargo-home`), the verify sandbox (`verify`,
-/// `verify-tmp`, `verify-home`), and the OpenCode runtime state
+/// build (`build-runtime`, `agent-target`, `cargo-home`), the verify sandbox
+/// (`verify-checkout`, `verify-runtime`, plus legacy `verify-tmp`/`verify-home`),
+/// and the OpenCode runtime state
 /// (`xdg-*`, `tmp`, `protected`, `sock`, `work`). The phase marker dirs
-/// `build/` and `intake/` are deliberately absent, as are `artifacts/`,
-/// `stop/`, `opencode-log-*`, `effects.log`, `checkout.json`, and `prompts/`.
-pub const REAP_SUBDIRS: [&str; 14] = [
+/// `build/`, `intake/` and `verify/` are deliberately absent: `<run>/verify`
+/// now holds the parent's durable `*.done`/`*.worker.json` markers, so it is
+/// never deleted wholesale (see [`reap_execution`] for the guarded legacy
+/// `verify/.git` reclamation). `artifacts/`, `stop/`, `opencode-log-*`,
+/// `effects.log`, `checkout.json`, and `prompts/` are likewise preserved.
+pub const REAP_SUBDIRS: [&str; 16] = [
     "checkout",
     "agent-target",
-    "verify",
+    "build-runtime",
+    "verify-checkout",
+    "verify-runtime",
     "cargo-home",
     "verify-tmp",
     "verify-home",
@@ -113,6 +119,24 @@ pub fn reap_execution(state_dir: &Path, execution: &ExecutionId) -> ReapReport {
             report.removed.push(sub.to_string());
         }
     }
+
+    // Legacy layout (pre-SF.6): the candidate verify clone lived at `<run>/verify`
+    // ALONGSIDE the parent's durable markers. Reclaim only its heavy `.git`
+    // object store (safely identified), never the whole directory — the parent's
+    // `*.done`/`*.worker.json`/`*.started` markers must survive. The new layout
+    // keeps the clone at `verify-checkout`, so `verify/.git` is normally absent
+    // and this is a no-op. Limitation: any other legacy `verify/` working-tree
+    // residue is left in place rather than risking a parent marker.
+    let legacy_verify_git = root.join("verify").join(".git");
+    if let Ok(meta) = std::fs::symlink_metadata(&legacy_verify_git) {
+        if meta.is_dir() {
+            report.bytes += size_bytes(&legacy_verify_git, &meta);
+            if std::fs::remove_dir_all(&legacy_verify_git).is_ok() {
+                report.removed.push("verify/.git".to_string());
+            }
+        }
+    }
+
     report
 }
 
@@ -218,8 +242,46 @@ mod tests {
 
     #[test]
     fn heavy_and_keep_sets_are_disjoint() {
-        for keep in ["artifacts", "stop", "build", "intake", "prompts"] {
+        for keep in ["artifacts", "stop", "build", "intake", "prompts", "verify"] {
             assert!(!REAP_SUBDIRS.contains(&keep), "{keep} must never be reaped");
         }
+    }
+
+    /// SF.6: `<run>/verify` holds the parent's durable markers; reap must NOT
+    /// delete it wholesale, but may reclaim only a legacy clone's `.git`.
+    #[test]
+    fn verify_markers_survive_reap_and_legacy_git_is_reclaimed() {
+        let dir = agalma_testkit::ScratchDir::new("reap-sf6");
+        let state = dir.child("state");
+        let exec = ExecutionId::new("exec:reap:1");
+        let root = run_root(&state, &exec);
+        std::fs::create_dir_all(root.join("verify")).expect("verify dir");
+        std::fs::write(root.join("verify").join("1.done"), b"green").expect("done marker");
+        std::fs::write(root.join("verify").join("1.started"), b"{}").expect("started marker");
+        std::fs::create_dir_all(root.join("verify").join(".git").join("objects"))
+            .expect("legacy git");
+        std::fs::write(
+            root.join("verify").join(".git").join("objects").join("x"),
+            b"data",
+        )
+        .expect("legacy object");
+        std::fs::create_dir_all(root.join("verify-checkout")).expect("new clone");
+        std::fs::write(root.join("verify-checkout").join("f"), b"c").expect("clone file");
+
+        let report = reap_execution(&state, &exec);
+        assert!(report.skipped.is_none(), "no live worker record");
+        assert!(
+            root.join("verify").join("1.done").exists(),
+            "parent verify completion marker must survive reap"
+        );
+        assert!(root.join("verify").join("1.started").exists());
+        assert!(
+            !root.join("verify").join(".git").exists(),
+            "legacy clone .git object store is reclaimed"
+        );
+        assert!(
+            !root.join("verify-checkout").exists(),
+            "new-layout clone scratch is reaped"
+        );
     }
 }

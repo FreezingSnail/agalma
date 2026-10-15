@@ -13,13 +13,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use agalma_contracts::digest::{failure_code, FailureCode};
-use agalma_contracts::harness::{API_VERSION, HARNESS_API};
-use agalma_contracts::{
-    AuthorizationOrigin, BindingPin, CommitBatch, ContextKind, ContractError, DirectiveRef,
-    ExecutionApi, ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState,
-    LedgerApi, OperationId, Role, StepOutcome, TaskId, TaskPackage,
-};
 use agalma_conductor::composition::BUILDER_PROMPT;
 use agalma_conductor::harness_binding::{harness_handle, HarnessChoice, HarnessKind};
 use agalma_conductor::phases::VERIFIER_PROMPT;
@@ -29,6 +22,13 @@ use agalma_conductor::task_package::{
     ContextInput, PackageInputs, RoleInput,
 };
 use agalma_conductor::work::{binding_pin as real_binding_pin, verify_recovered_pins};
+use agalma_contracts::digest::{failure_code, sha256_digest, FailureCode};
+use agalma_contracts::harness::{API_VERSION, HARNESS_API};
+use agalma_contracts::{
+    AuthorizationOrigin, BindingPin, CommitBatch, ContextKind, ContractError, DirectiveRef,
+    ExecutionApi, ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState,
+    LedgerApi, OperationId, Role, StepOutcome, TaskId, TaskPackage,
+};
 use agalma_execution::executor::Preparation;
 use agalma_execution::{Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
 use agalma_ledger::SqliteLedger;
@@ -88,7 +88,11 @@ impl Scratch {
         .expect("seed source");
 
         run_ok("git", &origin, &["init", "-q", "-b", "main"]);
-        run_ok("git", &origin, &["config", "user.email", "agalma@localhost"]);
+        run_ok(
+            "git",
+            &origin,
+            &["config", "user.email", "agalma@localhost"],
+        );
         run_ok("git", &origin, &["config", "user.name", "Agalma"]);
         run_ok("git", &origin, &["add", "-A"]);
         run_ok("git", &origin, &["commit", "-qm", "seed"]);
@@ -368,8 +372,7 @@ fn frozen_package_survives_edits_and_source_deletion() {
     assert_eq!(loaded.definition.design.text, "Original design.\n");
     assert_eq!(loaded.definition.notes.text, "Original notes.\n");
     assert_eq!(
-        loaded.definition.description.text,
-        definition.description,
+        loaded.definition.description.text, definition.description,
         "original body bytes retained"
     );
     assert_eq!(loaded.scope.allowed_paths, vec!["crates/agalma-conductor"]);
@@ -377,7 +380,10 @@ fn frozen_package_survives_edits_and_source_deletion() {
     assert_eq!(loaded.roles.len(), 2);
 
     let reloaded_bytes = fs::read(&package_file).expect("re-read persisted package");
-    assert_eq!(reloaded_bytes, original_bytes, "package bytes are immutable");
+    assert_eq!(
+        reloaded_bytes, original_bytes,
+        "package bytes are immutable"
+    );
 
     // The referenced shared-design/handoff objects are readable and intact.
     assert_eq!(
@@ -398,19 +404,22 @@ fn corrupt_package_digest_is_refused() {
     let definition = queue
         .task_definition(&TaskId::new(id.as_str()))
         .expect("definition");
-    let built = build_package(&definition, inputs(&scratch, &definition, b"d", b"h")).expect("build");
+    let built =
+        build_package(&definition, inputs(&scratch, &definition, b"d", b"h")).expect("build");
     let persisted = persist_package(&scratch.state_dir, &built).expect("persist");
 
     // Overwrite the stored document with a wrong-but-well-formed digest.
     let path = package_path(&scratch.state_dir, &persisted.digest).expect("path");
     let text = fs::read_to_string(&path).expect("read");
     let mut value: Value = serde_json::from_str(&text).expect("json");
-    value["package_digest"] =
-        Value::String(format!("sha256:{}", "0".repeat(64)));
+    value["package_digest"] = Value::String(format!("sha256:{}", "0".repeat(64)));
     fs::write(&path, serde_json::to_string(&value).expect("encode")).expect("write");
 
     let err = load_package(&scratch.state_dir, &persisted.digest).expect_err("corrupt refused");
-    assert!(matches!(err, agalma_contracts::ContractError::KnownFailure(_)));
+    assert!(matches!(
+        err,
+        agalma_contracts::ContractError::KnownFailure(_)
+    ));
     assert_eq!(failure_code(&err), Some(FailureCode::IntegrityMismatch));
 }
 
@@ -422,16 +431,16 @@ fn unsupported_package_version_is_refused() {
     let definition = queue
         .task_definition(&TaskId::new(id.as_str()))
         .expect("definition");
-    let built = build_package(&definition, inputs(&scratch, &definition, b"d", b"h")).expect("build");
+    let built =
+        build_package(&definition, inputs(&scratch, &definition, b"d", b"h")).expect("build");
 
     // Write a forward-versioned document directly (the build path only seals v1).
     let mut package: TaskPackage = built.package.clone();
     package.format = "TaskPackage/v99".to_string();
     let digest = package.package_digest().expect("recompute digest");
-    let document = agalma_contracts::digest::canonical_json(
-        &serde_json::to_value(&package).expect("encode"),
-    )
-    .expect("canonical");
+    let document =
+        agalma_contracts::digest::canonical_json(&serde_json::to_value(&package).expect("encode"))
+            .expect("canonical");
     let path = package_path(&scratch.state_dir, &digest).expect("path");
     fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
     fs::write(&path, document.as_bytes()).expect("write v99");
@@ -469,11 +478,15 @@ fn store_layout_matches_advertised_paths() {
     let definition = queue
         .task_definition(&TaskId::new(id.as_str()))
         .expect("definition");
-    let built = build_package(&definition, inputs(&scratch, &definition, b"d", b"h")).expect("build");
+    let built =
+        build_package(&definition, inputs(&scratch, &definition, b"d", b"h")).expect("build");
     let persisted = persist_package(&scratch.state_dir, &built).expect("persist");
 
     let expected_package = package_path(&scratch.state_dir, &persisted.digest).expect("pkg path");
-    assert!(expected_package.exists(), "package stored at its digest path");
+    assert!(
+        expected_package.exists(),
+        "package stored at its digest path"
+    );
     assert!(!scratch.state_dir.join("runs").join("packages").exists());
 
     for (digest, _) in &built.objects {
@@ -488,8 +501,7 @@ fn store_layout_matches_advertised_paths() {
 
 /// Repository instruction/shared-design bytes the production admission freezes.
 const AGENTS_BYTES: &str = "# Agents\nRepository working rules (frozen at admission).\n";
-const SHARED_DESIGN_BYTES: &str =
-    "# Shared design revision 1\nFrozen shared-design bytes.\n";
+const SHARED_DESIGN_BYTES: &str = "# Shared design revision 1\nFrozen shared-design bytes.\n";
 /// Acceptance that the scripted build satisfies (it writes `42` into `src/lib.rs`).
 const GREEN: &str = "  - sh -c 'grep -q 42 src/lib.rs'";
 
@@ -525,7 +537,11 @@ impl Prod {
         .expect("shared design");
 
         run_ok("git", &origin, &["init", "-q", "-b", "main"]);
-        run_ok("git", &origin, &["config", "user.email", "agalma@localhost"]);
+        run_ok(
+            "git",
+            &origin,
+            &["config", "user.email", "agalma@localhost"],
+        );
         run_ok("git", &origin, &["config", "user.name", "Agalma"]);
         run_ok("git", &origin, &["add", "-A"]);
         run_ok("git", &origin, &["commit", "-qm", "seed"]);
@@ -609,7 +625,45 @@ impl Prod {
                 "Original acceptance text.",
             ],
         );
+        self.protect(&id);
         id
+    }
+
+    /// Write/merge the operator `ProtectedInputs/v1` entry for `task_id` into
+    /// `<state_dir>/protected-inputs.json` (SF.6). Admission requires it.
+    fn protect(&self, task_id: &str) {
+        let root = fs::canonicalize(&self.origin).expect("canonical origin");
+        let marker = "ok\n";
+        let entry = json!({
+            "task_id": task_id,
+            "repository_root": root.to_string_lossy(),
+            "base_sha": self.head(),
+            "allowed_paths": ["src", "docs", "AGENTS.md"],
+            "protected_paths": ["tests"],
+            "baseline": {
+                "format": "ProtectedBaseline/v1",
+                "files": [{
+                    "path": "protected/marker.txt",
+                    "mode": "100644",
+                    "digest": sha256_digest(marker.as_bytes()),
+                    "bytes": marker.len() as u64,
+                    "text": marker,
+                }],
+                "commands": ["sh -c 'true'"],
+            },
+        });
+        let path = self.state_dir.join("protected-inputs.json");
+        let mut entries: Vec<Value> = fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .and_then(|v| v.get("entries").cloned())
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default();
+        entries.retain(|e| e.get("task_id").and_then(Value::as_str) != Some(task_id));
+        entries.push(entry);
+        fs::create_dir_all(&self.state_dir).expect("state dir");
+        let doc = json!({ "format": "ProtectedInputs/v1", "entries": entries });
+        fs::write(&path, serde_json::to_vec_pretty(&doc).expect("json")).expect("write manifest");
     }
 
     fn comment(&self, id: &str, text: &str) {
@@ -637,8 +691,8 @@ impl Prod {
     fn show(&self, id: &str) -> Value {
         let out = self.bd(&["show", id, "--json", "--include-comments"]);
         assert!(out.status.success(), "bd show: {}", stderr_of(&out));
-        let value: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout))
-            .expect("bd show json");
+        let value: Value =
+            serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).expect("bd show json");
         value
             .as_array()
             .expect("show array")
@@ -722,7 +776,9 @@ impl Prod {
         let conn =
             rusqlite::Connection::open(self.state_dir.join("ledger.sqlite")).expect("open ledger");
         let mut stmt = conn
-            .prepare("SELECT operation_id FROM dispatch_intents WHERE execution_id=?1 AND consumed=0")
+            .prepare(
+                "SELECT operation_id FROM dispatch_intents WHERE execution_id=?1 AND consumed=0",
+            )
             .expect("prepare intents");
         let rows = stmt
             .query_map([execution], |row| row.get::<_, String>(0))
@@ -783,7 +839,9 @@ fn production_admission_freezes_definition_and_context() {
     );
 
     let execution = format!("exec:{id}:1");
-    let event = prod.admitted(&execution).expect("admission reference recorded");
+    let event = prod
+        .admitted(&execution)
+        .expect("admission reference recorded");
     let digest = event["package_digest"]
         .as_str()
         .expect("package digest")
@@ -843,7 +901,9 @@ fn production_admission_freezes_definition_and_context() {
     );
     prod.bd_ok(&["delete", &id, "--force"]);
     assert!(
-        prod.queue().task_definition(&TaskId::new(id.as_str())).is_err(),
+        prod.queue()
+            .task_definition(&TaskId::new(id.as_str()))
+            .is_err(),
         "source issue is gone"
     );
 
@@ -926,7 +986,9 @@ fn crash_after_admission_recovers_from_frozen_package() {
     assert_aborted(&out.status);
 
     let execution = format!("exec:{id}:1");
-    let event = prod.admitted(&execution).expect("admission committed before the crash");
+    let event = prod
+        .admitted(&execution)
+        .expect("admission committed before the crash");
     let digest = event["package_digest"]
         .as_str()
         .expect("package digest")
@@ -1005,7 +1067,8 @@ fn self_consistent_wrong_document_under_requested_path_is_refused() {
     let definition = queue
         .task_definition(&TaskId::new(id.as_str()))
         .expect("definition");
-    let built = build_package(&definition, inputs(&scratch, &definition, b"d", b"h")).expect("build");
+    let built =
+        build_package(&definition, inputs(&scratch, &definition, b"d", b"h")).expect("build");
     let persisted = persist_package(&scratch.state_dir, &built).expect("persist");
 
     let mut other = built.package.clone();
@@ -1022,7 +1085,8 @@ fn self_consistent_wrong_document_under_requested_path_is_refused() {
     )
     .expect("write rewrite");
 
-    let err = load_package(&scratch.state_dir, &persisted.digest).expect_err("wrong document refused");
+    let err =
+        load_package(&scratch.state_dir, &persisted.digest).expect_err("wrong document refused");
     assert_eq!(failure_code(&err), Some(FailureCode::IntegrityMismatch));
 }
 
@@ -1032,7 +1096,8 @@ fn built_and_persisted(scratch: &Scratch) -> agalma_conductor::task_package::Bui
     let definition = queue
         .task_definition(&TaskId::new(id.as_str()))
         .expect("definition");
-    let built = build_package(&definition, inputs(scratch, &definition, b"d", b"h")).expect("build");
+    let built =
+        build_package(&definition, inputs(scratch, &definition, b"d", b"h")).expect("build");
     persist_package(&scratch.state_dir, &built).expect("persist");
     built
 }
@@ -1053,7 +1118,8 @@ fn missing_referenced_object_parks() {
     fs::remove_file(object_path(&scratch.state_dir, &shared.digest).expect("obj path"))
         .expect("remove object");
 
-    let err = verify_references(&scratch.state_dir, &built.package).expect_err("missing object parks");
+    let err =
+        verify_references(&scratch.state_dir, &built.package).expect_err("missing object parks");
     assert_eq!(failure_code(&err), Some(FailureCode::LegacyInputsMissing));
 }
 
@@ -1076,7 +1142,8 @@ fn corrupt_referenced_object_parks() {
     )
     .expect("tamper object");
 
-    let err = verify_references(&scratch.state_dir, &built.package).expect_err("corrupt object parks");
+    let err =
+        verify_references(&scratch.state_dir, &built.package).expect_err("corrupt object parks");
     assert_eq!(failure_code(&err), Some(FailureCode::IntegrityMismatch));
 }
 
@@ -1097,7 +1164,8 @@ fn missing_prompt_object_parks() {
     fs::remove_file(object_path(&scratch.state_dir, &builder.digest).expect("obj path"))
         .expect("remove prompt object");
 
-    let err = verify_references(&scratch.state_dir, &built.package).expect_err("missing prompt parks");
+    let err =
+        verify_references(&scratch.state_dir, &built.package).expect_err("missing prompt parks");
     assert_eq!(failure_code(&err), Some(FailureCode::LegacyInputsMissing));
 }
 
@@ -1247,7 +1315,9 @@ fn activation_executor(dir: &Path) -> Executor<SqliteLedger> {
 fn activation_is_atomic_duplicate_safe_and_rejects_changed_inputs() {
     let dir = ScratchDir::new("sf-activation");
     let mut executor = activation_executor(&dir);
-    let prep = executor.prepare(&TaskId::new("activation")).expect("prepare");
+    let prep = executor
+        .prepare(&TaskId::new("activation"))
+        .expect("prepare");
 
     let status = executor.status(&prep.execution_id).expect("status");
     assert_eq!(status.state, ExecutionState::Pending);
@@ -1257,7 +1327,9 @@ fn activation_is_atomic_duplicate_safe_and_rejects_changed_inputs() {
     );
 
     let admission = admission_event(&prep.execution_id, &format!("sha256:{}", "a".repeat(64)));
-    let operation = executor.activate(&prep, admission.clone()).expect("activate");
+    let operation = executor
+        .activate(&prep, admission.clone())
+        .expect("activate");
     assert_eq!(operation, OperationId::derive(&prep.execution_id, "intake"));
 
     let status = executor.status(&prep.execution_id).expect("status");
@@ -1274,7 +1346,11 @@ fn activation_is_atomic_duplicate_safe_and_rejects_changed_inputs() {
         .expect("duplicate activation is idempotent");
     assert_eq!(again, operation);
     assert_eq!(
-        executor.status(&prep.execution_id).expect("status").pending_operations.len(),
+        executor
+            .status(&prep.execution_id)
+            .expect("status")
+            .pending_operations
+            .len(),
         1,
         "duplicate activation announces no second intent"
     );
@@ -1298,7 +1374,9 @@ fn pending_preparation_never_dispatches() {
     let mut executor = activation_executor(&dir);
     let prep = executor.prepare(&TaskId::new("pending")).expect("prepare");
 
-    executor.recover().expect("recovery agrees with the Pending projection");
+    executor
+        .recover()
+        .expect("recovery agrees with the Pending projection");
 
     let step = executor.step(&prep.execution_id).expect("step");
     assert!(
@@ -1306,7 +1384,11 @@ fn pending_preparation_never_dispatches() {
         "Pending preparation does not dispatch: {step:?}"
     );
     assert!(
-        executor.status(&prep.execution_id).expect("status").pending_operations.is_empty(),
+        executor
+            .status(&prep.execution_id)
+            .expect("status")
+            .pending_operations
+            .is_empty(),
         "no intent was announced by step"
     );
 }
@@ -1325,12 +1407,23 @@ fn non_first_generation_role_pins_use_real_generation() {
     let first = prod.work(&[]);
     assert!(first.status.success(), "first run: {}", stderr_of(&first));
     prod.bd_ok(&["reopen", &id]);
+    // A re-run is a NEW generation whose resolved base is the post-merge origin
+    // SHA. Fail-closed base matching is preserved: the operator supplies a fresh
+    // entry matched to the new origin SHA before the next admission.
+    prod.protect(&id);
     let second = prod.work(&[]);
-    assert!(second.status.success(), "second run: {}", stderr_of(&second));
+    assert!(
+        second.status.success(),
+        "second run: {}",
+        stderr_of(&second)
+    );
 
     let execution = format!("exec:{id}:2");
     let event = prod.admitted(&execution).expect("generation-2 admission");
-    let digest = event["package_digest"].as_str().expect("digest").to_string();
+    let digest = event["package_digest"]
+        .as_str()
+        .expect("digest")
+        .to_string();
     let frozen = load_package(&prod.state_dir, &digest).expect("load generation-2 package");
     assert_eq!(frozen.generation, 2);
 
@@ -1389,19 +1482,29 @@ fn recovered_pins_validate_every_required_field() {
     persist_package(&scratch.state_dir, &built).expect("persist");
     let harness = harness_handle(HarnessChoice::OpenCode);
 
-    verify_recovered_pins(&scratch.state_dir, &built.package, &harness).expect("real pins validate");
+    verify_recovered_pins(&scratch.state_dir, &built.package, &harness)
+        .expect("real pins validate");
 
     let mut tampered = built.package.clone();
     tampered.roles[0].harness.api = "NotHarnessApi".to_string();
-    assert!(verify_recovered_pins(&scratch.state_dir, &tampered, &harness).is_err(), "api");
+    assert!(
+        verify_recovered_pins(&scratch.state_dir, &tampered, &harness).is_err(),
+        "api"
+    );
 
     let mut tampered = built.package.clone();
     tampered.roles[0].harness.api_version = 99;
-    assert!(verify_recovered_pins(&scratch.state_dir, &tampered, &harness).is_err(), "api_version");
+    assert!(
+        verify_recovered_pins(&scratch.state_dir, &tampered, &harness).is_err(),
+        "api_version"
+    );
 
     let mut tampered = built.package.clone();
     tampered.roles[0].harness.generation = 99;
-    assert!(verify_recovered_pins(&scratch.state_dir, &tampered, &harness).is_err(), "generation");
+    assert!(
+        verify_recovered_pins(&scratch.state_dir, &tampered, &harness).is_err(),
+        "generation"
+    );
 
     let mut tampered = built.package.clone();
     tampered.roles[0].harness.implementation_version = "tampered".to_string();
@@ -1412,7 +1515,10 @@ fn recovered_pins_validate_every_required_field() {
 
     let mut tampered = built.package.clone();
     tampered.roles[0].harness.config_digest = format!("sha256:{}", "0".repeat(64));
-    assert!(verify_recovered_pins(&scratch.state_dir, &tampered, &harness).is_err(), "config_digest");
+    assert!(
+        verify_recovered_pins(&scratch.state_dir, &tampered, &harness).is_err(),
+        "config_digest"
+    );
 }
 
 /// A missing instruction document referenced by AGENTS.md refuses admission
@@ -1467,7 +1573,10 @@ fn production_refuses_missing_referenced_instruction_without_effects() {
     );
 
     let execution = format!("exec:{id}:1");
-    assert!(prod.admitted(&execution).is_none(), "no admission on refusal");
+    assert!(
+        prod.admitted(&execution).is_none(),
+        "no admission on refusal"
+    );
     assert!(
         prod.pending_intents(&execution).is_empty(),
         "no dispatch intent on refusal"
@@ -1500,8 +1609,14 @@ fn production_refuses_nonfile_referenced_instruction_without_effects() {
         stdout_of(&out)
     );
     let execution = format!("exec:{id}:1");
-    assert!(prod.admitted(&execution).is_none(), "no admission on refusal");
-    assert!(prod.pending_intents(&execution).is_empty(), "no dispatch intent");
+    assert!(
+        prod.admitted(&execution).is_none(),
+        "no admission on refusal"
+    );
+    assert!(
+        prod.pending_intents(&execution).is_empty(),
+        "no dispatch intent"
+    );
     assert_eq!(prod.head(), before, "no handler effects on refusal");
 }
 
@@ -1518,7 +1633,10 @@ fn production_recovery_refuses_missing_referenced_object() {
 
     let execution = format!("exec:{id}:1");
     let event = prod.admitted(&execution).expect("admission committed");
-    let digest = event["package_digest"].as_str().expect("digest").to_string();
+    let digest = event["package_digest"]
+        .as_str()
+        .expect("digest")
+        .to_string();
     let frozen = load_package(&prod.state_dir, &digest).expect("load frozen package");
     let shared = frozen
         .context
@@ -1570,7 +1688,9 @@ fn activation_rejects_changed_kind_and_missing_evidence() {
     let mut executor = activation_executor(&dir);
     let prep = executor.prepare(&TaskId::new("kind")).expect("prepare");
     let admission = admission_event(&prep.execution_id, &format!("sha256:{}", "a".repeat(64)));
-    executor.activate(&prep, admission.clone()).expect("activate");
+    executor
+        .activate(&prep, admission.clone())
+        .expect("activate");
 
     let before = activation_snapshot(&executor, &prep.execution_id);
     let changed_kind = ExecutionEvent {
@@ -1710,7 +1830,10 @@ fn activation_rejects_forged_and_superseded_leases() {
         lease_generation: prep3.lease_generation + 1,
     };
     assert_eq!(
-        executor3.ledger().lease_generation(&task3).expect("task lease"),
+        executor3
+            .ledger()
+            .lease_generation(&task3)
+            .expect("task lease"),
         forged.lease_generation,
         "the forged lease equals the current task lease"
     );
@@ -1744,7 +1867,8 @@ fn oracle_is_not_builder_readable_and_grant_is_refused() {
     let definition = queue
         .task_definition(&TaskId::new(id.as_str()))
         .expect("definition");
-    let built = build_package(&definition, inputs(&scratch, &definition, b"d", b"h")).expect("build");
+    let built =
+        build_package(&definition, inputs(&scratch, &definition, b"d", b"h")).expect("build");
     let oracle_digest = built.package.scope.oracle.digest.clone();
 
     // Exclusion: the oracle digest is not a builder-readable artifact.
@@ -1791,13 +1915,18 @@ fn stored_package_granting_its_oracle_is_refused() {
     let definition = queue
         .task_definition(&TaskId::new(id.as_str()))
         .expect("definition");
-    let built = build_package(&definition, inputs(&scratch, &definition, b"d", b"h")).expect("build");
+    let built =
+        build_package(&definition, inputs(&scratch, &definition, b"d", b"h")).expect("build");
     let oracle_digest = built.package.scope.oracle.digest.clone();
 
     // Forge a stored package that grants its own held-out oracle, sealed under
     // its own digest.
     let mut unsafe_built = built.clone();
-    unsafe_built.package.scope.readable_artifacts.push(oracle_digest);
+    unsafe_built
+        .package
+        .scope
+        .readable_artifacts
+        .push(oracle_digest);
     unsafe_built.package.scope.readable_artifacts.sort();
     unsafe_built.package.scope.readable_artifacts.dedup();
     unsafe_built.package = unsafe_built.package.clone().seal().expect("seal");

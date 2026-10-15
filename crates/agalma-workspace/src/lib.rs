@@ -16,7 +16,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use agalma_contracts::{Checkout, ContractError, ExecutionId, MergeReceipt, WorkspaceApi};
+use agalma_contracts::{
+    ChangeKind, Checkout, ContractError, ExecutionId, FileChange, MergeReceipt, WorkspaceApi,
+};
 use agalma_ipc::WorkspaceOps;
 
 /// Upper bound on the rendered working-tree diff (bytes); longer diffs are
@@ -109,6 +111,18 @@ impl Workspace {
         })
     }
 
+    /// The candidate's typed change set against `checkout.base_sha` (SF.6).
+    ///
+    /// Parses `git diff --raw -z --find-renames <base>` in the checkout. Each
+    /// record's status letter maps to a [`ChangeKind`]; a rename carries both
+    /// the old and the new path; a mode-only change is reported as
+    /// [`ChangeKind::ModeChanged`]; a symlink destination records its target
+    /// (read from the commit's blob) so an escape is visible to the scope
+    /// check. The result is sorted by path for determinism.
+    pub fn changes(&self, checkout: &Checkout) -> Result<Vec<FileChange>, ContractError> {
+        change_set(Path::new(&checkout.path), &checkout.base_sha)
+    }
+
     /// Integrate a repo-mode candidate into the origin with expected-SHA CAS.
     ///
     /// Commits the dirty candidate tree, transfers the candidate objects into
@@ -122,8 +136,49 @@ impl Workspace {
         origin_path: &Path,
         expected_main_sha: &str,
     ) -> Result<MergeReceipt, ContractError> {
+        self.integrate_origin_inner(checkout, origin_path, expected_main_sha, None)
+    }
+
+    /// SF.6 verified integration: a **distinct method** (so an older peer that
+    /// only implements [`Workspace::integrate_origin`] fails closed with an
+    /// unsupported-method refusal rather than silently ignoring the expected
+    /// candidate). Enforces `expected_candidate_sha` at the actual mutation
+    /// boundary: `commit_candidate` may have committed a dirty/untracked tree
+    /// changed after verification, so a mismatch refuses BEFORE transferring
+    /// objects or moving `main`.
+    pub fn integrate_origin_verified(
+        &self,
+        checkout: &Checkout,
+        origin_path: &Path,
+        expected_main_sha: &str,
+        expected_candidate_sha: &str,
+    ) -> Result<MergeReceipt, ContractError> {
+        self.integrate_origin_inner(
+            checkout,
+            origin_path,
+            expected_main_sha,
+            Some(expected_candidate_sha),
+        )
+    }
+
+    fn integrate_origin_inner(
+        &self,
+        checkout: &Checkout,
+        origin_path: &Path,
+        expected_main_sha: &str,
+        expected_candidate_sha: Option<&str>,
+    ) -> Result<MergeReceipt, ContractError> {
         let repo = PathBuf::from(&checkout.path);
         let candidate_sha = commit_candidate(&repo, checkout)?;
+
+        if let Some(expected_candidate_sha) = expected_candidate_sha {
+            if candidate_sha != expected_candidate_sha {
+                return Err(ContractError::Conflict(format!(
+                    "candidate changed after verification: verified {expected_candidate_sha}, \
+                     committed {candidate_sha}; refusing to integrate"
+                )));
+            }
+        }
 
         // Fail closed on a moved `main` *before* transferring objects: no
         // mutation at all on conflict.
@@ -207,10 +262,14 @@ impl Workspace {
         execution: &ExecutionId,
         sha: &str,
     ) -> Result<PathBuf, ContractError> {
+        // SF.6: the candidate clone lives at `<run>/verify-checkout`, NOT
+        // `<run>/verify`. `<run>/verify` holds the parent's completion markers
+        // (`<attempt>.done`), which must never sit inside a candidate-writable
+        // root granted to the confined verifier.
         let dest = base_dir
             .join("runs")
             .join(execution_dir_name(execution))
-            .join("verify");
+            .join("verify-checkout");
         if dest.exists() {
             fs::remove_dir_all(&dest).map_err(|e| {
                 ContractError::KnownFailure(format!(
@@ -372,6 +431,10 @@ impl WorkspaceApi for Workspace {
         })
     }
 
+    fn changes(&self, checkout: &Checkout) -> Result<Vec<FileChange>, ContractError> {
+        Workspace::changes(self, checkout)
+    }
+
     fn diff(&self, checkout: &Checkout) -> Result<String, ContractError> {
         let repo = Path::new(&checkout.path);
         let mut text = git_ok(repo, &["diff", "HEAD", "--no-color"])?;
@@ -485,6 +548,22 @@ impl WorkspaceOps for Workspace {
         Workspace::integrate_origin(self, checkout, origin_path, expected_main_sha)
     }
 
+    fn integrate_origin_verified(
+        &self,
+        checkout: &Checkout,
+        origin_path: &Path,
+        expected_main_sha: &str,
+        expected_candidate_sha: &str,
+    ) -> Result<MergeReceipt, ContractError> {
+        Workspace::integrate_origin_verified(
+            self,
+            checkout,
+            origin_path,
+            expected_main_sha,
+            expected_candidate_sha,
+        )
+    }
+
     fn candidate_sha(&self, checkout: &Checkout) -> Result<String, ContractError> {
         Workspace::candidate_sha(self, checkout)
     }
@@ -570,6 +649,116 @@ fn sanitize_ref(raw: &str) -> String {
             }
         })
         .collect()
+}
+
+/// The typed change set of `repo`'s working tree against `base` (SF.6).
+///
+/// Paths are Git path bytes. A non-UTF-8 path is REFUSED rather than
+/// lossy-converted, so a `FileChange` never silently changes a filename's
+/// identity bytes.
+fn change_set(repo: &Path, base: &str) -> Result<Vec<FileChange>, ContractError> {
+    let raw_bytes = git_raw(repo, &["diff", "--raw", "-z", "--find-renames", base, "--"])?;
+    let mut changes = parse_raw_changes_bytes(&raw_bytes)?;
+    // Symlink targets live in the filesystem entry, not the raw diff: resolve
+    // each symlink destination so an escaping link is visible to the scope
+    // check. A destination that is not a reachable symlink is left unset.
+    for change in &mut changes {
+        if change.new_mode.as_deref() != Some(SYMLINK_MODE) {
+            continue;
+        }
+        if let Ok(target) = fs::read_link(repo.join(&change.path)) {
+            change.symlink_target = Some(target.to_string_lossy().into_owned());
+        }
+    }
+    changes.sort_by(|a, b| a.path.cmp(&b.path).then(a.old_path.cmp(&b.old_path)));
+    Ok(changes)
+}
+
+/// The git file mode for a symbolic link.
+const SYMLINK_MODE: &str = "120000";
+
+/// Parse raw `git diff --raw -z` bytes into typed changes.
+///
+/// Git paths are raw bytes. A non-UTF-8 path is REFUSED (a `KnownFailure`)
+/// rather than lossy-converted, so a `FileChange` never silently changes a
+/// filename's identity bytes.
+fn parse_raw_changes_bytes(bytes: &[u8]) -> Result<Vec<FileChange>, ContractError> {
+    let raw = std::str::from_utf8(bytes).map_err(|_| {
+        ContractError::KnownFailure(
+            "candidate change set contains a non-UTF8 path; refusing to interpret lossy paths"
+                .to_string(),
+        )
+    })?;
+    Ok(parse_raw_changes(raw))
+}
+
+/// Parse `git diff --raw -z` output into typed changes.
+///
+/// With `-z`, records are NUL-terminated tokens: a header token
+/// (`:<src_mode> <dst_mode> <src_sha> <dst_sha> <status>`) followed by one path
+/// token, except `R`/`C` records which carry the source path then the
+/// destination path.
+fn parse_raw_changes(raw: &str) -> Vec<FileChange> {
+    let mut changes = Vec::new();
+    let mut tokens = raw.split('\0');
+    while let Some(header) = tokens.next() {
+        if header.is_empty() {
+            continue;
+        }
+        if !header.starts_with(':') {
+            continue;
+        }
+        let fields: Vec<&str> = header[1..].split_whitespace().collect();
+        if fields.len() < 5 {
+            continue;
+        }
+        let old_mode = fields[0].to_string();
+        let new_mode = fields[1].to_string();
+        let status = fields[4];
+        let kind_code = status.chars().next().unwrap_or('M');
+        let (kind, old_path, new_path) = match kind_code {
+            'A' => (ChangeKind::Added, None, tokens.next().map(str::to_string)),
+            'D' => (ChangeKind::Deleted, None, tokens.next().map(str::to_string)),
+            'R' => {
+                let old = tokens.next().map(str::to_string);
+                let new = tokens.next().map(str::to_string);
+                (ChangeKind::Renamed, old, new)
+            }
+            'C' => {
+                let old = tokens.next().map(str::to_string);
+                let new = tokens.next().map(str::to_string);
+                (ChangeKind::Added, old, new)
+            }
+            'T' => (
+                ChangeKind::ModeChanged,
+                None,
+                tokens.next().map(str::to_string),
+            ),
+            _ => (
+                ChangeKind::Modified,
+                None,
+                tokens.next().map(str::to_string),
+            ),
+        };
+        let Some(path) = new_path else {
+            continue;
+        };
+        // A pure mode change shows the two modes differing under status `M`.
+        let changed_kind = if kind_code == 'M' && old_mode != new_mode {
+            ChangeKind::ModeChanged
+        } else {
+            kind
+        };
+        changes.push(FileChange {
+            kind: changed_kind,
+            path,
+            old_path,
+            old_mode: Some(old_mode),
+            new_mode: Some(new_mode),
+            symlink_target: None,
+        });
+    }
+    changes
 }
 
 /// Stage and commit the dirty candidate tree; return the resulting HEAD SHA.
@@ -658,6 +847,29 @@ fn git(dir: &Path, args: &[&str]) -> Result<GitOutput, ContractError> {
     })
 }
 
+/// Run `git` and return its raw stdout bytes (no UTF-8 conversion), failing with
+/// captured stderr on a non-zero exit. Used where path bytes must be preserved.
+fn git_raw(dir: &Path, args: &[&str]) -> Result<Vec<u8>, ContractError> {
+    let output = Command::new("git")
+        .arg("--no-pager")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_PAGER", "cat")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|e| {
+            ContractError::KnownFailure(format!("failed to spawn git {}: {e}", args.join(" ")))
+        })?;
+    if !output.status.success() {
+        return Err(ContractError::KnownFailure(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(output.stdout)
+}
+
 /// Run `git` and fail with its captured stderr on a non-zero exit.
 fn git_ok(dir: &Path, args: &[&str]) -> Result<String, ContractError> {
     let out = git(dir, args)?;
@@ -698,4 +910,32 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), ContractError> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SF.6: raw Git `--raw -z` bytes decode to typed changes; a non-UTF-8 path
+    /// is REFUSED (not lossy-converted), preserving filename identity bytes. An
+    /// invalid-UTF-8 filename cannot be created on an APFS/UTF-8 filesystem, so
+    /// the raw bytes are supplied directly to the production decoder.
+    #[test]
+    fn raw_change_bytes_refuse_non_utf8_and_preserve_utf8() {
+        let valid = b":100644 100644 abcdef 123456 A\0src/ok.rs\0";
+        let ok = parse_raw_changes_bytes(valid).expect("valid path parses");
+        assert_eq!(ok.len(), 1);
+        assert_eq!(ok[0].path, "src/ok.rs");
+        assert_eq!(ok[0].kind, ChangeKind::Added);
+
+        let mut invalid = b":100644 100644 abcdef 123456 A\0src/bad".to_vec();
+        invalid.push(0xff);
+        invalid.extend_from_slice(b"name.rs\0");
+        let err = parse_raw_changes_bytes(&invalid).expect_err("non-UTF8 refused");
+        assert!(
+            matches!(err, ContractError::KnownFailure(_)),
+            "non-UTF8 path must be a KnownFailure refusal: {err:?}"
+        );
+        assert!(err.to_string().contains("non-UTF8"), "message: {err}");
+    }
 }

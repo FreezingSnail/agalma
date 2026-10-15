@@ -7,6 +7,12 @@ use crate::cli::RunArgs;
 /// Default model identifier (cheap free model used in S0d).
 pub const DEFAULT_MODEL: &str = "opencode/mimo-v2.6-flash-free";
 
+/// Environment override for the builder-only scoped model selector (SF.8).
+///
+/// Distinct from the legacy global `AGALMA_MODEL`: this scopes the selection to
+/// the builder role and never changes the planner/reviewer/verifier selection.
+pub const BUILDER_MODEL_ENV: &str = "AGALMA_BUILDER_MODEL";
+
 /// The M0 phase plan, in order.
 pub const PHASE_PLAN: [&str; 6] = [
     "intake",
@@ -76,6 +82,26 @@ pub fn resolve_model(explicit: Option<&str>) -> String {
     DEFAULT_MODEL.to_string()
 }
 
+/// Resolve the **builder-scoped** model selector (SF.8).
+///
+/// This is deliberately separate from the legacy global [`resolve_model`] /
+/// `routing::explicit_model` selector: the builder selector applies to the
+/// builder role only and outranks the global selector for that role. Precedence:
+/// `--builder-model` > `AGALMA_BUILDER_MODEL`. Returns `None` when neither is
+/// set, so the builder then follows the legacy global selection unchanged.
+pub fn resolve_builder_model(explicit: Option<&str>) -> Option<String> {
+    if let Some(model) = explicit {
+        let trimmed = model.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    std::env::var(BUILDER_MODEL_ENV)
+        .ok()
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +121,27 @@ mod tests {
     fn empty_model_falls_back_to_default() {
         // An empty flag value must not shadow the default.
         assert_eq!(resolve_model(Some("")), resolve_model(None),);
+    }
+
+    #[test]
+    fn explicit_builder_model_wins() {
+        assert_eq!(
+            resolve_builder_model(Some("opencode-go/deepseek-v4.1-flash")),
+            Some("opencode-go/deepseek-v4.1-flash".to_string())
+        );
+        // Surrounding whitespace is trimmed, not treated as a value.
+        assert_eq!(
+            resolve_builder_model(Some("  opencode/big-pickle  ")),
+            Some("opencode/big-pickle".to_string())
+        );
+    }
+
+    #[test]
+    fn blank_builder_model_flag_falls_through_to_env() {
+        // A whitespace-only flag must not shadow the env/None fallback.
+        assert_eq!(
+            resolve_builder_model(Some("   ")),
+            resolve_builder_model(None)
+        );
     }
 }

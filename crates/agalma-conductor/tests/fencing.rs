@@ -20,17 +20,27 @@ use std::process::Command;
 use std::rc::Rc;
 use std::time::Duration;
 
+use agalma_contracts::digest::{failure_code, sha256_digest, FailureCode};
 use agalma_contracts::ids::{OperationId, TaskId};
 use agalma_contracts::{
-    CommitBatch, ExecutionApi, ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord,
-    ExecutionState, LedgerApi, StepOutcome,
+    AuthorizationOrigin, BindingPin, CommitBatch, ContextKind, DirectiveRef, ExecutionApi,
+    ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState, LedgerApi, Role,
+    StepOutcome,
 };
 use agalma_execution::{DispatchOutcome, Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
 use agalma_ipc::TaskQueueOps;
 use agalma_ledger::SqliteLedger;
+use agalma_taskqueue::TaskDefinition;
 use agalma_testkit::ScratchDir;
 use agalma_workspace::Workspace;
 
+use agalma_conductor::scope_guard::{
+    BaselineFile, ProtectedBaseline, ProtectedEntry, PROTECTED_BASELINE_FORMAT,
+};
+use agalma_conductor::task_package::{
+    build_package, load_admitted_package, object_path, persist_package, AuthorizationInput,
+    ContextInput, PackageInputs, RoleInput,
+};
 use agalma_conductor::workspace_process::WorkspaceHandle;
 use serde_json::json;
 
@@ -131,9 +141,18 @@ struct Harness {
 
 fn build_harness(origin: &Origin, acceptance: &[&str]) -> Harness {
     std::fs::create_dir_all(&origin.state_dir).expect("state dir");
-    // SF.1: repository mode requires the recorded package; seed valid fixtures
-    // for every generation this drill can dispatch (gen1, gen2).
-    common::seed_recorded_packages(&origin.state_dir, TASK, 2);
+    // SF.1/SF.6: repository mode requires the recorded package *and* a valid
+    // frozen protected oracle entry. Seed a fencing-local valid fixture for
+    // every generation this drill can dispatch (gen1, gen2); the shared
+    // `tests/common` helper intentionally seeds an opaque oracle.
+    let base_sha = git(&origin.origin, &["rev-parse", "refs/heads/main"]);
+    seed_fenced_packages(
+        &origin.state_dir,
+        origin.origin.to_str().expect("origin utf8"),
+        &base_sha,
+        &acceptance.join("\n"),
+        2,
+    );
     let deps = PhaseDeps {
         state_dir: origin.state_dir.clone(),
         fixture: origin.origin.clone(),
@@ -225,6 +244,158 @@ fn checkout_of(origin: &Origin, exec: &ExecutionId) -> agalma_contracts::Checkou
     let text = std::fs::read_to_string(&path).expect("checkout artifact");
     serde_json::from_str(&text).expect("checkout json")
 }
+
+// ===========================================================================
+// Local valid SF.6 protected oracle fixture
+// ===========================================================================
+//
+// SF.6 makes repository verification fail-closed: the frozen `scope.oracle` is
+// the selected operator protected entry, and a package whose oracle is missing
+// or malformed refuses at load. The shared `tests/common` helper seeds an
+// intentionally opaque oracle (`b"harness-oracle"`), which is correct for the
+// fixture-mode drills that never reach verification but makes these repo-mode
+// fencing cases refuse before their fencing/merge effects. This fencing-local
+// seeder builds the same minimal recorded package with a *valid* frozen entry
+// (task/base/scope identities matched to the scratch origin) instead.
+
+/// The frozen protected judge a valid baseline must carry (nonempty files +
+/// nonempty commands). A trivial passing command keeps the drilling effect: the
+/// fencing cases assert merge/fencing semantics, not protected behavior.
+const PROTECTED_JUDGE_TEXT: &str = "#!/bin/sh\nexit 0\n";
+const PROTECTED_JUDGE_COMMAND: &str = "sh -c 'true'";
+
+fn protected_baseline() -> ProtectedBaseline {
+    ProtectedBaseline {
+        format: PROTECTED_BASELINE_FORMAT.to_string(),
+        files: vec![BaselineFile {
+            path: "judge.sh".to_string(),
+            mode: "100644".to_string(),
+            digest: sha256_digest(PROTECTED_JUDGE_TEXT.as_bytes()),
+            bytes: PROTECTED_JUDGE_TEXT.len() as u64,
+            text: PROTECTED_JUDGE_TEXT.to_string(),
+        }],
+        commands: vec![PROTECTED_JUDGE_COMMAND.to_string()],
+    }
+}
+
+/// A validated protected entry bound to `repository_root`/`base_sha` with the
+/// fencing candidate's scope (`src` writable, nothing protected).
+fn fenced_entry(repository_root: &str, base_sha: &str) -> ProtectedEntry {
+    ProtectedEntry {
+        task_id: TASK.to_string(),
+        repository_root: repository_root.to_string(),
+        base_sha: base_sha.to_string(),
+        allowed_paths: vec!["src".to_string()],
+        protected_paths: Vec::new(),
+        baseline: protected_baseline(),
+    }
+}
+
+/// Persist a recorded `TaskPackage/v1` for `execution_id` with explicit package
+/// scope, acceptance, and frozen oracle bytes; return its package digest.
+fn persist_fenced_package(
+    state_dir: &Path,
+    execution_id: &str,
+    package_task: &str,
+    base_sha: &str,
+    acceptance: &str,
+    allowed_paths: Vec<String>,
+    protected_paths: Vec<String>,
+    oracle_bytes: Vec<u8>,
+) -> String {
+    let definition = TaskDefinition {
+        task_id: TaskId::new(package_task),
+        title: "Fence the task".to_string(),
+        description: "Fenced fixture.\n".to_string(),
+        design: Some("Design.\n".to_string()),
+        notes: None,
+        acceptance_criteria: Some(acceptance.to_string()),
+        parent: None,
+        dependencies: Vec::new(),
+        comments: Vec::new(),
+    };
+    let inputs = PackageInputs {
+        execution_id: execution_id.to_string(),
+        generation: 1,
+        lease_generation: 1,
+        repository_identity: "fence-fixture".to_string(),
+        base_sha: base_sha.to_string(),
+        directive: DirectiveRef {
+            id: "directive/v0".to_string(),
+            version: 0,
+            digest: sha256_digest(b"directive/v0"),
+        },
+        authorization: AuthorizationInput {
+            origin: AuthorizationOrigin::HumanBootstrap,
+            policy_digest: sha256_digest(b"human-bootstrap/v1"),
+            receipt_source: "bd:fence-task/claim".to_string(),
+            receipt_media_type: "application/json".to_string(),
+            receipt_bytes: b"{}".to_vec(),
+        },
+        roles: vec![RoleInput::new(
+            Role::Builder,
+            "builder:fix".to_string(),
+            "test/offline".to_string(),
+            BindingPin {
+                binding_id: "harness.opencode".to_string(),
+                api: "harness".to_string(),
+                api_version: 1,
+                implementation_version: "harness/v1".to_string(),
+                generation: 1,
+                config_digest: sha256_digest(b"{}"),
+            },
+            b"builder prompt".to_vec(),
+            "text/plain".to_string(),
+        )],
+        instructions: vec![ContextInput::new(
+            ContextKind::Instruction,
+            "AGENTS.md",
+            "text/plain",
+            b"frozen repository instruction\n".to_vec(),
+        )],
+        shared_design: Vec::new(),
+        parent_design: Vec::new(),
+        dependency_handoffs: Vec::new(),
+        allowed_paths,
+        protected_paths,
+        readable_artifacts: Vec::new(),
+        oracle_bytes,
+        oracle_media_type: "application/json".to_string(),
+        max_attempts: 2,
+        allowance_nusd: 0,
+        quota_policy_digest: sha256_digest(b"quota"),
+        recorded_at_unix_ms: 1_791_820_800_000,
+    };
+    let built = build_package(&definition, inputs).expect("build fenced package");
+    persist_package(state_dir, &built).expect("persist fenced package");
+    built.package.package_digest
+}
+
+/// Seed a valid SF.6-fixture package for generations `1..=max_generation` of
+/// `TASK`, matching the scratch origin's repository root and base SHA.
+fn seed_fenced_packages(
+    state_dir: &Path,
+    repository_root: &str,
+    base_sha: &str,
+    acceptance: &str,
+    max_generation: u32,
+) {
+    let entry = fenced_entry(repository_root, base_sha);
+    let oracle = entry.freeze().expect("freeze fencing entry");
+    for generation in 1..=max_generation {
+        persist_fenced_package(
+            state_dir,
+            &format!("exec:{TASK}:{generation}"),
+            TASK,
+            base_sha,
+            acceptance,
+            entry.allowed_paths.clone(),
+            entry.protected_paths.clone(),
+            oracle.clone(),
+        );
+    }
+}
+
 
 // ===========================================================================
 // Case 1 — duplicate dispatch cannot merge twice
@@ -546,6 +717,219 @@ fn projection_reconcile_after_crash_is_idempotent() {
         comments_after_first,
         "idempotent: no extra comment"
     );
+}
+
+// ===========================================================================
+// Protected oracle fixture identity — deterministic property + fail-closed
+// ===========================================================================
+
+/// Deterministic xorshift generator (same construction as the SF.6 property).
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+/// Order-insensitive path-set equality (the scope-agreement contract).
+fn same_set(a: &[String], b: &[String]) -> bool {
+    let mut a: Vec<&String> = a.iter().collect();
+    let mut b: Vec<&String> = b.iter().collect();
+    a.sort();
+    b.sort();
+    a == b
+}
+
+/// Deterministic property over the frozen protected-entry identity contract
+/// (seed `0x5f6_fence`, budget 64 cases).
+///
+/// The observable seam is `load_admitted_package`, the exact fail-closed path
+/// the repo-mode fencing cases exercise (oracle parse + scope agreement). The
+/// expected outcome is derived from the generated **identities**, never from
+/// the loader: a package loads only when `task_id`, `base_sha`, and the
+/// allowed/protected path *sets* agree; every mismatch refuses with the
+/// matching failure code. Boundary paths include the empty set and an
+/// order-permuted set that must still agree.
+#[test]
+fn protected_entry_identity_fail_closed_property() {
+    const CASES: usize = 64;
+    // The bead's mnemonic seed `0x5f6_fence`; `n` is not a hex digit, so the
+    // seed is the same digit string with `n` dropped (`0x5f6_fece`).
+    const SEED: u64 = 0x5f6_fece;
+    const PACKAGE_BASE: &str = "1111111111111111111111111111111111111111";
+    const ALTERNATE_BASE: &str = "2222222222222222222222222222222222222222";
+
+    // Boundary path sets: empty, singleton, an order permutation of the same
+    // set (must agree), and a differing set (must disagree).
+    let empty: Vec<String> = Vec::new();
+    let src_only: Vec<String> = vec!["src".to_string()];
+    let docs_src: Vec<String> = vec!["docs".to_string(), "src".to_string()];
+    let src_docs: Vec<String> = vec!["src".to_string(), "docs".to_string()];
+
+    let dir = fresh("oracle-prop");
+    let mut rng = Rng(SEED);
+    let mut ok_seen = 0usize;
+    let mut task_mismatch_seen = 0usize;
+    let mut base_mismatch_seen = 0usize;
+    let mut path_mismatch_seen = 0usize;
+
+    for case in 0..CASES {
+        // The first four cases pin the required classes; the rest vary from the
+        // seeded stream. Both the forcing and the stream are deterministic.
+        let (task_match, base_match, paths_match) = match case {
+            0 => (true, true, true),
+            1 => (false, true, true),
+            2 => (true, false, true),
+            3 => (true, true, false),
+            _ => (rng.below(2) == 1, rng.below(2) == 1, rng.below(2) == 1),
+        };
+
+        // A "path match" uses an order permutation (boundary) so order
+        // insensitivity is exercised; a mismatch is always a genuinely
+        // different set.
+        let (pkg_allowed, entry_allowed) = if paths_match {
+            let pick = rng.below(3);
+            match pick {
+                0 => (empty.clone(), empty.clone()),
+                1 => (src_only.clone(), src_only.clone()),
+                _ => (docs_src.clone(), src_docs.clone()),
+            }
+        } else {
+            (src_only.clone(), empty.clone())
+        };
+        let pkg_protected: Vec<String> = Vec::new();
+        let entry_protected: Vec<String> = Vec::new();
+
+        let entry = ProtectedEntry {
+            task_id: if task_match {
+                TASK.to_string()
+            } else {
+                "other.task".to_string()
+            },
+            repository_root: "/origin".to_string(),
+            base_sha: if base_match { PACKAGE_BASE } else { ALTERNATE_BASE }.to_string(),
+            allowed_paths: entry_allowed.clone(),
+            protected_paths: entry_protected.clone(),
+            baseline: protected_baseline(),
+        };
+        let oracle = entry.freeze().expect("freeze generated entry");
+        // The generated frozen bytes must be a *valid* entry: any refusal below
+        // is an identity disagreement, never malformedness.
+        ProtectedEntry::parse(&oracle).expect("generated entry is well-formed");
+
+        let digest = persist_fenced_package(
+            &dir,
+            &format!("exec:prop:{case}"),
+            TASK,
+            PACKAGE_BASE,
+            "sh -c 'true'",
+            pkg_allowed.clone(),
+            pkg_protected.clone(),
+            oracle,
+        );
+
+        let expect_ok = task_match
+            && base_match
+            && same_set(&entry.allowed_paths, &pkg_allowed)
+            && same_set(&entry.protected_paths, &pkg_protected);
+
+        match load_admitted_package(&dir, &digest) {
+            Ok(_) => {
+                assert!(
+                    expect_ok,
+                    "case {case}: valid fixture must load (seed {SEED:#x})"
+                );
+                ok_seen += 1;
+            }
+            Err(err) => {
+                assert!(
+                    !expect_ok,
+                    "case {case}: mismatched fixture must refuse, loaded anyway: {err}"
+                );
+                let code = failure_code(&err);
+                if !task_match || !base_match {
+                    assert_eq!(
+                        code,
+                        Some(FailureCode::IdentityConflict),
+                        "case {case}: task/base mismatch refuses as IdentityConflict"
+                    );
+                    if !task_match {
+                        task_mismatch_seen += 1;
+                    }
+                    if !base_match {
+                        base_mismatch_seen += 1;
+                    }
+                } else {
+                    assert_eq!(
+                        code,
+                        Some(FailureCode::ScopeDenied),
+                        "case {case}: path disagreement refuses as ScopeDenied"
+                    );
+                    path_mismatch_seen += 1;
+                }
+            }
+        }
+    }
+
+    assert!(ok_seen > 0, "valid identity must be exercised");
+    assert!(task_mismatch_seen > 0, "task mismatch must be exercised");
+    assert!(base_mismatch_seen > 0, "base mismatch must be exercised");
+    assert!(path_mismatch_seen > 0, "path mismatch must be exercised");
+    // A permutation of the same set agrees; a different set does not.
+    assert!(same_set(&docs_src, &src_docs), "order permutation agrees");
+    assert!(!same_set(&src_only, &empty), "different sets disagree");
+}
+
+/// A frozen oracle that is not a valid protected entry refuses on load.
+#[test]
+fn malformed_frozen_oracle_refuses_on_load() {
+    let dir = fresh("oracle-malformed");
+    let digest = persist_fenced_package(
+        &dir,
+        &format!("exec:{TASK}:1"),
+        TASK,
+        "a".repeat(40).as_str(),
+        "sh -c 'true'",
+        vec!["src".to_string()],
+        Vec::new(),
+        b"opaque-not-a-protected-entry".to_vec(),
+    );
+    let err = load_admitted_package(&dir, &digest).expect_err("malformed oracle must refuse");
+    assert_eq!(failure_code(&err), Some(FailureCode::InvalidRecord));
+}
+
+/// A valid fixture whose referenced oracle object is missing refuses on load.
+#[test]
+fn missing_frozen_oracle_object_refuses_on_load() {
+    let dir = fresh("oracle-missing");
+    let entry = fenced_entry("/origin", &"a".repeat(40));
+    let oracle = entry.freeze().expect("freeze entry");
+    let digest = persist_fenced_package(
+        &dir,
+        &format!("exec:{TASK}:1"),
+        TASK,
+        &"a".repeat(40),
+        "sh -c 'true'",
+        entry.allowed_paths.clone(),
+        entry.protected_paths.clone(),
+        oracle.clone(),
+    );
+    // Positive control: the fixture is valid while its oracle object is present.
+    load_admitted_package(&dir, &digest).expect("valid fixture loads");
+    // Remove the content-addressed oracle object: the load must refuse.
+    let oracle_digest = sha256_digest(&oracle);
+    std::fs::remove_file(object_path(&dir, &oracle_digest).expect("oracle path"))
+        .expect("remove oracle object");
+    let err = load_admitted_package(&dir, &digest).expect_err("missing oracle must refuse");
+    assert_eq!(failure_code(&err), Some(FailureCode::LegacyInputsMissing));
 }
 
 fn require_bd() {

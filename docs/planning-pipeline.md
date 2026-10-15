@@ -17,10 +17,12 @@ with LLM sessions supplying content and Rust code deciding consequences.
   MUST NOT decompose, create children, fill acceptance, defer, or implement.
 - **Designer** (autonomous, one-shot): reads the epic design (source of truth),
   spikes unknowns, authors child tickets + dep edges, runs the self-audit.
-  MUST NOT implement, review, repair, undefer, or claim children.
+  MUST NOT implement, review, repair, resolve an approval gate, undefer, or
+  claim children.
 - **Validator** (deterministic Rust): judges the decomposition; pass/fail with a
   rule-named violation list.
-- **Human**: approves by `bd undefer <child>`; rejection feedback is a comment,
+- **Human**: approves by resolving a child's native human execution-approval
+  gate (`bd gate resolve <gate>`); rejection feedback is a comment,
   design revised in place (never supersede).
 
 ## bd conventions
@@ -28,8 +30,9 @@ with LLM sessions supplying content and Rust code deciding consequences.
 - Epic: `bd create "<one-line ASCII title>" -t epic --body-file <desc>` then
   `bd update <epic> --design-file <design>`.
 - Child: `bd create "<title>" -t task --parent <epic> --body-file <desc>
-  --design-file <design> --labels staged,difficulty:low|high`; created with
-  `--defer <date>` (hidden from `bd ready` by construction).
+  --design-file <design> --labels staged,difficulty:low|high`; created **open**
+  (no `--defer` sentinel), and each child gets exactly one native human
+  execution-approval gate (CP.3 / `agalma-i5h.8`) that pins it.
 - Child description fixed headings, in order:
   `# Scope`, `# Files`, `# Contract`, `# Invariants`, `# Non-goals`, `# MACHINE`.
   MACHINE keys exactly one per line: `provides:`, `consumes:`, `files:`, `tier:`.
@@ -41,18 +44,36 @@ with LLM sessions supplying content and Rust code deciding consequences.
   scope-guarded. The validator parses it with the existing taskqueue parser.
 - Labels: `staged` + exactly one `difficulty:*`; after the gate,
   `decomp-approved` or `decomp-rejected`; rework task label `decomp-fix`;
-  review-gate label `drift-fix`; human escalation label `human`.
-- Approval state (two independent bits, `bd-undefer` never auto-run):
+  review-gate label `drift-fix`; human escalation label `human`; native human
+  execution-approval gate label `execution-approval`.
+- Native human execution-approval gate (the human gate primitive). The designer
+  authors one gate per child in the same session that creates the child:
+
+  ```
+  bd gate create --type human --blocks <child> --reason "Execution approval for <child>"
+  bd update <gate> --add-label human,execution-approval --set-metadata approval_for=<child>
+  ```
+
+  The gate is a standalone issue (no parent), pinned to the child by a direct
+  `blocks` edge. It is created **unresolved**; only a human resolves it with
+  `bd gate resolve <gate>`, which is the explicit bootstrap authorization. The
+  designer never resolves a gate and never sets `decomp-approved`.
+- Approval state (two independent bits, never auto-run):
   - **validator approval** — `decomp-approved` (never alongside
-    `decomp-rejected`), applied by the sweep gate on a clean decomposition;
-  - **human execution authorization** — `bd undefer <child>`, which restores
-    `status=open` and clears the defer date. It preserves labels, so `staged`
-    marks provenance, not authorization.
+    `decomp-rejected`), applied by the sweep gate on a clean decomposition and
+    exactly one well-formed gate per staged child;
+  - **human execution authorization** — the child's associated native human gate
+    resolved (closed). Clearing a defer date or changing a status never
+    authorizes; `defer` is reserved for deliberate postponement.
 - Ready contract: the adapter admits a `staged` child only when it is
-  `decomp-approved` and carries no defer date (i.e. a human ran `bd undefer`);
-  it always excludes epics, `human`, `parked`, `decomp-fix`, and any issue with a
-  set defer date. Ordinary open work needs neither label, and an accidental
-  `bd update --status open` (defer date intact) never releases staged work.
+  `decomp-approved`, carries no defer date, has **exactly one** well-formed
+  associated native human gate (`issue_type=gate`, `await_type=human`, labels
+  `human,execution-approval`, `approval_for=<child>`) that a human has resolved,
+  and has no unresolved prerequisites. Missing, conflicting, or malformed
+  approval associations deny release. The adapter excludes epics, gate issues,
+  `human`, `parked`, `decomp-fix`, `drift-fix`, and any issue with a set defer
+  date. An accidental `bd update --status open` never releases staged work;
+  ordinary open work needs no gate.
 
 ## Difficulty tier (derived, never judged)
 
@@ -103,14 +124,19 @@ After recovery, before claiming ordinary work:
    `decomp-rejected` with retries remaining.
 2. Spawn one designer session (planner route) with the epic design; concurrency
    cap 1 in the serial MVP.
-3. On completion: run the validator.
-   - Pass → label children `decomp-approved` (children stay deferred/staged;
-     validator approval alone releases nothing).
+3. On completion: run the validator and reconcile each staged child's native
+   human approval gate.
+   - Pass (validator clean **and** exactly one well-formed gate per staged
+     child) → label children `decomp-approved` (children stay blocked/staged;
+     validator approval alone releases nothing). A missing, conflicting, or
+     malformed gate association fails closed as an `approval-gate` violation.
    - Fail → label `decomp-rejected` + create one P1 `decomp-fix` task (parent
      epic) carrying the violation list; retry up to 3; then `bd human <epic>` +
      comment and stop looping.
-4. Approved children enter `bd ready` only via human `bd undefer` (which clears
-   the defer date); rejected and never-validated children never do.
+4. Approved children enter `bd ready` only once a human resolves their native
+   execution-approval gate (and prerequisites close); rejected and
+   never-validated children never do. The sweep never creates or recreates a
+   gate: an absurd association is rework, never invented approval.
 
 ## Review gate (post-merge, per epic)
 
@@ -136,9 +162,9 @@ dispatch until a re-review approves or a human takes over.
 
 `agalma-3kr` (TUI control plane) is the first goal to travel the full path:
 concierge design refinement → designer decomposition (existing hand-authored
-children are reference input, not binding) → validator → human `undefer` →
-fleet. Success = the dashboard epic's children are machine-validated, staged,
-and consumed by the factory.
+children are reference input, not binding) → validator → human resolves each
+native execution-approval gate → fleet. Success = the dashboard epic's children
+are machine-validated, staged, gated, and consumed by the factory.
 
 ## Bead plan
 
@@ -158,11 +184,12 @@ and consumed by the factory.
   the safety net, and `decomp-fix` keeps rework bounded.
 - Per-task factory intake still requires `directive/v0`; the designer must author
   it per child — validator rule `intake-block` enforces parseability.
-- maduin's `--defer` is date-based; agalma uses the same bd semantics. The ready
-  predicate keys on two bits — `decomp-approved` and a cleared defer date — so it
-  never confuses human-deferred work, still-deferred staged children, or
-  rejected work with an authorized child; the `staged` label alone authorizes
-  nothing.
+- `defer` is date-based bd semantics, reserved for deliberate postponement. The
+  ready predicate keys on two independent bits — validator `decomp-approved` and
+  a resolved native human execution-approval gate — plus no set defer date and no
+  open prerequisite, so it never confuses postponed work, still-blocked staged
+  children, or rejected work with an authorized child; the `staged` label alone
+  authorizes nothing, and clearing a defer date authorizes nothing.
 
 ## Planned prompt/skill release extension
 
@@ -171,8 +198,9 @@ The implemented CP gate above remains the bootstrap default. SM.9
 for allowlisted builder prompts and builder-context skills, per
 `docs/self-mutation-contracts.md`. It journals a release receipt before queue
 projection and revalidates source digest, active directive, scope and budget at
-claim. Decomposition approval and a cleared defer date alone do not grant this
-automated authority. Plugin packages follow a later explicit allowlist; bootstrap
+claim. Decomposition approval, a cleared defer date, or a resolved bootstrap
+human gate alone does not grant this automated authority. Plugin packages follow
+a later explicit allowlist; bootstrap
 code keeps transitional oversight until P1. This amendment is a future contract,
 not a claim that the current queue gate already implements automated release.
 

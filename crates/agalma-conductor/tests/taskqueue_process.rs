@@ -187,6 +187,76 @@ impl Scratch {
         value["id"].as_str().expect("created id").to_string()
     }
 
+    /// Add a native human execution-approval gate blocking `blocked`; return the
+    /// gate id (unresolved; resolve with `bd gate resolve`).
+    fn add_native_gate(&self, blocked: &str) -> String {
+        let out = Command::new("bd")
+            .arg("--db")
+            .arg(self.beads_dir())
+            .args([
+                "gate",
+                "create",
+                "--type",
+                "human",
+                "--blocks",
+                blocked,
+                "--reason",
+                "test execution approval",
+                "--json",
+            ])
+            .current_dir(&self.dir)
+            .env("BD_NON_INTERACTIVE", "1")
+            .output()
+            .expect("spawn bd gate create");
+        assert!(out.status.success(), "bd gate create: {}", stderr_of(&out));
+        let value: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("bd gate create --json");
+        let gate = value["id"].as_str().expect("gate id").to_string();
+        self.bd_ok(&[
+            "update",
+            &gate,
+            "--add-label",
+            "human,execution-approval",
+            "--set-metadata",
+            &format!("approval_for={blocked}"),
+        ]);
+        gate
+    }
+
+    /// Create a task with an explicit label list (open, no defer); return its id.
+    fn create_open_labeled(&self, title: &str, labels: &str) -> String {
+        let out = Command::new("bd")
+            .arg("--db")
+            .arg(self.beads_dir())
+            .args([
+                "create",
+                title,
+                "-t",
+                "task",
+                "-p",
+                "2",
+                "--description",
+                VALID,
+                "--labels",
+                labels,
+                "--json",
+            ])
+            .current_dir(&self.dir)
+            .env("BD_NON_INTERACTIVE", "1")
+            .output()
+            .expect("spawn bd create");
+        assert!(out.status.success(), "bd create: {}", stderr_of(&out));
+        let value: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("bd create --json");
+        value["id"].as_str().expect("created id").to_string()
+    }
+
+    /// Prevent auto-cleanup so the fixture survives the successful test for
+    /// persistent evidence retention.
+    fn keep(&mut self) {
+        self.dir.keep();
+    }
+
     /// Run a bd subcommand that must succeed.
     fn bd_ok(&self, args: &[&str]) {
         let out = Command::new("bd")
@@ -560,40 +630,58 @@ fn process_binding_withholds_blocked_children() {
     let _ = server.stop();
 }
 
-/// Approval release parity across a process restart: a staged, approved child
-/// stays hidden until `bd undefer`, then the release survives a server restart
-/// (durable `.beads` state, fresh adapter rebuild) and matches the in-process
-/// binding (process transport inherits the server behavior).
+/// Native approval release parity across a process restart: a staged, approved
+/// child stays hidden until a human resolves its native gate, then the release
+/// survives a server restart (durable `.beads` state, fresh adapter rebuild) and
+/// matches the in-process binding (process transport inherits server behavior).
+/// `bd undefer` (defer semantics) is not authorization for staged work.
+///
+/// Uses the production [`TaskQueueProcess::spawn`] entry (bounded socket path)
+/// so the test is robust to long worktree paths, not the raw-socket helper.
 #[test]
-fn undefer_release_survives_restart_and_matches_process_binding() {
-    let scratch = Scratch::new(fresh());
-    let approved = scratch.create_deferred(
+fn native_gate_release_survives_restart_and_matches_process_binding() {
+    let mut scratch = Scratch::new(fresh());
+    let approved = scratch.create_open_labeled(
         "Approved",
         "staged,difficulty:low,decomp-approved",
-        "2099-01-01",
     );
-    let unvalidated = scratch.create_deferred("Unvalidated", "staged,difficulty:low", "2099-01-01");
+    let gate = scratch.add_native_gate(&approved);
+    let unvalidated = scratch.create_open_labeled("Unvalidated", "staged,difficulty:low");
+    let _unvalidated_gate = scratch.add_native_gate(&unvalidated);
+    let state = scratch.repo().join("state");
+    std::fs::create_dir_all(&state).expect("state dir");
+    // A canonical absolute state path keeps the bounded-socket alias target
+    // stable (no relative/dangling symlink target).
+    let state = std::fs::canonicalize(&state).expect("canonical state dir");
 
     // Generation 1: no human authorization yet, so nothing is released.
-    let socket_a = scratch.repo().join("ap-a.sock");
-    let mut server_a = spawn_server(&socket_a, scratch.repo());
+    let mut server_a = TaskQueueProcess::spawn(&state, scratch.repo(), READY_TIMEOUT)
+        .unwrap_or_else(|e| panic!("spawn taskqueue server: {e}"));
     let a = server_a.client().expect("client a");
     assert!(sorted_ready_ids(&a).is_empty(), "no pre-approval release");
 
-    // Human authorizes the approved child, then the server is restarted.
+    // `bd undefer` is only defer semantics for ordinary work; it never authorizes
+    // a staged child whose gate is still open.
     scratch.bd_ok(&["undefer", &approved]);
+    assert!(
+        sorted_ready_ids(&a).is_empty(),
+        "undefer alone must not release a gated staged child"
+    );
+
+    // Human resolves the approved child's native gate, then the server restarts.
+    scratch.bd_ok(&["gate", "resolve", &gate]);
     drop(a);
     let _ = server_a.stop();
 
     // Generation 2: a fresh process with a rebuilt adapter sees the release.
-    let socket_b = scratch.repo().join("ap-b.sock");
-    let mut server_b = spawn_server(&socket_b, scratch.repo());
+    let mut server_b = TaskQueueProcess::spawn(&state, scratch.repo(), READY_TIMEOUT)
+        .unwrap_or_else(|e| panic!("respawn taskqueue server: {e}"));
     let b = server_b.client().expect("client b");
     let process_ids = sorted_ready_ids(&b);
     assert_eq!(
         process_ids,
         vec![approved.clone()],
-        "the approved child is ready after restart"
+        "the gate-resolved child is ready after restart"
     );
     assert!(
         !process_ids.contains(&unvalidated),
@@ -610,6 +698,49 @@ fn undefer_release_survives_restart_and_matches_process_binding() {
 
     drop(b);
     let _ = server_b.stop();
+    scratch.keep();
+}
+
+/// Compatibility: a genuine `--defer` postponement on ordinary (non-staged) work
+/// retains its semantics — `bd undefer` releases it — across the process
+/// boundary and a restart.
+#[test]
+fn undefer_release_survives_restart_for_ordinary_work() {
+    let mut scratch = Scratch::new(fresh());
+    let approved = scratch.create_deferred("Postponed", "difficulty:low", "2099-01-01");
+    let state = scratch.repo().join("state");
+    std::fs::create_dir_all(&state).expect("state dir");
+    let state = std::fs::canonicalize(&state).expect("canonical state dir");
+
+    // Generation 1: the postponed task is hidden.
+    let mut server_a = TaskQueueProcess::spawn(&state, scratch.repo(), READY_TIMEOUT)
+        .unwrap_or_else(|e| panic!("spawn taskqueue server: {e}"));
+    let a = server_a.client().expect("client a");
+    assert!(sorted_ready_ids(&a).is_empty(), "postponed work is hidden");
+
+    // Human clears the real postponement; the server is restarted.
+    scratch.bd_ok(&["undefer", &approved]);
+    drop(a);
+    let _ = server_a.stop();
+
+    let mut server_b = TaskQueueProcess::spawn(&state, scratch.repo(), READY_TIMEOUT)
+        .unwrap_or_else(|e| panic!("respawn taskqueue server: {e}"));
+    let b = server_b.client().expect("client b");
+    assert_eq!(
+        sorted_ready_ids(&b),
+        vec![approved.clone()],
+        "ordinary postponed work releases after undefer across restart"
+    );
+    let inproc = TaskQueueHandle::in_process(scratch.repo());
+    assert_eq!(
+        sorted_ready_ids(&b),
+        sorted_ready_ids(&inproc),
+        "in-process vs process parity"
+    );
+
+    drop(b);
+    let _ = server_b.stop();
+    scratch.keep();
 }
 
 // ===========================================================================

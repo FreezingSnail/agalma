@@ -131,7 +131,7 @@ impl Scratch {
         value["id"].as_str().expect("epic id").to_string()
     }
 
-    /// Create a deferred, staged child.
+    /// Create an OPEN staged child (no sentinel defer date); return its id.
     fn create_child(&self, parent: &str, title: &str, description: &str, labels: &str) -> String {
         let out = self.bd(&[
             "create",
@@ -148,13 +148,103 @@ impl Scratch {
             "Small, single-file change; no new interface.",
             "--labels",
             labels,
-            "--defer",
-            "2099-01-01",
             "--json",
         ]);
         assert!(out.status.success(), "bd create child: {}", stderr_of(&out));
         let value: Value = serde_json::from_slice(&out.stdout).expect("child json");
         value["id"].as_str().expect("child id").to_string()
+    }
+
+    /// Attach a native human execution-approval gate to `blocked` and return the
+    /// gate id (created unresolved; resolve with `bd gate resolve <gate>`).
+    fn add_gate(&self, blocked: &str) -> String {
+        let out = self.bd(&[
+            "gate",
+            "create",
+            "--type",
+            "human",
+            "--blocks",
+            blocked,
+            "--reason",
+            "test execution approval",
+            "--json",
+        ]);
+        assert!(out.status.success(), "bd gate create: {}", stderr_of(&out));
+        let value: Value = serde_json::from_slice(&out.stdout).expect("gate json");
+        let gate = value["id"].as_str().expect("gate id").to_string();
+        self.bd_ok(&[
+            "update",
+            &gate,
+            "--add-label",
+            "human,execution-approval",
+            "--set-metadata",
+            &format!("approval_for={blocked}"),
+        ]);
+        gate
+    }
+
+    /// Number of native human gates directly blocking `child` (its `blocks`
+    /// edges whose target is a native `gate` issue).
+    fn native_gate_count(&self, child: &str) -> usize {
+        let issue = self.show(child);
+        issue["dependencies"]
+            .as_array()
+            .map(|deps| {
+                deps.iter()
+                    .filter(|d| d["dependency_type"] == "blocks" && d["issue_type"] == "gate")
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    /// The id of the native gate directly blocking `child`.
+    fn gate_of(&self, child: &str) -> String {
+        let issue = self.show(child);
+        issue["dependencies"]
+            .as_array()
+            .and_then(|deps| {
+                deps.iter()
+                    .find(|d| d["dependency_type"] == "blocks" && d["issue_type"] == "gate")
+                    .and_then(|d| d["id"].as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| panic!("child {child} has no native gate: {issue}"))
+    }
+
+    /// Create `n` open staged children, each with exactly one native gate;
+    /// returns their ids in creation order.
+    fn seed_staged_gated_children(&self, epic: &str, n: usize) -> Vec<String> {
+        (0..n)
+            .map(|i| {
+                let id = self.create_child(
+                    epic,
+                    &format!("child {i}"),
+                    &low_desc(&format!("c{i}")),
+                    "staged,difficulty:low",
+                );
+                self.add_gate(&id);
+                id
+            })
+            .collect()
+    }
+
+    /// Number of native approval gates in the scratch backlog (label
+    /// `execution-approval`, open and closed).
+    fn gate_count(&self) -> usize {
+        let out = self.bd_ok(&[
+            "list",
+            "--label",
+            "execution-approval",
+            "--all",
+            "--include-gates",
+            "--json",
+            "--limit",
+            "0",
+        ]);
+        serde_json::from_str::<Value>(&out)
+            .ok()
+            .and_then(|v| v.as_array().map(Vec::len))
+            .unwrap_or(0)
     }
 
     fn create_decomp_fix(&self, parent: &str) -> String {
@@ -171,8 +261,6 @@ impl Scratch {
             "seed rework task",
             "--labels",
             "decomp-fix",
-            "--defer",
-            "2099-01-01",
             "--json",
         ]);
         assert!(out.status.success(), "bd create fix: {}", stderr_of(&out));
@@ -206,6 +294,20 @@ impl Scratch {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Prevent auto-cleanup so the fixture survives the successful test for
+    /// persistent evidence retention.
+    fn keep(&mut self) {
+        self._dir.keep();
+    }
+
+    /// Like [`Scratch::new`], but retained even on success: required
+    /// gate-reconciliation cases keep their fixture for persistent evidence.
+    fn new_kept(name: &str) -> Self {
+        let mut scratch = Self::new(name);
+        scratch.keep();
+        scratch
     }
 }
 
@@ -288,7 +390,7 @@ impl DesignerSession for ScriptedDesigner {
             String::from_utf8_lossy(&out.stdout).into_owned()
         };
         let create = |title: &str, description: &str, labels: &str| {
-            let _ = bd(&[
+            let out = bd(&[
                 "create",
                 title,
                 "-t",
@@ -303,8 +405,32 @@ impl DesignerSession for ScriptedDesigner {
                 "Small, single-file change; no new interface.",
                 "--labels",
                 labels,
-                "--defer",
-                "2099-01-01",
+                "--json",
+            ]);
+            let child: Value = serde_json::from_str(&out).expect("created child json");
+            let child_id = child["id"].as_str().expect("child id");
+            // Every staged child gets exactly one native human approval gate
+            // (the designer's contract); the gate stays unresolved.
+            let out = bd(&[
+                "gate",
+                "create",
+                "--type",
+                "human",
+                "--blocks",
+                child_id,
+                "--reason",
+                "execution approval",
+                "--json",
+            ]);
+            let gate: Value = serde_json::from_str(&out).expect("created gate json");
+            let gate_id = gate["id"].as_str().expect("gate id");
+            bd(&[
+                "update",
+                gate_id,
+                "--add-label",
+                "human,execution-approval",
+                "--set-metadata",
+                &format!("approval_for={child_id}"),
             ]);
         };
         let outcome = match self.mode {
@@ -409,7 +535,7 @@ fn undecomposed_epic_is_detected_and_swept() {
 
 #[test]
 fn valid_decomposition_is_approved_staged_and_invisible_to_ready() {
-    let scratch = Scratch::new("approve");
+    let scratch = Scratch::new_kept("approve");
     let epic = scratch.create_epic("Valid epic");
     let designer = ScriptedDesigner::new(Mode::Valid);
 
@@ -431,10 +557,19 @@ fn valid_decomposition_is_approved_staged_and_invisible_to_ready() {
             labels.contains(&"decomp-approved".to_string()),
             "child approved: {labels:?}"
         );
-        assert_eq!(child["status"], "deferred", "child stays deferred");
+        assert_eq!(child["status"], "open", "child is created open (no sentinel date)");
+        assert!(
+            child.get("defer_until").is_none() || child["defer_until"].is_null(),
+            "no sentinel defer date: {child}"
+        );
+        assert_eq!(
+            scratch.native_gate_count(child["id"].as_str().unwrap()),
+            1,
+            "exactly one native human gate per child"
+        );
     }
 
-    // Ready intake sees neither the epic nor the staged (deferred) children.
+    // Ready intake sees neither the epic nor the staged (gate-blocked) children.
     let ready = BdTaskQueue::new(&scratch.repo)
         .ready_tasks()
         .expect("ready");
@@ -681,12 +816,12 @@ fn ready_ids(repo: &Path) -> Vec<String> {
     ids
 }
 
-/// End-to-end: a clean decomposition passes the gate; children stay invisible;
-/// a single human `bd undefer` releases one approved child when it is unblocked,
-/// while every other deferred child stays hidden.
+/// End-to-end: a clean decomposition passes the gate; children stay invisible
+/// behind their native human gates; resolving a gate + unblocking the child
+/// releases it, while unresolved gates keep the rest hidden.
 #[test]
-fn approved_children_release_only_after_human_undefer_and_unblock() {
-    let scratch = Scratch::new("undefer-release");
+fn approved_children_release_after_gate_resolution_and_unblock() {
+    let scratch = Scratch::new_kept("gate-release");
     let epic = scratch.create_epic("Valid epic");
     let designer = ScriptedDesigner::new(Mode::Valid);
     let report = sweep_epics(
@@ -705,22 +840,22 @@ fn approved_children_release_only_after_human_undefer_and_unblock() {
         .collect();
     assert_eq!(ids.len(), 8, "eight approved children");
 
-    // Validator-approved but not human-authorized: nothing is ready.
+    // Validator-approved but gates unresolved: nothing is ready.
     assert!(
         ready_ids(&scratch.repo).is_empty(),
-        "approved children stay deferred until `bd undefer`"
+        "approved children stay hidden until their native gate resolves"
     );
 
-    // Serialize child 1 behind child 0, then authorize both with `bd undefer`.
+    // Serialize child 1 behind child 0, then resolve both gates.
     scratch.bd_ok(&["dep", "add", &ids[1], &ids[0]]);
-    scratch.bd_ok(&["undefer", &ids[0]]);
-    scratch.bd_ok(&["undefer", &ids[1]]);
+    scratch.bd_ok(&["gate", "resolve", &scratch.gate_of(&ids[0])]);
+    scratch.bd_ok(&["gate", "resolve", &scratch.gate_of(&ids[1])]);
 
     // Only the unblocked child is ready; the blocked one is withheld.
     assert_eq!(
         ready_ids(&scratch.repo),
         vec![ids[0].clone()],
-        "undeferred approved child ready; blocked one withheld"
+        "gate-resolved approved child ready; blocked one withheld"
     );
 
     // Closing the blocker releases the blocked approved child.
@@ -731,14 +866,126 @@ fn approved_children_release_only_after_human_undefer_and_unblock() {
         "blocked approved child releases once its prerequisite closes"
     );
 
-    // The remaining six children were never undeferred and stay invisible.
+    // The remaining six children's gates were never resolved: they stay hidden.
     let ready = ready_ids(&scratch.repo);
-    for never_undeferred in &ids[2..] {
+    for unresolved in &ids[2..] {
         assert!(
-            !ready.contains(never_undeferred),
-            "deferred child {never_undeferred} leaked: {ready:?}"
+            !ready.contains(unresolved),
+            "gate-blocked child {unresolved} leaked: {ready:?}"
         );
     }
+}
+
+/// Repeated validation/restart never duplicates a child's native gate and never
+/// resets a resolved human approval.
+#[test]
+fn repeated_validation_does_not_duplicate_gates_or_reset_resolved_approval() {
+    let scratch = Scratch::new_kept("gate-idempotent");
+    let epic = scratch.create_epic("Valid epic");
+    let designer = ScriptedDesigner::new(Mode::Valid);
+
+    let first = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
+    assert_eq!(first.approved, vec![epic.clone()], "{first:?}");
+    assert_eq!(scratch.gate_count(), 8, "one gate per child");
+
+    // A human resolves one child's gate (explicit bootstrap authorization).
+    let ids: Vec<String> = scratch
+        .children(&epic)
+        .iter()
+        .filter_map(|c| c["id"].as_str().map(str::to_string))
+        .collect();
+    let gated = scratch.gate_of(&ids[0]);
+    scratch.bd_ok(&["gate", "resolve", &gated]);
+
+    // Re-running the sweep (restart) re-reads durable state: the approved epic is
+    // untouched, so no new gate is created and the resolved approval is preserved.
+    let second = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
+    assert!(second.epics_seen.is_empty(), "{second:?}");
+    assert_eq!(designer.called().len(), 1, "no second designer session");
+    assert_eq!(scratch.gate_count(), 8, "no duplicated gates");
+    assert_eq!(
+        scratch.gate_of(&ids[0]),
+        gated,
+        "the same gate is reused, not recreated"
+    );
+    assert_eq!(
+        scratch.show(&gated)["status"],
+        "closed",
+        "the resolved approval is not reset"
+    );
+    assert_eq!(
+        ready_ids(&scratch.repo),
+        vec![ids[0].clone()],
+        "the authorized child stays released across restart"
+    );
+}
+
+/// The sweep fails closed (rejects) when a staged child has no native gate
+/// association: a complete decomposition with a missing gate is never approved.
+#[test]
+fn missing_gate_association_fails_closed() {
+    let scratch = Scratch::new_kept("gate-missing");
+    let epic = scratch.create_epic("Missing-gate epic");
+
+    // A complete valid decomposition of eight staged children, but only seven
+    // carry a native gate: the orphan must fail the gate closed.
+    let mut ids = scratch.seed_staged_gated_children(&epic, 7);
+    let orphan = scratch.create_child(
+        &epic,
+        "child 7",
+        &low_desc("c7"),
+        "staged,difficulty:low",
+    );
+    ids.push(orphan.clone());
+    // The orphan has no gate at all (no `blocks` edge to any gate issue).
+    assert_eq!(scratch.native_gate_count(&orphan), 0);
+    scratch.bd_ok(&["update", &epic, "--add-label", "decomp-attempts:1"]);
+    scratch.bd_ok(&["update", &epic, "--add-label", "decomp-inflight"]);
+
+    let designer = ScriptedDesigner::new(Mode::Valid);
+    let report = sweep_epics(
+        &scratch.repo,
+        &scratch.state_dir,
+        &gate(true, true),
+        &designer,
+    )
+    .expect("sweep");
+
+    assert_eq!(report.recovered, vec![epic.clone()], "{report:?}");
+    assert!(report.approved.is_empty(), "never approved: {report:?}");
+    assert_eq!(report.rejected, vec![epic.clone()], "{report:?}");
+
+    // No child is approved; the rework task names the approval-gate rule.
+    for id in &ids {
+        assert!(
+            !has_label(&scratch.show(id), "decomp-approved"),
+            "child {id} must not be approved without a gate"
+        );
+    }
+    let fix = scratch
+        .children(&epic)
+        .into_iter()
+        .find(|c| has_label(c, "decomp-fix"))
+        .expect("rework task filed");
+    assert!(
+        fix["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("approval-gate"),
+        "rework names the approval-gate rule: {fix}"
+    );
 }
 
 /// Rejected and never-validated staged children never become executable — not
@@ -947,22 +1194,14 @@ fn success_with_zero_children_retries_and_escalates() {
 
 #[test]
 fn restart_after_partial_gate_projection_recovers_without_replanning() {
-    let scratch = Scratch::new("restart-partial");
+    let scratch = Scratch::new_kept("restart-partial");
     let epic = scratch.create_epic("Interrupted epic");
 
     // Simulate a process death mid-gate: a complete valid decomposition whose
     // approval was projected for only three of eight children, with the durable
-    // in-flight marker and attempt counter still present.
-    let ids: Vec<String> = (0..8)
-        .map(|i| {
-            scratch.create_child(
-                &epic,
-                &format!("child {i}"),
-                &low_desc(&format!("c{i}")),
-                "staged,difficulty:low",
-            )
-        })
-        .collect();
+    // in-flight marker and attempt counter still present. Each child keeps its
+    // exactly-one native gate across the crash.
+    let ids = scratch.seed_staged_gated_children(&epic, 8);
     for id in &ids[..3] {
         scratch.bd_ok(&["update", id, "--add-label", "decomp-approved"]);
     }
@@ -1009,10 +1248,11 @@ fn restart_after_partial_gate_projection_recovers_without_replanning() {
         "in-flight marker cleared"
     );
 
-    // Recovered-but-approved children stay invisible until a human `bd undefer`.
+    // Recovered-but-approved children stay invisible until their native gate is
+    // resolved by a human.
     assert!(
         ready_ids(&scratch.repo).is_empty(),
-        "approved children stay deferred pending `bd undefer`"
+        "approved children stay gate-blocked pending human resolution"
     );
 
     // A later sweep sees the approved epic as untouched.
@@ -1085,7 +1325,7 @@ fn approved_epic_is_not_redispatched() {
 
 #[test]
 fn designer_timeout_after_full_commit_finalizes_in_place_without_second_session() {
-    let scratch = Scratch::new("timeout-full");
+    let scratch = Scratch::new_kept("timeout-full");
     let epic = scratch.create_epic("Timed-out full epic");
     let designer = ScriptedDesigner::new(Mode::TimeoutAfterValid);
 
@@ -1115,7 +1355,7 @@ fn designer_timeout_after_full_commit_finalizes_in_place_without_second_session(
             labels.contains(&"decomp-approved".to_string()),
             "child approved by same-pass reconciliation: {labels:?}"
         );
-        assert_eq!(child["status"], "deferred", "child stays deferred");
+        assert_eq!(child["status"], "open", "child stays open, gate-blocked");
     }
     let epic_issue = scratch.show(&epic);
     assert!(
@@ -1137,7 +1377,7 @@ fn designer_timeout_after_full_commit_finalizes_in_place_without_second_session(
     );
     assert!(
         ready_ids(&scratch.repo).is_empty(),
-        "approved children stay deferred pending `bd undefer`"
+        "approved children stay gate-blocked pending human resolution"
     );
 
     // Sweep 2: the approved epic is untouched and no further session runs.
@@ -1280,22 +1520,14 @@ fn designer_timeout_with_no_commits_counts_toward_retry_budget() {
 
 #[test]
 fn crash_after_complete_commit_without_projection_is_recovered() {
-    let scratch = Scratch::new("crash-after-commit");
+    let scratch = Scratch::new_kept("crash-after-commit");
     let epic = scratch.create_epic("Crashed epic");
 
     // Simulate a crash right after a complete valid decomposition was committed
-    // but before any gate verdict was projected: eight staged children, the
-    // attempt counter, and the durable in-flight marker, no child verdicts.
-    let ids: Vec<String> = (0..8)
-        .map(|i| {
-            scratch.create_child(
-                &epic,
-                &format!("child {i}"),
-                &low_desc(&format!("c{i}")),
-                "staged,difficulty:low",
-            )
-        })
-        .collect();
+    // but before any gate verdict was projected: eight staged children (each with
+    // its native gate), the attempt counter, and the durable in-flight marker, no
+    // child verdicts.
+    let ids = scratch.seed_staged_gated_children(&epic, 8);
     scratch.bd_ok(&["update", &epic, "--add-label", "decomp-attempts:1"]);
     scratch.bd_ok(&["update", &epic, "--add-label", "decomp-inflight"]);
 
@@ -1338,7 +1570,7 @@ fn crash_after_complete_commit_without_projection_is_recovered() {
 
 #[test]
 fn scoped_run_decomposes_only_the_named_epic() {
-    let scratch = Scratch::new("scoped-one");
+    let scratch = Scratch::new_kept("scoped-one");
     let epic1 = scratch.create_epic("Scoped epic 1");
     let epic2 = scratch.create_epic("Scoped epic 2");
     let designer = ScriptedDesigner::new(Mode::Valid);
@@ -1363,7 +1595,7 @@ fn scoped_run_decomposes_only_the_named_epic() {
         scratch.children(&epic2)
     );
 
-    // epic1's children are deferred, staged, and approved.
+    // epic1's children are open, staged, approved, and gate-blocked.
     let children = scratch.children(&epic1);
     assert_eq!(children.len(), 8, "eight staged children");
     for child in &children {
@@ -1371,28 +1603,19 @@ fn scoped_run_decomposes_only_the_named_epic() {
             has_label(child, "decomp-approved"),
             "child approved: {child}"
         );
-        assert_eq!(child["status"], "deferred", "child stays deferred");
+        assert_eq!(child["status"], "open", "child stays open, gate-blocked");
     }
 }
 
 #[test]
 fn scoped_run_recovers_interrupted_attempt_without_session() {
-    let scratch = Scratch::new("scoped-recover");
+    let scratch = Scratch::new_kept("scoped-recover");
     let epic = scratch.create_epic("Interrupted epic");
 
     // A crash right after a complete valid decomposition was committed but
-    // before any verdict: eight staged children, the attempt counter, and the
-    // durable in-flight marker, no child verdicts.
-    let ids: Vec<String> = (0..8)
-        .map(|i| {
-            scratch.create_child(
-                &epic,
-                &format!("child {i}"),
-                &low_desc(&format!("c{i}")),
-                "staged,difficulty:low",
-            )
-        })
-        .collect();
+    // before any verdict: eight staged children (each with its native gate), the
+    // attempt counter, and the durable in-flight marker, no child verdicts.
+    let ids = scratch.seed_staged_gated_children(&epic, 8);
     scratch.bd_ok(&["update", &epic, "--add-label", "decomp-attempts:1"]);
     scratch.bd_ok(&["update", &epic, "--add-label", "decomp-inflight"]);
 

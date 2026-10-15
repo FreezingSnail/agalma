@@ -14,12 +14,19 @@
 //! 3. **design** — run one designer session through the harness seam
 //!    ([`DesignerSession`]); the designer authors children via `bd` itself, the
 //!    conductor does not.
-//! 4. **gate** — run the CP.1 [`decomp::validate`] over the staged children.
-//!    Pass: label them `decomp-approved` (they stay deferred/staged — approval is
-//!    a human `bd undefer`). Fail: label them `decomp-rejected`, create ONE P1
-//!    `decomp-fix` task under the epic carrying the ordered rule-named violation
-//!    list, and comment on the epic. The third failure escalates the epic to a
-//!    human.
+//! 4. **gate** — run the CP.1 [`decomp::validate`] over the staged children and
+//!    reconcile each child's native human execution-approval gate
+//!    ([`approval_state`]): every staged child must carry exactly one
+//!    well-formed gate (issue_type=gate, await_type=human, labels
+//!    human,execution-approval, `approval_for=<child>`, direct `blocks` edge).
+//!    Pass: label them `decomp-approved` (children stay blocked/staged — release
+//!    is a human resolving that gate, `bd gate resolve`). Fail: label them
+//!    `decomp-rejected`, create ONE P1 `decomp-fix` task under the epic carrying
+//!    the ordered rule-named violation list (validator rules plus
+//!    `approval-gate`), and comment on the epic. A missing/conflicting/malformed
+//!    gate association fails closed exactly like a validator violation; the sweep
+//!    never creates or recreates a gate and never treats an absent association
+//!    as approval. The third failure escalates the epic to a human.
 //!
 //! Retry counting: the number of prior `decomp-fix` tasks under the epic (each
 //! failed gate creates exactly one) reconciled with the durable
@@ -88,7 +95,8 @@ use std::rc::Rc;
 use agalma_contracts::ids::ArtifactRef;
 use agalma_contracts::{ContractError, OperationId, TaskFamily, TaskId, TaskQueueApi};
 use agalma_taskqueue::{
-    decomp, BdTaskQueue, EpicRecord, DECOMP_FIX_LABEL, HUMAN_LABEL, STAGED_LABEL,
+    approval_state, decomp, ApprovalGate, ApprovalState, BdTaskQueue, EpicRecord,
+    DECOMP_FIX_LABEL, HUMAN_LABEL, STAGED_LABEL,
 };
 
 use crate::routing;
@@ -102,11 +110,11 @@ use crate::stop::{bind_stop_control, StopControl};
 pub const DECOMP_APPROVED: &str = agalma_taskqueue::DECOMP_APPROVED_LABEL;
 /// Label applied to children a failing decomposition gate rejected.
 pub const DECOMP_REJECTED: &str = agalma_taskqueue::DECOMP_REJECTED_LABEL;
+/// Rule name for the native approval-gate reconciliation failure (a staged
+/// child without exactly one well-formed native human gate).
+pub const RULE_APPROVAL_GATE: &str = "approval-gate";
 /// Priority of the single rework task created on a failed gate (P1).
 pub const DECOMP_FIX_PRIORITY: u8 = 1;
-/// Defer date for the rework task: it is a designer/human artifact, never
-/// ordinary fleet work, so it is hidden from `bd ready` by construction.
-pub const DECOMP_FIX_DEFER: &str = "2099-01-01";
 /// Number of failed decomposition gates tolerated before human escalation.
 pub const MAX_DECOMP_RETRIES: usize = 3;
 /// Durable in-flight marker label on the epic (see module docs).
@@ -917,15 +925,24 @@ fn is_candidate(queue: &BdTaskQueue, epic: &EpicRecord) -> Result<bool, Contract
     Ok(observed_attempts(&epic.labels, fixes) < MAX_DECOMP_RETRIES)
 }
 
-/// Run the CP.1 validator over the epic's `staged` children and project the gate
-/// verdict onto the backlog.
+/// Run the CP.1 validator over the epic's `staged` children *and reconcile each
+/// child's native human approval gate*, then project the gate verdict onto the
+/// backlog.
 ///
 /// Only `staged` children are decomposition membership; `decomp-fix` rework
 /// tasks and any hand-authored children are never validated or labelled by the
-/// gate. `attempt` is the durable attempt number this verdict belongs to: the
-/// rework task carries it so a crash between rework creation and verdict
-/// projection reuses the same task instead of fabricating a duplicate, and the
-/// attempt reaching [`MAX_DECOMP_RETRIES`] escalates the epic to a human.
+/// gate. Before applying `decomp-approved`, every staged child must carry exactly
+/// one well-formed native human approval gate association
+/// ([`approval_state`]): a missing, conflicting, or malformed association fails
+/// closed exactly like a validator violation — the sweep never creates or
+/// recreates a gate, and it never treats an absent association as approval. A
+/// well-formed *unresolved* gate is fine (human resolution is what releases the
+/// child, not decomposition approval).
+///
+/// `attempt` is the durable attempt number this verdict belongs to: the rework
+/// task carries it so a crash between rework creation and verdict projection
+/// reuses the same task instead of fabricating a duplicate, and the attempt
+/// reaching [`MAX_DECOMP_RETRIES`] escalates the epic to a human.
 fn apply_gate(
     queue: &mut BdTaskQueue,
     epic: &str,
@@ -944,7 +961,11 @@ fn apply_gate(
         min_children: decomp::MIN_CHILDREN,
         min_width: 1,
     };
-    let violations = decomp::validate(&staged, &params);
+    let mut violations = decomp::validate(&staged, &params);
+    // Reconciliation: the native approval-gate association is part of the gate
+    // verdict, so a broken association fails closed (reject + rework) exactly
+    // like a validator rule.
+    violations.extend(approval_gate_violations(&staged, &queue.approval_gates()?));
 
     if violations.is_empty() {
         for child in &staged {
@@ -958,7 +979,8 @@ fn apply_gate(
         queue.comment(
             &TaskId::new(epic),
             &format!(
-                "decomp-approved: {} staged child(ren) passed validation; awaiting human `bd undefer`",
+                "decomp-approved: {} staged child(ren) passed validation; each awaits human \
+                 resolution of its native execution-approval gate",
                 staged.len()
             ),
         )?;
@@ -985,13 +1007,16 @@ fn apply_gate(
         Some(task) => task.id.clone(),
         None => {
             let labels = [DECOMP_FIX_LABEL, attempt_tag.as_str()];
+            // Rework tasks are rework bookkeeping, excluded from *factory*
+            // readiness by their `decomp-fix` label — never by a sentinel defer
+            // date (native `bd ready` does not exclude the label intrinsically).
             queue.create_task(
                 &format!("decomp-fix: {epic}"),
                 &description,
                 Some(epic),
                 DECOMP_FIX_PRIORITY,
                 &labels,
-                Some(DECOMP_FIX_DEFER),
+                None,
             )?
         }
     };
@@ -1018,6 +1043,50 @@ fn apply_gate(
         report.escalated.push(epic.to_string());
     }
     Ok(())
+}
+
+/// Reconcile each staged child's native human approval gate association and
+/// return a fail-closed violation for every child that does not have exactly one
+/// well-formed gate.
+///
+/// Only [`ApprovalState::Missing`], [`ApprovalState::Conflicting`], and
+/// [`ApprovalState::Malformed`] are violators; a well-formed but still
+/// `Unresolved` gate is expected (the human resolves it to release the child).
+/// The sweep never creates or recreates a gate — a broken association is a
+/// rework signal, not an opportunity to invent approval.
+fn approval_gate_violations(
+    staged: &[decomp::ChildTask],
+    gates: &[ApprovalGate],
+) -> Vec<decomp::Violation> {
+    let mut out = Vec::new();
+    for child in staged {
+        let state = approval_state(&child.id, &child.depends_on, gates);
+        if state.is_well_formed() {
+            continue;
+        }
+        let detail = match state {
+            ApprovalState::Missing => format!(
+                "child {}: no native human execution-approval gate is associated",
+                child.id
+            ),
+            ApprovalState::Conflicting => format!(
+                "child {}: multiple/conflicting native human approval gates are associated",
+                child.id
+            ),
+            ApprovalState::Malformed => format!(
+                "child {}: the associated native human approval gate is malformed \
+                 (needs issue_type=gate, await_type=human, labels human,execution-approval, \
+                 and approval_for naming the child)",
+                child.id
+            ),
+            ApprovalState::Resolved | ApprovalState::Unresolved => continue,
+        };
+        out.push(decomp::Violation {
+            rule: RULE_APPROVAL_GATE,
+            detail,
+        });
+    }
+    out
 }
 
 /// The ordered, rule-named violation list carried by a `decomp-fix` task.

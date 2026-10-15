@@ -17,10 +17,15 @@ rewards for a quality regression. A new versioned policy can choose a different
 objective; plugin mutation is a subsequent explicitly allowlisted rollout.
 
 The existing human execution gate remains in force for the filed bootstrap Rust
-tasks. The SM.9 automatic release service may clear a defer date only for a
-class explicitly authorized by an active directive, after decomposition and
-scope checks. A model cannot supply that authority. This design session does not
-release tasks, activate a genome, or authorize paid inference.
+tasks: each staged child is pinned by a native human execution-approval gate
+(labels `human,execution-approval`, metadata `approval_for=<child>`, and a direct
+`blocks` edge) that only an explicit human `bd gate resolve` clears; validator
+decomposition approval, a `staged` label, or a cleared defer date grant no
+execution authority. Separately, the SM.9 automatic release service may release a
+task only for a class explicitly authorized by an active directive, after
+decomposition and scope checks and a durable release receipt. A model cannot
+supply that authority. This design session does not release tasks, activate a
+genome, or authorize paid inference.
 
 First-domain permissions:
 
@@ -46,10 +51,11 @@ reconciles the same receipt; different input under the operation ID conflicts.
 At claim/package admission, revalidate the active policy and compare the frozen
 source definition with the release receipt. A bd edit between release and claim,
 revocation, missing receipt, protected-scope expansion or budget change parks
-before inference/effects. Decomposition labels and a cleared defer date are not
-substitutes for a durable automated-release receipt. Existing explicit human
-release remains a separate recorded bootstrap path. SM.9 owns the policy and
-projection primitive; M3.1 extends it with operator cadence and aggregate limits.
+before inference/effects. Decomposition labels, a cleared defer date, and a
+resolved bootstrap human gate are not substitutes for a durable automated-release
+receipt. The explicit human `bd gate resolve` bootstrap path remains separate and
+recorded. SM.9 owns the policy and projection primitive; M3.1 extends it with
+operator cadence and aggregate limits.
 
 An expired, cancelled, superseded, or unavailable directive denies new effects.
 Recovery can read evidence and reconcile already announced work; it does not

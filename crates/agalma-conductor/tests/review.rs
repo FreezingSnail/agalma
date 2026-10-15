@@ -192,8 +192,6 @@ impl Scratch {
             "seed drift rework",
             "--labels",
             "drift-fix",
-            "--defer",
-            "2099-01-01",
             "--json",
         ]);
         assert!(
@@ -320,8 +318,9 @@ fn drift_verdict_files_one_p1_drift_fix_and_holds_dispatch() {
         "ordinary dispatch is held"
     );
 
-    // Exactly one P1 drift-fix task, deferred (never ordinary fleet work),
-    // carrying the reviewer feedback.
+    // Exactly one P1 drift-fix task, excluded from `bd ready` by its
+    // `drift-fix` label (never a sentinel defer date), carrying the reviewer
+    // feedback.
     let children = scratch.children(&epic);
     let fixes: Vec<&Value> = children
         .iter()
@@ -330,7 +329,11 @@ fn drift_verdict_files_one_p1_drift_fix_and_holds_dispatch() {
     assert_eq!(fixes.len(), 1, "exactly one drift-fix: {fixes:?}");
     let fix = fixes[0];
     assert_eq!(fix["priority"], 1, "drift-fix is P1: {fix}");
-    assert_eq!(fix["status"], "deferred", "drift-fix is rework: {fix}");
+    assert_eq!(fix["status"], "open", "drift-fix is rework: {fix}");
+    assert!(
+        fix.get("defer_until").is_none() || fix["defer_until"].is_null(),
+        "rework is label-excluded, not defer-hidden: {fix}"
+    );
     let description = fix["description"].as_str().unwrap_or_default();
     assert!(
         description.contains("missing acceptance for X"),

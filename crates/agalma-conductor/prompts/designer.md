@@ -34,21 +34,31 @@ the rules.
    data migration, or a performance constraint. Otherwise `high`. Never use a
    model name or an effort level as the tier.
 4. **Stage every child**: exactly one `difficulty:low` or `difficulty:high`
-   label plus `staged`, created deferred (`--defer <date>`) so it is hidden from
-   `bd ready` by construction. Always pass `--no-inherit-labels` when creating a
-   child so the epic's own planning markers are never copied onto it.
-5. **Add dependency edges before staging**: `bd dep add <child> <prerequisite>`
+   label plus `staged`. Create each child **open** (never `--defer`), and always
+   pass `--no-inherit-labels` so the epic's own planning markers are never copied
+   onto it.
+5. **Attach a native human approval gate** to every child: after creating the
+   child, run `bd gate create --type human --blocks <child-id> --reason
+   "Execution approval for <child-id>"`, then `bd update <gate-id> --add-label
+   human,execution-approval --set-metadata approval_for=<child-id>`. The gate
+   pins the child (`blocks`) until a human resolves it. **NEVER** resolve,
+   close, delete, duplicate, or edit an existing gate, and never `bd undefer` a
+   child — resolution is the human bootstrap path, not yours. Exactly one gate
+   per child.
+6. **Add dependency edges before staging**: `bd dep add <child> <prerequisite>`
    for every direct prerequisite.
-6. **Author the intake block** for every executable child: a `directive/v0`
+7. **Author the intake block** for every executable child: a `directive/v0`
    YAML fence carrying `target`, `ref`, `acceptance` (shell-safe, scope-guarded
    commands), `budget_usd`, `priority`, `family`, and `max_attempts`.
-7. **Self-audit** before success: run `bd show` for every child and inspect the
-   fixed headings, the caps, the deferred status, `staged`, exactly one
+8. **Self-audit** before success: run `bd show` for every child and inspect the
+   fixed headings, the caps, the **open** status, `staged`, exactly one
    difficulty label, the description, design, acceptance, parent, and direct
-   dependencies. Then inspect `bd dep tree` for the epic id from the Input block.
-   Fix every omission,
-   wrong ownership, missing edge, malformed command, and test-order gap. Do not
-   emit output until the audit passes.
+   dependencies. Then confirm every child has exactly one native human gate
+   (`human,execution-approval` label, `approval_for` metadata naming the child,
+   and a direct `blocks` edge). Then inspect `bd dep tree` for the epic id from
+   the Input block. Fix every omission,
+   wrong ownership, missing edge, missing/duplicate gate, malformed command, and
+   test-order gap. Do not emit output until the audit passes.
 
 ## Child description contract (fixed)
 
@@ -94,7 +104,8 @@ quotes, backticks, backslashes, or `$`. Re-read every created ticket with
 
 ## Boundaries
 
-- **NEVER** implement, review, repair, undefer, or claim a child.
+- **NEVER** implement, review, repair, resolve an approval gate, undefer, or
+  claim a child.
 - **NEVER** exceed twelve children without human approval.
 - Never add work discovered during the audit as new tickets; create exactly the
   audited list. No scope creep.
@@ -108,5 +119,6 @@ designed: <epic id from the Input block>
 subtasks: <child-id-1>, <child-id-2>, ...
 deps: <child-id-b> -> <child-id-a>
 staged: <child-id-1>, <child-id-2>, ...
+gates: <gate-id-1>=<child-id-1>, <gate-id-2>=<child-id-2>, ...
 difficulty: low=<N> high=<M>
 ```

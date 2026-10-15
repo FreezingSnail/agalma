@@ -54,13 +54,17 @@ fn designer_prompt_is_present_and_carries_its_contract() {
         "# MACHINE",
         "directive/v0",
         "plan-check",
+        "bd gate create",
+        "execution-approval",
+        "approval_for",
     ] {
         assert!(
             DESIGNER_PROMPT.contains(marker),
             "designer prompt missing contract marker {marker:?}"
         );
     }
-    // The designer never implements, reviews, repairs, undefers, or claims.
+    // The designer authors exactly one native human gate per child and never
+    // resolves one.
     assert!(DESIGNER_PROMPT.contains("NEVER"));
     assert_no_forbidden_tokens(DESIGNER_PROMPT);
 }

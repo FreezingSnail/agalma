@@ -91,6 +91,20 @@ impl Scratch {
         BdTaskQueue::new(self.dir.path())
     }
 
+    /// Prevent auto-cleanup so the fixture survives the successful test for
+    /// persistent evidence retention (call at the end of a required case).
+    fn keep(&mut self) {
+        self.dir.keep();
+    }
+
+    /// Like [`Scratch::new`], but retained even on success: required
+    /// native-gate cases keep their fixture for persistent evidence.
+    fn new_kept(name: &str) -> Self {
+        let mut scratch = Self::new(name);
+        scratch.keep();
+        scratch
+    }
+
     fn beads_dir(&self) -> PathBuf {
         self.dir.join(".beads")
     }
@@ -159,6 +173,98 @@ impl Scratch {
             .output()
             .expect("spawn bd dep add");
         assert!(out.status.success(), "bd dep add: {}", stderr_of(&out));
+    }
+
+    /// Create a native human execution-approval gate blocking `blocked`
+    /// (`bd gate create --type human --blocks ...` + the convention labels and
+    /// `approval_for` metadata); return the gate id.
+    fn add_native_gate(&self, blocked: &str) -> String {
+        let out = Command::new("bd")
+            .arg("--db")
+            .arg(self.beads_dir())
+            .args([
+                "gate",
+                "create",
+                "--type",
+                "human",
+                "--blocks",
+                blocked,
+                "--reason",
+                "test approval",
+                "--json",
+            ])
+            .current_dir(&self.dir)
+            .env("BD_NON_INTERACTIVE", "1")
+            .output()
+            .expect("spawn bd gate create");
+        assert!(out.status.success(), "bd gate create: {}", stderr_of(&out));
+        let value: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("bd gate create --json");
+        let gate = value["id"].as_str().expect("gate id").to_string();
+        self.bd_ok(&[
+            "update",
+            &gate,
+            "--add-label",
+            "human,execution-approval",
+            "--set-metadata",
+            &format!("approval_for={blocked}"),
+        ]);
+        gate
+    }
+
+    /// Create a native gate blocking `blocked` with NO approval labels/metadata
+    /// (an ordinary prerequisite gate); return the gate id.
+    fn add_prerequisite_gate(&self, blocked: &str) -> String {
+        let out = Command::new("bd")
+            .arg("--db")
+            .arg(self.beads_dir())
+            .args([
+                "gate",
+                "create",
+                "--type",
+                "human",
+                "--blocks",
+                blocked,
+                "--reason",
+                "prerequisite",
+                "--json",
+            ])
+            .current_dir(&self.dir)
+            .env("BD_NON_INTERACTIVE", "1")
+            .output()
+            .expect("spawn bd gate create");
+        assert!(out.status.success(), "bd gate create: {}", stderr_of(&out));
+        let value: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("gate json");
+        value["id"].as_str().expect("gate id").to_string()
+    }
+
+    /// Create a task with an explicit label list; return its id (open, no defer).
+    fn create_open_labeled(&self, title: &str, labels: &str) -> String {
+        let out = Command::new("bd")
+            .arg("--db")
+            .arg(self.beads_dir())
+            .args([
+                "create",
+                title,
+                "-t",
+                "task",
+                "-p",
+                "2",
+                "--description",
+                VALID,
+                "--labels",
+                labels,
+                "--json",
+            ])
+            .current_dir(&self.dir)
+            .env("BD_NON_INTERACTIVE", "1")
+            .output()
+            .expect("spawn bd create");
+        assert!(out.status.success(), "bd create: {}", stderr_of(&out));
+        let value: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("bd create --json");
+        value["id"].as_str().expect("created id").to_string()
     }
 
     /// Create a task with an explicit label list and a defer date.
@@ -613,117 +719,221 @@ fn malformed_block_reports_issue_id_and_line() {
 }
 
 // ---------------------------------------------------------------------------
-// Decomposition approval lifecycle (agalma-4el)
+// Native human approval gates (agalma-i5h.8)
 // ---------------------------------------------------------------------------
 
-/// `bd undefer` is the human execution authorization; the `decomp-approved`
-/// label is validator approval. A staged child is ready only with both, and a
-/// defer date keeps it hidden otherwise.
 #[test]
-fn staged_children_release_only_after_validator_approval_and_human_undefer() {
-    let scratch = Scratch::new("approval-lifecycle");
+fn open_staged_children_have_no_sentinel_date_and_one_native_gate() {
+    let scratch = Scratch::new_kept("native-gate-open");
+    let queue = scratch.queue();
+
+    let child = scratch.create_open_labeled(
+        "Child",
+        &format!("{STAGED_LABEL},difficulty:low,{DECOMP_APPROVED_LABEL}"),
+    );
+    let gate = scratch.add_native_gate(&child);
+
+    // The child is open, has no defer date, and its gate is a native human gate
+    // with the convention labels/metadata and a direct `blocks` edge.
+    let child_json = scratch.show_json(&child);
+    assert_eq!(child_json["status"], "open", "child is open: {child_json}");
+    assert!(
+        child_json.get("defer_until").is_none() || child_json["defer_until"].is_null(),
+        "no sentinel defer date: {child_json}"
+    );
+    let gate_json = scratch.show_json(&gate);
+    assert_eq!(gate_json["issue_type"], "gate", "native gate type");
+    assert_eq!(gate_json["await_type"], "human", "native human await type");
+    assert_eq!(gate_json["metadata"]["approval_for"], child);
+    let labels: Vec<&str> = gate_json["labels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|l| l.as_str())
+        .collect();
+    assert!(labels.contains(&"human"), "human label: {labels:?}");
+    assert!(
+        labels.contains(&"execution-approval"),
+        "execution-approval label: {labels:?}"
+    );
+
+    // Validation alone does not release; the unresolved gate keeps it hidden.
+    assert!(
+        ready_ids(&queue).is_empty(),
+        "unresolved native gate keeps an approved child hidden"
+    );
+    // bd's own ready query also withholds it (the open gate is a real blocker),
+    // proving the native gate — not just the adapter predicate — pins the child.
+    let raw = scratch.bd_ok(&["list", "--ready", "--json", "--limit", "0"]);
+    let raw: serde_json::Value = serde_json::from_str(&raw).expect("bd ready json");
+    let raw_ids: Vec<&str> = raw
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|i| i["id"].as_str())
+        .collect();
+    assert!(
+        !raw_ids.contains(&child.as_str()),
+        "an unresolved native gate blocks the child in bd's own ready query: {raw_ids:?}"
+    );
+    assert!(
+        !raw_ids.contains(&gate.as_str()),
+        "the gate issue is not surfaced as ordinary work: {raw_ids:?}"
+    );
+}
+
+/// A staged child releases only after validator approval AND a resolved native
+/// gate; a rejected or never-validated child never releases.
+#[test]
+fn staged_child_releases_only_after_validator_approval_and_resolved_gate() {
+    let scratch = Scratch::new_kept("native-gate-release");
     let queue = scratch.queue();
 
     let ready = scratch.create("Ready", VALID);
-    let approved = scratch.create_labeled(
+    let approved = scratch.create_open_labeled(
         "Approved",
         &format!("{STAGED_LABEL},difficulty:low,{DECOMP_APPROVED_LABEL}"),
-        "2099-01-01",
     );
-    let rejected = scratch.create_labeled(
+    let approved_gate = scratch.add_native_gate(&approved);
+    let rejected = scratch.create_open_labeled(
         "Rejected",
         &format!("{STAGED_LABEL},difficulty:low,{DECOMP_REJECTED_LABEL}"),
-        "2099-01-01",
     );
-    let unvalidated = scratch.create_labeled(
-        "Unvalidated",
-        &format!("{STAGED_LABEL},difficulty:low"),
-        "2099-01-01",
-    );
+    let rejected_gate = scratch.add_native_gate(&rejected);
+    let unvalidated =
+        scratch.create_open_labeled("Unvalidated", &format!("{STAGED_LABEL},difficulty:low"));
+    let unvalidated_gate = scratch.add_native_gate(&unvalidated);
 
-    // Before any human authorization every staged child stays invisible.
-    assert_eq!(
-        ready_ids(&queue),
-        vec![ready.clone()],
-        "deferred staged children are hidden"
-    );
+    // Nothing staged is released while every gate is unresolved.
+    assert_eq!(ready_ids(&queue), vec![ready.clone()], "all gates unresolved");
 
-    // Human undefer of the approved child releases exactly it.
-    scratch.bd_ok(&["undefer", &approved]);
+    // Resolve only the approved child's gate: exactly it releases.
+    scratch.bd_ok(&["gate", "resolve", &approved_gate]);
     let mut expected = vec![ready.clone(), approved.clone()];
     expected.sort();
     assert_eq!(
         ready_ids(&queue),
         expected,
-        "approved child is ready after `bd undefer`"
+        "approved child ready after its gate resolves"
     );
 
-    // Undefer of the rejected child does not release it.
-    scratch.bd_ok(&["undefer", &rejected]);
+    // Resolving the rejected/unvalidated gates does not release them.
+    scratch.bd_ok(&["gate", "resolve", &rejected_gate]);
+    scratch.bd_ok(&["gate", "resolve", &unvalidated_gate]);
     assert_eq!(
         ready_ids(&queue),
         expected,
-        "a rejected child stays hidden even after `bd undefer`"
+        "rejected/unvalidated children stay hidden even with a resolved gate"
     );
 
-    // Undefer of a never-validated staged child does not release it.
-    scratch.bd_ok(&["undefer", &unvalidated]);
-    assert_eq!(
-        ready_ids(&queue),
-        expected,
-        "a never-validated child stays hidden even after `bd undefer`"
-    );
-
-    // A rebuilt adapter (fresh `BdTaskQueue`, new process view) sees the same
-    // durable state — approval is persisted in `.beads`, not the adapter.
+    // A rebuilt adapter (fresh `BdTaskQueue`) sees the same durable state.
     let rebuilt = scratch.queue();
     assert_eq!(
         ready_ids(&rebuilt),
         expected,
-        "approval survives an adapter rebuild"
+        "approval survives a rebuild"
     );
 }
 
-/// An accidental `bd update --status open` cannot release unapproved work: the
-/// defer date survives the status flip, and bd's own past-defer "appears
-/// immediately" semantics still do not authorize a staged child.
+/// Missing, conflicting, and malformed gate associations all deny release.
 #[test]
-fn accidental_status_change_cannot_release_unapproved_staged_children() {
-    let scratch = Scratch::new("accidental-status");
+fn missing_conflicting_and_malformed_gates_deny() {
+    let scratch = Scratch::new_kept("native-gate-faults");
     let queue = scratch.queue();
 
-    let ready = scratch.create("Ready", VALID);
-    // Never validated, deferred far in the future.
-    let unvalidated = scratch.create_labeled(
-        "Unvalidated",
-        &format!("{STAGED_LABEL},difficulty:low"),
-        "2099-01-01",
-    );
-    // Never validated with a PAST defer date: bd surfaces it as ready (open
-    // status, elapsed defer), so only the defensive predicate keeps it hidden.
-    let unvalidated_past = scratch.create_labeled(
-        "UnvalidatedPast",
-        &format!("{STAGED_LABEL},difficulty:low"),
-        "2020-01-01",
-    );
-    // Approved but never human-undeferred, past defer date: still needs undefer.
-    let approved_past = scratch.create_labeled(
-        "ApprovedPast",
-        &format!("{STAGED_LABEL},{DECOMP_APPROVED_LABEL}"),
-        "2020-01-01",
+    // Missing: approved but no gate at all.
+    let orphan = scratch.create_open_labeled(
+        "Orphan",
+        &format!("{STAGED_LABEL},difficulty:low,{DECOMP_APPROVED_LABEL}"),
     );
 
-    // Accidental status flip of the future-deferred, unvalidated child.
-    scratch.bd_ok(&["update", &unvalidated, "--status", "open"]);
+    // Conflicting: two resolved native gates.
+    let ambiguous = scratch.create_open_labeled(
+        "Ambiguous",
+        &format!("{STAGED_LABEL},difficulty:low,{DECOMP_APPROVED_LABEL}"),
+    );
+    let g1 = scratch.add_native_gate(&ambiguous);
+    let g2 = scratch.add_native_gate(&ambiguous);
+    scratch.bd_ok(&["gate", "resolve", &g1]);
+    scratch.bd_ok(&["gate", "resolve", &g2]);
 
-    assert_eq!(
-        ready_ids(&queue),
-        vec![ready],
-        "only ordinary work is ready; status flips and elapsed defers authorize nothing"
+    // Malformed target: a native gate whose approval_for names a different task.
+    let wrong_target = scratch.create_open_labeled(
+        "WrongTarget",
+        &format!("{STAGED_LABEL},difficulty:low,{DECOMP_APPROVED_LABEL}"),
+    );
+    let g3 = scratch.add_native_gate(&wrong_target);
+    scratch.bd_ok(&["update", &g3, "--set-metadata", "approval_for=someone-else"]);
+    scratch.bd_ok(&["gate", "resolve", &g3]);
+
+    // Non-native impostor: a plain task that copied the labels/metadata and a
+    // blocks edge, then closed.
+    let impostor_child = scratch.create_open_labeled(
+        "ImpostorChild",
+        &format!("{STAGED_LABEL},difficulty:low,{DECOMP_APPROVED_LABEL}"),
+    );
+    let impostor = scratch.create_open_labeled("Impostor", "human,execution-approval");
+    scratch.bd_ok(&["update", &impostor, "--set-metadata", &format!("approval_for={impostor_child}")]);
+    scratch.bd_ok(&["dep", "add", &impostor_child, &impostor]);
+    scratch.bd_ok(&["close", &impostor, "--reason", "not a native gate"]);
+
+    assert!(
+        ready_ids(&queue).is_empty(),
+        "every fault association denies release: {orphan} {ambiguous} {wrong_target} {impostor_child}"
+    );
+}
+
+/// Discovery must not silently reduce a duplicate gate to a single association
+/// when the second linked native gate has lost its `execution-approval` label:
+/// both are linked to the child with the same `approval_for`, so the exact-one
+/// rule denies even though one of them is a valid resolved gate.
+#[test]
+fn duplicate_gate_with_stripped_label_denies() {
+    let scratch = Scratch::new_kept("native-gate-stripped-label");
+    let queue = scratch.queue();
+
+    let child = scratch.create_open_labeled(
+        "Child",
+        &format!("{STAGED_LABEL},difficulty:low,{DECOMP_APPROVED_LABEL}"),
     );
 
-    // bd's own ready query surfaces the elapsed-defer children (they are
-    // `open`), proving the adapter predicate — not bd — keeps them out.
+    // A valid, resolved, labelled native gate.
+    let valid = scratch.add_native_gate(&child);
+    scratch.bd_ok(&["gate", "resolve", &valid]);
+
+    // A second native gate linked to the same child, with `approval_for` set but
+    // its `execution-approval` label stripped, then resolved.
+    let stripped = Command::new("bd")
+        .arg("--db")
+        .arg(scratch.beads_dir())
+        .args([
+            "gate",
+            "create",
+            "--type",
+            "human",
+            "--blocks",
+            &child,
+            "--reason",
+            "second approval",
+            "--json",
+        ])
+        .current_dir(scratch.dir.path())
+        .env("BD_NON_INTERACTIVE", "1")
+        .output()
+        .expect("spawn bd gate create");
+    assert!(
+        stripped.status.success(),
+        "bd gate create: {}",
+        stderr_of(&stripped)
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&stripped.stdout).expect("gate json");
+    let stripped = value["id"].as_str().expect("gate id").to_string();
+    scratch.bd_ok(&["update", &stripped, "--set-metadata", &format!("approval_for={child}")]);
+    scratch.bd_ok(&["gate", "resolve", &stripped]);
+
+    // Both blockers are closed, so bd's own ready query surfaces the child; the
+    // adapter must still deny it (ambiguous duplicate association).
     let raw: serde_json::Value =
         serde_json::from_str(&scratch.bd_ok(&["list", "--ready", "--json", "--limit", "0"]))
             .expect("bd ready json");
@@ -734,11 +944,100 @@ fn accidental_status_change_cannot_release_unapproved_staged_children() {
         .filter_map(|i| i["id"].as_str())
         .collect();
     assert!(
-        raw_ids.contains(&unvalidated_past.as_str()),
-        "bd ready surfaces an elapsed-defer, never-validated child: {raw_ids:?}"
+        raw_ids.contains(&child.as_str()),
+        "both blockers are closed so bd surfaces the child: {raw_ids:?}"
     );
     assert!(
-        raw_ids.contains(&approved_past.as_str()),
-        "bd ready surfaces an elapsed-defer, approved-but-not-undeferred child: {raw_ids:?}"
+        ready_ids(&queue).is_empty(),
+        "a stripped-label duplicate gate is a conflicting association and denies release"
+    );
+}
+
+/// An unrelated native prerequisite gate (no execution-approval claim) blocks
+/// the child like any dependency, then permits readiness once closed alongside
+/// the resolved execution-approval gate.
+#[test]
+fn unrelated_native_prerequisite_gate_blocks_then_allows_readiness() {
+    let scratch = Scratch::new_kept("native-gate-unrelated");
+    let queue = scratch.queue();
+
+    let child = scratch.create_open_labeled(
+        "Child",
+        &format!("{STAGED_LABEL},difficulty:low,{DECOMP_APPROVED_LABEL}"),
+    );
+    let approval = scratch.add_native_gate(&child);
+    scratch.bd_ok(&["gate", "resolve", &approval]);
+    // A separate native gate that claims no approval: an ordinary prerequisite.
+    let prereq = scratch.add_prerequisite_gate(&child);
+
+    // The unrelated prerequisite is still open: the child is withheld even
+    // though its execution-approval gate is resolved.
+    assert!(
+        ready_ids(&queue).is_empty(),
+        "an open unrelated prerequisite gate withholds the child"
+    );
+
+    // Closing the unrelated prerequisite releases the child alongside its
+    // resolved execution-approval gate (ordinary gate/dependency semantics).
+    scratch.bd_ok(&["gate", "resolve", &prereq]);
+    assert_eq!(
+        ready_ids(&queue),
+        vec![child.clone()],
+        "closing the unrelated prerequisite allows readiness"
+    );
+}
+
+/// A genuine postponement keeps its defer semantics and is not authorization;
+/// undefer only makes a postponed task schedulable, and a staged child still
+/// needs a resolved gate.
+#[test]
+fn genuine_deferral_retained_and_undefer_is_not_authorization() {
+    let scratch = Scratch::new_kept("native-gate-defer");
+    let queue = scratch.queue();
+
+    // Ordinary deferred work: `undefer` releases it (defer semantics retained).
+    let postponed = scratch.create_labeled("Postponed", "difficulty:low", "2099-01-01");
+    assert!(ready_ids(&queue).is_empty(), "deferred work is hidden");
+    scratch.bd_ok(&["undefer", &postponed]);
+    assert_eq!(
+        ready_ids(&queue),
+        vec![postponed.clone()],
+        "undefer releases ordinary postponed work"
+    );
+
+    // A staged, approved, gate-resolved child that is also deferred stays
+    // hidden until its real postponement is cleared — and clearing the date
+    // alone (undefer) is not what authorizes it: the gate is.
+    let staged = scratch.create_labeled(
+        "StagedPostponed",
+        &format!("{STAGED_LABEL},difficulty:low,{DECOMP_APPROVED_LABEL}"),
+        "2099-01-01",
+    );
+    let gate = scratch.add_native_gate(&staged);
+    // Undefer only: real postponement cleared, but the gate is still open.
+    scratch.bd_ok(&["undefer", &staged]);
+    assert!(
+        !ready_ids(&queue).contains(&staged),
+        "undefer alone never authorizes a staged child"
+    );
+    // Resolve the gate: now (and only now) the child releases.
+    scratch.bd_ok(&["gate", "resolve", &gate]);
+    assert!(
+        ready_ids(&queue).contains(&staged),
+        "resolved gate plus cleared postponement releases the child"
+    );
+
+    // A second staged, approved, gate-resolved child that is deferred for a real
+    // reason stays hidden: a real postponement is respected.
+    let still_deferred = scratch.create_labeled(
+        "StillDeferred",
+        &format!("{STAGED_LABEL},difficulty:low,{DECOMP_APPROVED_LABEL}"),
+        "2099-01-01",
+    );
+    let gate2 = scratch.add_native_gate(&still_deferred);
+    scratch.bd_ok(&["gate", "resolve", &gate2]);
+    assert!(
+        !ready_ids(&queue).contains(&still_deferred),
+        "a resolved gate is not authorization past a genuine postponement"
     );
 }

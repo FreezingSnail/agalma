@@ -16,16 +16,17 @@ use agalma_contracts::{
 };
 use agalma_ipc::IssueProjection;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::block::parse_task_block;
 
 /// Label marking a task terminal-but-unfinished (design §"Task model").
 pub const PARKED_LABEL: &str = "parked";
 /// Label marking a staged decomposition child (CP.3): hidden from `bd ready`
-/// until a human `bd undefer`s it.
+/// until its native human approval gate is resolved.
 ///
 /// `staged` marks *provenance* (a designer-authored decomposition child), never
-/// authorization: it survives both validator approval and human `bd undefer`.
+/// authorization: it survives both validator approval and human gate resolution.
 pub const STAGED_LABEL: &str = "staged";
 /// Label a passing decomposition gate applies to every staged child (CP.3):
 /// the validator-approval bit. Not sufficient on its own — see
@@ -36,8 +37,20 @@ pub const DECOMP_APPROVED_LABEL: &str = "decomp-approved";
 pub const DECOMP_REJECTED_LABEL: &str = "decomp-rejected";
 /// Label marking an epic escalated to a human (CP.3): excluded from `bd ready`.
 pub const HUMAN_LABEL: &str = "human";
-/// Label marking a decomposition rework task (CP.3): excluded from `bd ready`.
+/// Label marking a decomposition rework task (CP.3): excluded from *factory*
+/// readiness by this label (native `bd ready` does not exclude it intrinsically).
 pub const DECOMP_FIX_LABEL: &str = "decomp-fix";
+/// Label marking a post-merge review-drift rework task (CP.5): excluded from
+/// *factory* readiness by this label (native `bd ready` does not exclude it
+/// intrinsically).
+pub const DRIFT_FIX_LABEL: &str = "drift-fix";
+/// Label marking a native human execution-approval gate issue (CP.3 /
+/// `agalma-i5h.8`): the gate never executes, and it is what pins a staged child
+/// until a human resolves it.
+pub const EXECUTION_APPROVAL_LABEL: &str = "execution-approval";
+/// Metadata key on a native human gate naming the task it authorizes
+/// (`approval_for=<task-id>`).
+pub const APPROVAL_FOR_KEY: &str = "approval_for";
 /// Label on an epic while one designer attempt is in flight (CP.3 recovery).
 ///
 /// Set on the epic immediately before the designer session starts and removed
@@ -106,6 +119,134 @@ pub struct TaskDefinition {
     pub dependencies: Vec<TaskDependency>,
     /// Comment bodies, oldest first (`--include-comments`).
     pub comments: Vec<String>,
+}
+
+/// A native human execution-approval gate as the adapter reads it.
+///
+/// A gate is an ordinary bd issue (conventionally created with
+/// `bd gate create --type human --blocks <task>`) that carries the
+/// [`HUMAN_LABEL`] + [`EXECUTION_APPROVAL_LABEL`] labels and the
+/// `approval_for=<task-id>` metadata, and is pinned to its task by a direct
+/// `blocks` edge. `resolved` is true once a human closes it (`bd gate resolve`),
+/// which is the explicit human bootstrap authorization for that task.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApprovalGate {
+    /// The gate issue id.
+    pub id: String,
+    /// The task id the gate authorizes (`approval_for`), when well-formed.
+    pub approval_for: Option<String>,
+    /// The gate's labels.
+    pub labels: Vec<String>,
+    /// The bd issue type (must be `gate` for a native gate).
+    pub issue_type: Option<String>,
+    /// The bd gate await type (must be `human` for a native human gate).
+    pub await_type: Option<String>,
+    /// Whether the gate has been resolved (closed) by a human.
+    pub resolved: bool,
+}
+
+impl ApprovalGate {
+    /// Whether this issue is a *native* human gate: `issue_type=gate` with
+    /// `await_type=human`. A plain task or a timer/automation gate that merely
+    /// copied the labels and metadata is rejected.
+    pub fn is_native_human(&self) -> bool {
+        self.issue_type.as_deref() == Some("gate") && self.await_type.as_deref() == Some("human")
+    }
+
+    /// Whether this gate claims execution approval: it carries the
+    /// [`EXECUTION_APPROVAL_LABEL`] or an `approval_for` target. A native gate
+    /// claiming neither is an ordinary prerequisite gate, not an approval
+    /// association — it blocks the child like any dependency and is governed by
+    /// bd's normal ready semantics.
+    pub fn claims_execution_approval(&self) -> bool {
+        self.approval_for.is_some() || self.labels.iter().any(|l| l == EXECUTION_APPROVAL_LABEL)
+    }
+
+    /// Whether two discovery observations describe the same gate. Label order is
+    /// normalized so the same native gate returned with reordered labels is one
+    /// observation, not a spurious conflict; any other differing field is a
+    /// genuinely different observation.
+    pub fn same_observation(&self, other: &ApprovalGate) -> bool {
+        if self.id != other.id
+            || self.approval_for != other.approval_for
+            || self.issue_type != other.issue_type
+            || self.await_type != other.await_type
+            || self.resolved != other.resolved
+        {
+            return false;
+        }
+        let mut a = self.labels.clone();
+        let mut b = other.labels.clone();
+        a.sort();
+        b.sort();
+        a == b
+    }
+}
+
+/// How a staged child relates to its native human approval gate.
+///
+/// Only [`ApprovalState::Resolved`] authorizes release. Every other variant is
+/// fail-closed: a missing, ambiguous, or malformed association is *not* treated
+/// as approval, and the conductor never invents or recreates one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApprovalState {
+    /// No associated gate was found.
+    Missing,
+    /// More than one associated gate was found (ambiguous).
+    Conflicting,
+    /// A gate is associated but is not well formed (labels/metadata mismatch).
+    Malformed,
+    /// Exactly one well-formed gate exists but a human has not resolved it.
+    Unresolved,
+    /// Exactly one well-formed gate exists and a human has resolved it.
+    Resolved,
+}
+
+impl ApprovalState {
+    /// Whether the association is well formed (`Resolved` or `Unresolved`): the
+    /// sweep requires this before it applies decomposition approval. A malformed
+    /// or absent association fails closed.
+    pub fn is_well_formed(self) -> bool {
+        matches!(self, ApprovalState::Resolved | ApprovalState::Unresolved)
+    }
+}
+
+/// Classify `child_id`'s native human gate association from its `blocks` edge
+/// targets and the backlog's gate records.
+///
+/// Only gates that [`ApprovalGate::claims_execution_approval`] are approval
+/// associations; an unrelated native prerequisite gate (a timer/human gate with
+/// neither the `execution-approval` label nor `approval_for`) is an ordinary
+/// dependency blocker and is ignored here. Exactly one approval association
+/// whose labels carry both [`HUMAN_LABEL`] and [`EXECUTION_APPROVAL_LABEL`],
+/// which is a native gate, and whose `approval_for` names `child_id` is
+/// well-formed; it is `Resolved` once closed. Zero matches is
+/// [`ApprovalState::Missing`], more than one is [`ApprovalState::Conflicting`],
+/// and a single non-matching approval association is [`ApprovalState::Malformed`]
+/// — all fail closed.
+pub fn approval_state(child_id: &str, blockers: &[String], gates: &[ApprovalGate]) -> ApprovalState {
+    let associated: Vec<&ApprovalGate> = gates
+        .iter()
+        .filter(|gate| blockers.iter().any(|blocker| blocker == &gate.id))
+        .filter(|gate| gate.claims_execution_approval())
+        .collect();
+    match associated.as_slice() {
+        [] => ApprovalState::Missing,
+        [gate] => {
+            let well_formed = gate.is_native_human()
+                && gate.approval_for.as_deref() == Some(child_id)
+                && gate.labels.iter().any(|l| l == HUMAN_LABEL)
+                && gate.labels.iter().any(|l| l == EXECUTION_APPROVAL_LABEL);
+            if !well_formed {
+                ApprovalState::Malformed
+            } else if gate.resolved {
+                ApprovalState::Resolved
+            } else {
+                ApprovalState::Unresolved
+            }
+        }
+        _ => ApprovalState::Conflicting,
+    }
 }
 
 /// Task backlog adapter backed by the `bd` CLI.
@@ -256,6 +397,63 @@ impl BdTaskQueue {
             .collect())
     }
 
+    /// All native human execution-approval gates in the backlog (open and
+    /// resolved). Used by the ready predicate and the epic sweep to reconcile
+    /// exactly one gate per staged child — never to create or resolve one.
+    ///
+    /// Discovery is a union of two queries so ambiguity is never silently
+    /// reduced away:
+    ///
+    /// - `--type gate` finds every native gate, including one whose
+    ///   `execution-approval` label was stripped (which is therefore
+    ///   [`ApprovalState::Malformed`]);
+    /// - `--label execution-approval` finds any issue carrying the label, so a
+    ///   non-native impostor (a plain task) is classified as malformed too.
+    ///
+    /// Either way, a second linked association is visible and the exact-one rule
+    /// denies it. `bd list` hides native gates by default, so `--include-gates`
+    /// is required.
+    pub fn approval_gates(&self) -> Result<Vec<ApprovalGate>, ContractError> {
+        let mut gates: Vec<ApprovalGate> = Vec::new();
+        for args in [
+            [
+                "list",
+                "--type",
+                "gate",
+                "--all",
+                "--include-gates",
+                "--json",
+                "--limit",
+                "0",
+            ],
+            [
+                "list",
+                "--label",
+                EXECUTION_APPROVAL_LABEL,
+                "--all",
+                "--include-gates",
+                "--json",
+                "--limit",
+                "0",
+            ],
+        ] {
+            for issue in parse_issues(&self.bd_ok(&args)?)? {
+                let gate = issue.into_gate();
+                // Deduplicate *identical* observations only (label order
+                // normalized). Differing observations for one identity (for
+                // example the same gate seen closed in one query and reopened in
+                // the other) are both kept, so the exact-one rule sees a conflict
+                // and fails closed rather than letting a stale record silently
+                // win.
+                if gates.iter().any(|existing| existing.same_observation(&gate)) {
+                    continue;
+                }
+                gates.push(gate);
+            }
+        }
+        Ok(gates)
+    }
+
     /// Create a task issue via `bd create`, returning its id. `parent` attaches
     /// it under an epic; `defer` (a `YYYY-MM-DD` date) hides it from `bd ready`
     /// by construction; `labels` is a comma-joined label list.
@@ -307,18 +505,19 @@ impl BdTaskQueue {
 
 impl TaskQueueApi for BdTaskQueue {
     fn ready_tasks(&self) -> Result<ReadyTasks, ContractError> {
-        // Ready contract (CP.3): never hand epics or `human`/`decomp-fix`/
-        // `parked` issues to the claim path, and never admit a task whose
-        // blocking dependency is still open. `--ready` applies bd's
-        // blocker-aware ready-work semantics (the `bd ready` query) so an
-        // unfinished prerequisite keeps its children out; bd filters below, and
-        // [`BdIssue::is_ready_candidate`] re-checks defensively so the
-        // projection never depends on the CLI's flag semantics.
+        // Ready contract (CP.3 / agalma-i5h.8): never hand epics, gate issues,
+        // or `human`/`decomp-fix`/`drift-fix`/`parked` issues to the claim path,
+        // and never admit a task whose blocking dependency is still open.
+        // `--ready` applies bd's blocker-aware ready-work semantics (the
+        // `bd ready` query) so an unfinished prerequisite (including an
+        // unresolved native approval gate) keeps its children out; bd filters
+        // below, and [`BdIssue::is_ready_candidate`] re-checks defensively so
+        // the projection never depends on the CLI's flag semantics.
         //
         // `staged` is deliberately NOT excluded here: a staged child that has
-        // passed the validator gate AND been human-authorized (`bd undefer`,
-        // which clears the defer date) must surface. The predicate below keeps
-        // still-deferred, rejected, and never-validated children out.
+        // passed the validator gate AND whose native human approval gate a human
+        // has resolved must surface. The predicate below keeps still-blocked,
+        // rejected, never-validated, and gate-orphaned children out.
         let stdout = self.bd_ok(&[
             "list",
             "--json",
@@ -326,19 +525,22 @@ impl TaskQueueApi for BdTaskQueue {
             "--status",
             "open",
             "--exclude-type",
-            "epic",
+            "epic,gate",
             "--exclude-label",
-            "parked,human,decomp-fix,decomp-rejected",
+            "parked,human,execution-approval,decomp-fix,drift-fix,decomp-rejected",
             "--limit",
             "0",
         ])?;
         let issues = parse_issues(&stdout)?;
+        // Read the gate set once so the (defensive) approval re-check never
+        // depends solely on bd's `--ready` flag semantics.
+        let gates = self.approval_gates()?;
 
         let mut tasks = Vec::new();
         let mut skipped = Vec::new();
         for issue in issues {
             let id = issue.id.clone();
-            if !issue.is_ready_candidate() {
+            if !issue.is_ready_candidate(&gates) {
                 continue;
             }
             match parse_task_block(&issue.description) {
@@ -411,10 +613,12 @@ struct BdComment {
     text: Option<String>,
 }
 
-/// A dependency edge as `bd list --json` reports it. `bd show --json` nests a
-/// different (full-issue) shape under the same key, so every field is optional
-/// and non-matching edges are ignored — this keeps the shared `parse_issues`
-/// usable for both payloads.
+/// A dependency edge as `bd list --json`/`bd show --json` reports it. The two
+/// payloads use different shapes under the same key: the list shape carries
+/// `depends_on_id`/`type` (and an edge-level `metadata` string), the show shape
+/// nests a full issue object with `id`/`dependency_type`/`status`/`labels`/
+/// `metadata`. Every field is optional and non-matching edges are ignored, which
+/// keeps the shared `parse_issues` usable for both payloads.
 #[derive(Debug, Deserialize)]
 struct BdDependency {
     /// The issue id from the list shape (`depends_on_id`) or the nested
@@ -460,19 +664,25 @@ struct BdIssue {
     parent: Option<String>,
     #[serde(default)]
     issue_type: Option<String>,
+    /// bd gate await type (`human`, `timer`, ...); present only on gate issues.
+    #[serde(default)]
+    await_type: Option<String>,
     status: String,
     #[serde(default)]
     assignee: Option<String>,
     #[serde(default)]
     started_at: Option<String>,
     /// bd defer marker: present while the issue is snoozed (created with
-    /// `--defer`, or after an accidental status flip). Human `bd undefer`
-    /// clears it. Used to distinguish real human authorization from a mere
-    /// status change.
+    /// `--defer`, or after an accidental status flip). `bd undefer` clears it.
+    /// A real postponement: a set date hides the issue, and clearing a date is
+    /// *not* execution authorization (only a resolved native human gate is).
     #[serde(default)]
     defer_until: Option<String>,
     #[serde(default)]
     labels: Option<Vec<String>>,
+    /// bd custom metadata object (present on gate issues as `approval_for`).
+    #[serde(default)]
+    metadata: Option<Value>,
     #[serde(default)]
     dependencies: Option<Vec<BdDependency>>,
     #[serde(default)]
@@ -493,40 +703,94 @@ impl BdIssue {
     ///
     /// - **validator approval** — the [`DECOMP_APPROVED_LABEL`] the sweep gate
     ///   adds on a clean decomposition (never with [`DECOMP_REJECTED_LABEL`]);
-    /// - **human execution authorization** — `bd undefer <child>`, which
-    ///   restores `status=open` and clears the defer date while preserving
-    ///   labels (including `staged`).
+    /// - **human execution authorization** — a resolved native human gate: an
+    ///   associated gate issue ([`EXECUTION_APPROVAL_LABEL`] + [`HUMAN_LABEL`] +
+    ///   `approval_for=<child>` + a direct `blocks` edge) that a human has closed
+    ///   (`bd gate resolve`, the explicit bootstrap path).
     ///
-    /// Consequently a `staged` child is consumable only when it is approved and
-    /// no longer deferred. `staged` alone (never validated), `staged` +
-    /// `decomp-rejected`, and any issue still carrying a defer date stay hidden
-    /// — so an accidental `bd update --status open` (which leaves the defer
-    /// date in place) cannot release unapproved work. Ordinary non-staged open
-    /// work needs neither label.
-    fn is_ready_candidate(&self) -> bool {
-        if self.status != "open" || self.issue_type.as_deref() == Some("epic") {
+    /// Consequently a `staged` child is consumable only when it is approved *and*
+    /// its associated gate is resolved *and* no prerequisite remains open. A
+    /// `staged` child that is never validated, rejected, gate-orphaned
+    /// ([`ApprovalState::Missing`]), ambiguously gated
+    /// ([`ApprovalState::Conflicting`]), or malformed-gated stays hidden — so an
+    /// accidental `bd update --status open`, a status/date/label edit, or a
+    /// missing/duplicated approval gate can never release unapproved work.
+    /// Ordinary non-staged open work needs no gate; a genuine `--defer`
+    /// postponement still hides any issue (date clear is not authorization).
+    fn is_ready_candidate(&self, gates: &[ApprovalGate]) -> bool {
+        // Never execute an epic or a gate issue, even when a CLI default filter
+        // changes: the type check is explicit and independent of `--exclude-type`.
+        if self.status != "open"
+            || matches!(self.issue_type.as_deref(), Some("epic") | Some("gate"))
+        {
             return false;
         }
-        // A set defer date means no human has run `bd undefer` yet; bd's native
-        // ready semantics also honor it. `undefer` clears the field.
+        // A set defer date is a real postponement, not authorization. `undefer`
+        // only makes a postponed task schedulable; it never approves staged work.
         if self.defer_until.is_some() {
             return false;
         }
         if self.has_label(PARKED_LABEL)
             || self.has_label(HUMAN_LABEL)
             || self.has_label(DECOMP_FIX_LABEL)
+            || self.has_label(DRIFT_FIX_LABEL)
         {
+            return false;
+        }
+        // A gate issue itself is never ordinary fleet work.
+        if self.has_label(EXECUTION_APPROVAL_LABEL) {
             return false;
         }
         // A rejected child never executes, staged or not.
         if self.has_label(DECOMP_REJECTED_LABEL) {
             return false;
         }
-        // A staged child additionally needs validator approval.
-        if self.has_label(STAGED_LABEL) && !self.has_label(DECOMP_APPROVED_LABEL) {
-            return false;
+        // A staged child additionally needs validator approval AND a resolved
+        // native human gate association; anything else (missing/conflicting/
+        // malformed/unresolved) fails closed.
+        if self.has_label(STAGED_LABEL) {
+            if !self.has_label(DECOMP_APPROVED_LABEL) {
+                return false;
+            }
+            if approval_state(&self.id, &self.blocks_targets(), gates) != ApprovalState::Resolved {
+                return false;
+            }
         }
         true
+    }
+
+    /// Ids this issue is blocked by (`blocks` edge targets). The parent-child
+    /// edge is ignored.
+    fn blocks_targets(&self) -> Vec<String> {
+        self.dependencies
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|edge| edge.edge_kind() == Some("blocks"))
+            .filter_map(|edge| edge.target().map(str::to_string))
+            .collect()
+    }
+
+    /// Project an issue into an approval-gate record. `approval_for` is read from
+    /// the `approval_for` metadata key; `resolved` is true once the gate is
+    /// closed. The native gate type/await fields are preserved so the association
+    /// check can reject a non-native (task/timer) issue that merely copied the
+    /// labels and metadata.
+    fn into_gate(self) -> ApprovalGate {
+        let approval_for = self
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.get(APPROVAL_FOR_KEY))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        ApprovalGate {
+            id: self.id,
+            approval_for,
+            labels: self.labels.unwrap_or_default(),
+            issue_type: self.issue_type,
+            await_type: self.await_type,
+            resolved: self.status == "closed",
+        }
     }
 
     fn into_projection(self) -> IssueProjection {
@@ -648,11 +912,13 @@ mod tests {
             acceptance_criteria: None,
             parent: None,
             issue_type: Some("task".to_string()),
+            await_type: None,
             status: "open".to_string(),
             assignee: None,
             started_at: None,
             defer_until: None,
             labels: None,
+            metadata: None,
             dependencies: None,
             comments: None,
         }
@@ -665,10 +931,40 @@ mod tests {
         }
     }
 
+    /// An issue carrying `labels` and `blocks` edges to `blockers`.
+    fn blocked(labels: &[&str], blockers: &[&str]) -> BdIssue {
+        let dependencies = blockers
+            .iter()
+            .map(|b| BdDependency {
+                depends_on_id: Some(b.to_string()),
+                id: None,
+                kind: Some("blocks".to_string()),
+                dependency_type: None,
+            })
+            .collect();
+        BdIssue {
+            labels: Some(labels.iter().map(|l| l.to_string()).collect()),
+            dependencies: Some(dependencies),
+            ..issue()
+        }
+    }
+
+    /// A well-formed native human gate authorizing `for_`.
+    fn native_gate(id: &str, for_: &str, resolved: bool) -> ApprovalGate {
+        ApprovalGate {
+            id: id.to_string(),
+            approval_for: Some(for_.to_string()),
+            labels: vec![HUMAN_LABEL.to_string(), EXECUTION_APPROVAL_LABEL.to_string()],
+            issue_type: Some("gate".to_string()),
+            await_type: Some("human".to_string()),
+            resolved,
+        }
+    }
+
     #[test]
     fn ordinary_open_undeferred_work_is_ready() {
-        assert!(issue().is_ready_candidate());
-        assert!(with_labels(&["difficulty:low"]).is_ready_candidate());
+        assert!(issue().is_ready_candidate(&[]));
+        assert!(with_labels(&["difficulty:low"]).is_ready_candidate(&[]));
     }
 
     #[test]
@@ -676,52 +972,396 @@ mod tests {
         let mut deferred = issue();
         deferred.defer_until = Some("2099-01-01T00:00:00Z".to_string());
         assert!(
-            !deferred.is_ready_candidate(),
-            "a set defer date means no human `bd undefer` yet"
+            !deferred.is_ready_candidate(&[]),
+            "a set defer date is a real postponement, not authorization"
         );
 
         let mut epic = issue();
         epic.issue_type = Some("epic".to_string());
-        assert!(!epic.is_ready_candidate());
+        assert!(!epic.is_ready_candidate(&[]));
 
-        for label in [PARKED_LABEL, HUMAN_LABEL, DECOMP_FIX_LABEL, DECOMP_REJECTED_LABEL] {
+        for label in [
+            PARKED_LABEL,
+            HUMAN_LABEL,
+            DECOMP_FIX_LABEL,
+            DRIFT_FIX_LABEL,
+            EXECUTION_APPROVAL_LABEL,
+            DECOMP_REJECTED_LABEL,
+        ] {
             assert!(
-                !with_labels(&[label]).is_ready_candidate(),
+                !with_labels(&[label]).is_ready_candidate(&[]),
                 "{label} must stay hidden"
             );
         }
     }
 
     #[test]
-    fn staged_children_require_both_approval_and_authorization() {
-        // Never validated: hidden.
-        assert!(!with_labels(&[STAGED_LABEL]).is_ready_candidate());
-        // Validator-approved but still deferred: hidden (no human undefer).
-        let mut approved_deferred = with_labels(&[STAGED_LABEL, DECOMP_APPROVED_LABEL]);
-        approved_deferred.defer_until = Some("2099-01-01T00:00:00Z".to_string());
-        assert!(!approved_deferred.is_ready_candidate());
-        // Validator-approved + human-undeferred: ready.
-        assert!(with_labels(&[STAGED_LABEL, DECOMP_APPROVED_LABEL]).is_ready_candidate());
+    fn staged_child_needs_validator_approval_and_a_resolved_native_gate() {
+        // Never validated: hidden even with a resolved gate.
+        assert!(!blocked(&[STAGED_LABEL], &["g"]).is_ready_candidate(&[native_gate("g", "x", true)]));
+        // Approved but gate-orphaned (no association): hidden.
+        assert!(!with_labels(&[STAGED_LABEL, DECOMP_APPROVED_LABEL]).is_ready_candidate(&[]));
+        // Approved, gate present but unresolved: hidden.
+        assert!(!blocked(
+            &[STAGED_LABEL, DECOMP_APPROVED_LABEL],
+            &["g"]
+        )
+        .is_ready_candidate(&[native_gate("g", "x", false)]));
+        // Approved + exactly one resolved native gate: ready.
+        assert!(blocked(
+            &[STAGED_LABEL, DECOMP_APPROVED_LABEL],
+            &["g"]
+        )
+        .is_ready_candidate(&[native_gate("g", "x", true)]));
         // Rejected alongside approval: still hidden.
-        assert!(
-            !with_labels(&[STAGED_LABEL, DECOMP_APPROVED_LABEL, DECOMP_REJECTED_LABEL])
-                .is_ready_candidate()
+        assert!(!blocked(
+            &[STAGED_LABEL, DECOMP_APPROVED_LABEL, DECOMP_REJECTED_LABEL],
+            &["g"]
+        )
+        .is_ready_candidate(&[native_gate("g", "x", true)]));
+    }
+
+    #[test]
+    fn conflicting_and_malformed_gate_associations_deny() {
+        let approved = || blocked(&[STAGED_LABEL, DECOMP_APPROVED_LABEL], &["g1", "g2"]);
+
+        // Two associated gates: ambiguous ⇒ hidden.
+        assert!(!approved().is_ready_candidate(&[
+            native_gate("g1", "x", true),
+            native_gate("g2", "x", true),
+        ]));
+
+        // approval_for names a different task: malformed ⇒ hidden.
+        let mut wrong_target = blocked(&[STAGED_LABEL, DECOMP_APPROVED_LABEL], &["g"]);
+        wrong_target.id = "x".to_string();
+        assert!(!wrong_target.is_ready_candidate(&[native_gate("g", "other", true)]));
+
+        // A plain task that copied the labels/metadata is not a native gate.
+        let mut impostor = native_gate("g", "x", true);
+        impostor.issue_type = Some("task".to_string());
+        assert!(!wrong_target.is_ready_candidate(&[impostor]));
+
+        // A timer/automation gate is not a native human gate.
+        let mut timer = native_gate("g", "x", true);
+        timer.await_type = Some("timer".to_string());
+        assert!(!wrong_target.is_ready_candidate(&[timer]));
+
+        // Missing labels on the gate: malformed ⇒ hidden.
+        let mut unlabeled = native_gate("g", "x", true);
+        unlabeled.labels = vec![HUMAN_LABEL.to_string()];
+        assert!(!wrong_target.is_ready_candidate(&[unlabeled]));
+    }
+
+    #[test]
+    fn status_and_date_edits_cannot_release_staged_work() {
+        // `bd update --status open` flips the status but not the gate/approval:
+        // a never-validated staged child stays invisible.
+        let mut never_validated = with_labels(&[STAGED_LABEL]);
+        never_validated.status = "open".to_string();
+        assert!(!never_validated.is_ready_candidate(&[]));
+
+        // A resolved gate plus a still-set (real) defer date stays hidden.
+        let mut postponed = blocked(&[STAGED_LABEL, DECOMP_APPROVED_LABEL], &["g"]);
+        postponed.defer_until = Some("2099-01-01T00:00:00Z".to_string());
+        assert!(!postponed.is_ready_candidate(&[native_gate("g", "x", true)]));
+    }
+
+    #[test]
+    fn approval_state_classifies_every_association() {
+        assert_eq!(approval_state("x", &[], &[]), ApprovalState::Missing);
+        assert_eq!(
+            approval_state("x", &["g".into()], &[native_gate("g", "x", false)]),
+            ApprovalState::Unresolved
+        );
+        assert_eq!(
+            approval_state("x", &["g".into()], &[native_gate("g", "x", true)]),
+            ApprovalState::Resolved
+        );
+        assert_eq!(
+            approval_state(
+                "x",
+                &["g1".into(), "g2".into()],
+                &[native_gate("g1", "x", true), native_gate("g2", "x", true)]
+            ),
+            ApprovalState::Conflicting
+        );
+        assert_eq!(
+            approval_state("x", &["g".into()], &[native_gate("g", "other", true)]),
+            ApprovalState::Malformed
         );
     }
 
     #[test]
-    fn accidental_status_change_with_defer_intact_stays_hidden() {
-        // `bd update --status open` flips the status but leaves the defer date,
-        // so never-validated and rejected children stay invisible.
-        let mut never_validated = with_labels(&[STAGED_LABEL]);
-        never_validated.status = "open".to_string();
-        never_validated.defer_until = Some("2099-01-01T00:00:00Z".to_string());
-        assert!(!never_validated.is_ready_candidate());
+    fn unrelated_native_gate_is_not_an_approval_association() {
+        // A native prerequisite gate with neither the `execution-approval` label
+        // nor `approval_for` claims no approval: it is ignored here (bd's own
+        // blocker semantics govern it), so a valid resolved approval gate still
+        // releases the child.
+        let mut unrelated = native_gate("dep", "x", false);
+        unrelated.labels = Vec::new();
+        unrelated.approval_for = None;
+        let child = blocked(
+            &[STAGED_LABEL, DECOMP_APPROVED_LABEL],
+            &["g", "dep"],
+        );
+        assert_eq!(
+            approval_state("x", &child.blocks_targets(), &[native_gate("g", "x", true), unrelated]),
+            ApprovalState::Resolved,
+            "an unrelated native prerequisite gate is not an approval association"
+        );
+        assert!(child.is_ready_candidate(&[native_gate("g", "x", true)]));
+    }
 
-        let mut rejected = with_labels(&[STAGED_LABEL, DECOMP_REJECTED_LABEL]);
-        rejected.status = "open".to_string();
-        rejected.defer_until = Some("2099-01-01T00:00:00Z".to_string());
-        assert!(!rejected.is_ready_candidate());
+    #[test]
+    fn gate_and_epic_type_issues_are_never_ready() {
+        // A native gate carrying an intake block and no exclusion label must
+        // never be executable: the type check rejects it explicitly.
+        let mut gate = issue();
+        gate.issue_type = Some("gate".to_string());
+        gate.description = "Intro.\n\n```yaml\ndirective: directive/v0\n```\n".to_string();
+        assert!(
+            !gate.is_ready_candidate(&[]),
+            "a gate issue is never ordinary work"
+        );
+        let mut epic = issue();
+        epic.issue_type = Some("epic".to_string());
+        assert!(!epic.is_ready_candidate(&[]));
+    }
+
+    /// A fake `bd` whose union queries return `first` and `second` respectively.
+    fn fake_gate_bd(dir: &agalma_testkit::ScratchDir, first: &str, second: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let a = dir.join("first.json");
+        let b = dir.join("second.json");
+        std::fs::write(&a, first).expect("write first");
+        std::fs::write(&b, second).expect("write second");
+        let script = dir.join("fakebd.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncase \"$*\" in\n  *--type*) cat {a} ;;\n  *) cat {b} ;;\nesac\n",
+                a = a.display(),
+                b = b.display(),
+            ),
+        )
+        .expect("write fake bd");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        script.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn approval_gates_keeps_differing_observations_as_a_conflict() {
+        // The same gate id observed closed in `--type gate`, reopened in
+        // `--label execution-approval`: the union must keep both so the exact-one
+        // rule fails closed instead of retaining a stale closed record.
+        let mut dir = agalma_testkit::ScratchDir::new("bd-fake-gate-union");
+        let closed = r#"[{"id":"g1","title":"Gate","status":"closed","issue_type":"gate","await_type":"human","labels":["human","execution-approval"],"metadata":{"approval_for":"c1"}}]"#;
+        let reopened = r#"[{"id":"g1","title":"Gate","status":"open","issue_type":"gate","await_type":"human","labels":["human","execution-approval"],"metadata":{"approval_for":"c1"}}]"#;
+        let program = fake_gate_bd(&dir, closed, reopened);
+
+        let queue = BdTaskQueue::new(dir.path()).with_program(program);
+        let gates = queue.approval_gates().expect("fake gates");
+        assert_eq!(
+            gates.len(),
+            2,
+            "differing observations for one identity are both kept: {gates:?}"
+        );
+        assert_eq!(
+            approval_state("c1", &["g1".to_string()], &gates),
+            ApprovalState::Conflicting,
+            "conflicting observations of one gate identity must fail closed"
+        );
+        dir.keep();
+    }
+
+    #[test]
+    fn approval_gates_normalizes_label_order_across_queries() {
+        // The same native gate returned with reordered labels is one observation,
+        // not a spurious conflict.
+        let mut dir = agalma_testkit::ScratchDir::new("bd-fake-gate-label-order");
+        let first = r#"[{"id":"g1","title":"Gate","status":"closed","issue_type":"gate","await_type":"human","labels":["human","execution-approval"],"metadata":{"approval_for":"c1"}}]"#;
+        let second = r#"[{"id":"g1","title":"Gate","status":"closed","issue_type":"gate","await_type":"human","labels":["execution-approval","human"],"metadata":{"approval_for":"c1"}}]"#;
+        let program = fake_gate_bd(&dir, first, second);
+
+        let queue = BdTaskQueue::new(dir.path()).with_program(program);
+        let gates = queue.approval_gates().expect("fake gates");
+        assert_eq!(
+            gates.len(),
+            1,
+            "reordered labels are the same observation: {gates:?}"
+        );
+        assert_eq!(
+            approval_state("c1", &["g1".to_string()], &gates),
+            ApprovalState::Resolved
+        );
+        dir.keep();
+    }
+
+    // -----------------------------------------------------------------------
+    // Property test: readiness is exactly determined by the generated spec.
+    //
+    // The expected release result is computed from the generated specification
+    // inputs (approval/rejection, real postponement, gate count, native type,
+    // target association, labels, resolution) — never from the production
+    // `approval_state`. This keeps the oracle independent, so a classifier bug
+    // (e.g. denying every staged task) fails the exact-equivalence assertion
+    // instead of satisfying a safety-only one. Deterministic, bounded, and
+    // failure-replayable (seed + case index + inputs).
+    // -----------------------------------------------------------------------
+
+    /// A tiny deterministic generator (no external dependency): reproducible
+    /// operation sequences under a fixed seed.
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            self.0 >> 33
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+
+    /// One generated scenario. Every field is an independent input; the expected
+    /// readiness is derived from them, not from the code under test.
+    #[derive(Clone, Copy, Debug)]
+    struct Spec {
+        staged: bool,
+        approved: bool,
+        rejected: bool,
+        deferred: bool,
+        /// Number of `blocks` edges to candidate gate issues (0, 1, or 2).
+        gate_count: usize,
+        /// Gate is a native human gate (`issue_type=gate`, `await_type=human`).
+        native_type: bool,
+        /// Gate labels carry both `human` and `execution-approval`.
+        labelled: bool,
+        /// Gate `approval_for` names this child.
+        correct_target: bool,
+        /// Gate is resolved (closed).
+        resolved: bool,
+        /// Also attach an unrelated native prerequisite gate (no
+        /// `execution-approval` label, no `approval_for`); it is an ordinary
+        /// dependency blocker, never an approval association.
+        unrelated_gate: bool,
+    }
+
+    impl Spec {
+        /// The independently derived readiness: a staged child releases only when
+        /// approved, unrejected, undeferred, and pinned by exactly one resolved,
+        /// native, correctly-labelled, correctly-targeted approval gate. An
+        /// unrelated native prerequisite gate never participates in approval.
+        fn expected_ready(&self) -> bool {
+            if self.rejected || self.deferred {
+                return false;
+            }
+            if !self.staged {
+                return true;
+            }
+            self.approved
+                && self.gate_count == 1
+                && self.native_type
+                && self.labelled
+                && self.correct_target
+                && self.resolved
+        }
+
+        fn build(&self) -> (BdIssue, Vec<ApprovalGate>) {
+            let mut labels = Vec::new();
+            if self.staged {
+                labels.push(STAGED_LABEL.to_string());
+            }
+            if self.approved {
+                labels.push(DECOMP_APPROVED_LABEL.to_string());
+            }
+            if self.rejected {
+                labels.push(DECOMP_REJECTED_LABEL.to_string());
+            }
+
+            let mut blockers = Vec::new();
+            let mut gates = Vec::new();
+            for index in 0..self.gate_count {
+                let gate_id = format!("gate-{index}");
+                blockers.push(gate_id.clone());
+                let mut gate_labels = Vec::new();
+                if self.labelled {
+                    gate_labels.push(HUMAN_LABEL.to_string());
+                    gate_labels.push(EXECUTION_APPROVAL_LABEL.to_string());
+                }
+                gates.push(ApprovalGate {
+                    id: gate_id,
+                    approval_for: Some(if self.correct_target {
+                        "x".to_string()
+                    } else {
+                        "someone-else".to_string()
+                    }),
+                    labels: gate_labels,
+                    issue_type: Some(if self.native_type { "gate" } else { "task" }.to_string()),
+                    await_type: Some(if self.native_type { "human" } else { "timer" }.to_string()),
+                    resolved: self.resolved,
+                });
+            }
+            if self.unrelated_gate {
+                // A native prerequisite gate that claims no execution approval.
+                blockers.push("unrelated".to_string());
+                gates.push(ApprovalGate {
+                    id: "unrelated".to_string(),
+                    approval_for: None,
+                    labels: Vec::new(),
+                    issue_type: Some("gate".to_string()),
+                    await_type: Some("human".to_string()),
+                    resolved: self.resolved,
+                });
+            }
+
+            let mut issue = blocked(
+                &labels.iter().map(String::as_str).collect::<Vec<_>>(),
+                &blockers.iter().map(String::as_str).collect::<Vec<_>>(),
+            );
+            if self.deferred {
+                issue.defer_until = Some("2099-01-01T00:00:00Z".to_string());
+            }
+            (issue, gates)
+        }
+    }
+
+    #[test]
+    fn ready_predicate_is_exactly_determined_by_the_generated_spec() {
+        // Fixed seed + bounded budget so any failure is replayable.
+        const SEED: u64 = 0x5eed_1234_abcd_0001;
+        const CASES: usize = 6000;
+        let mut rng = Lcg(SEED);
+
+        for case in 0..CASES {
+            let spec = Spec {
+                staged: rng.below(2) == 0,
+                approved: rng.below(2) == 0,
+                rejected: rng.below(4) == 0,
+                deferred: rng.below(3) == 0,
+                gate_count: match rng.below(6) {
+                    0 => 0,
+                    1..=3 => 1,
+                    _ => 2,
+                },
+                unrelated_gate: rng.below(3) == 0,
+                native_type: rng.below(8) != 0,
+                labelled: rng.below(8) != 0,
+                correct_target: rng.below(8) != 0,
+                resolved: rng.below(2) == 0,
+            };
+            let (issue, gates) = spec.build();
+            let ready = issue.is_ready_candidate(&gates);
+            assert_eq!(
+                ready,
+                spec.expected_ready(),
+                "seed={SEED:#x} case={case} spec={spec:?} (replay: rerun with the same seed)"
+            );
+            // Determinism: a pure predicate must return the same result twice.
+            assert_eq!(ready, issue.is_ready_candidate(&gates), "idempotent case={case}");
+        }
     }
 
     #[test]

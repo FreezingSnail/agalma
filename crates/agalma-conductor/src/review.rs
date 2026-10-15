@@ -61,7 +61,10 @@ use crate::stop::{bind_stop_control, StopControl};
 use crate::sweep::PlannerGate;
 
 /// Label of the P1 rework task filed on a drift verdict (design: `drift-fix`).
-pub const DRIFT_FIX_LABEL: &str = "drift-fix";
+///
+/// Single-sourced from the task-queue adapter so the review gate and the ready
+/// predicate can never disagree on the exclusion label.
+pub const DRIFT_FIX_LABEL: &str = agalma_taskqueue::DRIFT_FIX_LABEL;
 /// Epic label marking an unresolved review drift (the dispatch hold).
 pub const REVIEW_DRIFT_LABEL: &str = "review-drift";
 /// Epic label marking a passing review (terminal).
@@ -74,9 +77,6 @@ pub const REVIEW_ATTEMPTS_PREFIX: &str = "review-attempts:";
 pub const REVIEW_ATTEMPT_PREFIX: &str = "review-attempt:";
 /// Priority of the drift-fix rework task (P1).
 pub const DRIFT_FIX_PRIORITY: u8 = 1;
-/// Defer date for the drift-fix task: it is a rework/human artifact, never
-/// ordinary fleet work, so it is hidden from `bd ready` by construction.
-pub const DRIFT_FIX_DEFER: &str = "2099-01-01";
 /// Failed reviews tolerated before human escalation.
 pub const MAX_REVIEW_RETRIES: usize = 3;
 
@@ -525,13 +525,16 @@ fn apply_verdict(
                 Some(task) => task.id,
                 None => {
                     let labels = [DRIFT_FIX_LABEL, tag.as_str()];
+                    // Rework bookkeeping, excluded from *factory* readiness by
+                    // its `drift-fix` label — never by a sentinel defer date
+                    // (native `bd ready` does not exclude the label intrinsically).
                     queue.create_task(
                         &format!("drift-fix: {epic}"),
                         &description,
                         Some(epic),
                         DRIFT_FIX_PRIORITY,
                         &labels,
-                        Some(DRIFT_FIX_DEFER),
+                        None,
                     )?
                 }
             };

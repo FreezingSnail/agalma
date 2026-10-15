@@ -255,6 +255,13 @@ Contract-only or isolated component tests do not establish this end-to-end claim
   Recovery never reconstructs historical acceptance from current bd contents.
 - Automatic task release requires a durable directive-authorized receipt and
   revalidation at claim. A cleared defer date or model-authored label is not authority.
+- Human execution authorization for a staged planner/queue child is a native
+  human execution-approval gate: labels `human,execution-approval`, metadata
+  `approval_for=<child>`, and a direct `blocks` edge, resolved only by an
+  explicit human `bd gate resolve`. Decomposition approval, the `staged` label,
+  and a cleared defer date grant no execution authority; `defer` is deliberate
+  postponement. Missing, conflicting, or malformed gate associations fail
+  closed.
 - Use SHA-256 for immutable package/evidence integrity, inspected request paths
   for bounded inference, and separate cash/quota/local resource accounting.
 - A binary rollback never rewinds the live ledger schema. Core activation and

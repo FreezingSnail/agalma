@@ -99,8 +99,10 @@ Release policy checks active directive, target/class allowlist, decomposition
 approval, complete immutable inputs, closed blockers, scope/protected constraints,
 role eligibility and remaining directive/task budgets. It records the exact
 decision and reason before changing the queue projection. Projection is
-reconcilable; a cleared defer date alone is not trusted automation authority.
-Bootstrap Rust and arbitrary executable plugins remain under their existing gates.
+reconcilable; a cleared defer date, a validator `decomp-approved` label, or a
+resolved bootstrap human gate alone is not trusted automation authority.
+Bootstrap Rust and arbitrary executable plugins remain under their existing gates
+(the native human execution-approval gate for staged children).
 
 | Key | Owns | Behavioral acceptance |
 |---|---|---|
@@ -209,7 +211,8 @@ these accepted architecture and standup contracts govern new production work.
 
 Each implementation child owns one row above, its public surface and a named
 behavioral integration test. Use the CP headings, rich notes, factory intake,
-explicit dependency edges, structural difficulty and staged defer. Cross-epic
+explicit dependency edges, structural difficulty, the `staged` label, and a
+native human execution-approval gate. Cross-epic
 dependencies must be real bd edges even when MACHINE consumes resolves only
 sibling symbols. The runtime design gate must validate the actual predecessor
 contracts and these resource/default values before those later children release.

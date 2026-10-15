@@ -328,8 +328,14 @@ fn projection_tamper_with_preserved_history_refuses_with_zero_effects() {
 
     {
         let observed = Rc::new(RefCell::new(Observed::default()));
-        let mut executor =
-            build_executor(open(&db), &task, "ACCEPT-A", &ws, &observed, ProbeMode::File);
+        let mut executor = build_executor(
+            open(&db),
+            &task,
+            "ACCEPT-A",
+            &ws,
+            &observed,
+            ProbeMode::File,
+        );
         exec = executor.start(&task).expect("start");
         drive_to(&mut executor, &exec, ExecutionPhase::Build);
     }
@@ -341,8 +347,14 @@ fn projection_tamper_with_preserved_history_refuses_with_zero_effects() {
     tamper_phase(&db, &exec, "verify");
 
     let observed = Rc::new(RefCell::new(Observed::default()));
-    let mut executor =
-        build_executor(open(&db), &task, "ACCEPT-A", &ws, &observed, ProbeMode::File);
+    let mut executor = build_executor(
+        open(&db),
+        &task,
+        "ACCEPT-A",
+        &ws,
+        &observed,
+        ProbeMode::File,
+    );
     let err = executor
         .recover_execution(&exec)
         .expect_err("tampered projection must refuse the gate");
@@ -358,7 +370,10 @@ fn projection_tamper_with_preserved_history_refuses_with_zero_effects() {
     assert_eq!(effects(&ws), before, "zero subsequent effects after tamper");
     assert!(observed.borrow().executed.is_empty(), "no fresh effect ran");
 
-    let pending = executor.ledger().pending_intents().expect("pending intents");
+    let pending = executor
+        .ledger()
+        .pending_intents()
+        .expect("pending intents");
     assert_eq!(pending.len(), 1, "only the build intent is pending");
     assert_eq!(
         pending[0].operation_id,
@@ -393,15 +408,27 @@ fn scoped_recovery_uses_each_tasks_own_context() {
 
     {
         let observed = Rc::new(RefCell::new(Observed::default()));
-        let mut executor =
-            build_executor(open(&db), &task_a, "ACCEPT-A", &ws_a, &observed, ProbeMode::File);
+        let mut executor = build_executor(
+            open(&db),
+            &task_a,
+            "ACCEPT-A",
+            &ws_a,
+            &observed,
+            ProbeMode::File,
+        );
         exec_a = executor.start(&task_a).expect("start A");
         drive_to(&mut executor, &exec_a, ExecutionPhase::Build);
     }
     {
         let observed = Rc::new(RefCell::new(Observed::default()));
-        let mut executor =
-            build_executor(open(&db), &task_b, "ACCEPT-B", &ws_b, &observed, ProbeMode::File);
+        let mut executor = build_executor(
+            open(&db),
+            &task_b,
+            "ACCEPT-B",
+            &ws_b,
+            &observed,
+            ProbeMode::File,
+        );
         exec_b = executor.start(&task_b).expect("start B");
         drive_to(&mut executor, &exec_b, ExecutionPhase::Build);
     }
@@ -411,8 +438,14 @@ fn scoped_recovery_uses_each_tasks_own_context() {
     // A). If the gate were the global `recover()`, it would probe B's intent
     // through A's activity and the task-scoped assertion would panic.
     let obs_rec = Rc::new(RefCell::new(Observed::default()));
-    let mut executor_a =
-        build_executor(open(&db), &task_a, "ACCEPT-A", &ws_a, &obs_rec, ProbeMode::File);
+    let mut executor_a = build_executor(
+        open(&db),
+        &task_a,
+        "ACCEPT-A",
+        &ws_a,
+        &obs_rec,
+        ProbeMode::File,
+    );
     executor_a
         .recover_execution(&exec_a)
         .expect("scoped recovery of A");
@@ -423,7 +456,10 @@ fn scoped_recovery_uses_each_tasks_own_context() {
     );
 
     // B is untouched by A's scoped recovery.
-    let pending = executor_a.ledger().pending_intents().expect("pending intents");
+    let pending = executor_a
+        .ledger()
+        .pending_intents()
+        .expect("pending intents");
     assert!(
         pending.iter().any(|intent| intent.execution_id == exec_b
             && intent.operation_id == OperationId::derive(&exec_b, "build@1")),
@@ -437,8 +473,14 @@ fn scoped_recovery_uses_each_tasks_own_context() {
     ));
 
     let obs_rec_b = Rc::new(RefCell::new(Observed::default()));
-    let mut executor_b =
-        build_executor(open(&db), &task_b, "ACCEPT-B", &ws_b, &obs_rec_b, ProbeMode::File);
+    let mut executor_b = build_executor(
+        open(&db),
+        &task_b,
+        "ACCEPT-B",
+        &ws_b,
+        &obs_rec_b,
+        ProbeMode::File,
+    );
     executor_b
         .recover_execution(&exec_b)
         .expect("scoped recovery of B");
@@ -492,8 +534,14 @@ fn crash_after_effect_reconciles_without_repetition() {
 
     {
         let observed = Rc::new(RefCell::new(Observed::default()));
-        let mut executor =
-            build_executor(open(&db), &task, "ACCEPT-A", &ws, &observed, ProbeMode::File);
+        let mut executor = build_executor(
+            open(&db),
+            &task,
+            "ACCEPT-A",
+            &ws,
+            &observed,
+            ProbeMode::File,
+        );
         exec = executor.start(&task).expect("start");
         drive_to(&mut executor, &exec, ExecutionPhase::Build);
     }
@@ -504,8 +552,14 @@ fn crash_after_effect_reconciles_without_repetition() {
     assert_eq!(before.len(), 3, "intake + checkout + landed build effect");
 
     let observed = Rc::new(RefCell::new(Observed::default()));
-    let mut executor =
-        build_executor(open(&db), &task, "ACCEPT-A", &ws, &observed, ProbeMode::File);
+    let mut executor = build_executor(
+        open(&db),
+        &task,
+        "ACCEPT-A",
+        &ws,
+        &observed,
+        ProbeMode::File,
+    );
     executor
         .recover_execution(&exec)
         .expect("recovery reconciles the landed effect");
@@ -534,7 +588,9 @@ fn crash_after_effect_reconciles_without_repetition() {
     assert_eq!(receipt.operation_id, build_op);
     let events = executor.ledger().events(&exec).expect("events");
     assert!(
-        events.iter().any(|event| event.kind == "operation_reconciled"),
+        events
+            .iter()
+            .any(|event| event.kind == "operation_reconciled"),
         "a reconciled operation event is recorded"
     );
     assert_eq!(
@@ -559,8 +615,14 @@ fn ambiguous_survivor_parks_and_prevents_redispatch() {
 
     {
         let observed = Rc::new(RefCell::new(Observed::default()));
-        let mut executor =
-            build_executor(open(&db), &task, "ACCEPT-A", &ws, &observed, ProbeMode::File);
+        let mut executor = build_executor(
+            open(&db),
+            &task,
+            "ACCEPT-A",
+            &ws,
+            &observed,
+            ProbeMode::File,
+        );
         exec = executor.start(&task).expect("start");
         drive_to(&mut executor, &exec, ExecutionPhase::Build);
     }
@@ -600,13 +662,20 @@ fn ambiguous_survivor_parks_and_prevents_redispatch() {
         observed.borrow().executed.is_empty(),
         "no dispatch under ambiguity"
     );
-    assert!(observed.borrow().terminated.is_empty(), "no survivor terminated");
+    assert!(
+        observed.borrow().terminated.is_empty(),
+        "no survivor terminated"
+    );
 
     match executor.step(&exec).expect("step") {
         StepOutcome::Parked { .. } => {}
         other => panic!("ambiguous survivor must prevent redispatch, got {other:?}"),
     }
-    assert_eq!(effects(&ws), before, "no effect after the refused redispatch");
+    assert_eq!(
+        effects(&ws),
+        before,
+        "no effect after the refused redispatch"
+    );
     assert!(
         executor
             .ledger()
@@ -649,7 +718,11 @@ fn run_ok(program: &str, dir: &Path, args: &[&str]) {
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .unwrap_or_else(|e| panic!("spawn {program} {args:?}: {e}"));
-    assert!(out.status.success(), "{program} {args:?}: {}", stderr_of(&out));
+    assert!(
+        out.status.success(),
+        "{program} {args:?}: {}",
+        stderr_of(&out)
+    );
 }
 
 fn assert_aborted(status: &std::process::ExitStatus) {
@@ -681,7 +754,11 @@ impl Prod {
         .expect("seed source");
 
         run_ok("git", &origin, &["init", "-q", "-b", "main"]);
-        run_ok("git", &origin, &["config", "user.email", "agalma@localhost"]);
+        run_ok(
+            "git",
+            &origin,
+            &["config", "user.email", "agalma@localhost"],
+        );
         run_ok("git", &origin, &["config", "user.name", "Agalma"]);
         run_ok("git", &origin, &["add", "-A"]);
         run_ok("git", &origin, &["commit", "-qm", "seed"]);
@@ -745,7 +822,45 @@ impl Prod {
             "--json",
         ]);
         let value: Value = serde_json::from_str(&stdout).expect("bd create json");
-        value["id"].as_str().expect("created id").to_string()
+        let id = value["id"].as_str().expect("created id").to_string();
+        self.protect(&id);
+        id
+    }
+
+    /// Write/merge the operator `ProtectedInputs/v1` entry for `task_id` (SF.6).
+    fn protect(&self, task_id: &str) {
+        let root = fs::canonicalize(&self.origin).expect("canonical origin");
+        let marker = "ok\n";
+        let entry = json!({
+            "task_id": task_id,
+            "repository_root": root.to_string_lossy(),
+            "base_sha": self.head(),
+            "allowed_paths": ["src"],
+            "protected_paths": ["tests"],
+            "baseline": {
+                "format": "ProtectedBaseline/v1",
+                "files": [{
+                    "path": "protected/marker.txt",
+                    "mode": "100644",
+                    "digest": agalma_contracts::digest::sha256_digest(marker.as_bytes()),
+                    "bytes": marker.len() as u64,
+                    "text": marker,
+                }],
+                "commands": ["sh -c 'true'"],
+            },
+        });
+        let path = self.state_dir.join("protected-inputs.json");
+        let mut entries: Vec<Value> = fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .and_then(|v| v.get("entries").cloned())
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default();
+        entries.retain(|e| e.get("task_id").and_then(Value::as_str) != Some(task_id));
+        entries.push(entry);
+        fs::create_dir_all(&self.state_dir).expect("state dir");
+        let doc = json!({ "format": "ProtectedInputs/v1", "entries": entries });
+        fs::write(&path, serde_json::to_vec_pretty(&doc).expect("json")).expect("write manifest");
     }
 
     /// Run `agalma work --once` against the scratch origin in scripted mode.
@@ -945,7 +1060,9 @@ fn work_gate_parks_tampered_projection_without_effects() {
         "the gate reports the projection disagreement: {stderr}"
     );
     // The same reason is persisted durably by the recovery park event.
-    let reason = prod.park_reason(&exec).expect("a persisted recovery park event");
+    let reason = prod
+        .park_reason(&exec)
+        .expect("a persisted recovery park event");
     assert!(
         reason.contains("reconstructed state disagrees with projection"),
         "persisted park reason names the disagreement: {reason}"
@@ -1000,17 +1117,27 @@ fn work_recovery_uses_each_tasks_frozen_acceptance() {
     let exec_a = format!("exec:{a}:1");
     assert!(prod.admitted(&exec_a).is_some());
 
-    // Add task B; this boot first recovers A from its own frozen package, then
-    // crashes B at admission: A done, B non-terminal.
+    // A boot with no other task recovers A from its own frozen package to done
+    // (integrating A moves `main`).
+    let boot_a = prod.work(&[]);
+    assert!(
+        boot_a.status.success(),
+        "recover A: {}\n{}",
+        stdout_of(&boot_a),
+        stderr_of(&boot_a)
+    );
+    assert_eq!(
+        prod.execution_phase(&exec_a),
+        ("done".to_string(), "completed".to_string()),
+        "A was recovered and completed"
+    );
+
+    // The operator registers B against the *post-A* origin SHA (fail-closed base
+    // matching is preserved), then crashes B's admission: B non-terminal.
     let b = prod.create_task("Frozen B", "ACCEPT_B");
     let crash_b = prod.work(&[("AGALMA_PACKAGE_CRASH_AT", "after_admit")]);
     assert_aborted(&crash_b.status);
     let exec_b = format!("exec:{b}:1");
-    assert_eq!(
-        prod.execution_phase(&exec_a),
-        ("done".to_string(), "completed".to_string()),
-        "A was recovered and completed in the second boot"
-    );
     assert_eq!(
         prod.execution_phase(&exec_b),
         ("intake".to_string(), "running".to_string()),

@@ -383,6 +383,54 @@ fn integrate_origin_wrong_expected_is_conflict_and_leaves_main() {
     );
 }
 
+/// SF.6: the distinct verified integration accepts the verified candidate.
+#[test]
+fn integrate_origin_verified_merges_the_verified_candidate() {
+    let (_dir, origin, seed) = seed_origin("repo-verified-ok");
+    let base_dir = origin.parent().unwrap().to_path_buf();
+    let mut ws = Workspace::new(&base_dir);
+    let exec = ExecutionId::new("exec:fix-answer:1");
+
+    let checkout = ws.prepare_repo(&origin, "main", &exec, &base_dir).unwrap();
+    write_fix(&checkout.path);
+    let verified = ws.commit_candidate(&checkout).unwrap();
+
+    let receipt = ws
+        .integrate_origin_verified(&checkout, &origin, &checkout.base_sha, &verified)
+        .unwrap();
+    assert_eq!(receipt.expected_main_sha, seed);
+    assert_eq!(receipt.candidate_sha, verified);
+    assert_eq!(git(&origin, &["rev-parse", "refs/heads/main"]), verified);
+}
+
+/// SF.6: a dirty/untracked change made after verification must not ship — the
+/// candidate committed at integration differs from the verified SHA and the
+/// merge boundary refuses without moving `main`.
+#[test]
+fn integrate_origin_verified_refuses_candidate_changed_after_verify() {
+    let (_dir, origin, seed) = seed_origin("repo-candidate-drift");
+    let base_dir = origin.parent().unwrap().to_path_buf();
+    let mut ws = Workspace::new(&base_dir);
+    let exec = ExecutionId::new("exec:fix-answer:1");
+
+    let checkout = ws.prepare_repo(&origin, "main", &exec, &base_dir).unwrap();
+    write_fix(&checkout.path);
+    let verified = ws.commit_candidate(&checkout).unwrap();
+
+    // The candidate changes again (tracked or untracked) after verification.
+    fs::write(Path::new(&checkout.path).join("src/extra.rs"), "// later\n").unwrap();
+
+    let err = ws
+        .integrate_origin_verified(&checkout, &origin, &checkout.base_sha, &verified)
+        .unwrap_err();
+    assert!(matches!(err, ContractError::Conflict(_)), "got {err:?}");
+    assert_eq!(
+        git(&origin, &["rev-parse", "refs/heads/main"]),
+        seed,
+        "main unchanged when the candidate drifted after verify"
+    );
+}
+
 #[test]
 fn origin_receipt_detects_landed_merge_without_reintegrating() {
     let (_dir, origin, seed) = seed_origin("repo-reconcile");

@@ -63,6 +63,7 @@ use crate::phases::{
 };
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
 use crate::routing::{self, RouteSelection};
+use crate::scope_guard::ProtectedInputs;
 use crate::stop::{BoundStopControl, StopControl};
 use crate::task_package::{
     build_package, gather_admission_context, legacy_park, load_admitted_package,
@@ -132,11 +133,9 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
     // binding (`agalma-5fy.5`): a lost/partial established ledger refuses here,
     // never recreated. The same bound control is shared with the sweep, the
     // review gate, the work loop and the phase polls.
-    let ledger = crate::ledger_process::open_admission_ledger(
-        &state_dir,
-        LedgerTransport::from_env(),
-    )
-    .map_err(ContractError::KnownFailure)?;
+    let ledger =
+        crate::ledger_process::open_admission_ledger(&state_dir, LedgerTransport::from_env())
+            .map_err(ContractError::KnownFailure)?;
     {
         let version = ledger.schema_version()?;
         if version != LEDGER_SCHEMA_VERSION {
@@ -509,15 +508,7 @@ fn run_task(
     // reference with activation in one atomic batch. No dispatch intent precedes
     // package admission.
     let (persisted, admission) = admit_task(
-        state_dir,
-        repo,
-        task,
-        &execution,
-        generation,
-        lease,
-        &plan,
-        &harness,
-        evidence,
+        state_dir, repo, task, &execution, generation, lease, &plan, &harness, evidence,
     )?;
     lifecycle.activate(&preparation, admission)?;
     package_crash("after_admit");
@@ -612,7 +603,9 @@ pub fn resolve_paid_profile(
         ))
     })?;
     let profile: ProviderRequestProfile = serde_json::from_str(&text).map_err(|e| {
-        ContractError::KnownFailure(format!("paid dispatch denied: budget profile {path} invalid: {e}"))
+        ContractError::KnownFailure(format!(
+            "paid dispatch denied: budget profile {path} invalid: {e}"
+        ))
     })?;
     // An unknown/unsupported price bound (`n != 1`, overflow) is unusable.
     profile.reservation_nusd().map_err(|e| {
@@ -901,9 +894,7 @@ fn drive_task(
                 return Ok(Terminal::Blocked);
             }
             crate::stop::StopDecision::Unavailable(reason) => {
-                eprintln!(
-                    "agalma: stop state unavailable ({reason}); halting without projection"
-                );
+                eprintln!("agalma: stop state unavailable ({reason}); halting without projection");
                 return Ok(Terminal::Blocked);
             }
         }
@@ -1034,16 +1025,18 @@ fn recover_inflight(
         // Recovery reads the frozen package; it never refreshes the definition
         // from bd. No admission reference -> explicit legacy park.
         let reference = admission_digest(ledger, &record.execution_id)?;
-        let package =
-            match load_frozen_or_legacy(state_dir, reference.as_deref(), record.execution_id.as_str())
-            {
-                Ok(package) => package,
-                Err(err) => {
-                    eprintln!("agalma: recovery parks {}: {err}", record.execution_id);
-                    park_execution(ledger, &record, &err.to_string(), queue)?;
-                    continue;
-                }
-            };
+        let package = match load_frozen_or_legacy(
+            state_dir,
+            reference.as_deref(),
+            record.execution_id.as_str(),
+        ) {
+            Ok(package) => package,
+            Err(err) => {
+                eprintln!("agalma: recovery parks {}: {err}", record.execution_id);
+                park_execution(ledger, &record, &err.to_string(), queue)?;
+                continue;
+            }
+        };
 
         if package.execution_id != record.execution_id.as_str() {
             let reason = format!(
@@ -1169,7 +1162,14 @@ fn settle_cancelled_execution(
     record: &ExecutionRecord,
 ) -> Result<(), ContractError> {
     let (mut executor, _role_proxies) = match build_recovery_executor(
-        ledger, state_dir, repo, paid_available, proxy_url, harness, stop, record,
+        ledger,
+        state_dir,
+        repo,
+        paid_available,
+        proxy_url,
+        harness,
+        stop,
+        record,
     ) {
         Ok(pair) => pair,
         Err(err) => {
@@ -1315,6 +1315,17 @@ fn admit_task(
     let definitions = BdTaskQueue::new(repo);
     let definition = definitions.task_definition(&task.task_id)?;
     let context = gather_admission_context(repo, &definitions, &definition)?;
+    let base_sha = resolve_base_sha(repo, &task.base_ref)?;
+    // SF.6: the protected verification inputs are operator-supplied in
+    // `<state_dir>/protected-inputs.json` and frozen whole as `scope.oracle`.
+    // Missing/mismatched inputs stop repository work; a repository file or task
+    // text never authorizes an unprotected repository execution.
+    let repository_root = repo.to_string_lossy().into_owned();
+    let protected = ProtectedInputs::load(state_dir)?;
+    let entry = protected.select(task.task_id.as_str(), &repository_root, &base_sha)?;
+    let oracle_bytes = entry.freeze()?;
+    let allowed_paths = entry.allowed_paths.clone();
+    let protected_paths = entry.protected_paths.clone();
     let inputs = PackageInputs {
         execution_id: execution.as_str().to_string(),
         generation: generation as u64,
@@ -1323,7 +1334,7 @@ fn admit_task(
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "agalma".to_string()),
-        base_sha: resolve_base_sha(repo, &task.base_ref)?,
+        base_sha,
         directive: directive_ref(task),
         authorization: authorization_input(task, evidence),
         roles: role_inputs(plan, harness, generation)?,
@@ -1331,11 +1342,11 @@ fn admit_task(
         shared_design: context.shared_design,
         parent_design: context.parent_design,
         dependency_handoffs: context.dependency_handoffs,
-        allowed_paths: Vec::new(),
-        protected_paths: Vec::new(),
+        allowed_paths,
+        protected_paths,
         readable_artifacts: Vec::new(),
-        oracle_bytes: Vec::new(),
-        oracle_media_type: "text/plain".to_string(),
+        oracle_bytes,
+        oracle_media_type: "application/json".to_string(),
         max_attempts: task.max_attempts as u64,
         allowance_nusd: budget_nusd(task.budget_usd),
         quota_policy_digest: sha256_digest(b"quota-policy/v1:unknown-usage-deny"),
@@ -1412,7 +1423,10 @@ fn park_execution(
 
     let _ = queue.comment(
         &record.task_id,
-        &format!("phase=parked execution={} recovery-park", record.execution_id),
+        &format!(
+            "phase=parked execution={} recovery-park",
+            record.execution_id
+        ),
     );
     let _ = queue.set_status(&record.task_id, "blocked");
     let _ = queue.add_label(&record.task_id, PARKED_LABEL);
@@ -1421,10 +1435,7 @@ fn park_execution(
 }
 
 /// Read the frozen builder prompt bytes from a package.
-fn builder_prompt_bytes(
-    state_dir: &Path,
-    package: &TaskPackage,
-) -> Result<Vec<u8>, ContractError> {
+fn builder_prompt_bytes(state_dir: &Path, package: &TaskPackage) -> Result<Vec<u8>, ContractError> {
     let builder = package
         .roles
         .iter()

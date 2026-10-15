@@ -16,7 +16,7 @@
 //!   output is captured under `<state>/runs/<exec>/artifacts/`. In repo mode
 //!   (M1) the candidate working tree is committed on the candidate branch, a
 //!   **pristine** verification checkout is cloned at that SHA under
-//!   `<run>/verify/` (its own Git metadata), and each task acceptance command
+//!   `<run>/verify-checkout/` (its own Git metadata), and each task acceptance command
 //!   runs there as its own bounded launch (`accept@<attempt>-<n>.txt`).
 //! - `integrate`: [`WorkspaceApi::integrate`] compare-and-updates `main` and
 //!   tags `m0/<exec>`. Recovery detects an already-landed merge from Git state
@@ -55,8 +55,8 @@ use agalma_contracts::ids::{ArtifactRef, AttemptId};
 use agalma_contracts::sandbox::LaunchSpec;
 use agalma_contracts::{
     Checkout, ContextItem, ContextKind, ContractError, DecisionApi, DecisionAttempt, DecisionKind,
-    DecisionOption, DecisionPin, DecisionRequest, LedgerApi, OperationId, TaskPackage, WorkspaceApi,
-    DECISION_API_VERSION,
+    DecisionOption, DecisionPin, DecisionRequest, LedgerApi, OperationId, TaskPackage,
+    WorkspaceApi, DECISION_API_VERSION,
 };
 use agalma_decision::{StaticDecider, RETRY_ESCALATE_BASELINE};
 use agalma_execution::{
@@ -71,6 +71,7 @@ use serde_json::json;
 use crate::harness_binding::{self, HarnessHandle, HarnessKind};
 use crate::harness_process::{self, HarnessTransport, LiveHarness, OpenCodeHarnessInit};
 use crate::sandbox_process::SandboxSource;
+use crate::scope_guard::{self, CandidatePin, DeniedChange, ScopeEvidence, ScopePolicy};
 use crate::stop::StopControl;
 use crate::workers::{self, Survivor};
 use crate::workspace_process::WorkspaceHandle;
@@ -298,6 +299,293 @@ fn checkout_artifact_path(state_dir: &Path, execution: &agalma_contracts::Execut
 /// `<run>/effects.log` — scripted-mode effect ledger (crash-matrix evidence).
 pub fn effects_log_path(state_dir: &Path, execution: &agalma_contracts::ExecutionId) -> PathBuf {
     run_root(state_dir, execution).join("effects.log")
+}
+
+/// `<state>/scope-pins/<exec>.json` — the immutable verification pin written by
+/// a green repo-mode verify and revalidated before integration (SF.6).
+///
+/// Deliberately **outside** `<state>/runs/<exec>` (the sandbox `ATTEMPT`,
+/// which the child may write): a read-only `PROTECTED` allowance does not revoke
+/// the parent writable grant over `ATTEMPT`, so the pin must live outside all
+/// child writable roots.
+pub fn scope_pin_path(state_dir: &Path, execution: &agalma_contracts::ExecutionId) -> PathBuf {
+    state_dir.join("scope-pins").join(format!(
+        "{}.json",
+        agalma_workspace::execution_dir_name(execution)
+    ))
+}
+
+/// `<state>/scope-evidence/<exec>@<attempt>.json` — scope/oracle evidence for
+/// one verify attempt (outside `<state>/runs/<exec>`).
+fn scope_evidence_path(
+    state_dir: &Path,
+    execution: &agalma_contracts::ExecutionId,
+    attempt: u32,
+) -> PathBuf {
+    state_dir.join("scope-evidence").join(format!(
+        "{}@{attempt}.json",
+        agalma_workspace::execution_dir_name(execution)
+    ))
+}
+
+/// `<run>/build-runtime` — the builder child's narrow sandbox `ATTEMPT` root.
+///
+/// SF.6: parent markers/receipts live under `<run>/<phase>/`, outside this
+/// narrow root, so a confined builder cannot overwrite a parent completion or
+/// worker marker. The checkout the model edits is granted separately.
+pub fn builder_runtime_dir(state_dir: &Path, execution: &agalma_contracts::ExecutionId) -> PathBuf {
+    run_root(state_dir, execution).join("build-runtime")
+}
+
+/// `<run>/verify-runtime` — the verifier child's narrow sandbox `ATTEMPT` root
+/// (shared by the acceptance run and the live diagnosis session).
+pub fn verify_runtime_dir(state_dir: &Path, execution: &agalma_contracts::ExecutionId) -> PathBuf {
+    run_root(state_dir, execution).join("verify-runtime")
+}
+
+/// Production builder child config (SF.6).
+///
+/// The sandbox `ATTEMPT` is the narrow `build-runtime`; the whole run root is
+/// granted **read-only** via `protected_dir` so the builder can read its prompt
+/// and the retry context without granting `<run>` writable; the checkout is the
+/// only extra writable root. All supplied RO roots are preserved.
+pub fn builder_config_init(
+    deps: &PhaseDeps,
+    checkout: &Checkout,
+    execution: &agalma_contracts::ExecutionId,
+) -> Result<OpenCodeConfigInit, ActivityError> {
+    let root = run_root(&deps.state_dir, execution);
+    std::fs::create_dir_all(&root)
+        .map_err(|e| ActivityError::KnownFailure(format!("create run root: {e}")))?;
+    let runtime = canonical_dir(&builder_runtime_dir(&deps.state_dir, execution))?;
+    let protected = canonical_dir(&root)?;
+    let sock = canonical_dir(&runtime.join("sock"))?;
+    let mut env = deps.toolchain_env.clone();
+    env.insert(
+        "CARGO_HOME".to_string(),
+        ensure_cargo_home(&runtime)?.to_string_lossy().into_owned(),
+    );
+    // Keep build artifacts out of the checkout so the candidate commit is the
+    // source change, not a multi-megabyte `target/` tree.
+    env.insert(
+        "CARGO_TARGET_DIR".to_string(),
+        runtime.join("agent-target").to_string_lossy().into_owned(),
+    );
+    Ok(OpenCodeConfigInit {
+        profile_path: deps.profile_path.clone(),
+        attempt_dir: runtime,
+        protected_dir: protected,
+        sock_dir: sock,
+        model: deps.model.clone(),
+        proxy_url: deps.proxy_url.clone(),
+        paid_proxy: deps.paid_proxy,
+        extra_ro_roots: deps.extra_ro_roots.clone(),
+        extra_rw_roots: vec![PathBuf::from(&checkout.path)],
+        extra_env: env,
+    })
+}
+
+/// Production verifier-diagnosis child config (SF.6).
+///
+/// The sandbox `ATTEMPT` is the narrow `verify-runtime`; the run root is granted
+/// **read-only** via `protected_dir`, so the diagnosis child can read the
+/// checkout and the diff/failure inputs, and the prompt, without any parent
+/// marker being writable and without consuming an `EXTRA_RO` slot. All supplied
+/// RO roots are preserved (no truncation).
+pub fn verifier_config_init(
+    deps: &PhaseDeps,
+    _checkout: &Checkout,
+    execution: &agalma_contracts::ExecutionId,
+) -> Result<OpenCodeConfigInit, ActivityError> {
+    let root = run_root(&deps.state_dir, execution);
+    let runtime = canonical_dir(&verify_runtime_dir(&deps.state_dir, execution))?;
+    let protected = canonical_dir(&root)?;
+    let sock = canonical_dir(&runtime.join("sock"))?;
+    Ok(OpenCodeConfigInit {
+        profile_path: deps.profile_path.clone(),
+        attempt_dir: runtime,
+        protected_dir: protected,
+        sock_dir: sock,
+        model: deps.verifier_model.clone(),
+        proxy_url: deps
+            .verifier_proxy_url
+            .clone()
+            .or_else(|| deps.proxy_url.clone()),
+        paid_proxy: deps.paid_proxy,
+        extra_ro_roots: deps.extra_ro_roots.clone(),
+        extra_rw_roots: Vec::new(),
+        extra_env: deps.toolchain_env.clone(),
+    })
+}
+
+/// `<state>/protected/<exec>` — the read-only protected baseline root.
+///
+/// Outside `<state>/runs/<exec>` (the candidate/child writable tree), so a
+/// protected command running under the sandbox cannot write the judge or the
+/// parent pin state.
+pub fn protected_root(state_dir: &Path, execution: &agalma_contracts::ExecutionId) -> PathBuf {
+    state_dir
+        .join("protected")
+        .join(agalma_workspace::execution_dir_name(execution))
+}
+
+/// The scope/protected-baseline result for one candidate verify attempt (SF.6).
+struct CandidateGuard {
+    evidence: ScopeEvidence,
+    denial: bool,
+    /// Missing/invalid required inputs `park` (refuse); a scope denial is `red`
+    /// (red retry, which exhausts to a park).
+    park: bool,
+    /// Why it was refused (denied paths, invalid policy, missing baseline).
+    reason: String,
+    /// The validated protected baseline (files + commands), when authorized.
+    baseline: Option<scope_guard::ProtectedBaseline>,
+}
+
+/// Authorize the candidate change set and materialize the immutable protected
+/// baseline (SF.6).
+///
+/// Always returns `Ok(Some(..))`: repository verification is **fail-closed**. A
+/// missing recorded package, an invalid/unenforced policy, or a missing/opaque
+/// baseline all refuse (park) rather than running an unprotected judge. The
+/// admission source for these inputs is the operator `ProtectedInputs/v1`
+/// manifest (`<state_dir>/protected-inputs.json`) frozen whole into the
+/// package's `scope.oracle`; M0 fixture mode (`repo == None`) does not reach
+/// this seam and stays a separate path.
+///
+/// - an **invalid recorded policy** refuses (no fail-open);
+/// - the candidate's typed change set is authorized against the frozen scope
+///   with **real symlink resolution** against the pinned candidate tree (deny
+///   wins);
+/// - a valid baseline's files are materialized into a **separate read-only
+///   protected root outside the candidate tree** (never restored into the
+///   candidate), so the *frozen* acceptance — run through `SandboxApi` in the
+///   acceptance path, with the protected root as the read-only judge — is the
+///   authority.
+impl VerifyActivity {
+    fn guard_candidate(
+        &self,
+        ctx: &OperationContext,
+        checkout: &Checkout,
+        verify_dir: &Path,
+        candidate_sha: &str,
+        package: Option<&agalma_contracts::TaskPackage>,
+    ) -> Result<Option<CandidateGuard>, ActivityError> {
+        // Repository verification is fail-closed: a missing recorded package,
+        // an unenforced (empty) policy, or a missing/invalid protected baseline
+        // all REFUSE (park) rather than running an unprotected judge. The inputs
+        // come from the operator `ProtectedInputs/v1` manifest frozen into the
+        // package's `scope.oracle`; M0 fixture mode (`repo == None`) does not
+        // reach this seam and stays separate.
+        let Some(package) = package else {
+            return Ok(Some(CandidateGuard {
+                evidence: ScopeEvidence {
+                    candidate_sha: candidate_sha.to_string(),
+                    package_digest: String::new(),
+                    oracle_digest: None,
+                    baseline_files: 0,
+                    denied_paths: Vec::new(),
+                },
+                baseline: None,
+                denial: true,
+                park: true,
+                reason: "repository verification requires a recorded TaskPackage; none is admitted"
+                    .to_string(),
+            }));
+        };
+        let mut evidence = ScopeEvidence {
+            candidate_sha: candidate_sha.to_string(),
+            package_digest: package.package_digest.clone(),
+            oracle_digest: None,
+            baseline_files: 0,
+            denied_paths: Vec::new(),
+        };
+
+        // Finding 4: an invalid recorded policy refuses before any effect.
+        let policy = match ScopePolicy::from_scope(&package.scope) {
+            Ok(policy) => policy,
+            Err(err) => {
+                evidence.denied_paths.push(DeniedChange {
+                    path: err.entry.clone(),
+                    code: "invalid_policy".to_string(),
+                    detail: err.detail.clone(),
+                });
+                return Ok(Some(CandidateGuard {
+                    evidence,
+                    baseline: None,
+                    denial: true,
+                    park: true,
+                    reason: format!("invalid recorded scope policy: {err}"),
+                }));
+            }
+        };
+
+        // Finding 1: an unenforced (empty) scope is NOT permission to run
+        // unprotected repository verification; it refuses.
+        if !policy.enforced() {
+            return Ok(Some(CandidateGuard {
+                evidence,
+                baseline: None,
+                denial: true,
+                park: true,
+                reason: "repository verification has no enforced scope policy; refusing to run \
+                         an unprotected judge"
+                    .to_string(),
+            }));
+        }
+
+        let changes = self
+            .workspace
+            .borrow()
+            .changes(checkout)
+            .map_err(contract_err)?;
+        let report = policy.authorize_in_tree(&changes, verify_dir);
+        evidence.denied_paths = report.denied.clone();
+        if report.is_denied() {
+            return Ok(Some(CandidateGuard {
+                evidence,
+                baseline: None,
+                denial: true,
+                park: false,
+                reason: scope_failure_text(&report.denied),
+            }));
+        }
+
+        // A protected package requires a valid frozen protected entry + baseline;
+        // a missing/invalid one refuses rather than silently skipping the judge.
+        let (bytes, entry) =
+            scope_guard::entry_from_artifact(&self.deps.state_dir, &package.scope.oracle)
+                .map_err(contract_err)?;
+        let baseline = entry.baseline.clone();
+        evidence.oracle_digest = Some(agalma_contracts::digest::sha256_digest(&bytes));
+        evidence.baseline_files = baseline.files.len();
+
+        // Materialize the read-only protected root OUTSIDE the candidate/child
+        // writable tree; the sole judge must never live in a candidate-writable
+        // tree.
+        let protected_root = protected_root(&self.deps.state_dir, &ctx.execution_id);
+        scope_guard::materialize_baseline(&protected_root, &baseline).map_err(contract_err)?;
+
+        Ok(Some(CandidateGuard {
+            evidence,
+            denial: false,
+            park: false,
+            reason: String::new(),
+            baseline: Some(baseline),
+        }))
+    }
+}
+
+/// Render the red-verdict failure text for a denied scope.
+fn scope_failure_text(denied: &[DeniedChange]) -> String {
+    let mut out = format!("candidate scope denied ({} path(s)):\n", denied.len());
+    for denial in denied {
+        out.push_str(&format!(
+            "- {} ({}) {}\n",
+            denial.path, denial.code, denial.detail
+        ));
+    }
+    out
 }
 
 /// Create `path` if needed and return its canonical form (Seatbelt parameters
@@ -636,36 +924,19 @@ impl BuildActivity {
         let root = run_root(&self.deps.state_dir, &ctx.execution_id);
         std::fs::create_dir_all(&root)
             .map_err(|e| ActivityError::KnownFailure(format!("create run root: {e}")))?;
-        let protected = canonical_dir(&root.join("protected"))?;
-        let sock = canonical_dir(&root.join("sock"))?;
         // Parameterize the base builder prompt per attempt: the model sees the
         // task title, the acceptance commands, and the captured failure text (or
         // a verifier diagnosis artifact when M1.3 writes one).
         let prompt_path = write_builder_prompt(&self.deps, &root, ctx)?;
 
-        let mut env = self.deps.toolchain_env.clone();
-        env.insert(
-            "CARGO_HOME".to_string(),
-            ensure_cargo_home(&root)?.to_string_lossy().into_owned(),
-        );
-        // Keep build artifacts out of the checkout so the candidate commit is
-        // the source change, not a multi-megabyte `target/` tree.
-        env.insert(
-            "CARGO_TARGET_DIR".to_string(),
-            root.join("agent-target").to_string_lossy().into_owned(),
-        );
-        let config = build_config(OpenCodeConfigInit {
-            profile_path: self.deps.profile_path.clone(),
-            attempt_dir: root.clone(),
-            protected_dir: protected.clone(),
-            sock_dir: sock.clone(),
-            model: self.deps.model.clone(),
-            proxy_url: self.deps.proxy_url.clone(),
-            paid_proxy: self.deps.paid_proxy,
-            extra_ro_roots: self.deps.extra_ro_roots.clone(),
-            extra_rw_roots: Vec::new(),
-            extra_env: env,
-        });
+        // Production-produced builder config (shared helper, SF.6): narrow
+        // ATTEMPT runtime, run root read-only (PROTECTED), the checkout the only
+        // extra writable root.
+        let config = build_config(builder_config_init(
+            &self.deps,
+            &checkout,
+            &ctx.execution_id,
+        )?);
 
         let sandbox_socket = self.sandbox.ensure().map_err(contract_err)?;
         let transport = HarnessTransport::from_env();
@@ -1296,12 +1567,17 @@ impl VerifyActivity {
             .as_ref()
             .ok_or_else(|| ActivityError::KnownFailure("repo mode required".into()))?;
         let root = run_root(&self.deps.state_dir, &ctx.execution_id);
-        let attempt_dir = canonical_dir(&root)?;
-        let protected = canonical_dir(&root.join("protected"))?;
-        let sock = canonical_dir(&root.join("sock"))?;
-        let tmp = canonical_dir(&root.join("verify-tmp"))?;
-        let home = canonical_dir(&root.join("verify-home"))?;
         let artifacts = canonical_dir(&root.join("artifacts"))?;
+        // SF.6: the verifier's sandbox ATTEMPT is a NARROW runtime root, not the
+        // whole run root. Parent receipt/marker state (`<run>/verify/*.done`,
+        // worker records, `checkout.json`, prompts) and the pins/protected root
+        // all live outside it, so a confined verifier command cannot overwrite a
+        // parent completion/worker marker.
+        let runtime = canonical_dir(&verify_runtime_dir(&self.deps.state_dir, &ctx.execution_id))?;
+        let attempt_dir = runtime.clone();
+        let sock = canonical_dir(&runtime.join("sock"))?;
+        let tmp = canonical_dir(&runtime.join("tmp"))?;
+        let home = canonical_dir(&runtime.join("home"))?;
         mark_started(&self.deps, &ctx.execution_id, "verify", ctx.attempt)?;
 
         // 1. Commit the candidate working tree on the candidate branch. This
@@ -1330,6 +1606,114 @@ impl VerifyActivity {
             .map_err(contract_err)?;
         let verify_dir = canonical_dir(&verify_path)?;
 
+        // SF.6: authorize the candidate change set against the frozen scope,
+        // materialize the immutable protected baseline into a separate read-only
+        // protected root (outside the candidate), and run the *frozen* baseline
+        // commands plus the frozen task acceptance (from the admitted package,
+        // never the live task) so a candidate cannot substitute its own
+        // always-pass tests for the judge. A package that fails to load
+        // (missing/invalid protected entry or disagreement) refuses (parks)
+        // rather than aborting the run.
+        let package = match resolve_recorded_package(&self.deps.state_dir, &ctx.execution_id) {
+            Ok(package) => package,
+            Err(err) => {
+                let reason = format!("protected inputs refused: {err}");
+                eprintln!("agalma: verify attempt {} refused: {reason}", ctx.attempt);
+                let outcome = park_outcome(&reason);
+                workers::write_done(
+                    &self.deps.state_dir,
+                    &ctx.execution_id,
+                    "verify",
+                    ctx.attempt,
+                    &outcome,
+                )?;
+                return Ok(outcome);
+            }
+        };
+        let guard = self.guard_candidate(
+            ctx,
+            &checkout,
+            &verify_dir,
+            &candidate_sha,
+            package.as_ref(),
+        )?;
+        // Commands run in order: the frozen task acceptance, then the frozen
+        // protected baseline commands (the protected judge). Both must pass. A
+        // denied guard returned above, so it has no commands.
+        let mut acceptance: Vec<String> = package
+            .as_ref()
+            .map(|p| p.definition.acceptance.clone())
+            .filter(|cmds| !cmds.is_empty())
+            .unwrap_or_else(|| repo.acceptance.clone());
+        acceptance.extend(
+            guard
+                .as_ref()
+                .and_then(|guard| guard.baseline.as_ref())
+                .map(|baseline| baseline.commands.clone())
+                .unwrap_or_default(),
+        );
+        // The sandbox's read-only protected root: outside `<run>` (ATTEMPT), so
+        // the judge cannot lie in a child writable tree. Canonicalize it for the
+        // sandbox profile parameter.
+        let protected_judge =
+            canonical_dir(&protected_root(&self.deps.state_dir, &ctx.execution_id))?;
+
+        if let Some(guard) = &guard {
+            workers::write_json(
+                &scope_evidence_path(&self.deps.state_dir, &ctx.execution_id, ctx.attempt),
+                &guard.evidence,
+            )?;
+            if guard.denial {
+                let failure_path = artifacts.join(format!("failure@{}.txt", ctx.attempt));
+                std::fs::write(&failure_path, &guard.reason).map_err(|e| {
+                    ActivityError::KnownFailure(format!(
+                        "write scope failure {}: {e}",
+                        failure_path.display()
+                    ))
+                })?;
+                eprintln!(
+                    "agalma: verify attempt {} refused (scope/baseline): {}",
+                    ctx.attempt, guard.reason
+                );
+                // Missing/invalid required inputs park (refuse); a scope denial
+                // is red (retry, exhausting to a park).
+                if guard.park {
+                    let outcome = park_outcome(&guard.reason);
+                    workers::write_done(
+                        &self.deps.state_dir,
+                        &ctx.execution_id,
+                        "verify",
+                        ctx.attempt,
+                        &outcome,
+                    )?;
+                    return Ok(outcome);
+                }
+                let outcome = ActivityOutcome {
+                    result: json!({
+                        "status": "red",
+                        "reason": "scope_or_baseline_denied",
+                        "attempt": ctx.attempt,
+                        "candidate_sha": candidate_sha,
+                        "oracle_digest": guard.evidence.oracle_digest,
+                        "denied_paths": guard.evidence.denied_paths,
+                        "detail": guard.reason,
+                        "failure": failure_path.to_string_lossy(),
+                    }),
+                    next: ActivityNext::Retry {
+                        failure: ArtifactRef::derive(&format!("verify@{}", ctx.attempt)),
+                    },
+                };
+                workers::write_done(
+                    &self.deps.state_dir,
+                    &ctx.execution_id,
+                    "verify",
+                    ctx.attempt,
+                    &outcome,
+                )?;
+                return Ok(outcome);
+            }
+        }
+
         let mut env = self.deps.toolchain_env.clone();
         env.insert("HOME".to_string(), home.to_string_lossy().into_owned());
         env.insert("TMPDIR".to_string(), tmp.to_string_lossy().into_owned());
@@ -1337,7 +1721,13 @@ impl VerifyActivity {
         // resolves dependencies offline despite the empty confined HOME.
         env.insert(
             "CARGO_HOME".to_string(),
-            ensure_cargo_home(&root)?.to_string_lossy().into_owned(),
+            ensure_cargo_home(&runtime)?.to_string_lossy().into_owned(),
+        );
+        // Build artifacts stay inside the narrow runtime root (ATTEMPT), never
+        // in a parent receipt directory.
+        env.insert(
+            "CARGO_TARGET_DIR".to_string(),
+            runtime.join("verify-target").to_string_lossy().into_owned(),
         );
         let mut path = env
             .get("PATH")
@@ -1345,12 +1735,22 @@ impl VerifyActivity {
             .unwrap_or_else(|| "/usr/bin:/bin".to_string());
         path.push_str(":/usr/bin:/bin:/usr/sbin:/sbin");
         env.insert("PATH".to_string(), path);
-
+        // Parent-controlled protected runner inputs (SF.6 amendment): the
+        // read-only protected root (outside ATTEMPT/EXTRA_RW) and the pinned
+        // candidate directory.
+        env.insert(
+            "AGALMA_PROTECTED_DIR".to_string(),
+            protected_judge.to_string_lossy().into_owned(),
+        );
+        env.insert(
+            "AGALMA_CANDIDATE_DIR".to_string(),
+            verify_dir.to_string_lossy().into_owned(),
+        );
         let started = Instant::now();
         let mut sandbox = SeatbeltSandbox::new();
         let mut command_results: Vec<serde_json::Value> = Vec::new();
         let mut failures: Vec<serde_json::Value> = Vec::new();
-        for (index, command) in repo.acceptance.iter().enumerate() {
+        for (index, command) in acceptance.iter().enumerate() {
             let log_path = artifacts.join(format!("accept@{}-{index}.txt", ctx.attempt));
             let cmd_started = Instant::now();
             let output = if self.sandboxed {
@@ -1362,7 +1762,7 @@ impl VerifyActivity {
                     profile: self.deps.profile_path.to_string_lossy().into_owned(),
                     attempt: AttemptId::derive(ctx.attempt),
                     attempt_dir: attempt_dir.to_string_lossy().into_owned(),
-                    protected_dir: protected.to_string_lossy().into_owned(),
+                    protected_dir: protected_judge.to_string_lossy().into_owned(),
                     sock_dir: sock.to_string_lossy().into_owned(),
                     extra_ro_roots: self
                         .deps
@@ -1370,7 +1770,10 @@ impl VerifyActivity {
                         .iter()
                         .map(|root| root.to_string_lossy().into_owned())
                         .collect(),
-                    extra_rw_roots: Vec::new(),
+                    // The only extra writable root is the pristine candidate
+                    // checkout (cargo may need a Cargo.lock). Parent receipt
+                    // state is NOT granted.
+                    extra_rw_roots: vec![verify_dir.to_string_lossy().into_owned()],
                 };
                 sandbox
                     .run(&spec, self.deps.verify_timeout)
@@ -1509,12 +1912,33 @@ impl VerifyActivity {
             zero_usage(),
             wall_ms,
         )?;
+        // SF.6: pin the verified candidate identity (candidate SHA + oracle
+        // digest + frozen package digest + attempt) so a changed candidate or a
+        // mismatched package is refused at the integration boundary.
+        if let Some(guard) = &guard {
+            let pin = CandidatePin {
+                execution_id: ctx.execution_id.as_str().to_string(),
+                generation: ctx.lease_generation,
+                package_digest: guard.evidence.package_digest.clone(),
+                attempt: ctx.attempt,
+                candidate_sha: candidate_sha.clone(),
+                oracle_digest: guard.evidence.oracle_digest.clone().unwrap_or_default(),
+            };
+            workers::write_json(
+                &scope_pin_path(&self.deps.state_dir, &ctx.execution_id),
+                &pin,
+            )?;
+        }
+        let oracle_digest = guard
+            .as_ref()
+            .and_then(|guard| guard.evidence.oracle_digest.clone());
         let outcome = ActivityOutcome {
             result: json!({
                 "status": "green",
                 "exit_code": 0,
                 "attempt": ctx.attempt,
                 "candidate_sha": candidate_sha,
+                "oracle_digest": oracle_digest,
                 "verify_path": verify_dir.to_string_lossy(),
                 "command_results": command_results,
                 "wall_ms": wall_ms,
@@ -1531,7 +1955,8 @@ impl VerifyActivity {
         Ok(outcome)
     }
 
-    /// Render and write the per-attempt verifier prompt under `<run>/prompts/`.
+    /// Render and write the per-attempt verifier prompt under `<run>/prompts/`;
+    /// the confined verifier reads it via its read-only run-root PROTECTED grant.
     fn write_verifier_prompt(
         &self,
         root: &Path,
@@ -1560,8 +1985,11 @@ impl VerifyActivity {
         ctx: &OperationContext,
         failure_path: &Path,
     ) -> Result<PathBuf, ActivityError> {
-        let diagnosis_path = artifacts.join(format!("diagnosis@{}.md", ctx.attempt));
-        let prompt_path = self.write_verifier_prompt(root, ctx)?;
+        // The retry handoff reads the diagnosis from `<run>/artifacts/`, but the
+        // confined verifier child may only write inside its narrow ATTEMPT root
+        // (SF.6). The live session writes to `<run>/verify-runtime/diagnosis@N.md`;
+        // the parent then persists it under artifacts.
+        let artifacts_diagnosis = artifacts.join(format!("diagnosis@{}.md", ctx.attempt));
         let started = Instant::now();
         let usage = if self.scripted {
             let failure = std::fs::read_to_string(failure_path).unwrap_or_default();
@@ -1569,13 +1997,13 @@ impl VerifyActivity {
                 std::fs::read_to_string(artifacts.join(format!("diff@{}.patch", ctx.attempt)))
                     .unwrap_or_default();
             std::fs::write(
-                &diagnosis_path,
+                &artifacts_diagnosis,
                 render_scripted_diagnosis(ctx.attempt, &failure, &diff),
             )
             .map_err(|e| {
                 ActivityError::KnownFailure(format!(
                     "write diagnosis {}: {e}",
-                    diagnosis_path.display()
+                    artifacts_diagnosis.display()
                 ))
             })?;
             append_effect(
@@ -1586,14 +2014,30 @@ impl VerifyActivity {
             )?;
             zero_usage()
         } else {
-            self.run_verifier_session(
+            let runtime =
+                canonical_dir(&verify_runtime_dir(&self.deps.state_dir, &ctx.execution_id))?;
+            // The diagnosis inputs (diff/failure) live under `<run>/artifacts`
+            // and are readable through the verifier's read-only run-root
+            // PROTECTED grant; the output is written inside the narrow ATTEMPT.
+            let prompt_path = self.write_verifier_prompt(root, ctx)?;
+            let runtime_diagnosis = runtime.join(format!("diagnosis@{}.md", ctx.attempt));
+            let usage = self.run_verifier_session(
                 checkout,
                 root,
                 ctx,
                 &prompt_path,
                 failure_path,
-                &diagnosis_path,
-            )?
+                &runtime_diagnosis,
+            )?;
+            if runtime_diagnosis.exists() {
+                std::fs::copy(&runtime_diagnosis, &artifacts_diagnosis).map_err(|e| {
+                    ActivityError::KnownFailure(format!(
+                        "persist diagnosis {}: {e}",
+                        artifacts_diagnosis.display()
+                    ))
+                })?;
+            }
+            usage
         };
         record_usage_event(
             &self.deps.state_dir,
@@ -1607,7 +2051,7 @@ impl VerifyActivity {
             usage,
             started.elapsed().as_millis() as u64,
         )?;
-        Ok(diagnosis_path)
+        Ok(artifacts_diagnosis)
     }
 
     /// Live verifier: a fresh confined OpenCode attempt/session, read-only with
@@ -1621,24 +2065,14 @@ impl VerifyActivity {
         failure_path: &Path,
         diagnosis_path: &Path,
     ) -> Result<Usage, ActivityError> {
-        let protected = canonical_dir(&root.join("protected"))?;
-        let sock = canonical_dir(&root.join("sock"))?;
-        let config = build_config(OpenCodeConfigInit {
-            profile_path: self.deps.profile_path.clone(),
-            attempt_dir: root.to_path_buf(),
-            protected_dir: protected.clone(),
-            sock_dir: sock.clone(),
-            model: self.deps.verifier_model.clone(),
-            proxy_url: self
-                .deps
-                .verifier_proxy_url
-                .clone()
-                .or_else(|| self.deps.proxy_url.clone()),
-            paid_proxy: self.deps.paid_proxy,
-            extra_ro_roots: self.deps.extra_ro_roots.clone(),
-            extra_rw_roots: Vec::new(),
-            extra_env: self.deps.toolchain_env.clone(),
-        });
+        // Production verifier-diagnosis config (shared helper): narrow ATTEMPT
+        // runtime, run root read-only (diagnosis inputs + checkout + prompt), no
+        // extra writable root, all supplied RO roots preserved.
+        let config = build_config(verifier_config_init(
+            &self.deps,
+            checkout,
+            &ctx.execution_id,
+        )?);
 
         let sandbox_socket = self.sandbox.ensure().map_err(contract_err)?;
         let transport = HarnessTransport::from_env();
@@ -1815,12 +2249,15 @@ impl Activity for VerifyActivity {
             .borrow_mut()
             .ensure_checkout(&self.deps.state_dir, &ctx.execution_id)?;
         let root = run_root(&self.deps.state_dir, &ctx.execution_id);
-        let attempt_dir = canonical_dir(&root)?;
-        let protected = canonical_dir(&root.join("protected"))?;
-        let sock = canonical_dir(&root.join("sock"))?;
-        let tmp = canonical_dir(&root.join("verify-tmp"))?;
-        let home = canonical_dir(&root.join("verify-home"))?;
         let artifacts = canonical_dir(&root.join("artifacts"))?;
+        // SF.6: narrow the verifier ATTEMPT to a runtime root so parent receipt
+        // markers (`<run>/verify/<attempt>.done`) are not inside it.
+        let runtime = canonical_dir(&verify_runtime_dir(&self.deps.state_dir, &ctx.execution_id))?;
+        let attempt_dir = runtime.clone();
+        let protected = canonical_dir(&root.join("protected"))?;
+        let sock = canonical_dir(&runtime.join("sock"))?;
+        let tmp = canonical_dir(&runtime.join("tmp"))?;
+        let home = canonical_dir(&runtime.join("home"))?;
         let log_path = artifacts.join(format!("verify@{}.log", ctx.attempt));
         mark_started(&self.deps, &ctx.execution_id, "verify", ctx.attempt)?;
 
@@ -1830,11 +2267,11 @@ impl Activity for VerifyActivity {
         env.insert("TMPDIR".to_string(), tmp.to_string_lossy().into_owned());
         env.insert(
             "CARGO_HOME".to_string(),
-            ensure_cargo_home(&root)?.to_string_lossy().into_owned(),
+            ensure_cargo_home(&runtime)?.to_string_lossy().into_owned(),
         );
         env.insert(
             "CARGO_TARGET_DIR".to_string(),
-            root.join("verify-target").to_string_lossy().into_owned(),
+            runtime.join("verify-target").to_string_lossy().into_owned(),
         );
 
         let spec = LaunchSpec {
@@ -1853,7 +2290,8 @@ impl Activity for VerifyActivity {
                 .iter()
                 .map(|root| root.to_string_lossy().into_owned())
                 .collect(),
-            extra_rw_roots: Vec::new(),
+            // The candidate checkout is the only extra writable root.
+            extra_rw_roots: vec![checkout.path.clone()],
         };
 
         let mut sandbox = SeatbeltSandbox::new();
@@ -1993,6 +2431,59 @@ fn repo_integrate_tag(checkout: &Checkout) -> String {
     )
 }
 
+/// SF.6: a durable verify verdict may satisfy the pin only when it is the
+/// **successful** verdict for the SAME attempt, candidate and oracle — not
+/// merely a `status == "green"` outcome. Binds the recorded verdict's identity
+/// (attempt, candidate SHA, oracle digest) and its advancing/exit semantics.
+pub fn verify_verdict_matches_pin(
+    pin: &CandidatePin,
+    outcome: &ActivityOutcome,
+) -> Result<(), String> {
+    if !matches!(outcome.next, ActivityNext::Advance) {
+        return Err("durable verdict is not an advancing (successful) outcome".to_string());
+    }
+    let r = &outcome.result;
+    let status = r.get("status").and_then(|v| v.as_str());
+    let exit = r.get("exit_code").and_then(|v| v.as_i64());
+    let attempt = r.get("attempt").and_then(|v| v.as_u64());
+    let candidate = r.get("candidate_sha").and_then(|v| v.as_str());
+    let oracle = r.get("oracle_digest").and_then(|v| v.as_str());
+    if status != Some("green") {
+        return Err(format!("verdict status {status:?} is not green"));
+    }
+    if exit != Some(0) {
+        return Err(format!("verdict exit_code {exit:?} is not 0"));
+    }
+    if attempt != Some(pin.attempt as u64) {
+        return Err(format!(
+            "verdict attempt {attempt:?} does not match pin attempt {}",
+            pin.attempt
+        ));
+    }
+    if candidate != Some(pin.candidate_sha.as_str()) {
+        return Err("verdict candidate_sha does not match the pin".to_string());
+    }
+    if pin.oracle_digest.is_empty() {
+        if oracle.is_some_and(|s| !s.is_empty()) {
+            return Err("verdict oracle present but pin oracle is empty".to_string());
+        }
+    } else if oracle != Some(pin.oracle_digest.as_str()) {
+        return Err("verdict oracle_digest does not match the pin".to_string());
+    }
+    Ok(())
+}
+
+/// A fail-closed park outcome (missing/invalid required inputs, identity
+/// mismatch). Distinct from a red verify, which retries.
+fn park_outcome(reason: &str) -> ActivityOutcome {
+    ActivityOutcome {
+        result: json!({ "status": "parked", "reason": reason }),
+        next: ActivityNext::Park {
+            reason: reason.to_string(),
+        },
+    }
+}
+
 fn integrate_outcome(receipt: &agalma_contracts::MergeReceipt, tag: &str) -> ActivityOutcome {
     ActivityOutcome {
         result: json!({
@@ -2023,9 +2514,96 @@ impl Activity for IntegrateActivity {
             {
                 return Ok(integrate_outcome(&receipt, &tag));
             }
-            let receipt = workspace
-                .integrate_origin(&checkout, &repo.origin, &checkout.base_sha)
-                .map_err(contract_err)?;
+            // SF.6: require the authoritative verification pin and revalidate
+            // its full identity (execution/generation, package digest, attempt,
+            // candidate SHA, oracle digest) at the actual integration boundary.
+            // The frozen package and its oracle digest are re-derived from the
+            // immutable store, never from candidate content.
+            let package = match resolve_recorded_package(&self.deps.state_dir, &ctx.execution_id) {
+                Ok(Some(package)) => package,
+                Ok(None) => {
+                    return Ok(park_outcome(&format!(
+                        "repository integration for {} has no recorded TaskPackage; refusing",
+                        ctx.execution_id
+                    )))
+                }
+                Err(err) => {
+                    return Ok(park_outcome(&format!(
+                        "protected inputs refused at integration: {err}"
+                    )))
+                }
+            };
+            let oracle_digest =
+                match scope_guard::entry_from_artifact(&self.deps.state_dir, &package.scope.oracle)
+                {
+                    Ok((bytes, _entry)) => agalma_contracts::digest::sha256_digest(&bytes),
+                    Err(err) => {
+                        return Ok(park_outcome(&format!("frozen oracle unreadable: {err}")))
+                    }
+                };
+            let pin = match workers::read_json::<CandidatePin>(&scope_pin_path(
+                &self.deps.state_dir,
+                &ctx.execution_id,
+            )) {
+                Some(pin) => pin,
+                None => {
+                    return Ok(park_outcome(&format!(
+                        "protected execution {} has no verification pin; refusing to integrate \
+                             an unverified candidate",
+                        ctx.execution_id
+                    )))
+                }
+            };
+            // The pin's attempt must correspond to a durable *successful* (green)
+            // verification verdict: a missing/corrupt/non-green/stale attempt
+            // refuses, so an altered attempt with all other fields unchanged
+            // cannot ship.
+            let verdict = workers::read_done(
+                &self.deps.state_dir,
+                &ctx.execution_id,
+                "verify",
+                pin.attempt,
+            );
+            let Some(verdict) = verdict else {
+                return Ok(park_outcome(&format!(
+                    "verification pin attempt {} has no durable verdict; refusing to integrate",
+                    pin.attempt
+                )));
+            };
+            if let Err(reason) = verify_verdict_matches_pin(&pin, &verdict) {
+                return Ok(park_outcome(&format!(
+                    "verification verdict refused: {reason}"
+                )));
+            }
+            let current = match workspace.candidate_sha(&checkout) {
+                Ok(sha) => sha,
+                Err(err) => return Ok(park_outcome(&err.to_string())),
+            };
+            if let Err(err) = pin.revalidate(&scope_guard::PinIdentity {
+                execution_id: ctx.execution_id.as_str(),
+                generation: ctx.lease_generation,
+                package_digest: &package.package_digest,
+                candidate_sha: &current,
+                oracle_digest: &oracle_digest,
+            }) {
+                return Ok(park_outcome(&err.to_string()));
+            }
+            // The verified tree must be exactly the tree that ships.
+            if let Err(err) = ensure_clean_worktree(&checkout) {
+                return Ok(park_outcome(&err.to_string()));
+            }
+            // Enforce the expected candidate at the actual merge mutation
+            // boundary: Workspace refuses to move `main` if the committed tree
+            // differs from the verified candidate SHA.
+            let receipt = match workspace.integrate_origin_verified(
+                &checkout,
+                &repo.origin,
+                &checkout.base_sha,
+                &pin.candidate_sha,
+            ) {
+                Ok(receipt) => receipt,
+                Err(err) => return Ok(park_outcome(&format!("integration refused: {err}"))),
+            };
             return Ok(integrate_outcome(&receipt, &tag));
         }
 
@@ -2224,6 +2802,8 @@ fn write_builder_prompt(
         root,
         ctx.attempt,
     )?;
+    // The prompt lives under `<run>/prompts`; the confined builder reads it
+    // read-only via its PROTECTED run-root grant (writes stay in ATTEMPT).
     let dir = root.join("prompts");
     std::fs::create_dir_all(&dir)
         .map_err(|e| ActivityError::KnownFailure(format!("create prompt dir: {e}")))?;
@@ -2493,12 +3073,13 @@ fn render_context_items(
         return Ok(());
     }
     for item in items {
-        let bytes = crate::task_package::read_artifact(state_dir, &item.artifact).map_err(|err| {
-            ActivityError::KnownFailure(format!(
-                "required context object `{}` is unreadable: {err}",
-                item.artifact.path
-            ))
-        })?;
+        let bytes =
+            crate::task_package::read_artifact(state_dir, &item.artifact).map_err(|err| {
+                ActivityError::KnownFailure(format!(
+                    "required context object `{}` is unreadable: {err}",
+                    item.artifact.path
+                ))
+            })?;
         out.push_str(&format!(
             "### `{}` (artifact `{}`, sha256 `{}`)\n\n",
             item.source, item.artifact.path, item.artifact.digest
@@ -2553,7 +3134,14 @@ fn render_retry_context(out: &mut String, root: &Path, attempt: u32) {
 /// Render the per-attempt verifier prompt: the base verifier prompt plus the
 /// file-only input paths and the absolute diagnosis output path.
 fn render_verifier_prompt(base: &str, deps: &PhaseDeps, root: &Path, attempt: u32) -> String {
+    // The diagnosis inputs are parent-owned under `<run>/artifacts` and readable
+    // through the verifier's read-only run-root PROTECTED grant; the diagnosis
+    // output is written inside the verifier's narrow ATTEMPT runtime, then the
+    // parent persists it under artifacts.
     let artifacts = root.join("artifacts");
+    let diagnosis = root
+        .join("verify-runtime")
+        .join(format!("diagnosis@{attempt}.md"));
     let mut out = String::new();
     out.push_str(base);
     out.push_str("\n\n---\n\n## This attempt\n\n");
@@ -2568,7 +3156,7 @@ fn render_verifier_prompt(base: &str, deps: &PhaseDeps, root: &Path, attempt: u3
          `{}`\n",
         artifacts.join(format!("diff@{attempt}.patch")).display(),
         artifacts.join(format!("failure@{attempt}.txt")).display(),
-        artifacts.join(format!("diagnosis@{attempt}.md")).display(),
+        diagnosis.display(),
     ));
     out
 }
@@ -2614,6 +3202,34 @@ fn write_candidate_diff(
     std::fs::write(&path, &out.stdout)
         .map_err(|e| ActivityError::KnownFailure(format!("write diff {}: {e}", path.display())))?;
     Ok(path)
+}
+
+/// Refuse to integrate when the candidate working tree is dirty or carries
+/// untracked files (SF.6): `integrate_origin` commits the dirty tree, so a
+/// change made after verification would ship an unverified SHA.
+fn ensure_clean_worktree(checkout: &Checkout) -> Result<(), ActivityError> {
+    let out = Command::new("git")
+        .arg("--no-pager")
+        .args(["status", "--porcelain"])
+        .current_dir(&checkout.path)
+        .env("GIT_PAGER", "cat")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|e| ActivityError::KnownFailure(format!("git status candidate: {e}")))?;
+    if !out.status.success() {
+        return Err(ActivityError::KnownFailure(format!(
+            "git status candidate failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    if !String::from_utf8_lossy(&out.stdout).trim().is_empty() {
+        return Err(ActivityError::KnownFailure(
+            "candidate working tree changed after verification (dirty or untracked); refusing \
+             to integrate an unverified tree"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// A fully-known zero usage (Rust-run acceptance and the scripted verifier).
@@ -3279,7 +3895,9 @@ mod tests {
             harness: crate::harness_binding::harness_handle(
                 crate::harness_binding::HarnessChoice::OpenCode,
             ),
-            stop: Rc::new(crate::stop::FileStopControl::new(std::path::Path::new("state"))),
+            stop: Rc::new(crate::stop::FileStopControl::new(std::path::Path::new(
+                "state",
+            ))),
         }
     }
 
@@ -3342,7 +3960,11 @@ mod tests {
 
         let first = bounded_socket_path(&long, "ledger.sock");
         let second = bounded_socket_path(&long, "workspace.sock");
-        assert!(first.as_os_str().len() < SUN_LEN_LIMIT, "{}", first.display());
+        assert!(
+            first.as_os_str().len() < SUN_LEN_LIMIT,
+            "{}",
+            first.display()
+        );
         assert!(
             second.as_os_str().len() < SUN_LEN_LIMIT,
             "{}",
@@ -3460,15 +4082,9 @@ mod tests {
             task_title: "Fix the thing".to_string(),
             acceptance: vec!["sh -c 'true'".to_string(), "cargo test".to_string()],
         };
-        let err = render_builder_prompt(
-            Path::new("."),
-            "base",
-            Some(&repo),
-            None,
-            Path::new("."),
-            1,
-        )
-        .expect_err("repository mode without a recorded package must refuse");
+        let err =
+            render_builder_prompt(Path::new("."), "base", Some(&repo), None, Path::new("."), 1)
+                .expect_err("repository mode without a recorded package must refuse");
         assert!(matches!(err, ActivityError::KnownFailure(_)), "got {err:?}");
     }
 

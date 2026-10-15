@@ -28,9 +28,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use agalma_contracts::digest::{canonical_json, sha256_digest, validate_digest, FailureCode};
 use agalma_contracts::{
-    Authorization, AuthorizationOrigin, BindingPin, Budget, ContextItem, ContextKind, ContractError,
-    Definition, DirectiveRef, PackageArtifactRef, RepositoryRef, Role, RolePin, Scope, TaskId,
-    TaskPackage, TextObject, UnknownUsage, TASK_PACKAGE_FORMAT,
+    Authorization, AuthorizationOrigin, BindingPin, Budget, ContextItem, ContextKind,
+    ContractError, Definition, DirectiveRef, PackageArtifactRef, RepositoryRef, Role, RolePin,
+    Scope, TaskId, TaskPackage, TextObject, UnknownUsage, TASK_PACKAGE_FORMAT,
 };
 use agalma_taskqueue::{parse_task_block, BdTaskQueue, TaskDefinition};
 
@@ -222,10 +222,9 @@ pub fn build_package(
     )?;
 
     if inputs.roles.is_empty() {
-        return Err(FailureCode::InvalidRecord.failure(
-            &task_id,
-            "at least one role pin is required",
-        ));
+        return Err(
+            FailureCode::InvalidRecord.failure(&task_id, "at least one role pin is required")
+        );
     }
     // Materialize each role prompt and the oracle as content-addressed objects so
     // the referenced bytes are durable and recoverable, not just referenced.
@@ -469,9 +468,56 @@ pub fn verify_references(state_dir: &Path, package: &TaskPackage) -> Result<(), 
     for role in &package.roles {
         read_artifact(state_dir, &role.prompt)?;
     }
-    read_artifact(state_dir, &package.scope.oracle)?;
+    // SF.6: the frozen `scope.oracle` is the selected operator protected entry.
+    // Validate its identity and that its allowed/protected paths agree with the
+    // package scope, so a package cannot carry a scope that disagrees with the
+    // baseline it froze.
+    let oracle_bytes = read_artifact(state_dir, &package.scope.oracle)?;
+    let entry = crate::scope_guard::ProtectedEntry::parse(&oracle_bytes)?;
+    verify_scope_agreement(package, &entry)?;
     for digest in &package.scope.readable_artifacts {
         verify_object_digest(state_dir, digest)?;
+    }
+    Ok(())
+}
+
+/// Verify a frozen package's scope agrees with its frozen protected entry.
+fn verify_scope_agreement(
+    package: &TaskPackage,
+    entry: &crate::scope_guard::ProtectedEntry,
+) -> Result<(), ContractError> {
+    if entry.task_id != package.task_id {
+        return Err(FailureCode::IdentityConflict.failure(
+            &package.task_id,
+            format!(
+                "frozen protected entry task {:?} does not match package task {:?}",
+                entry.task_id, package.task_id
+            ),
+        ));
+    }
+    if entry.base_sha != package.repository.base_sha {
+        return Err(FailureCode::IdentityConflict.failure(
+            &package.task_id,
+            format!(
+                "frozen protected entry base {} does not match package base {}",
+                entry.base_sha, package.repository.base_sha
+            ),
+        ));
+    }
+    let agree = |a: &[String], b: &[String]| {
+        let mut a: Vec<&String> = a.iter().collect();
+        let mut b: Vec<&String> = b.iter().collect();
+        a.sort();
+        b.sort();
+        a == b
+    };
+    if !agree(&entry.allowed_paths, &package.scope.allowed_paths)
+        || !agree(&entry.protected_paths, &package.scope.protected_paths)
+    {
+        return Err(FailureCode::ScopeDenied.failure(
+            &package.task_id,
+            "frozen protected entry paths disagree with the recorded package scope",
+        ));
     }
     Ok(())
 }
@@ -643,12 +689,14 @@ pub fn gather_admission_context(
 fn referenced_markdown(text: &str) -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
     for token in text.split(|c: char| {
-        c.is_whitespace() || matches!(c, '(' | ')' | '[' | ']' | '"' | '\'' | '`' | ',' | '<' | '>')
+        c.is_whitespace()
+            || matches!(
+                c,
+                '(' | ')' | '[' | ']' | '"' | '\'' | '`' | ',' | '<' | '>'
+            )
     }) {
         let token = token.trim_matches(|c: char| matches!(c, ':' | '*' | ';' | '.'));
-        let candidate = token
-            .strip_prefix("./")
-            .unwrap_or(token);
+        let candidate = token.strip_prefix("./").unwrap_or(token);
         if candidate.ends_with(".md")
             && !candidate.starts_with('/')
             && !candidate.starts_with("http")
@@ -672,17 +720,13 @@ fn observe_repo_file(repo: &Path, source: &str) -> Result<Option<Vec<u8>>, Contr
                 return Ok(None);
             }
             fs::read(&path).map(Some).map_err(|e| {
-                FailureCode::StateUnavailable.failure(
-                    source,
-                    format!("cannot read {}: {e}", path.display()),
-                )
+                FailureCode::StateUnavailable
+                    .failure(source, format!("cannot read {}: {e}", path.display()))
             })
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(FailureCode::StateUnavailable.failure(
-            source,
-            format!("cannot stat {}: {e}", path.display()),
-        )),
+        Err(e) => Err(FailureCode::StateUnavailable
+            .failure(source, format!("cannot stat {}: {e}", path.display()))),
     }
 }
 
@@ -699,7 +743,10 @@ fn read_required_repo_file(repo: &Path, source: &str) -> Result<Vec<u8>, Contrac
     if !meta.is_file() {
         return Err(FailureCode::LegacyInputsMissing.failure(
             source,
-            format!("required instruction {} is not a regular file", path.display()),
+            format!(
+                "required instruction {} is not a regular file",
+                path.display()
+            ),
         ));
     }
     fs::read(&path).map_err(|e| {
@@ -743,10 +790,8 @@ pub fn read_artifact(
 ) -> Result<Vec<u8>, ContractError> {
     let path = resolve_artifact_path(state_dir, &artifact.path)?;
     let bytes = fs::read(&path).map_err(|e| {
-        FailureCode::LegacyInputsMissing.failure(
-            &artifact.path,
-            format!("referenced object unreadable: {e}"),
-        )
+        FailureCode::LegacyInputsMissing
+            .failure(&artifact.path, format!("referenced object unreadable: {e}"))
     })?;
     artifact.verify(&bytes)?;
     Ok(bytes)
@@ -922,7 +967,11 @@ mod tests {
         built.package.verify_text().expect("text digests");
         assert_eq!(built.package.definition.acceptance, vec!["sh -c 'true'"]);
         assert_eq!(built.package.context.len(), 2);
-        assert!(built.package.context.iter().any(|c| c.kind == ContextKind::SharedDesign));
+        assert!(built
+            .package
+            .context
+            .iter()
+            .any(|c| c.kind == ContextKind::SharedDesign));
     }
 
     #[test]

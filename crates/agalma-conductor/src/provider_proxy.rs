@@ -35,11 +35,13 @@ use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 
+use crate::budget::{GateAdmission, GateTicket, PaidRequestGate};
 use crate::provider_auth::{self, AuthState};
+use agalma_contracts::budget::UsageObservation;
 
 /// Environment variable holding the comma-separated host allowlist.
 pub const ALLOW_ENV: &str = "AGALMA_PROXY_ALLOW";
@@ -61,6 +63,12 @@ pub const NO_PROXY: &str = "127.0.0.1,localhost";
 
 /// Upper bound on a request header block, to bound memory for a hostile client.
 const MAX_HEAD: usize = 64 * 1024;
+
+/// Upper bound on an inspected billable request body held in memory.
+const MAX_BODY: usize = 8 * 1024 * 1024;
+
+/// Upper bound on a buffered response held while settling usage.
+const MAX_RESPONSE: usize = 8 * 1024 * 1024;
 
 /// A host allowlist supporting exact and suffix matches.
 ///
@@ -256,7 +264,7 @@ fn default_session_id() -> String {
 }
 
 /// Proxy configuration.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ProxyConfig {
     /// Host allowlist.
     pub allow: AllowList,
@@ -266,6 +274,22 @@ pub struct ProxyConfig {
     pub inject: Option<InjectConfig>,
     /// Credential audit state (present/absent + fingerprint + reason).
     pub auth: AuthState,
+    /// Optional parent-owned request-admission gate (`agalma-5fy.7`). When set,
+    /// paid forward requests are inspected and reserved before any upstream
+    /// contact; over-budget requests never reach the provider.
+    pub budget: Option<Arc<dyn PaidRequestGate>>,
+}
+
+impl fmt::Debug for ProxyConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProxyConfig")
+            .field("allow", &self.allow)
+            .field("log", &self.log)
+            .field("inject", &self.inject)
+            .field("auth", &self.auth)
+            .field("budget", &self.budget.is_some())
+            .finish()
+    }
 }
 
 impl ProxyConfig {
@@ -297,6 +321,7 @@ impl ProxyConfig {
             log: std::env::var(LOG_ENV).is_ok_and(|v| !v.is_empty() && v != "0"),
             inject,
             auth,
+            budget: None,
         }
     }
 
@@ -308,6 +333,7 @@ impl ProxyConfig {
             log: false,
             inject: Some(inject),
             auth,
+            budget: None,
         }
     }
 
@@ -318,7 +344,14 @@ impl ProxyConfig {
             log,
             inject: None,
             auth: AuthState::disabled("", "no injection configured"),
+            budget: None,
         }
+    }
+
+    /// Attach the parent-owned request-admission gate (`agalma-5fy.7`).
+    pub fn with_budget(mut self, budget: Arc<dyn PaidRequestGate>) -> Self {
+        self.budget = Some(budget);
+        self
     }
 }
 
@@ -337,6 +370,7 @@ impl Default for ProxyConfig {
             log: false,
             inject: None,
             auth: AuthState::disabled("", "paid proxy disabled (default config)"),
+            budget: None,
         }
     }
 }
@@ -367,9 +401,19 @@ impl ProviderProxy {
         let log = config.log;
         let inject = config.inject.clone();
         let auth = config.auth.clone();
+        let budget = config.budget.clone();
 
         let handle = tokio::spawn(async move {
-            accept_loop(listener, allow, inject, log, task_requests, shutdown_rx).await;
+            accept_loop(
+                listener,
+                allow,
+                inject,
+                log,
+                budget,
+                task_requests,
+                shutdown_rx,
+            )
+            .await;
         });
 
         Ok(ProviderProxy {
@@ -443,11 +487,13 @@ impl Drop for ProviderProxy {
 }
 
 /// Accept loop: one task per connection; exits when the shutdown signal fires.
+#[allow(clippy::too_many_arguments)]
 async fn accept_loop(
     listener: TcpListener,
     allow: Arc<AllowList>,
     inject: Option<InjectConfig>,
     log: bool,
+    budget: Option<Arc<dyn PaidRequestGate>>,
     requests: Arc<Mutex<Vec<ProxyRequest>>>,
     mut shutdown: oneshot::Receiver<()>,
 ) {
@@ -461,8 +507,9 @@ async fn accept_loop(
                         let allow = Arc::clone(&allow);
                         let inject = Arc::clone(&inject);
                         let requests = Arc::clone(&requests);
+                        let budget = budget.clone();
                         tokio::spawn(async move {
-                            let _ = handle_connection(stream, allow, inject, log, requests).await;
+                            let _ = handle_connection(stream, allow, inject, log, budget, requests).await;
                         });
                     }
                     Err(err) => {
@@ -479,11 +526,13 @@ async fn accept_loop(
 /// Handle one client connection: parse the head, enforce the allowlist, then
 /// tunnel (CONNECT), paid-forward (injection configured), or forward
 /// (absolute-form plain HTTP).
+#[allow(clippy::too_many_arguments)]
 async fn handle_connection(
     mut client: TcpStream,
     allow: Arc<AllowList>,
     inject: Arc<Option<InjectConfig>>,
     log: bool,
+    budget: Option<Arc<dyn PaidRequestGate>>,
     requests: Arc<Mutex<Vec<ProxyRequest>>>,
 ) -> io::Result<()> {
     let head = match read_head(&mut client).await {
@@ -503,7 +552,7 @@ async fn handle_connection(
     }
     if let Some(inject) = inject.as_ref() {
         return handle_forward(
-            client, &method, &target, &head, inject, allow, log, requests,
+            client, &method, &target, &head, inject, allow, log, budget, requests,
         )
         .await;
     }
@@ -514,6 +563,12 @@ async fn handle_connection(
 /// configured upstream base, sent over TLS with an injected bearer token, and
 /// the response (including chunked/SSE) is streamed back verbatim. The upstream
 /// host must be allowlisted; otherwise `403`.
+///
+/// When a [`PaidRequestGate`] is configured (`agalma-5fy.7`) the request body is
+/// buffered and inspected, the reviewed reservation is committed **before** any
+/// upstream contact, and the response is buffered only long enough to settle
+/// authoritative usage. An over-budget/unsupported request is answered `402`
+/// and never reaches upstream.
 #[allow(clippy::too_many_arguments)]
 async fn handle_forward(
     mut client: TcpStream,
@@ -523,6 +578,7 @@ async fn handle_forward(
     inject: &InjectConfig,
     allow: Arc<AllowList>,
     log: bool,
+    budget: Option<Arc<dyn PaidRequestGate>>,
     requests: Arc<Mutex<Vec<ProxyRequest>>>,
 ) -> io::Result<()> {
     let path = request_path(target);
@@ -530,6 +586,32 @@ async fn handle_forward(
     record(&requests, method, &inject.host, inject.port, allowed, log);
     if !allowed {
         return respond(&mut client, 403, "Forbidden").await;
+    }
+
+    // Admission (`agalma-5fy.7`): inspect the bounded body and reserve before
+    // any upstream contact. A denied request never opens a provider socket.
+    let mut body: Vec<u8> = Vec::new();
+    let mut ticket: Option<GateTicket> = None;
+    if let Some(gate) = budget.as_ref() {
+        match read_body(&mut client, head).await {
+            Ok(read) => body = read,
+            Err(reason) => {
+                if log {
+                    eprintln!("provider-proxy: uninspectable request body: {reason}");
+                }
+                return respond(&mut client, 413, "Payload Too Large").await;
+            }
+        }
+        match gate.admit(method, &path, &body) {
+            Ok(GateAdmission::Billable(t)) => ticket = Some(t),
+            Ok(GateAdmission::NonBillable) => {}
+            Err(reason) => {
+                if log {
+                    eprintln!("provider-proxy: budget denied {method} {path}: {reason}");
+                }
+                return respond(&mut client, 402, "Payment Required").await;
+            }
+        }
     }
 
     let upstream_path = join_base_path(&inject.base_path, &path);
@@ -544,6 +626,10 @@ async fn handle_forward(
                     inject.host, inject.port
                 );
             }
+            // Never sent: release the not-yet-incurred reservation.
+            if let (Some(gate), Some(t)) = (budget.as_ref(), ticket.as_ref()) {
+                gate.release(t);
+            }
             return respond(&mut client, 502, "Bad Gateway").await;
         }
     };
@@ -551,22 +637,157 @@ async fn handle_forward(
     if inject.tls {
         match tls_connect(&inject.host, tcp).await {
             Ok(mut upstream) => {
-                upstream.write_all(rewritten.as_bytes()).await?;
-                let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+                forward_paid(
+                    &mut client,
+                    &mut upstream,
+                    &rewritten,
+                    &body,
+                    ticket.as_ref(),
+                    budget.as_ref(),
+                )
+                .await;
             }
             Err(err) => {
                 if log {
                     eprintln!("provider-proxy: TLS to {} failed: {err}", inject.host);
+                }
+                if let (Some(gate), Some(t)) = (budget.as_ref(), ticket.as_ref()) {
+                    gate.release(t);
                 }
                 return respond(&mut client, 502, "Bad Gateway").await;
             }
         }
     } else {
         let mut upstream = tcp;
-        upstream.write_all(rewritten.as_bytes()).await?;
-        let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+        forward_paid(
+            &mut client,
+            &mut upstream,
+            &rewritten,
+            &body,
+            ticket.as_ref(),
+            budget.as_ref(),
+        )
+        .await;
     }
     Ok(())
+}
+
+/// Relay one forwarded request. Without a ticket the body/response are piped
+/// verbatim (`copy_bidirectional`, the historical path). With a ticket the
+/// reservation is marked sent, the bounded response is read once so its usage
+/// can be settled, and the bytes are then handed to the client.
+async fn forward_paid<S>(
+    client: &mut TcpStream,
+    upstream: &mut S,
+    rewritten: &str,
+    body: &[u8],
+    ticket: Option<&GateTicket>,
+    gate: Option<&Arc<dyn PaidRequestGate>>,
+) where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    if upstream.write_all(rewritten.as_bytes()).await.is_err() {
+        if let (Some(gate), Some(t)) = (gate, ticket) {
+            gate.release(t);
+        }
+        return;
+    }
+    if !body.is_empty() && upstream.write_all(body).await.is_err() {
+        if let (Some(gate), Some(t)) = (gate, ticket) {
+            gate.release(t);
+        }
+        return;
+    }
+
+    let Some(ticket) = ticket else {
+        let _ = tokio::io::copy_bidirectional(client, upstream).await;
+        return;
+    };
+
+    // The reservation is now sent: an incurred charge can no longer be refunded.
+    if let Some(gate) = gate {
+        gate.mark_sent(ticket);
+    }
+    let response = read_bounded_response(upstream).await;
+    let usage = response_usage(&response);
+    if let Some(gate) = gate {
+        gate.settle_usage(ticket, &usage);
+    }
+    let _ = client.write_all(&response).await;
+    let _ = client.shutdown().await;
+}
+
+/// Read an upstream response up to [`MAX_RESPONSE`] bytes (the injected
+/// `Connection: close` terminates it on upstream close).
+async fn read_bounded_response<S>(upstream: &mut S) -> Vec<u8>
+where
+    S: AsyncRead + Unpin,
+{
+    let mut out = Vec::with_capacity(4096);
+    let mut buf = [0u8; 8192];
+    loop {
+        match upstream.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                if out.len() + n > MAX_RESPONSE {
+                    break;
+                }
+                out.extend_from_slice(&buf[..n]);
+            }
+        }
+    }
+    out
+}
+
+/// Extract usage from a buffered HTTP response (headers + JSON body). Anything
+/// unparseable is a missing observation and retains the full liability.
+fn response_usage(response: &[u8]) -> UsageObservation {
+    match find_subslice(response, b"\r\n\r\n") {
+        Some(idx) => crate::budget::usage_from_response_body(&response[idx + 4..]),
+        None => UsageObservation::missing(),
+    }
+}
+
+/// Find the first occurrence of `needle` in `haystack`.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// Read the bounded request body declared by `Content-Length`. A `chunked`
+/// request body cannot be inspected and is refused; an absent length is an
+/// empty body.
+async fn read_body(stream: &mut TcpStream, head: &str) -> Result<Vec<u8>, String> {
+    let mut content_length: Option<usize> = None;
+    for line in head.split("\r\n") {
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("transfer-encoding:") && lower.contains("chunked") {
+            return Err("chunked request bodies cannot be inspected".to_string());
+        }
+        if let Some(value) = lower.strip_prefix("content-length:") {
+            let n: usize = value
+                .trim()
+                .parse()
+                .map_err(|_| format!("invalid content-length {value:?}"))?;
+            content_length = Some(n);
+        }
+    }
+    let Some(n) = content_length else {
+        return Ok(Vec::new());
+    };
+    if n > MAX_BODY {
+        return Err(format!("request body {n} exceeds {MAX_BODY}"));
+    }
+    let mut body = vec![0u8; n];
+    stream
+        .read_exact(&mut body)
+        .await
+        .map_err(|e| format!("read request body: {e}"))?;
+    Ok(body)
 }
 
 /// The origin-form path of a request target: absolute-form (`http://h/p`) →

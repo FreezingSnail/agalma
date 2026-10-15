@@ -30,6 +30,7 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::process::ExitCode;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use agalma_contracts::digest::{sha256_digest, FailureCode};
 use agalma_contracts::{
@@ -49,6 +50,9 @@ use serde_json::json;
 
 use agalma_ipc::TaskQueueOps;
 
+use crate::budget::{
+    bound_reservation_ledger, AdmissionScope, BudgetGate, ExecutionBudget, PaidRequestGate,
+};
 use crate::cli::WorkArgs;
 use crate::composition::{toolchain, BUILDER_PROMPT, DEFAULT_TURN_TIMEOUT, DEFAULT_VERIFY_TIMEOUT};
 use crate::config::resolve_state_dir;
@@ -501,12 +505,24 @@ fn run_task(
     let admitted_task = task_from_package(&package, &task.task_id);
     let admitted_plan = role_plan_from_package(&package)?;
     let builder_prompt = builder_prompt_bytes(state_dir, &package)?;
+
+    // SF.7: parent-owned budget admission. When a reviewed provider profile is
+    // configured, this execution's paid traffic runs through a per-execution
+    // gated proxy backed by the bound ledger API: every billable request is
+    // durably reserved before it reaches upstream. Without a reviewed profile
+    // the historical process proxy path is preserved.
+    let gated_proxy = budget_gate_proxy(state_dir, &package, paid_available)?;
+    let task_proxy_url = gated_proxy
+        .as_ref()
+        .map(ProviderProxy::url)
+        .or_else(|| proxy_url.clone());
+
     let mut executor = build_executor(
         ledger,
         state_dir,
         &admitted_plan,
         paid_available,
-        proxy_url,
+        task_proxy_url,
         &admitted_task,
         repo,
         harness,
@@ -534,6 +550,77 @@ fn run_task(
         false,
     )?;
     Ok(terminal)
+}
+
+/// Environment variable naming a reviewed provider request profile (JSON). When
+/// set, the work loop runs paid traffic through the SF.7 durable budget gate.
+pub const BUDGET_PROFILE_ENV: &str = "AGALMA_BUDGET_PROFILE";
+
+/// Load the operator-supplied reviewed [`ProviderRequestProfile`], if any. No
+/// price is invented here: an unset/invalid profile leaves the historical proxy
+/// path in place (SF.7 never guesses live bounds).
+fn reviewed_request_profile() -> Option<agalma_contracts::budget::ProviderRequestProfile> {
+    let path = std::env::var(BUDGET_PROFILE_ENV).ok()?;
+    if path.trim().is_empty() {
+        return None;
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(profile) => Some(profile),
+            Err(err) => {
+                eprintln!("agalma: budget profile {path} invalid (ignored): {err}");
+                None
+            }
+        },
+        Err(err) => {
+            eprintln!("agalma: budget profile {path} unreadable (ignored): {err}");
+            None
+        }
+    }
+}
+
+/// Start a per-execution gated provider proxy for `package` when a reviewed
+/// profile is configured and paid dispatch is available. The gate shares one
+/// `ExecutionBudget` per execution (atomic across roles/attempts) and reserves
+/// every billable request **durably through the bound ledger** before send.
+///
+/// Fail-closed: a reviewed profile with an unavailable bound-ledger port refuses
+/// the task rather than dispatching paid work unguarded. No profile leaves the
+/// historical process proxy untouched.
+fn budget_gate_proxy(
+    state_dir: &Path,
+    package: &TaskPackage,
+    paid_available: bool,
+) -> Result<Option<ProviderProxy>, ContractError> {
+    let Some(profile) = reviewed_request_profile() else {
+        return Ok(None);
+    };
+    if !paid_available {
+        return Ok(None);
+    }
+    let port = bound_reservation_ledger(state_dir)?;
+    let execution = ExecutionId::new(package.execution_id.clone());
+    let budget = ExecutionBudget::open(port, execution, Some(package.budget.allowance_nusd), None)?;
+    let role = package
+        .roles
+        .iter()
+        .find(|pin| pin.role == Role::Builder)
+        .map(|pin| pin.role)
+        .unwrap_or(Role::Builder);
+    let gate: Arc<dyn PaidRequestGate> = Arc::new(BudgetGate::new(
+        AdmissionScope::new(
+            package.execution_id.clone(),
+            package.package_digest.clone(),
+            role,
+        ),
+        profile,
+        budget,
+    ));
+    let mut config = ProxyConfig::from_env();
+    config.budget = Some(gate);
+    let proxy = ProviderProxy::start(config)
+        .map_err(|e| ContractError::KnownFailure(format!("gated provider proxy: {e}")))?;
+    Ok(Some(proxy))
 }
 
 /// Resolve the (builder, verifier) static routes for `task` (H3). Both are

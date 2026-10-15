@@ -101,32 +101,39 @@ Repository collaboration follows [AGENTS.md](AGENTS.md) and the
 planning, and review using the [Sol architect persona](agents/sol-architect.md).
 All code implementation goes to GPT-6 Luna or DeepSeek Flash through OpenCode.
 
-Build every product workspace target with the root Makefile:
+Build, verify, and maintain the workspace with the root Makefile — the single
+entry point for routine builds, scoped checks, and build-artifact hygiene:
 
 ```sh
 make             # same as make all / make build; debug profile
-make all         # same debug build
-make build       # same debug build
 make release     # same targets in the release profile
+make test-focused SELECTION='-p <crate> --test <target> [filter]'
+make test-peers  # five local process smokes on the default Connect wire
+make test-full   # workspace tests; excludes ignored live-provider checks
+make report      # sizes of every target/ consumer
+make sweep       # classify worktree caches; sweep-apply reclaims them
 make help        # targets, scope, outputs, and overrides
 ```
 
-These compile all Cargo workspace targets (libraries, binaries, examples, tests,
-and benches); they do not execute tests. Standalone spikes and fixture projects
-are excluded. Defaults are `--offline --locked`; builds reuse Cargo's normal
-`target/debug/` or `target/release/` outputs. `CARGO` selects the Cargo executable,
-`CARGO_FLAGS` replaces the default flags as a whole, and `CARGO_TARGET_DIR` selects
-an alternate cache. See the [development workflow](docs/development-workflow.md)
-for details.
+The build commands compile all Cargo workspace targets (libraries, binaries,
+examples, tests, and benches) without running tests. Standalone spikes and
+fixture projects are excluded. Defaults are `--offline --locked`; builds reuse
+Cargo's normal `target/debug/` or `target/release/` outputs. `CARGO` selects the
+Cargo executable, `CARGO_FLAGS` replaces the default flags as a whole,
+`CARGO_TARGET_DIR` selects an alternate cache, and `CARGO_INCREMENTAL` defaults
+to `0` (set `1` for fast local iteration). Build inside an implementation
+worktree with `CARGO_TARGET_DIR=target/worktree-caches/<bead>/target`; see the
+[development workflow](docs/development-workflow.md) for details.
 
-Choose and state a focused, peer, or full test scope before running checks. The
-workflow defines the unified `scripts/test.sh` entry point, which is pending
-implementation, and documents the existing commands to use during the transition.
-The workspace command below is a full test run; it is not the default check for
-every change, and process checks may need separately built server binaries.
+Choose and state a focused, peer, or full test scope before running checks; the
+Makefile target for the scope records the exact command, raw log, and exit status
+under `target/test-runs/<bead>/<run-id>/`. The workflow defines the unified
+`scripts/test.sh` runner, which is pending implementation; the Makefile forwards
+to it once it exists. A full workspace run is not the default check for every
+change, and process checks may need separately built server binaries.
 
 ```sh
-cargo test --offline --workspace  # full workspace tests; excludes ignored live checks
+make test-full                    # full workspace tests; excludes ignored live checks
 cargo run --offline -p agalma-conductor -- run \
   --fixture fixtures/target-template --once \
   --state-dir target/test-runs/e2e
@@ -134,11 +141,12 @@ cargo run --offline -p agalma-conductor -- run \
 
 Verification runs belong under `target/test-runs/`; worker reports and handoffs
 are retained under `target/worker-output/`. Treat both as evidence, including
-frozen records. `target/debug/` and `target/release/` are active build outputs;
-do not remove all of `target/` while sessions may be using its binaries. An
-obsolete isolated cache may be removed only after confirming no active session
-uses it, and without discarding retained evidence. Dependency versions are
-pinned exactly in `Cargo.toml`; no new crates without explicit approval
+frozen records; hygiene targets never sweep them. `target/debug/` and
+`target/release/` are active build outputs; do not remove all of `target/` while
+sessions may be using its binaries. Reclaim an obsolete isolated cache with
+`make sweep-apply`, which preserves registered, dirty, and unmerged worktrees and
+all evidence. Dependency versions are pinned exactly in `Cargo.toml`; no new
+crates without explicit approval
 ([`docs/m0-dependencies.md`](docs/m0-dependencies.md)).
 
 OpenCode attempts disable native snapshots; Agalma uses workspace Git for rollback.

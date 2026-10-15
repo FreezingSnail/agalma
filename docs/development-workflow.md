@@ -52,14 +52,20 @@ task branches unless their deletion is separately requested.
 The session-resume ownership policy from the retrospective's item 1 is deferred.
 Do not introduce a new closed-bead resume policy as part of this amendment.
 
-## Reusable build entry point
+## Reusable build and verification entry point
 
-Use the root [Makefile](../Makefile) for routine builds:
+Use the root [Makefile](../Makefile) for routine builds, scoped checks, and
+build-artifact hygiene:
 
 ```sh
 make             # same as make all / make build
 make release     # all workspace targets in the release profile
-make help        # targets, build scope, and overrides
+make test-focused SELECTION='-p <crate> --test <target> [filter]'
+make test-peers  # five local process smokes on the default Connect wire
+make test-full   # workspace tests (excludes ignored live-provider checks)
+make report      # build-artifact sizes, no changes
+make sweep       # classify worktree caches; sweep-apply reclaims them
+make help        # targets, scope, and overrides
 ```
 
 The debug build runs `cargo build --offline --locked --workspace --all-targets`.
@@ -71,12 +77,48 @@ members are included through Cargo without editing a component list in Makefile.
 Normal outputs and incremental caches remain in `target/debug/` and
 `target/release/`. Override `CARGO` to select the Cargo executable,
 `CARGO_FLAGS` to change the default `--offline --locked` options, or
-`CARGO_TARGET_DIR` to reuse an established alternate cache. Download and
-dependency-change authority still follows the repository rules. Coordinate
-shared-cache builds with sessions running process tests against server binaries.
+`CARGO_TARGET_DIR` to reuse an established alternate cache. The Makefile exports
+`CARGO_INCREMENTAL=0` by default: incremental IR is the largest single consumer
+inside a cache and cannot be shared between caches. Set `CARGO_INCREMENTAL=1` for
+fast local iteration. Download and dependency-change authority still follows the
+repository rules. Coordinate shared-cache builds with sessions running process
+tests against server binaries.
 
-Compilation is separate from verification. Select a test scope below; the
-Makefile does not implement the pending unified test runner.
+Compilation is separate from verification. The verification targets below select
+a scope and log evidence; `scripts/test.sh` remains the unified runner.
+
+## Worktree build isolation and artifact hygiene
+
+Implementation worktrees share one repository but must not share one build cache
+lockstep. Build inside a worktree with a redirected cache:
+
+```sh
+CARGO_TARGET_DIR=target/worktree-caches/<bead>/target make build
+```
+
+Do not compile into `<worktree>/target/`. An unredirected build writes a second
+full cache inside the worktree, so one bead's dependency graph, native test
+executables, and incremental IR were previously stored several times over. The
+`[profile.dev] debug = 1` setting in `Cargo.toml` keeps line-level backtraces
+while avoiding full-DWARF artifact sizes; the IPC codegen rlib and native test
+executables are the largest individual artifacts.
+
+A redirected cache is 0.5-4 GiB and is rebuildable, not evidence. Reclaim it when
+the bead's reviewed changes are merged and its worktree is removed:
+
+```sh
+make report                        # sizes of every target/ consumer
+make sweep                         # classify: keep, orphaned, pending, duplicate
+make sweep-apply                   # remove orphaned and merged-and-clean caches
+make worktree-remove BEAD=<id>     # guarded single-bead worktree + cache removal
+```
+
+`make sweep` never removes a registered, dirty, or unmerged worktree or its
+cache, and never touches `target/test-runs`. `make worktree-remove` refuses a
+dirty or unmerged worktree and refuses while Cargo is running. `make clean-build`
+removes only `target/debug` and `target/release`; `make clean-caches` removes
+every redirected cache. Retained evidence under `target/test-runs` is never part
+of a hygiene target.
 
 ## Unified test entry point
 
@@ -88,6 +130,10 @@ and post-change runs are not routine requirements.
 The target entry point is `bash scripts/test.sh <scope> [selection]`.
 **It is not implemented yet.** Building it is a Luna/Flash task. This document
 defines its contract without claiming that documentation creates a working tool.
+Until it exists, the Makefile scope targets are the entry point. They forward to
+`scripts/test.sh` as soon as that file is executable, so there is a single
+implementation rather than two, and they record raw output and exit status under
+`target/test-runs/<bead>/<run-id>/`. Set `BEAD=<id>` to label evidence for a task.
 
 | Scope | Selection and purpose | Limits |
 |---|---|---|
@@ -123,17 +169,23 @@ The runner must:
   and status remain authoritative; no custom integrity receipt framework is needed
   for ordinary tests. Existing promotion contracts still require their evidence.
 
-During the transition, choose one existing documented command per scope:
+During the transition, use the Makefile target for the chosen scope. Each target
+runs the command below (or forwards to `scripts/test.sh` once implemented) and
+keeps the exact command line, raw log, and exit status under
+`target/test-runs/<bead>/<run-id>/`:
 
-- Focused: `cargo test --offline --locked -p <crate> --test <target> [filter]`
-  or `cargo test --offline --locked -p <crate> --lib <module/filter>`, with required binary
-  prerequisites stated separately. This command alone does not build sibling
-  server binaries or prove that a selection executed a required case.
-- Peer acceptance: `bash scripts/verify-peer-transports.sh`. The existing script
-  also builds all workspace binaries and runs the full conductor suite; state
-  that broader cost and coverage before using it. It is not a focused peer runner.
-- Full: `cargo build --offline --workspace --bins`, then
-  `cargo test --offline --workspace`; preserve task-specific environment and
+- Focused: `make test-focused SELECTION='-p <crate> --test <target> [filter]'`,
+  which runs `cargo test --offline --locked -p <crate> --test <target> [filter]`,
+  or `SELECTION='-p <crate> --lib <module/filter>'` for unit tests, with required
+  binary prerequisites stated separately. This command alone does not build sibling
+  server binaries or prove that a selection executed a required case. An empty
+  `SELECTION` fails before any build.
+- Peer acceptance: `make test-peers`, which runs
+  `bash scripts/verify-peer-transports.sh`. The existing script also builds all
+  workspace binaries and runs the full conductor suite; state that broader cost
+  and coverage before using it. It is not a focused peer runner.
+- Full: `make test-full`, which runs `cargo build --offline --workspace --bins`,
+  then `cargo test --offline --workspace`; preserve task-specific environment and
   serialization requirements. An exit of zero does not prove ignored cases ran.
 
 The unified runner should replace routine alternatives. Retain the old peer

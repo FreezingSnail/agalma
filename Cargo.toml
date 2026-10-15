@@ -73,3 +73,20 @@ http = "=1.5.0"
 # binds crossterm 0.29, which the direct pin below unifies with.
 ratatui = "=0.30.2"
 crossterm = "=0.29.0"
+
+# Debug-profile size control for the workspace and every isolated worktree
+# cache (CARGO_TARGET_DIR=target/worktree-caches/<bead>/target). Full DWARF
+# (`debug = true`, the default) made dependency rlibs and native test binaries
+# several times larger than the code they carry: the agalma-ipc codegen rlib
+# alone reached 161 MiB and test executables 29-58 MiB each. `debug = 1` keeps
+# file/line backtraces at a small fraction of the bytes. Changing this value
+# changes artifact fingerprints, so the next build recompiles once; that cost is
+# expected, not a defect.
+[profile.dev]
+debug = 1
+
+# Evidence and isolated-cache runs disable incremental compilation by default
+# (Makefile: CARGO_INCREMENTAL ?= 0). Incremental IR was the single largest
+# per-cache consumer (0.9-1.3 GiB each) and cannot be shared across caches.
+# Local iterative work can opt back in with CARGO_INCREMENTAL=1.
+

@@ -224,6 +224,7 @@ fn sandboxed_acceptance_resolves_cargo_offline() {
         profile_path: profile,
         builder_prompt: state_dir.join("unused-builder.md"),
         proxy_url: None,
+        verifier_proxy_url: None,
         paid_proxy: false,
         extra_ro_roots,
         toolchain_env,

@@ -53,6 +53,7 @@ fn dummy_deps(state_dir: &Path) -> PhaseDeps {
         profile_path: state_dir.join("unused-worker.sb"),
         builder_prompt: state_dir.join("unused-builder.md"),
         proxy_url: None,
+        verifier_proxy_url: None,
         paid_proxy: false,
         extra_ro_roots: Vec::new(),
         toolchain_env: BTreeMap::new(),

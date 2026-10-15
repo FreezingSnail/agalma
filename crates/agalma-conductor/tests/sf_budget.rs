@@ -21,12 +21,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use agalma_conductor::budget::{
-    load_execution_budget, role_key, AdmissionScope, BudgetGate, ExecutionBudget, PaidRequestGate,
-    ReservationLedger,
+    load_execution_budget, role_key, AdmissionScope, BudgetGate, ExecutionBudget, ExecutionGates,
+    GateAdmission, PaidRequestGate, ReservationLedger,
 };
 use agalma_conductor::provider_proxy::{AllowList, InjectConfig, ProviderProxy, ProxyConfig};
 use agalma_contracts::budget::{
     BudgetError, Nusd, ProviderRequestProfile, Reservation, ReservationState, SpendState,
+    UsageObservation,
 };
 use agalma_contracts::{ContractError, ExecutionId, Role};
 use agalma_ledger::SqliteLedger;
@@ -857,4 +858,624 @@ fn duplicate_reservation_identity_is_idempotent_or_conflicting() {
         state.reserve(changed),
         Err(BudgetError::Conflict("dup".to_string()))
     );
+}
+
+// ---------------------------------------------------------------------------
+// agalma-c31: production role attribution, fail-closed profile, restart-safe ids
+// ---------------------------------------------------------------------------
+
+/// A durable reservation port whose records survive across simulated restarts
+/// (a shared vector), so a fresh `ExecutionGates::open` rebuilds the same
+/// durable state an earlier process left behind.
+#[derive(Clone, Default)]
+struct SharedLedger {
+    records: Arc<std::sync::Mutex<Vec<Reservation>>>,
+}
+
+impl ReservationLedger for SharedLedger {
+    fn load_records(
+        &mut self,
+        _execution: &ExecutionId,
+    ) -> Result<Vec<Reservation>, ContractError> {
+        Ok(self.records.lock().expect("shared ledger").clone())
+    }
+    fn commit_record(
+        &mut self,
+        _execution: &ExecutionId,
+        record: &Reservation,
+    ) -> Result<(), ContractError> {
+        self.records
+            .lock()
+            .expect("shared ledger")
+            .push(record.clone());
+        Ok(())
+    }
+}
+
+/// Production constructor: per-role gates over one shared execution budget.
+fn production_gates(
+    ledger: impl ReservationLedger + 'static,
+    execution: &str,
+    allowance: Nusd,
+    roles: &[Role],
+) -> Arc<ExecutionGates> {
+    ExecutionGates::open(
+        Box::new(ledger),
+        ExecutionId::new(execution),
+        PACKAGE,
+        Some(allowance),
+        None,
+        ProviderRequestProfile::fake_byte_token(),
+        roles,
+    )
+    .expect("open production gates")
+}
+
+/// A real proxy whose paid admission runs through the **production** per-role
+/// gate (not a hand-built gate), pointed at `upstream`.
+fn role_gated_proxy(
+    upstream: SocketAddr,
+    gates: &Arc<ExecutionGates>,
+    role: Role,
+) -> ProviderProxy {
+    let gate = gates.gate(role).expect("role gate constructed");
+    let mut config = ProxyConfig::with_injection(
+        InjectConfig::from_base(
+            &format!("http://127.0.0.1:{}/zen/go/v1", upstream.port()),
+            "fake-secret-token",
+        )
+        .expect("inject config"),
+    );
+    config.allow = AllowList::new(vec!["127.0.0.1".to_string()]);
+    let gate_arc: Arc<BudgetGate> = Arc::clone(gate);
+    let dynamic: Arc<dyn PaidRequestGate> = gate_arc;
+    config.budget = Some(dynamic);
+    ProviderProxy::start(config).expect("start proxy")
+}
+
+/// Production builder and verifier requests are attributed to their own roles
+/// while sharing one execution allowance.
+#[tokio::test]
+async fn production_gates_attribute_builder_and_verifier_separately() {
+    let upstream =
+        FakeUpstream::spawn(r#"{"usage":{"prompt_tokens":100,"completion_tokens":50}}"#).await;
+    let gates = production_gates(
+        MemoryLedger::default(),
+        EXECUTION,
+        4 * RESERVATION_NUSD,
+        &[Role::Builder, Role::Verifier],
+    );
+    let builder = role_gated_proxy(upstream.addr, &gates, Role::Builder);
+    let verifier = role_gated_proxy(upstream.addr, &gates, Role::Verifier);
+
+    let b = send_forward(&builder, &request_body(512)).await;
+    assert!(
+        String::from_utf8_lossy(&b).starts_with("HTTP/1.1 200"),
+        "builder admitted: {:?}",
+        String::from_utf8_lossy(&b)
+    );
+    let v = send_forward(&verifier, &request_body(512)).await;
+    assert!(
+        String::from_utf8_lossy(&v).starts_with("HTTP/1.1 200"),
+        "verifier admitted: {:?}",
+        String::from_utf8_lossy(&v)
+    );
+
+    let snapshot = gates.budget().snapshot();
+    let mut roles: Vec<Role> = snapshot.reservations.values().map(|r| r.role).collect();
+    roles.sort_by_key(|r| role_key(*r));
+    assert_eq!(
+        roles,
+        vec![Role::Builder, Role::Verifier],
+        "each request is attributed to the proxy's own role"
+    );
+    assert_eq!(snapshot.outstanding_nusd(), 0);
+    assert_eq!(snapshot.cash_spent_nusd(), 1_000_000);
+    assert_eq!(upstream.accepted.load(Ordering::SeqCst), 2);
+
+    builder.stop().await;
+    verifier.stop().await;
+}
+
+/// Both roles share one allowance: the builder's admitted spend pushes the
+/// verifier over the shared cap, and the verifier request never reaches upstream.
+#[tokio::test]
+async fn production_gates_share_allowance_across_roles() {
+    let upstream =
+        FakeUpstream::spawn(r#"{"usage":{"prompt_tokens":100,"completion_tokens":50}}"#).await;
+    let gates = production_gates(
+        MemoryLedger::default(),
+        EXECUTION,
+        RESERVATION_NUSD,
+        &[Role::Builder, Role::Verifier],
+    );
+    let builder = role_gated_proxy(upstream.addr, &gates, Role::Builder);
+    let verifier = role_gated_proxy(upstream.addr, &gates, Role::Verifier);
+
+    let first = send_forward(&builder, &request_body(512)).await;
+    assert!(String::from_utf8_lossy(&first).starts_with("HTTP/1.1 200"));
+
+    let second = send_forward(&verifier, &request_body(512)).await;
+    assert!(
+        String::from_utf8_lossy(&second).starts_with("HTTP/1.1 402"),
+        "shared allowance denies the second role: {:?}",
+        String::from_utf8_lossy(&second)
+    );
+    assert_eq!(
+        upstream.accepted.load(Ordering::SeqCst),
+        1,
+        "the denied verifier request never reaches upstream"
+    );
+    let snapshot = gates.budget().snapshot();
+    assert_eq!(snapshot.reservations.len(), 1);
+    assert_eq!(
+        snapshot
+            .reservations
+            .values()
+            .filter(|r| r.role == Role::Builder)
+            .count(),
+        1
+    );
+
+    builder.stop().await;
+    verifier.stop().await;
+}
+
+/// Recovery-path regression (`agalma-c31`): the shared production constructor
+/// that recovery (`recover_inflight`, `build_recovery_executor`) and fresh
+/// dispatch both use yields a **distinct** verifier proxy, and a verifier request
+/// through it is billed to the verifier. A recovered paid run must not route
+/// verifier traffic through the builder proxy.
+#[tokio::test]
+async fn recovery_role_proxies_attribute_verifier_to_verifier() {
+    let upstream =
+        FakeUpstream::spawn(r#"{"usage":{"prompt_tokens":100,"completion_tokens":50}}"#).await;
+    let mut base = ProxyConfig::with_injection(
+        InjectConfig::from_base(
+            &format!("http://127.0.0.1:{}/zen/go/v1", upstream.addr.port()),
+            "fake-secret-token",
+        )
+        .expect("inject config"),
+    );
+    base.allow = AllowList::new(vec!["127.0.0.1".to_string()]);
+
+    let proxies = agalma_conductor::work::execution_role_proxies(
+        Box::new(MemoryLedger::default()),
+        EXECUTION,
+        PACKAGE,
+        Some(4 * RESERVATION_NUSD),
+        ProviderRequestProfile::fake_byte_token(),
+        base,
+    )
+    .expect("recovery role proxies");
+    assert_ne!(
+        proxies.builder_url(),
+        proxies.verifier_url(),
+        "the verifier must not be routed through the builder proxy"
+    );
+
+    // The exact routing contract recovery uses: with role proxies the verifier
+    // gets its own URL; without them it falls back to the shared free path.
+    let (rb, rv) = agalma_conductor::work::executor_proxy_urls(Some(&proxies), None);
+    assert_eq!(rb.as_deref(), Some(proxies.builder_url().as_str()));
+    assert_eq!(
+        rv.as_deref(),
+        Some(proxies.verifier_url().as_str()),
+        "recovery routes the verifier to the verifier proxy"
+    );
+    let (fb, fv) = agalma_conductor::work::executor_proxy_urls(None, Some("http://free".into()));
+    assert_eq!(fb.as_deref(), Some("http://free"));
+    assert_eq!(fv, None, "no verifier proxy on the free path");
+
+    let b = send_forward(proxies.builder(), &request_body(512)).await;
+    assert!(
+        String::from_utf8_lossy(&b).starts_with("HTTP/1.1 200"),
+        "builder admitted: {:?}",
+        String::from_utf8_lossy(&b)
+    );
+    let v = send_forward(proxies.verifier(), &request_body(512)).await;
+    assert!(
+        String::from_utf8_lossy(&v).starts_with("HTTP/1.1 200"),
+        "verifier admitted: {:?}",
+        String::from_utf8_lossy(&v)
+    );
+
+    let snapshot = proxies.budget().snapshot();
+    let mut roles: Vec<Role> = snapshot.reservations.values().map(|r| r.role).collect();
+    roles.sort_by_key(|r| role_key(*r));
+    assert_eq!(
+        roles,
+        vec![Role::Builder, Role::Verifier],
+        "verifier spend is attributed to the verifier"
+    );
+    assert_eq!(upstream.accepted.load(Ordering::SeqCst), 2);
+}
+
+/// Property: for any generated sequence of role assignments, each admitted
+/// request is attributed to the role of the gate that admitted it — attribution
+/// is a function of the pinned gate, never shared mutable state.
+///
+/// Independent invariant: for every `Ok(Billable(ticket))`, the reservation
+/// recorded under `ticket.request_id` has `role == the requesting role`.
+#[test]
+fn property_role_attribution_follows_the_requesting_role() {
+    let roles = [
+        Role::Builder,
+        Role::Verifier,
+        Role::Planner,
+        Role::Reviewer,
+        Role::Evaluator,
+    ];
+    let mut rng = Rng::new(PROP_SEED ^ 0x77);
+    let mut admitted = 0u64;
+    let mut multi_role_cases = 0u64;
+    for case in 0..PROP_CASES {
+        let exec = format!("exec:attr:{case}");
+        let gates = production_gates(
+            MemoryLedger::default(),
+            &exec,
+            (PROP_STEPS as u64 + 1) * RESERVATION_NUSD,
+            &roles,
+        );
+        let mut seen_roles = std::collections::BTreeSet::new();
+        for _ in 0..PROP_STEPS {
+            let role = roles[rng.below(roles.len() as u64) as usize];
+            let gate = gates.gate(role).expect("serialized gate resident");
+            match gate.inspect("POST", "/chat/completions", &request_body(64).into_bytes(), 1) {
+                Ok(GateAdmission::Billable(ticket)) => {
+                    let snapshot = gates.budget().snapshot();
+                    let record = snapshot
+                        .reservations
+                        .get(&ticket.request_id)
+                        .expect("admitted reservation is recorded");
+                    assert_eq!(
+                        record.role, role,
+                        "attribution must follow the requesting role {}",
+                        role_key(role)
+                    );
+                    seen_roles.insert(role_key(role));
+                    admitted += 1;
+                }
+                Ok(GateAdmission::NonBillable) => unreachable!("chat-completions is billable"),
+                Err(other) => panic!("unexpected admission error: {other}"),
+            }
+        }
+        if seen_roles.len() > 1 {
+            multi_role_cases += 1;
+        }
+    }
+    assert!(admitted > 0, "the generated roles must admit some work");
+    assert!(
+        multi_role_cases > 0,
+        "the generated cases must exercise multiple roles in one execution"
+    );
+}
+
+/// Property: a generated absent/invalid paid profile always denies paid
+/// admission, so the production path (`task_role_proxies`) never reaches proxy
+/// construction; only a well-formed, in-validity, priced profile is admitted.
+///
+/// Independent invariant: `resolve_paid_profile(true, input)` is `Ok(Some(_))`
+/// iff the input is exactly a readable, schema-valid, `n == 1`, priced,
+/// non-expired profile; every other generated input is `Err` (no ungated paid
+/// proxy). The expected verdict is derived from the profile specification, not
+/// from the resolver implementation.
+#[test]
+fn property_invalid_or_missing_paid_profile_never_yields_ungated_proxy() {
+    let mut rng = Rng::new(PROP_SEED ^ 0x88);
+    let dir = ScratchDir::new("paid-profile-prop");
+    let mut invalid_cases = 0u64;
+    let mut valid_cases = 0u64;
+    let mut checked = 0u64;
+
+    for case in 0..PROP_CASES {
+        let kind = rng.below(10);
+        let mut profile = ProviderRequestProfile::fake_byte_token();
+        let mut path: Option<String> = None;
+        // `None` expected verdict == deny.
+        let expect_valid = matches!(kind, 8 | 9);
+
+        match kind {
+            0 => {} // missing path
+            1 => path = Some("   ".to_string()),
+            2 => {
+                path = Some(
+                    dir.join(format!("absent-{case}.json"))
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+            }
+            3 => {
+                let p = dir.join(format!("malformed-{case}.json"));
+                std::fs::write(&p, format!("{{ not-json {case}").as_bytes()).expect("write");
+                path = Some(p.to_string_lossy().into_owned());
+            }
+            4 => {
+                let mut value = serde_json::to_value(&profile).expect("encode");
+                value
+                    .as_object_mut()
+                    .expect("object")
+                    .remove("model");
+                let p = dir.join(format!("missing-field-{case}.json"));
+                std::fs::write(&p, serde_json::to_vec(&value).expect("encode")).expect("write");
+                path = Some(p.to_string_lossy().into_owned());
+            }
+            5 => profile.n = 2, // unsupported n
+            6 => {
+                profile.valid_from_unix_ms = 0;
+                profile.valid_until_unix_ms = 1; // expired
+            }
+            7 => {
+                profile.input_limit_tokens = u64::MAX;
+                profile.max_input_price_per_million_nusd = u64::MAX; // unknown price
+            }
+            8 => {} // valid fake profile
+            9 => {
+                // Boundary-valid interval: the whole open interval up to u64::MAX.
+                profile.valid_from_unix_ms = 0;
+                profile.valid_until_unix_ms = u64::MAX;
+            }
+            _ => unreachable!(),
+        }
+
+        // Any non-`None`/empty path with an invalid profile is serialized to a
+        // real file, so the resolver must reject on content, not on absence.
+        if path.is_none() && kind != 0 && kind != 1 {
+            let p = dir.join(format!("case-{case}.json"));
+            std::fs::write(&p, serde_json::to_vec(&profile).expect("encode")).expect("write");
+            path = Some(p.to_string_lossy().into_owned());
+        }
+
+        let outcome = agalma_conductor::work::resolve_paid_profile(true, path.as_deref());
+        if expect_valid {
+            let resolved = outcome.expect("valid profile must resolve");
+            assert!(
+                resolved.is_some(),
+                "a valid profile must yield the reviewed profile"
+            );
+            valid_cases += 1;
+        } else {
+            assert!(
+                outcome.is_err(),
+                "invalid/missing profile (kind {kind}) must deny, got {outcome:?}"
+            );
+            invalid_cases += 1;
+        }
+        // No paid credential: no profile is required and no proxy is gated.
+        assert_eq!(
+            agalma_conductor::work::resolve_paid_profile(false, path.as_deref())
+                .expect("free path never errors"),
+            None
+        );
+        checked += 1;
+    }
+    assert!(checked > 0);
+    assert!(valid_cases > 0, "the generator must produce valid profiles");
+    assert!(
+        invalid_cases > 0,
+        "the generator must produce invalid/missing profiles"
+    );
+}
+
+/// Duplicate send/settle observations for one ticket never double count and
+/// never change the pinned role attribution.
+#[test]
+fn duplicate_observation_through_production_gate_is_stable() {
+    let gates = production_gates(
+        MemoryLedger::default(),
+        EXECUTION,
+        4 * RESERVATION_NUSD,
+        &[Role::Verifier],
+    );
+    let gate = gates.gate(Role::Verifier).expect("verifier gate");
+    let ticket = match gate
+        .inspect("POST", "/chat/completions", &request_body(64).into_bytes(), 1)
+        .expect("admitted")
+    {
+        GateAdmission::Billable(t) => t,
+        other => panic!("expected billable, got {other:?}"),
+    };
+    gate.mark_sent(&ticket);
+    let usage = UsageObservation {
+        prompt_tokens: Some(100),
+        completion_tokens: Some(50),
+        reported_cash_nusd: None,
+    };
+    gate.settle_usage(&ticket, &usage);
+    gate.settle_usage(&ticket, &usage);
+    gate.mark_sent(&ticket);
+
+    let snapshot = gate.snapshot();
+    assert_eq!(snapshot.cash_spent_nusd(), 500_000, "settled once");
+    assert_eq!(snapshot.outstanding_nusd(), 0);
+    assert_eq!(snapshot.reservations.len(), 1);
+    assert_eq!(snapshot.reservations[&ticket.request_id].role, Role::Verifier);
+}
+
+/// An absent, unreadable, invalid, or expired paid profile denies paid
+/// admission; there is no ungated fallback. No paid credential (`paid_available
+/// == false`) leaves the free path unchanged.
+#[test]
+fn missing_or_invalid_paid_profile_denies_ungated_fallback() {
+    use agalma_conductor::work::resolve_paid_profile;
+
+    // No paid dispatch available -> free path, no profile needed.
+    assert_eq!(resolve_paid_profile(false, None).expect("free path"), None);
+
+    // Paid dispatch with no profile path at all -> deny (no ungated fallback).
+    assert!(resolve_paid_profile(true, None).is_err());
+    assert!(resolve_paid_profile(true, Some("   ")).is_err());
+
+    // Unreadable / invalid / expired profiles -> deny.
+    assert!(resolve_paid_profile(true, Some("/no/such/paid-profile.json")).is_err());
+
+    let dir = ScratchDir::new("paid-profile-c31");
+    std::fs::write(dir.join("invalid.json"), b"{ not json").expect("write invalid");
+    assert!(resolve_paid_profile(true, Some(dir.join("invalid.json").to_str().unwrap())).is_err());
+
+    let mut expired = ProviderRequestProfile::fake_byte_token();
+    expired.valid_from_unix_ms = 0;
+    expired.valid_until_unix_ms = 1;
+    std::fs::write(
+        dir.join("expired.json"),
+        serde_json::to_vec(&expired).expect("encode expired"),
+    )
+    .expect("write expired");
+    assert!(resolve_paid_profile(true, Some(dir.join("expired.json").to_str().unwrap())).is_err());
+
+    // A valid reviewed profile is admitted.
+    let valid = ProviderRequestProfile::fake_byte_token();
+    std::fs::write(
+        dir.join("valid.json"),
+        serde_json::to_vec(&valid).expect("encode valid"),
+    )
+    .expect("write valid");
+    let got = resolve_paid_profile(true, Some(dir.join("valid.json").to_str().unwrap()))
+        .expect("valid profile")
+        .expect("some profile");
+    assert_eq!(got.model, "fake-byte-token");
+}
+
+/// After restart, a fresh request must not reuse a durable request id (which
+/// would make `reserve` return the existing reservation as an idempotent
+/// success and resend the billable request). The next id is derived from the
+/// durable maximum, not the reservation count.
+#[test]
+fn restart_next_id_exceeds_durable_maximum_and_never_reuses() {
+    // Durable state with a same-role id (`builder:2`) and a gap below it: a
+    // count-based seed of 2 would reissue `builder:2` and turn a fresh request
+    // into a resend of the existing reservation.
+    let ledger = SharedLedger::default();
+    {
+        let mut records = ledger.records.lock().expect("seed ledger");
+        records.push(reservation(
+            &format!("budget:{EXECUTION}:verifier:1"),
+            Role::Verifier,
+            RESERVATION_NUSD,
+            0,
+        ));
+        records.push(reservation(
+            &format!("budget:{EXECUTION}:builder:2"),
+            Role::Builder,
+            RESERVATION_NUSD,
+            0,
+        ));
+    }
+    let gates = production_gates(
+        ledger.clone(),
+        EXECUTION,
+        4 * RESERVATION_NUSD,
+        &[Role::Builder, Role::Verifier],
+    );
+    assert_eq!(
+        gates.budget().snapshot().reservations.len(),
+        2,
+        "durable state rebuilt across the restart"
+    );
+    let builder = gates.gate(Role::Builder).expect("builder gate");
+    let ticket = match builder
+        .inspect("POST", "/chat/completions", &request_body(64).into_bytes(), 1)
+        .expect("admitted")
+    {
+        GateAdmission::Billable(t) => t,
+        other => panic!("expected billable, got {other:?}"),
+    };
+    assert_ne!(
+        ticket.request_id,
+        format!("budget:{EXECUTION}:builder:2"),
+        "must not reuse a durable id"
+    );
+    assert!(
+        ticket.request_id.ends_with(":3"),
+        "fresh id must exceed the durable maximum: {}",
+        ticket.request_id
+    );
+    let snapshot = gates.budget().snapshot();
+    assert_eq!(
+        snapshot.reservations.len(),
+        3,
+        "a fresh reservation is added, never reused"
+    );
+    assert_eq!(snapshot.outstanding_nusd(), 3 * RESERVATION_NUSD);
+}
+
+/// Property: for any durable set of request ids (including sparse/gappy ones),
+/// the next generated id never collides with a durable id and its sequence
+/// strictly exceeds the durable maximum.
+#[test]
+fn property_fresh_request_id_never_collides_with_durable_ids() {
+    let mut rng = Rng::new(PROP_SEED ^ 0x55);
+    let mut checked = 0u64;
+    for case in 0..PROP_CASES {
+        let exec = format!("exec:prop:{case}");
+        let n = rng.below(6) + 1;
+        let mut seeded: Vec<String> = Vec::new();
+        let mut max_seq: Option<u64> = None;
+        for _ in 0..n {
+            let seq = rng.below(40);
+            let role = if rng.below(2) == 0 {
+                Role::Builder
+            } else {
+                Role::Verifier
+            };
+            let id = format!("budget:{exec}:{}:{seq}", role_key(role));
+            if !seeded.contains(&id) {
+                seeded.push(id);
+            }
+            max_seq = Some(max_seq.map_or(seq, |m| m.max(seq)));
+        }
+        let max_seq = max_seq.expect("at least one seeded id");
+
+        let ledger = SharedLedger::default();
+        {
+            let mut records = ledger.records.lock().expect("seed ledger");
+            for id in &seeded {
+                records.push(Reservation {
+                    request_id: id.clone(),
+                    execution_id: exec.clone(),
+                    package_digest: PACKAGE.to_string(),
+                    role: Role::Builder,
+                    profile_digest: "sha256:profile".to_string(),
+                    max_liability_nusd: RESERVATION_NUSD,
+                    quota_units: 0,
+                    state: ReservationState::Reserved,
+                    charged_nusd: None,
+                    created_at_unix_ms: 1,
+                });
+            }
+        }
+        let allowance = (seeded.len() as u64 + 2) * RESERVATION_NUSD;
+        let gates = production_gates(
+            ledger.clone(),
+            &exec,
+            allowance,
+            &[Role::Builder, Role::Verifier],
+        );
+        let gate = gates.gate(Role::Builder).expect("builder gate");
+        let ticket = match gate
+            .inspect("POST", "/chat/completions", &request_body(64).into_bytes(), 1)
+            .expect("admitted")
+        {
+            GateAdmission::Billable(t) => t,
+            other => panic!("expected billable, got {other:?}"),
+        };
+        assert!(
+            !seeded.contains(&ticket.request_id),
+            "fresh id collided with a durable id: {}",
+            ticket.request_id
+        );
+        let seq: u64 = ticket
+            .request_id
+            .rsplit(':')
+            .next()
+            .expect("seq suffix")
+            .parse()
+            .expect("numeric seq");
+        assert!(
+            seq > max_seq,
+            "fresh seq {seq} must exceed durable max {max_seq}"
+        );
+        checked += 1;
+    }
+    assert!(checked > 0);
 }

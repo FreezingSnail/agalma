@@ -250,6 +250,7 @@ impl Composition {
             profile_path,
             builder_prompt,
             proxy_url: Some(proxy.url()),
+            verifier_proxy_url: None,
             paid_proxy: false,
             extra_ro_roots,
             toolchain_env,

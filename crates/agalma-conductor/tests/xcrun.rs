@@ -106,6 +106,7 @@ fn sandboxed_git_guard_runs_without_xcrun_noise() {
         profile_path: profile,
         builder_prompt: state_dir.join("unused-builder.md"),
         proxy_url: None,
+        verifier_proxy_url: None,
         paid_proxy: false,
         extra_ro_roots: Vec::new(),
         toolchain_env: BTreeMap::new(),

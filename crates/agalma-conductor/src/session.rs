@@ -212,6 +212,8 @@ pub fn run_session_end(
     // Gated provider proxy (`agalma-5fy.7`): when a budget gate is pinned, this
     // session owns a proxy that inspects/reserves every paid request before it
     // reaches upstream. The proxy is held for the session's lifetime below.
+    // `agalma-c31`: a paid session with no pinned gate must fail closed rather
+    // than dispatch through an ungated proxy.
     let gated_proxy = match live.budget.clone() {
         Some(gate) => {
             let mut config = ProxyConfig::from_env();
@@ -221,7 +223,16 @@ pub fn run_session_end(
                     .map_err(|e| ContractError::KnownFailure(format!("provider proxy: {e}")))?,
             )
         }
-        None => None,
+        None => {
+            if live.paid_proxy {
+                return Err(ContractError::KnownFailure(format!(
+                    "{} not started: paid dispatch requires a reviewed budget gate; \
+                     refusing ungated paid session",
+                    spec.error_label
+                )));
+            }
+            None
+        }
     };
     let proxy_url = gated_proxy
         .as_ref()

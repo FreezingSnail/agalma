@@ -39,7 +39,6 @@
 //!   double count; cancellation cannot refund incurred charges.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -253,7 +252,16 @@ impl ExecutionBudget {
         for record in ledger.load_records(&execution)? {
             spend.apply(record);
         }
-        let next_seq = spend.reservations.len() as u64;
+        // Restart-safe request identity (`agalma-c31`): seed the sequence from
+        // the **highest** durable request number, never from the reservation
+        // count. A count can shrink (a cancelled reservation is removed from the
+        // in-memory view) and can leave gaps, so a restart could otherwise
+        // reissue a request id that already exists durably. Reusing an id makes
+        // [`SpendState::reserve`] return the existing reservation as an idempotent
+        // success, which the gate would report `Billable` — i.e. a blind resend.
+        // Deriving from the durable maximum proves a fresh request can never
+        // collide with an earlier reservation.
+        let next_seq = next_request_seq(&spend);
         Ok(Arc::new(ExecutionBudget {
             inner: Mutex::new(Inner {
                 spend,
@@ -291,6 +299,14 @@ impl ExecutionBudget {
             role_key(reservation.role),
             seq
         );
+        // A fresh admission must never reuse a durable id: reusing one would
+        // make `reserve` return the earlier reservation as an idempotent
+        // success and the proxy would resend a billable request. The seed above
+        // makes a collision impossible; this guard fails closed if durable state
+        // ever surprises that invariant.
+        if inner.spend.reservations.contains_key(&reservation.request_id) {
+            return Err(BudgetError::Conflict(reservation.request_id));
+        }
         let mut candidate = inner.spend.clone();
         let kept = candidate.reserve(reservation)?;
         commit(&mut inner, &kept)?;
@@ -350,6 +366,26 @@ fn commit(inner: &mut Inner, record: &Reservation) -> Result<(), BudgetError> {
         .ledger
         .commit_record(&inner.execution.clone(), record)
         .map_err(|e| BudgetError::Persist(e.to_string()))
+}
+
+/// The next durable request number for `spend`: one past the highest
+/// `:<seq>` suffix across every reservation id, or `0` when none carry a
+/// numeric suffix. Reading the durable maximum (not the reservation count) is
+/// what makes a fresh request id restart-safe.
+fn next_request_seq(spend: &SpendState) -> u64 {
+    let highest = spend
+        .reservations
+        .keys()
+        .filter_map(|id| id.rsplit(':').next())
+        .filter_map(|tail| tail.parse::<u64>().ok())
+        .max();
+    match highest {
+        Some(max) => max.saturating_add(1),
+        // No parseable ids yet (e.g. a fresh execution, or hand-built test ids):
+        // fall back to the reservation count so the first admission starts at a
+        // value no smaller than the number already present.
+        None => spend.reservations.len() as u64,
+    }
 }
 
 /// A terminal record that supersedes a released reservation on replay.
@@ -513,6 +549,62 @@ pub fn load_execution_budget(
     quota_cap_units: Option<u64>,
 ) -> Result<Arc<ExecutionBudget>, ContractError> {
     ExecutionBudget::open(ledger, execution.clone(), allowance_nusd, quota_cap_units)
+}
+
+/// Per-role admission gates for **one** execution, all sharing a single
+/// [`ExecutionBudget`] (`agalma-c31`).
+///
+/// The parent proxy instance pins the attribution scope, and each paid session
+/// runs through the gate for **its own** role. Sharing one budget keeps
+/// `spent + outstanding + proposed <= allowance` atomic across roles, so a
+/// verifier request is charged to the verifier and still cannot push the
+/// execution past its builder+verifier allowance. This is the production
+/// constructor: [`crate::work`] and [`crate::session`] build their paid proxies
+/// from it rather than pinning one role for every role's traffic.
+pub struct ExecutionGates {
+    budget: Arc<ExecutionBudget>,
+    gates: Vec<(Role, Arc<BudgetGate>)>,
+}
+
+impl ExecutionGates {
+    /// Open a restart-rebuilt [`ExecutionBudget`] over `ledger` and build one
+    /// pinned [`BudgetGate`] per role in `roles`.
+    pub fn open(
+        ledger: Box<dyn ReservationLedger>,
+        execution: ExecutionId,
+        package_digest: &str,
+        allowance_nusd: Option<Nusd>,
+        quota_cap_units: Option<u64>,
+        profile: ProviderRequestProfile,
+        roles: &[Role],
+    ) -> Result<Arc<Self>, ContractError> {
+        let budget = ExecutionBudget::open(ledger, execution.clone(), allowance_nusd, quota_cap_units)?;
+        let gates = roles
+            .iter()
+            .map(|role| {
+                let gate = Arc::new(BudgetGate::new(
+                    AdmissionScope::new(execution.as_str(), package_digest, *role),
+                    profile.clone(),
+                    Arc::clone(&budget),
+                ));
+                (*role, gate)
+            })
+            .collect();
+        Ok(Arc::new(ExecutionGates { budget, gates }))
+    }
+
+    /// The shared execution budget (diagnostics/tests).
+    pub fn budget(&self) -> &Arc<ExecutionBudget> {
+        &self.budget
+    }
+
+    /// The pinned gate for `role`, when `role` was included at construction.
+    pub fn gate(&self, role: Role) -> Option<&Arc<BudgetGate>> {
+        self.gates
+            .iter()
+            .find(|(candidate, _)| *candidate == role)
+            .map(|(_, gate)| gate)
+    }
 }
 
 /// The durable event for one reservation state change.

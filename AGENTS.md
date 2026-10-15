@@ -28,7 +28,11 @@ factory's runtime routing table, task-release authority, or promotion policy.
   before editing. Reuse that worktree for retries and review repairs; do not use
   one-off temporary directories, disposable clones, or the shared primary checkout
   for implementation. Coordinate owned files and shared build outputs. Retain the
-  worktree through review and delivery; cleanup follows explicit user direction.
+  worktree through review and repair. After the reviewed task changes are committed
+  and merged into `main`, remove its clean task worktree as part of delivery;
+  no further confirmation is needed. First confirm all test sources are delivered
+  and preserve all run evidence outside the worktree. Preserve dirty or unmerged
+  worktrees and report the remaining work; never force removal or discard changes.
 - After Sol approves acceptance, commit the completed task's reviewed changes
   before marking delivery complete. Stage only that task's files or hunks;
   preserve unrelated and unreviewed work. A shared dirty workspace is not a

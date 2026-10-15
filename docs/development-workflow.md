@@ -41,9 +41,13 @@ and report that condition instead of changing implementation ownership.
 Implementation and repairs use a named Git worktree and task branch, retained
 across attempts. Record the bead, worktree path, branch, and base commit before
 editing. Do not implement in the shared primary checkout or a disposable temp
-directory. Preserve the worktree through review and delivery; cleanup requires
-explicit user direction. Test sources and fixtures belong in the reviewed changes;
-run evidence belongs in a persistent artifact root that survives worktree removal.
+directory. Preserve the worktree through review and repair. Once the reviewed
+task changes are committed and merged into `main`, remove its clean task worktree
+as part of delivery without another confirmation. Confirm test sources and
+fixtures are delivered and preserve all run evidence at a persistent artifact
+root outside the worktree before removal. Preserve dirty or unmerged worktrees,
+report the remaining work, and never force removal or discard changes. Retain
+task branches unless their deletion is separately requested.
 
 The session-resume ownership policy from the retrospective's item 1 is deferred.
 Do not introduce a new closed-bead resume policy as part of this amendment.

@@ -40,8 +40,10 @@ generators, and regression fixtures in the reviewed changes. Retain every run's
 logs, command/environment, source identity, seeds, results, and fixture data under
 `target/test-runs/<bead-id>/<run-id>/` at the recorded persistent root, including
 passing and interrupted runs. Use existing ScratchDir retention APIs as needed.
-Evidence must survive worktree removal; neither evidence nor worktrees are deleted
-without explicit user direction.
+Evidence must survive worktree removal and is never deleted without explicit user
+direction. After reviewed task changes are committed and merged into `main`,
+remove the clean task worktree as part of delivery, following the evidence checks
+in development-workflow.md. Preserve dirty or unmerged worktrees; no forced removal.
 
 Do not routinely run whole-crate or workspace suites before editing. A baseline
 is useful only to reproduce a concrete failure or satisfy required paired evidence;

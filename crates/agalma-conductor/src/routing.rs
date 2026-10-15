@@ -579,6 +579,96 @@ pub fn resolve_route(
     })
 }
 
+/// Role-scoped explicit model overrides (SF.8).
+///
+/// The scoped `builder` selector (`--builder-model`/`AGALMA_BUILDER_MODEL`) is
+/// distinct from the legacy `global` selector (`--model`/`AGALMA_MODEL`): it
+/// applies to the builder class only, outranks the global selector for that
+/// class, and cannot bypass the paid credential gate. Every non-builder class
+/// continues to use the global selector exactly as before.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct RoleModelOverride<'a> {
+    /// Builder-only selector.
+    pub builder: Option<&'a str>,
+    /// Legacy global selector (honored for every class, unchanged).
+    pub global: Option<&'a str>,
+}
+
+impl<'a> RoleModelOverride<'a> {
+    /// Build a scoped override set.
+    pub fn new(builder: Option<&'a str>, global: Option<&'a str>) -> Self {
+        Self { builder, global }
+    }
+
+    /// The effective builder override: the scoped selector outranks the global.
+    pub fn effective_builder(&self) -> Option<&'a str> {
+        self.builder.or(self.global)
+    }
+
+    /// The legacy global override, unchanged for non-builder classes.
+    pub fn effective_global(&self) -> Option<&'a str> {
+        self.global
+    }
+}
+
+/// Whether `model` names a paid table spec (unknown ids are not paid).
+fn is_paid_model(model: &str) -> bool {
+    spec(model).map(ModelSpec::is_paid).unwrap_or(false)
+}
+
+/// Refuse an explicit builder selection that names a paid model without paid
+/// eligibility.
+///
+/// The scoped builder selector must not bypass the credential/capability gate:
+/// a requested paid model is selected as requested or refused, never silently
+/// substituted with a free fallback. Free and unknown ids are unaffected.
+pub fn check_builder_eligibility(
+    model: &str,
+    allow_paid: bool,
+    paid_available: bool,
+) -> Result<(), ContractError> {
+    if is_paid_model(model) && !(allow_paid && paid_available) {
+        let missing = if !allow_paid {
+            format!("{ALLOW_PAID_ENV} is not enabled")
+        } else {
+            "no paid provider credential is present".to_string()
+        };
+        return Err(ContractError::KnownFailure(format!(
+            "explicit builder model {model} is a paid route but {missing}; refusing \
+             (an explicit selection cannot bypass the paid credential gate)"
+        )));
+    }
+    Ok(())
+}
+
+/// Resolve the builder route with a role-scoped selector (SF.8).
+///
+/// The scoped builder selector outranks the legacy global selector for the
+/// builder only. An explicit paid selection that is not eligible is refused
+/// (see [`check_builder_eligibility`]); an unset selector falls back to the
+/// legacy global override with unchanged semantics.
+pub fn resolve_builder_route(
+    state_dir: &Path,
+    scope: &str,
+    family: TaskFamily,
+    allow_paid: bool,
+    paid_available: bool,
+    overrides: RoleModelOverride<'_>,
+) -> Result<RouteSelection, ContractError> {
+    if let Some(model) = overrides.builder.map(str::trim).filter(|s| !s.is_empty()) {
+        check_builder_eligibility(model, allow_paid, paid_available)?;
+    }
+    resolve_route(
+        state_dir,
+        scope,
+        "builder",
+        family,
+        allow_paid,
+        paid_available,
+        overrides.effective_builder(),
+    )
+}
+
 /// `(cash_usd, quota_usd)` for a model id at the given tokens (0 when unknown).
 pub fn cash_quota(model_id: &str, tokens_in: u64, tokens_out: u64) -> (f64, f64) {
     spec(model_id)
@@ -898,6 +988,40 @@ mod tests {
         // Paid route with no reported cost falls back to the table notional.
         let (cash, _) = cash_quota_for_usage("opencode-go/deepseek-v4.1-flash", 0.0, 1_000_000, 0);
         assert!((cash - 0.15).abs() < 1e-9, "cash {cash}");
+    }
+
+    #[test]
+    fn scoped_builder_selector_outranks_global_for_builder_only() {
+        let overrides = RoleModelOverride::new(
+            Some("opencode/mimo-v2.6-flash-free"),
+            Some("custom/legacy-global"),
+        );
+        assert_eq!(
+            overrides.effective_builder(),
+            Some("opencode/mimo-v2.6-flash-free"),
+            "the scoped builder selector outranks the legacy global selector"
+        );
+        // Non-builder classes keep the legacy global selector unchanged.
+        assert_eq!(overrides.effective_global(), Some("custom/legacy-global"));
+    }
+
+    #[test]
+    fn unset_builder_selector_falls_back_to_global() {
+        let overrides = RoleModelOverride::new(None, Some("custom/legacy-global"));
+        assert_eq!(overrides.effective_builder(), Some("custom/legacy-global"));
+    }
+
+    #[test]
+    fn paid_builder_selection_requires_both_gates() {
+        let flash = "opencode-go/deepseek-v4.1-flash";
+        assert!(check_builder_eligibility(flash, false, true).is_err());
+        assert!(check_builder_eligibility(flash, true, false).is_err());
+        assert!(check_builder_eligibility(flash, false, false).is_err());
+        assert!(check_builder_eligibility(flash, true, true).is_ok());
+        // A free selection is never gated.
+        assert!(check_builder_eligibility("opencode/big-pickle", false, false).is_ok());
+        // An unknown (non-table) model is not treated as paid.
+        assert!(check_builder_eligibility("custom/model", false, false).is_ok());
     }
 
     #[test]

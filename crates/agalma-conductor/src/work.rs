@@ -100,6 +100,10 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
     // static cheapest-adequate route is selected (free-only unless
     // `AGALMA_ALLOW_PAID=1`).
     let override_model = routing::explicit_model(args.model.as_deref());
+    // SF.8: the builder-scoped selector (`--builder-model`/`AGALMA_BUILDER_MODEL`)
+    // overrides the builder class only and never the planner/reviewer/verifier
+    // roles. It outranks the legacy global `--model` for the builder.
+    let builder_selector = crate::config::resolve_builder_model(args.builder_model.as_deref());
     std::fs::create_dir_all(&state_dir).map_err(|e| {
         ContractError::KnownFailure(format!(
             "cannot create state dir {}: {e}",
@@ -300,6 +304,21 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
         Err(err) => eprintln!("agalma: review hold check failed: {err}"),
     }
 
+    // SF.8: an explicit builder selector that names an ineligible paid model is
+    // refused before claiming any task, so a paid selection is never silently
+    // substituted. An unset selector keeps the legacy global/static behavior.
+    if let Some(model) = builder_selector.as_deref() {
+        if let Err(err) = routing::check_builder_eligibility(
+            model,
+            routing::allow_paid_from_env(),
+            paid_available,
+        ) {
+            return Err(ContractError::KnownFailure(format!(
+                "builder model selector refused: {err}"
+            )));
+        }
+    }
+
     let mut processed: u32 = 0;
     let mut last: Option<Terminal> = None;
     loop {
@@ -331,6 +350,7 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
             &repo,
             &state_dir,
             &ledger,
+            builder_selector.as_deref(),
             override_model.as_deref(),
             paid_available,
             proxy_url.clone(),
@@ -445,6 +465,7 @@ fn run_task(
     repo: &Path,
     state_dir: &Path,
     ledger: &LedgerHandle,
+    builder_selector: Option<&str>,
     override_model: Option<&str>,
     paid_available: bool,
     proxy_url: Option<String>,
@@ -454,7 +475,13 @@ fn run_task(
     harness: HarnessHandle,
     stop: Rc<dyn StopControl>,
 ) -> Result<Terminal, ContractError> {
-    let (builder, verifier) = task_routes(state_dir, task, override_model, paid_available)?;
+    let (builder, verifier) = task_routes(
+        state_dir,
+        task,
+        builder_selector,
+        override_model,
+        paid_available,
+    )?;
     let plan = RolePlan {
         builder_model: builder.model.clone(),
         builder_route: builder.label(),
@@ -536,23 +563,29 @@ fn run_task(
     Ok(terminal)
 }
 
-/// Resolve the (builder, verifier) static routes for `task` (H3). Both are
+/// Resolve the (builder, verifier) static routes for `task` (H3, SF.8). Both are
 /// recorded as `route.model` decisions; recovery reuses the recorded outcome.
+///
+/// The builder route honors the scoped builder selector (`builder_selector`),
+/// which outranks the legacy global `override_model` for the builder only. The
+/// verifier route uses only the legacy global override, so the builder selector
+/// never changes a non-builder role.
 fn task_routes(
     state_dir: &Path,
     task: &Task,
+    builder_selector: Option<&str>,
     override_model: Option<&str>,
     paid_available: bool,
 ) -> Result<(RouteSelection, RouteSelection), ContractError> {
     let allow_paid = routing::allow_paid_from_env();
-    let builder = routing::resolve_route(
+    let overrides = routing::RoleModelOverride::new(builder_selector, override_model);
+    let builder = routing::resolve_builder_route(
         state_dir,
         task.task_id.as_str(),
-        "builder",
         task.family,
         allow_paid,
         paid_available,
-        override_model,
+        overrides,
     )?;
     let verifier = routing::resolve_route(
         state_dir,
@@ -561,7 +594,7 @@ fn task_routes(
         task.family,
         allow_paid,
         paid_available,
-        override_model,
+        overrides.effective_global(),
     )?;
     Ok((builder, verifier))
 }

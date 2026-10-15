@@ -63,6 +63,10 @@ pub struct WorkArgs {
     /// Override the model identifier.
     #[arg(long, value_name = "ID")]
     pub model: Option<String>,
+    /// Override the model identifier for the builder role only (SF.8). Outranks
+    /// `--model` for the builder; other roles keep their existing selection.
+    #[arg(long, value_name = "ID")]
+    pub builder_model: Option<String>,
     /// Harness implementation to bind (`opencode|reference|reference-fail`).
     #[arg(long, value_name = "ID")]
     pub harness: Option<String>,

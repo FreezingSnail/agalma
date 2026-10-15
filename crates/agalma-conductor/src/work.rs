@@ -30,6 +30,7 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::process::ExitCode;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use agalma_contracts::digest::{sha256_digest, FailureCode};
 use agalma_contracts::{
@@ -49,6 +50,7 @@ use serde_json::json;
 
 use agalma_ipc::TaskQueueOps;
 
+use crate::budget::{bound_reservation_ledger, ExecutionGates, PaidRequestGate, ReservationLedger};
 use crate::cli::WorkArgs;
 use crate::composition::{toolchain, BUILDER_PROMPT, DEFAULT_TURN_TIMEOUT, DEFAULT_VERIFY_TIMEOUT};
 use crate::config::resolve_state_dir;
@@ -528,12 +530,25 @@ fn run_task(
     let admitted_task = task_from_package(&package, &task.task_id);
     let admitted_plan = role_plan_from_package(&package)?;
     let builder_prompt = builder_prompt_bytes(state_dir, &package)?;
+
+    // SF.7 + `agalma-c31`: parent-owned budget admission. When a reviewed
+    // provider profile is configured, this execution's builder **and** verifier
+    // paid traffic runs through a per-role gated proxy, both sharing one durable
+    // `ExecutionBudget` over the bound ledger API, so every billable request is
+    // reserved before it reaches upstream and attributed to its own role.
+    // Without paid dispatch the historical process proxy path is preserved, and
+    // a missing/invalid profile denies rather than falling back ungated.
+    let role_proxies = task_role_proxies(state_dir, &package, paid_available)?;
+    let (task_proxy_url, verifier_proxy_url) =
+        executor_proxy_urls(role_proxies.as_ref(), proxy_url.clone());
+
     let mut executor = build_executor(
         ledger,
         state_dir,
         &admitted_plan,
         paid_available,
-        proxy_url,
+        task_proxy_url,
+        verifier_proxy_url,
         &admitted_task,
         repo,
         harness,
@@ -561,6 +576,184 @@ fn run_task(
         false,
     )?;
     Ok(terminal)
+}
+
+/// Environment variable naming a reviewed provider request profile (JSON). When
+/// set, the work loop runs paid traffic through the SF.7 durable budget gate.
+pub const BUDGET_PROFILE_ENV: &str = "AGALMA_BUDGET_PROFILE";
+
+/// Resolve the reviewed paid [`ProviderRequestProfile`] for one task run.
+///
+/// **Fail closed** (`agalma-c31`): paid dispatch is only ever allowed behind a
+/// reviewed profile. When `paid_available` is true and the profile is absent,
+/// unreadable, invalid, unsupported (`n != 1`), unknown-priced, or expired this
+/// denies instead of falling back to an ungated proxy. When paid dispatch is not
+/// available the free path is returned unchanged (`Ok(None)`).
+pub fn resolve_paid_profile(
+    paid_available: bool,
+    profile_path: Option<&str>,
+) -> Result<Option<agalma_contracts::budget::ProviderRequestProfile>, ContractError> {
+    use agalma_contracts::budget::ProviderRequestProfile;
+    if !paid_available {
+        return Ok(None);
+    }
+    let path = profile_path
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| {
+            ContractError::KnownFailure(format!(
+                "paid dispatch denied: no reviewed provider budget profile \
+                 ({BUDGET_PROFILE_ENV} unset); refusing ungated paid admission"
+            ))
+        })?;
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        ContractError::KnownFailure(format!(
+            "paid dispatch denied: budget profile {path} unreadable: {e}"
+        ))
+    })?;
+    let profile: ProviderRequestProfile = serde_json::from_str(&text).map_err(|e| {
+        ContractError::KnownFailure(format!("paid dispatch denied: budget profile {path} invalid: {e}"))
+    })?;
+    // An unknown/unsupported price bound (`n != 1`, overflow) is unusable.
+    profile.reservation_nusd().map_err(|e| {
+        ContractError::KnownFailure(format!(
+            "paid dispatch denied: budget profile {path} has no valid reservation bound: {e}"
+        ))
+    })?;
+    if !profile.is_valid_at(crate::budget::now_unix_ms()) {
+        return Err(ContractError::KnownFailure(format!(
+            "paid dispatch denied: budget profile {path} is expired at the current time"
+        )));
+    }
+    Ok(Some(profile))
+}
+
+/// The per-role gated provider proxies for one task execution (`agalma-c31`).
+///
+/// Both roles share one [`ExecutionGates::budget`] so their combined spend
+/// cannot exceed the task allowance, while each request is attributed to the
+/// proxy's own pinned role — a verifier request is charged to the verifier, not
+/// the builder. The fresh dispatch path and recovery both construct proxies
+/// through [`execution_role_proxies`], so a recovered execution attributes roles
+/// exactly like a freshly admitted one.
+pub struct TaskRoleProxies {
+    builder: ProviderProxy,
+    verifier: ProviderProxy,
+    gates: Arc<ExecutionGates>,
+}
+
+impl TaskRoleProxies {
+    /// The builder-role proxy (bound to its own ephemeral loopback port).
+    pub fn builder(&self) -> &ProviderProxy {
+        &self.builder
+    }
+
+    /// The verifier-role proxy (bound to its own ephemeral loopback port).
+    pub fn verifier(&self) -> &ProviderProxy {
+        &self.verifier
+    }
+
+    /// The shared execution budget both role gates reserve against.
+    pub fn budget(&self) -> &Arc<crate::budget::ExecutionBudget> {
+        self.gates.budget()
+    }
+
+    pub fn builder_url(&self) -> String {
+        self.builder.url()
+    }
+    pub fn verifier_url(&self) -> String {
+        self.verifier.url()
+    }
+}
+
+/// Start one pinned gate proxy for `role`, sharing the execution budget. The
+/// `base` config supplies the upstream injection (production: `from_env`); the
+/// admission gate is attached per role.
+fn start_role_proxy(
+    gates: &Arc<ExecutionGates>,
+    role: Role,
+    base: &ProxyConfig,
+) -> Result<ProviderProxy, ContractError> {
+    let gate = gates.gate(role).ok_or_else(|| {
+        ContractError::KnownFailure(format!("no budget gate constructed for role {role:?}"))
+    })?;
+    let gate_arc: Arc<crate::budget::BudgetGate> = Arc::clone(gate);
+    let dynamic: Arc<dyn PaidRequestGate> = gate_arc;
+    let mut config = base.clone();
+    config.budget = Some(dynamic);
+    ProviderProxy::start(config)
+        .map_err(|e| ContractError::KnownFailure(format!("gated provider proxy ({role:?}): {e}")))
+}
+
+/// Build the shared builder/verifier role-gated proxies over `ledger` for one
+/// `execution`. This is the single production constructor used by **both** fresh
+/// dispatch ([`task_role_proxies`]) and recovery (`recover_inflight`,
+/// `build_recovery_executor`), so role attribution cannot differ between an
+/// admitted and a recovered execution. `base_config` is the upstream/injection
+/// template (production passes [`ProxyConfig::from_env`]).
+pub fn execution_role_proxies(
+    ledger: Box<dyn ReservationLedger>,
+    execution_id: &str,
+    package_digest: &str,
+    allowance_nusd: Option<agalma_contracts::budget::Nusd>,
+    profile: agalma_contracts::budget::ProviderRequestProfile,
+    base_config: ProxyConfig,
+) -> Result<TaskRoleProxies, ContractError> {
+    let gates = ExecutionGates::open(
+        ledger,
+        ExecutionId::new(execution_id),
+        package_digest,
+        allowance_nusd,
+        None,
+        profile,
+        &[Role::Builder, Role::Verifier],
+    )?;
+    Ok(TaskRoleProxies {
+        builder: start_role_proxy(&gates, Role::Builder, &base_config)?,
+        verifier: start_role_proxy(&gates, Role::Verifier, &base_config)?,
+        gates,
+    })
+}
+
+/// The `(builder, verifier)` proxy URLs an executor should use for `package`.
+/// When role-gated proxies exist the verifier gets its **own** URL; otherwise
+/// both roles fall back to the caller's free-path `fallback`. Recovery and fresh
+/// dispatch both route through this so a verifier is never silently sent to the
+/// builder proxy.
+pub fn executor_proxy_urls(
+    role_proxies: Option<&TaskRoleProxies>,
+    fallback: Option<String>,
+) -> (Option<String>, Option<String>) {
+    match role_proxies {
+        Some(proxies) => (Some(proxies.builder_url()), Some(proxies.verifier_url())),
+        None => (fallback, None),
+    }
+}
+
+/// Build the builder/verifier gated proxies for `package` when a reviewed
+/// profile is configured and paid dispatch is available. Every billable request
+/// is durably reserved through the bound ledger **before** upstream contact and
+/// attributed to the session's own role. An absent/invalid profile denies (no
+/// ungated fallback); when paid dispatch is unavailable this returns `None` and
+/// the historical free proxy path is preserved.
+fn task_role_proxies(
+    state_dir: &Path,
+    package: &TaskPackage,
+    paid_available: bool,
+) -> Result<Option<TaskRoleProxies>, ContractError> {
+    let profile_path = std::env::var(BUDGET_PROFILE_ENV).ok();
+    let Some(profile) = resolve_paid_profile(paid_available, profile_path.as_deref())? else {
+        return Ok(None);
+    };
+    let ledger = bound_reservation_ledger(state_dir)?;
+    Ok(Some(execution_role_proxies(
+        ledger,
+        &package.execution_id,
+        &package.package_digest,
+        Some(package.budget.allowance_nusd),
+        profile,
+        ProxyConfig::from_env(),
+    )?))
 }
 
 /// Resolve the (builder, verifier) static routes for `task` (H3, SF.8). Both are
@@ -886,12 +1079,20 @@ fn recover_inflight(
                 continue;
             }
         };
+        // Role-gated proxies for the recovered execution (`agalma-c31`): a
+        // recovered paid run attributes builder/verifier requests exactly like a
+        // fresh admission, so the verifier does not bill the builder's scope.
+        // Held for the iteration so the proxies outlive the executor.
+        let role_proxies = task_role_proxies(state_dir, &package, paid_available)?;
+        let (builder_proxy_url, verifier_proxy_url) =
+            executor_proxy_urls(role_proxies.as_ref(), proxy_url.clone());
         let mut executor = build_executor(
             ledger,
             state_dir,
             &plan,
             paid_available,
-            proxy_url.clone(),
+            builder_proxy_url,
+            verifier_proxy_url,
             &task,
             repo,
             harness.clone(),
@@ -967,22 +1168,25 @@ fn settle_cancelled_execution(
     stop: Rc<dyn StopControl>,
     record: &ExecutionRecord,
 ) -> Result<(), ContractError> {
-    let mut executor = match build_recovery_executor(
+    let (mut executor, _role_proxies) = match build_recovery_executor(
         ledger, state_dir, repo, paid_available, proxy_url, harness, stop, record,
     ) {
-        Ok(executor) => executor,
+        Ok(pair) => pair,
         Err(err) => {
             eprintln!(
                 "agalma: cancellation settle {} uses a bare executor \
                  (probes unconfirmed): {err}",
                 record.execution_id
             );
-            Executor::new(
-                ledger.clone(),
-                ExecutorConfig {
-                    max_attempts: 2,
-                    execution_definition_version: EXECUTION_DEFINITION_VERSION,
-                },
+            (
+                Executor::new(
+                    ledger.clone(),
+                    ExecutorConfig {
+                        max_attempts: 2,
+                        execution_definition_version: EXECUTION_DEFINITION_VERSION,
+                    },
+                ),
+                None,
             )
         }
     };
@@ -1009,6 +1213,11 @@ fn settle_cancelled_execution(
 /// Reconstruct a recovery executor bound to `record`'s frozen package and its
 /// pinned activities. Errors when the package/role pins cannot be resolved; the
 /// caller falls back to a bare (unconfirmed-probe) executor rather than driving.
+///
+/// Returns the role-gated proxies (`agalma-c31`) alongside the executor so the
+/// caller can hold them for the executor's lifetime — a cancelled execution
+/// whose survivors reconcile a verifier turn must still bill the verifier, not
+/// the builder.
 #[allow(clippy::too_many_arguments)]
 fn build_recovery_executor(
     ledger: &LedgerHandle,
@@ -1019,7 +1228,7 @@ fn build_recovery_executor(
     harness: HarnessHandle,
     stop: Rc<dyn StopControl>,
     record: &ExecutionRecord,
-) -> Result<Executor<LedgerHandle>, ContractError> {
+) -> Result<(Executor<LedgerHandle>, Option<TaskRoleProxies>), ContractError> {
     let reference = admission_digest(ledger, &record.execution_id)?;
     let package = load_frozen_or_legacy(
         state_dir,
@@ -1037,18 +1246,23 @@ fn build_recovery_executor(
     let task = task_from_package(&package, &task_id);
     verify_recovered_pins(state_dir, &package, &harness)?;
     let builder_prompt = builder_prompt_bytes(state_dir, &package)?;
-    build_executor(
+    let role_proxies = task_role_proxies(state_dir, &package, paid_available)?;
+    let (builder_proxy_url, verifier_proxy_url) =
+        executor_proxy_urls(role_proxies.as_ref(), proxy_url);
+    let executor = build_executor(
         ledger,
         state_dir,
         &plan,
         paid_available,
-        proxy_url,
+        builder_proxy_url,
+        verifier_proxy_url,
         &task,
         repo,
         harness,
         &builder_prompt,
         stop,
-    )
+    )?;
+    Ok((executor, role_proxies))
 }
 
 /// The route pins an executor run selected (models and route labels). A fresh
@@ -1434,6 +1648,7 @@ fn build_executor(
     plan: &RolePlan,
     paid_available: bool,
     proxy_url: Option<String>,
+    verifier_proxy_url: Option<String>,
     task: &Task,
     repo: &Path,
     harness: HarnessHandle,
@@ -1452,6 +1667,7 @@ fn build_executor(
         plan,
         paid_available,
         proxy_url,
+        verifier_proxy_url,
         task,
         repo,
         harness,
@@ -1480,6 +1696,7 @@ fn phase_deps(
     plan: &RolePlan,
     paid_available: bool,
     proxy_url: Option<String>,
+    verifier_proxy_url: Option<String>,
     task: &Task,
     repo: &Path,
     harness: HarnessHandle,
@@ -1520,6 +1737,7 @@ fn phase_deps(
         profile_path,
         builder_prompt,
         proxy_url,
+        verifier_proxy_url,
         paid_proxy: paid_available,
         extra_ro_roots,
         toolchain_env,

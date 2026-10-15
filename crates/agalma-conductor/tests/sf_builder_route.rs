@@ -11,7 +11,7 @@
 //! Deterministic: no network, no paid session. The routing half records real
 //! `route.model` decisions in a scratch `SqliteLedger`; the production half runs
 //! the real `agalma work` binary in scripted mode against a scratch git+bd origin.
-//! Scratch dirs auto-remove on success (kept on failure for forensics).
+//! Scratch dirs are retained for review evidence (`ScratchDir::keep`).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,6 +33,13 @@ use agalma_testkit::ScratchDir;
 use rusqlite::OptionalExtension;
 use serde_json::Value;
 
+/// Test scratch retained on disk for review evidence (`ScratchDir::keep`).
+fn scratch(name: &str) -> ScratchDir {
+    let mut dir = ScratchDir::new(name);
+    dir.keep();
+    dir
+}
+
 /// The reviewed Flash route this child targets (must not be a fabricated id).
 const FLASH: &str = "opencode-go/deepseek-v4.1-flash";
 /// A reviewed free model used for the scoped builder selector in offline tests.
@@ -46,7 +53,7 @@ const FREE_B: &str = "opencode/big-pickle";
 
 #[test]
 fn builder_selector_outranks_global_for_builder_only() {
-    let dir = ScratchDir::new("sf-builder-scope");
+    let dir = scratch("sf-builder-scope");
     let overrides = RoleModelOverride::new(Some(FREE_A), Some("custom/legacy-global"));
 
     let builder = routing::resolve_builder_route(
@@ -106,7 +113,7 @@ fn builder_selector_outranks_global_for_builder_only() {
 #[test]
 fn unset_builder_selector_preserves_legacy_selection() {
     // No scoped selector, no global override: the static free-first builder route.
-    let dir = ScratchDir::new("sf-builder-unset");
+    let dir = scratch("sf-builder-unset");
     let builder = routing::resolve_builder_route(
         &dir,
         "task-unset",
@@ -121,7 +128,7 @@ fn unset_builder_selector_preserves_legacy_selection() {
 
     // No scoped selector, global override set: the legacy global selects the
     // builder unchanged (legacy compatibility).
-    let dir2 = ScratchDir::new("sf-builder-global");
+    let dir2 = scratch("sf-builder-global");
     let legacy = routing::resolve_builder_route(
         &dir2,
         "task-legacy",
@@ -137,7 +144,7 @@ fn unset_builder_selector_preserves_legacy_selection() {
 
 #[test]
 fn eligible_paid_builder_selection_selects_the_reviewed_flash_route() {
-    let dir = ScratchDir::new("sf-builder-flash");
+    let dir = scratch("sf-builder-flash");
     let builder = routing::resolve_builder_route(
         &dir,
         "task-flash",
@@ -158,7 +165,7 @@ fn eligible_paid_builder_selection_selects_the_reviewed_flash_route() {
 
 #[test]
 fn explicit_paid_builder_selection_without_credential_is_denied() {
-    let dir = ScratchDir::new("sf-builder-paid-denied");
+    let dir = scratch("sf-builder-paid-denied");
 
     // Opt-in but no provider credential: refused, never silently downgraded.
     let err = routing::resolve_builder_route(
@@ -207,7 +214,7 @@ fn explicit_paid_builder_selection_without_credential_is_denied() {
 
 #[test]
 fn route_decisions_record_role_and_origin_provenance() {
-    let dir = ScratchDir::new("sf-builder-provenance");
+    let dir = scratch("sf-builder-provenance");
     let overrides = RoleModelOverride::new(Some(FREE_A), None);
     let builder = routing::resolve_builder_route(
         &dir,
@@ -280,7 +287,7 @@ fn route_decisions_record_role_and_origin_provenance() {
 /// alone. Fixed case budget: 6 selectors x 2 globals x 4 roles = 48 cases.
 #[test]
 fn scoped_builder_selector_never_mutates_non_builder_roles() {
-    let dir = ScratchDir::new("sf-builder-prop");
+    let dir = scratch("sf-builder-prop");
     let scoped = [
         None,
         Some(""),
@@ -431,7 +438,7 @@ fn frozen_role_pins_survive_reload_for_every_builder_selector() {
         ("custom/builder-model", "custom/verifier-model"),
     ];
     for (i, (builder_model, verifier_model)) in cases.iter().enumerate() {
-        let dir = ScratchDir::new(&format!("sf-builder-pin-{i}"));
+        let dir = scratch(&format!("sf-builder-pin-{i}"));
         let built = build_package(
             &pinned_definition(),
             pinned_inputs(*builder_model, *verifier_model),
@@ -516,7 +523,7 @@ struct Prod {
 impl Prod {
     fn new(name: &str) -> Prod {
         require_bd();
-        let dir = ScratchDir::new(&format!("sf-route-{name}"));
+        let dir = scratch(&format!("sf-route-{name}"));
         let origin = dir.join("origin");
         fs::create_dir_all(origin.join("src")).expect("origin src");
         fs::create_dir_all(origin.join("docs")).expect("origin docs");

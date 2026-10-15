@@ -19,7 +19,7 @@
 //!
 //! Scratch state lives under `target/test-runs/cargo-home-*` (never `/tmp`); the
 //! run is offline and makes no model turn (acceptance is green). Scratch dirs
-//! auto-remove on success (kept on failure for forensics).
+//! are retained for review evidence (`ScratchDir::keep`), not auto-removed.
 
 #![cfg(target_os = "macos")]
 
@@ -49,7 +49,10 @@ mod common;
 const ACCEPT: &str = "cargo metadata --offline --format-version 1";
 
 fn fresh(name: &str) -> ScratchDir {
-    ScratchDir::new(&format!("cargo-home-{name}"))
+    let mut dir = ScratchDir::new(&format!("cargo-home-{name}"));
+    // Retain fixtures for review evidence (`ScratchDir::keep`); not auto-removed.
+    dir.keep();
+    dir
 }
 
 fn git_ok(dir: &Path, args: &[&str]) {
@@ -230,6 +233,7 @@ fn sandboxed_acceptance_resolves_cargo_offline() {
         profile_path: profile,
         builder_prompt: state_dir.join("unused-builder.md"),
         proxy_url: None,
+        verifier_proxy_url: None,
         paid_proxy: false,
         extra_ro_roots,
         toolchain_env,

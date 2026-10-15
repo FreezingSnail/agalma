@@ -3,8 +3,8 @@
 //! Native Rust tests. The executor-level cases drive the real repo-mode
 //! checkout/integrate effects in-process with the scripted build/verify
 //! stand-ins; the reconcile case uses a real scratch `bd` store. All scratch
-//! state lives under `target/test-runs/` (never `/tmp`); scratch dirs
-//! auto-remove on success (kept on failure for forensics).
+//! state lives under `target/test-runs/` (never `/tmp`); scratch dirs are
+//! retained for review evidence (`ScratchDir::keep`), not auto-removed.
 //!
 //! | Case | Scenario |
 //! |------|----------|
@@ -47,7 +47,10 @@ fn task() -> TaskId {
 }
 
 fn fresh(name: &str) -> ScratchDir {
-    ScratchDir::new(&format!("fencing-{name}"))
+    let mut dir = ScratchDir::new(&format!("fencing-{name}"));
+    // Retain fixtures for review evidence (`ScratchDir::keep`); not auto-removed.
+    dir.keep();
+    dir
 }
 
 fn stderr_of(out: &std::process::Output) -> String {
@@ -142,6 +145,7 @@ fn build_harness(origin: &Origin, acceptance: &[&str]) -> Harness {
         profile_path: origin.state_dir.join("unused-worker.sb"),
         builder_prompt: origin.state_dir.join("unused-builder.md"),
         proxy_url: None,
+        verifier_proxy_url: None,
         paid_proxy: false,
         extra_ro_roots: Vec::new(),
         toolchain_env: BTreeMap::new(),

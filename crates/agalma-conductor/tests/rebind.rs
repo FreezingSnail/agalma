@@ -3,7 +3,7 @@
 //! Deterministic, in-process tests over the real repo-mode checkout/integrate
 //! effects and the deterministic reference `HarnessApi` adapters. No vendor, no
 //! network, no bd. Scratch state lives under `target/test-runs/rebind-*`;
-//! scratch dirs auto-remove on success (kept on failure for forensics).
+//! scratch dirs are retained for review evidence (`ScratchDir::keep`).
 //!
 //! | Case | Scenario |
 //! |------|----------|
@@ -47,7 +47,10 @@ fn task() -> TaskId {
 }
 
 fn fresh(name: &str) -> ScratchDir {
-    ScratchDir::new(&format!("rebind-{name}"))
+    let mut dir = ScratchDir::new(&format!("rebind-{name}"));
+    // Retain fixtures for review evidence (`ScratchDir::keep`); not auto-removed.
+    dir.keep();
+    dir
 }
 
 fn stderr_of(out: &std::process::Output) -> String {
@@ -138,6 +141,7 @@ fn build_harness(
         profile_path: origin.state_dir.join("unused-worker.sb"),
         builder_prompt: origin.state_dir.join("unused-builder.md"),
         proxy_url: None,
+        verifier_proxy_url: None,
         paid_proxy: false,
         extra_ro_roots: Vec::new(),
         toolchain_env: BTreeMap::new(),

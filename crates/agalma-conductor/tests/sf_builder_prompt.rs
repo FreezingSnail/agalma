@@ -23,6 +23,13 @@ use agalma_contracts::{
 use agalma_execution::ActivityError;
 use agalma_testkit::ScratchDir;
 
+/// Test scratch retained on disk for review evidence (`ScratchDir::keep`).
+fn scratch(name: &str) -> ScratchDir {
+    let mut dir = ScratchDir::new(name);
+    dir.keep();
+    dir
+}
+
 // ---------------------------------------------------------------------------
 // Independent package fixtures
 // ---------------------------------------------------------------------------
@@ -236,7 +243,7 @@ fn render(
 
 #[test]
 fn repository_prompt_delivers_every_frozen_section() {
-    let dir = ScratchDir::new("sf-builder-prompt-full");
+    let dir = scratch("sf-builder-prompt-full");
     let state = dir.child("state");
     let spec = Spec::feature();
     let package = build_package(&state, &spec);
@@ -274,7 +281,7 @@ fn repository_prompt_delivers_every_frozen_section() {
 /// destination with `SF1_RENDERED_PROMPT_OUT`.
 #[test]
 fn retains_rendered_repository_prompt_artifact() {
-    let dir = ScratchDir::new("sf-builder-prompt-artifact");
+    let dir = scratch("sf-builder-prompt-artifact");
     let state = dir.child("state");
     let spec = Spec::feature();
     let package = build_package(&state, &spec);
@@ -304,7 +311,7 @@ fn retains_rendered_repository_prompt_artifact() {
 
 #[test]
 fn repository_prompt_never_tells_a_feature_builder_to_make_a_one_line_edit() {
-    let dir = ScratchDir::new("sf-builder-prompt-no-one-line");
+    let dir = scratch("sf-builder-prompt-no-one-line");
     let state = dir.child("state");
     let spec = Spec::feature();
     let package = build_package(&state, &spec);
@@ -323,7 +330,7 @@ fn repository_prompt_never_tells_a_feature_builder_to_make_a_one_line_edit() {
 
 #[test]
 fn retry_prompt_includes_prior_failure_and_diagnosis_by_file_and_inline() {
-    let dir = ScratchDir::new("sf-builder-prompt-retry");
+    let dir = scratch("sf-builder-prompt-retry");
     let state = dir.child("state");
     let run = dir.child("run");
     std::fs::create_dir_all(run.join("artifacts")).expect("artifacts dir");
@@ -352,7 +359,7 @@ fn retry_prompt_includes_prior_failure_and_diagnosis_by_file_and_inline() {
 
 #[test]
 fn missing_required_context_is_a_known_failure_not_an_m0_fallback() {
-    let dir = ScratchDir::new("sf-builder-prompt-missing");
+    let dir = scratch("sf-builder-prompt-missing");
     let state = dir.child("state");
     let repo = repo_mode("Missing context", &["cargo test"]);
 
@@ -378,7 +385,7 @@ fn missing_required_context_is_a_known_failure_not_an_m0_fallback() {
 
 #[test]
 fn an_unreadable_required_object_is_a_known_failure() {
-    let dir = ScratchDir::new("sf-builder-prompt-corrupt-object");
+    let dir = scratch("sf-builder-prompt-corrupt-object");
     let state = dir.child("state");
     let spec = Spec::feature();
     let package = build_package(&state, &spec);
@@ -399,7 +406,7 @@ fn an_unreadable_required_object_is_a_known_failure() {
 
 #[test]
 fn fixture_mode_returns_the_base_prompt_unchanged() {
-    let dir = ScratchDir::new("sf-builder-prompt-fixture");
+    let dir = scratch("sf-builder-prompt-fixture");
     let state = dir.child("state");
     let spec = Spec::feature();
     let package = build_package(&state, &spec);
@@ -428,14 +435,14 @@ fn repository_mode_without_a_recorded_package_is_a_known_failure() {
     let repo = repo_mode("Strict missing package", &["cargo test"]);
 
     // No store at all.
-    let bare = ScratchDir::new("sf-builder-prompt-no-store");
+    let bare = scratch("sf-builder-prompt-no-store");
     let bare_state = bare.child("state");
     let err = render(&bare_state, BUILDER_PROMPT, Some(&repo), None, &bare_state, 1)
         .expect_err("repository mode without a package must refuse");
     assert!(matches!(err, ActivityError::KnownFailure(_)), "got {err:?}");
 
     // A store that has been used but holds no package for another execution.
-    let dir = ScratchDir::new("sf-builder-prompt-store-no-match");
+    let dir = scratch("sf-builder-prompt-store-no-match");
     let state = dir.child("state");
     let spec = Spec::feature();
     let package = build_package(&state, &spec);
@@ -463,7 +470,7 @@ fn fixture_and_repository_prompts_are_distinct() {
 
 #[test]
 fn resolves_the_recorded_package_by_execution_from_the_frozen_store() {
-    let dir = ScratchDir::new("sf-builder-prompt-resolve");
+    let dir = scratch("sf-builder-prompt-resolve");
     let state = dir.child("state");
     let spec = Spec::feature();
     let package = build_package(&state, &spec);
@@ -489,7 +496,7 @@ fn resolves_the_recorded_package_by_execution_from_the_frozen_store() {
 
 #[test]
 fn ambiguous_or_corrupt_recorded_packages_are_refused() {
-    let dir = ScratchDir::new("sf-builder-prompt-ambiguous");
+    let dir = scratch("sf-builder-prompt-ambiguous");
     let state = dir.child("state");
     let spec = Spec::feature();
     let first = build_package(&state, &spec);
@@ -506,7 +513,7 @@ fn ambiguous_or_corrupt_recorded_packages_are_refused() {
     assert!(matches!(err, ActivityError::KnownFailure(_)), "got {err:?}");
 
     // Corrupt a referenced object: the stored package can no longer be verified.
-    let clean = ScratchDir::new("sf-builder-prompt-corrupt-store");
+    let clean = scratch("sf-builder-prompt-corrupt-store");
     let clean_state = clean.child("state");
     let package = build_package(&clean_state, &spec);
     persist_document(&clean_state, &package);
@@ -547,7 +554,7 @@ impl Lcg {
 fn generated_packages_render_their_recorded_sections_or_refuse() {
     const SEED: u64 = 0x5F1_5EED;
     const CASES: u64 = 48;
-    let dir = ScratchDir::new("sf-builder-prompt-property");
+    let dir = scratch("sf-builder-prompt-property");
     let state = dir.child("state");
     let run = dir.child("run");
     std::fs::create_dir_all(run.join("artifacts")).expect("artifacts dir");

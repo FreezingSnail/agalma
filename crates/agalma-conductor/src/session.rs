@@ -19,6 +19,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use agalma_contracts::harness::{
@@ -28,8 +29,10 @@ use agalma_contracts::ids::ArtifactRef;
 use agalma_contracts::{ContractError, OperationId};
 use agalma_harness_opencode::{build_config, OpenCodeConfigInit};
 
+use crate::budget::PaidRequestGate;
 use crate::harness_process::{self, HarnessTransport, OpenCodeHarnessInit};
 use crate::phases::{ensure_cargo_home, poll_terminal, PollOutcome};
+use crate::provider_proxy::{ProviderProxy, ProxyConfig};
 use crate::routing;
 use crate::sandbox_process::SandboxSource;
 use crate::stop::StopControl;
@@ -57,6 +60,11 @@ pub struct LiveSession {
     /// bound control used for admission is passed through this seam
     /// (`agalma-5fy.5`).
     stop: Rc<dyn StopControl>,
+    /// Optional parent-owned request-admission gate (`agalma-5fy.7`). When set,
+    /// this session runs its own gated provider proxy so paid requests are
+    /// inspected and reserved against the pinned package/execution/role before
+    /// any upstream contact. `None` keeps the historical caller-owned proxy.
+    budget: Option<Arc<dyn PaidRequestGate>>,
 }
 
 impl LiveSession {
@@ -97,12 +105,21 @@ impl LiveSession {
             turn_timeout: crate::composition::DEFAULT_TURN_TIMEOUT,
             idle_timeout: crate::composition::resolve_idle_timeout(),
             stop,
+            budget: None,
         })
     }
 
     /// Install a custom stop control (tests embed a scripted one).
     pub fn with_stop(mut self, stop: Rc<dyn StopControl>) -> Self {
         self.stop = stop;
+        self
+    }
+
+    /// Attach a parent-owned request-admission gate (`agalma-5fy.7`). When set,
+    /// [`run_session_end`] starts a gated provider proxy for this session so
+    /// over-budget paid requests are refused before any upstream contact.
+    pub fn with_budget(mut self, budget: Arc<dyn PaidRequestGate>) -> Self {
+        self.budget = Some(budget);
         self
     }
 
@@ -192,6 +209,36 @@ pub fn run_session_end(
         )));
     }
 
+    // Gated provider proxy (`agalma-5fy.7`): when a budget gate is pinned, this
+    // session owns a proxy that inspects/reserves every paid request before it
+    // reaches upstream. The proxy is held for the session's lifetime below.
+    // `agalma-c31`: a paid session with no pinned gate must fail closed rather
+    // than dispatch through an ungated proxy.
+    let gated_proxy = match live.budget.clone() {
+        Some(gate) => {
+            let mut config = ProxyConfig::from_env();
+            config.budget = Some(gate);
+            Some(
+                ProviderProxy::start(config)
+                    .map_err(|e| ContractError::KnownFailure(format!("provider proxy: {e}")))?,
+            )
+        }
+        None => {
+            if live.paid_proxy {
+                return Err(ContractError::KnownFailure(format!(
+                    "{} not started: paid dispatch requires a reviewed budget gate; \
+                     refusing ungated paid session",
+                    spec.error_label
+                )));
+            }
+            None
+        }
+    };
+    let proxy_url = gated_proxy
+        .as_ref()
+        .map(ProviderProxy::url)
+        .or_else(|| live.proxy_url.clone());
+
     let root = live.state_dir.join(&spec.dir_key);
     let protected = canonical_dir(&root.join("protected"))?;
     let sock = canonical_dir(&root.join("sock"))?;
@@ -230,7 +277,7 @@ pub fn run_session_end(
         protected_dir: protected,
         sock_dir: sock,
         model: spec.model.clone(),
-        proxy_url: live.proxy_url.clone(),
+        proxy_url,
         paid_proxy: live.paid_proxy,
         extra_ro_roots,
         extra_rw_roots: vec![repo],

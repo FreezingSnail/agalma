@@ -154,6 +154,11 @@ pub struct PhaseDeps {
     pub builder_prompt: PathBuf,
     /// Parent-owned provider proxy URL handed to the confined harness.
     pub proxy_url: Option<String>,
+    /// Verifier-role proxy URL (`agalma-c31`). When the paid path pins a
+    /// per-role gate, the verifier session runs through its own proxy so its
+    /// spend is attributed to the verifier, not the builder. `None` keeps the
+    /// builder/`proxy_url` for the verifier (historical behavior).
+    pub verifier_proxy_url: Option<String>,
     /// Whether the paid provider proxy path is active (credential present +
     /// `AGALMA_ALLOW_PAID`). When true the confined harness config points the
     /// provider at the loopback proxy with a dummy key (`agalma-csw.2`).
@@ -1624,7 +1629,11 @@ impl VerifyActivity {
             protected_dir: protected.clone(),
             sock_dir: sock.clone(),
             model: self.deps.verifier_model.clone(),
-            proxy_url: self.deps.proxy_url.clone(),
+            proxy_url: self
+                .deps
+                .verifier_proxy_url
+                .clone()
+                .or_else(|| self.deps.proxy_url.clone()),
             paid_proxy: self.deps.paid_proxy,
             extra_ro_roots: self.deps.extra_ro_roots.clone(),
             extra_rw_roots: Vec::new(),
@@ -3259,6 +3268,7 @@ mod tests {
             profile_path: PathBuf::from("worker.sb"),
             builder_prompt: PathBuf::from("builder.md"),
             proxy_url: None,
+            verifier_proxy_url: None,
             paid_proxy: false,
             extra_ro_roots: Vec::new(),
             toolchain_env: BTreeMap::new(),

@@ -14,7 +14,8 @@
 //!
 //! Scratch state lives under `target/test-runs/xcrun-*` (never `/tmp`); the run
 //! is offline and makes no model turn (the guard is green, so no diagnosis
-//! session is created). Scratch dirs auto-remove on success (kept on failure).
+//! session is created). Scratch dirs are retained for review evidence
+//! (`ScratchDir::keep`), not auto-removed.
 
 #![cfg(target_os = "macos")]
 
@@ -45,7 +46,10 @@ const GUARD: &str =
     "sh -c '! git diff --name-only HEAD~1 HEAD | grep -qE \"Cargo\\.toml$|/src/.*\\.rs$\"'";
 
 fn fresh(name: &str) -> ScratchDir {
-    ScratchDir::new(&format!("xcrun-{name}"))
+    let mut dir = ScratchDir::new(&format!("xcrun-{name}"));
+    // Retain fixtures for review evidence (`ScratchDir::keep`); not auto-removed.
+    dir.keep();
+    dir
 }
 
 fn git_ok(dir: &Path, args: &[&str]) {
@@ -112,6 +116,7 @@ fn sandboxed_git_guard_runs_without_xcrun_noise() {
         profile_path: profile,
         builder_prompt: state_dir.join("unused-builder.md"),
         proxy_url: None,
+        verifier_proxy_url: None,
         paid_proxy: false,
         extra_ro_roots: Vec::new(),
         toolchain_env: BTreeMap::new(),

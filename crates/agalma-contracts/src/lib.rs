@@ -14,6 +14,7 @@
 //! implementation crate depends on another implementation crate.
 
 pub mod binding;
+pub mod budget;
 pub mod decision;
 pub mod digest;
 pub mod error;
@@ -28,6 +29,10 @@ pub mod taskqueue;
 pub mod workspace;
 
 pub use binding::{BindingRecord, BindingState};
+pub use budget::{
+    BillablePath, BudgetError, Nusd, PathClass, ProviderRequestProfile, RequestKind, Reservation,
+    ReservationState, SpendState, UsageObservation, NUSD_PER_USD, TOKENS_PER_PRICE_UNIT,
+};
 pub use decision::{
     DecisionApi, DecisionAttempt, DecisionKind, DecisionOption, DecisionOutcome, DecisionPin,
     DecisionRequest, DecisionResponse, DecisionScore, FallbackReason, DECISION_API_VERSION,

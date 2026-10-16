@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="paid-route-evidence.md">paid-route-evidence.md</a></div>
+<div class="ring"><a href="reliability-hardening.html">⟲ reliability-hardening</a><span class="step">step 18 / 31 in the ring</span><a href="b1-extraction.html">b1-extraction ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li class="here"><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="paid-route-evidence-credential-injecting-proxy-agalma-csw2">Paid-route evidence — credential-injecting proxy <code>agalma-csw.2</code></h1>
+<p>Bead: <code>agalma-csw.2</code>. Base HEAD: <code>db7f081</code>. Date: 2026-10-10. Design: <code>docs/reliability-hardening.md</code> (H3 routing); prices/routes: <code>docs/research/opencode-models.md</code>; auth/proxy mapping: <code>docs/research/cloud-offerings.md</code> §3.</p>
+<h2 id="0-result">0. Result</h2>
+<p>A scratch-clone task ran on the <strong>paid</strong> OpenCode Go route through the parent-owned credential-injecting proxy and <strong>merged on <code>main</code> with real cash cost</strong>:</p>
+<table><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody><tr><td>Task</td><td><code>paid-kvt</code> (builder-prompt acceptance/no-test-edits guidance, M1.8 <code>vc6</code> wording)</td></tr><tr><td>Execution</td><td><code>exec:paid-kvt:1</code></td></tr><tr><td>Model</td><td><code>opencode-go/deepseek-v4.1-flash</code></td></tr><tr><td>Route</td><td><code>builder:fix</code> (origin <code>override</code>, <code>paid_active=true</code>)</td></tr><tr><td>Attempts</td><td>1 (0 stalls)</td></tr><tr><td>Verdict</td><td><strong>green / done</strong> (bd <code>closed</code>)</td></tr><tr><td>Tokens</td><td>13 184 in / 1 451 out</td></tr><tr><td><code>cash_usd</code></td><td><strong>0.004763088</strong></td></tr><tr><td><code>quota_usd</code></td><td>0.0028482</td></tr><tr><td>Merged result</td><td><code>main</code> = <code>da7208a54fb2b137dd7edcc15e2eafbbdbe6b7ed</code> = candidate; tag <code>m1/exec-paid-kvt-1</code></td></tr><tr><td>Files touched</td><td><code>crates/agalma-conductor/prompts/builder.md</code> (+7/−2)</td></tr><tr><td>Wall</td><td>38.0 s</td></tr><tr><td>Credential audit fingerprint</td><td><code>65f71dcdab6a9cef</code> (non-cryptographic; host <code>opencode.ai</code>)</td></tr></tbody></table>
+<p>Raw artifacts (scratch, never committed): <code>target/test-runs/paid-route/run-2/state/ledger.sqlite</code>, <code>…/runs/exec-paid-kvt-1/artifacts/digest.json</code>, <code>…/work.log</code>.</p>
+<h2 id="1-command">1. Command</h2>
+<pre class="code"><code class="lang-text">AGALMA_ALLOW_PAID=1 AGALMA_PROXY_LOG=1 AGALMA_IDLE_TIMEOUT_SECS=240 \
+  cargo run --offline -p agalma-conductor -- work \
+    --repo target/test-runs/paid-route/run-2/target \
+    --state-dir target/test-runs/paid-route/run-2/state \
+    --model opencode-go/deepseek-v4.1-flash \
+    --harness opencode --max-tasks 1 --once</code></pre>
+<p><code>--model</code> pins the paid route because the H3 builder class is deliberately <strong>free-first</strong> (the paid <code>deepseek-v4.1-flash → glm-5.3-flash</code> entries are fallbacks after the free entries, per <code>docs/reliability-hardening.md</code> H3); the verifier class is the tier whose paid entries lead. The override is the H3 sanctioned way to force a paid builder turn and is recorded as <code>origin=override</code> in the <code>route.model</code> decision. <code>AGALMA_ALLOW_PAID=1</code> is set so the decision context carries <code>paid_active=true</code>.</p>
+<h2 id="2-proxy-path-evidence">2. Proxy path evidence</h2>
+<p>The worker only ever reached loopback; the parent proxy terminated TLS and injected the credential. Proxy request log (stderr):</p>
+<pre class="code"><code class="lang-text">provider-proxy: allow CONNECT models.opencode.ai:443
+provider-proxy: allow CONNECT opencode.ai:443
+provider-proxy: allow POST opencode.ai:443   (×8; tool-loop turns)</code></pre>
+<p>Gated live proxy smoke (same proxy, direct exercise of the forward path):</p>
+<pre class="code"><code class="lang-text">$ AGALMA_PAID_LIVE=1 cargo test -p agalma-conductor --offline \
+      --test provider_proxy_paid_live -- --ignored --nocapture
+paid auth: present=true host=opencode.ai fingerprint=65f71dcdab6a9cef
+paid proxy upstream status: HTTP/1.1 200 OK
+x-opencode-endpoint-id: orcarouter-dsv4.1flash
+x-opencode-upstream-model-id: deepseek/deepseek-v4.1-flash
+proxy request: allowed=true POST opencode.ai:443</code></pre>
+<p>The token is read by the parent from <code>~/.local/share/opencode/auth.json</code> (<code>opencode-go.key</code>), never logged, never copied into the sandbox, and never written to the ledger/digest. The sandbox holds only the dummy key <code>agalma-proxy</code>; the proxy strips any inbound credential header and injects <code>Authorization: Bearer &lt;token&gt;</code> plus <code>x-opencode-session</code> (OpenCode Go requires it) upstream.</p>
+<h2 id="3-route-decision-recorded-in-the-ledger">3. Route decision (recorded in the ledger)</h2>
+<pre class="code"><code class="lang-json">{
+  &quot;kind&quot;: &quot;RouteModel&quot;,
+  &quot;context&quot;: {
+    &quot;allow_paid&quot;: true, &quot;paid_available&quot;: true, &quot;paid_active&quot;: true,
+    &quot;fallback_reason&quot;: null, &quot;class&quot;: &quot;builder&quot;, &quot;family&quot;: &quot;fix&quot;,
+    &quot;role&quot;: &quot;builder&quot;, &quot;origin&quot;: &quot;override&quot;
+  },
+  &quot;options&quot;: [{&quot;option_id&quot;: &quot;opencode-go/deepseek-v4.1-flash&quot;, &quot;attributes&quot;: {&quot;rank&quot;: 0}}],
+  &quot;pin&quot;: {&quot;policy&quot;: &quot;route.model/v1&quot;, &quot;model&quot;: &quot;static&quot;}
+}</code></pre>
+<p><code>provider_auth</code> audit event (token-free):</p>
+<pre class="code"><code class="lang-json">{&quot;fingerprint&quot;:&quot;65f71dcdab6a9cef&quot;,&quot;host&quot;:&quot;opencode.ai&quot;,&quot;present&quot;:true,&quot;reason&quot;:null,&quot;recorded_at_unix_ms&quot;:1791638332527}</code></pre>
+<p>Usage event (builder turn):</p>
+<pre class="code"><code class="lang-text">phase=build role=builder model=opencode-go/deepseek-v4.1-flash
+tokens_in=13184 tokens_out=1451 cost_usd=0.004763088
+cash_usd=0.004763088 quota_usd=0.0028482</code></pre>
+<p><code>cash_usd</code> is the provider-reported per-turn dollar cost (OpenCode session <code>data.cost</code>); <code>quota_usd</code> is the notional Go-allowance drain from the routing table. Both are recorded separately, so paid turns no longer read <code>$0</code>.</p>
+<h2 id="4-acceptance-on-main">4. Acceptance on <code>main</code></h2>
+<p>The conductor committed the candidate, cloned a pristine verification checkout at the candidate SHA, ran each acceptance command there (all exit 0), then CAS-merged the candidate onto <code>main</code> and tagged it:</p>
+<pre class="code"><code class="lang-text">sh -c 'grep -q &quot;acceptance commands&quot; .../builder.md'        exit 0
+sh -c 'grep -qi &quot;do not edit the tests&quot; .../builder.md'      exit 0
+sh -c '! git diff --name-only HEAD~1 HEAD | grep -qE &quot;Cargo\.toml$|/src/.*\.rs$&quot;' exit 0</code></pre>
+<p>Post-merge the committed <code>main</code> tree contains both markers and the tag <code>m1/exec-paid-kvt-1</code> points at <code>da7208a</code> (= candidate = <code>main</code>). (The scratch origin <em>worktree</em> copy lags because integration advances <code>main</code> by CAS <code>update-ref</code> — the M1.8 origin-worktree caveat — the committed tree is authoritative and passes acceptance.)</p>
+<h2 id="5-opencode-provider-baseurl-override-verified-shape">5. OpenCode provider <code>baseURL</code> override (verified shape)</h2>
+<p>Verified against the OpenCode v2 provider config (docs <code>https://opencode.ai/docs/providers/</code> &quot;Base URL&quot;) and the v2 source (<code>packages/core/src/config/discovery.ts</code>, <code>packages/util/src/global.ts</code>):</p>
+<ul><li>The provider is keyed by id under <code>provider</code>; the endpoint is <code>provider.&lt;id&gt;.options.baseURL</code>.</li><li>The global config directory is <code>OPENCODE_CONFIG_DIR</code> when set, else <code>$XDG_CONFIG_HOME/opencode</code>; <code>opencode.json</code> there is the global config. The confined adapter sets <code>OPENCODE_CONFIG_DIR</code> to the checkout (the config discovery short-circuit the confine profile needs), so the override is a written-then-locally-excluded <code>opencode.json</code> in the checkout.</li><li><code>opencode-go</code> uses env <code>OPENCODE_API_KEY</code>; the sandbox gets the dummy and the proxy injects the real bearer token.</li></ul>
+<p>Rendered shape (<code>render_provider_config</code>):</p>
+<pre class="code"><code class="lang-json">{
+  &quot;$schema&quot;: &quot;https://opencode.ai/config.json&quot;,
+  &quot;provider&quot;: { &quot;opencode-go&quot;: { &quot;options&quot;: { &quot;baseURL&quot;: &quot;http://127.0.0.1:&lt;port&gt;&quot; } } }
+}</code></pre>
+<p>The worker's <code>baseURL</code> is the loopback proxy root; the proxy maps <code>/&lt;path&gt;</code> onto <code>https://opencode.ai/zen/go/v1/&lt;path&gt;</code> (the configured upstream base, <code>AGALMA_PROVIDER_BASE</code>), so OpenCode's <code>POST /chat/completions</code> becomes <code>https://opencode.ai/zen/go/v1/chat/completions</code> with the credential injected.</p>
+<h2 id="6-deviations-notes">6. Deviations / notes</h2>
+<ol><li><strong>First scratch run (<code>run-1</code>) failed with a config error, not an auth/quota error.</strong> Before the provider gate was added, the override was applied to <em>every</em> model, so the free <code>opencode/big-pickle</code> route was mapped onto the paid Go base and the provider returned <code>AI.Error.InvalidRequest: Upstream request failed: Model is unavailable.</code> The fix: point only <code>opencode-go</code> at the injecting proxy; free <code>opencode</code> routes keep the transparent CONNECT tunnel to the Zen endpoint. <code>run-1</code> cost $0.00 (free model) and is retained as evidence.</li><li><strong><code>--model</code> override.</strong> As above, the live proof pins the paid model because H3 builder routing is free-first; static paid <em>eligibility</em> (with/without credential) is covered by the deterministic tests.</li><li>No <code>git commit</code>/<code>push</code> was performed in the live repo; all bd, merge, and tag activity happened in the scratch clone. <code>bd</code> in the live repo was only read.</li></ol>
+<h2 id="7-test-coverage-for-this-bead">7. Test coverage for this bead</h2>
+<ul><li><code>provider_proxy</code> unit tests: header injection, inbound-credential stripping, allowlist denial (<code>403</code>), path mapping, chunked/SSE passthrough, token redaction in <code>Debug</code>, <code>x-opencode-session</code> injection/preservation.</li><li><code>provider_proxy_paid_live</code> (gated): real 200 through the proxy (above).</li><li><code>provider_auth</code> unit tests: token read precedence, fingerprint stability, audit event recorded without the token, host parsing.</li><li><code>harness-opencode</code> unit tests: <code>baseURL</code> config shape, dummy-key isolation, local exclude so the override never enters the candidate commit.</li><li><code>routing</code> unit/integration tests: paid eligibility requires both opt-in and a credential; absent credential → free fallback with a recorded reason; <code>cash_quota_for_usage</code> surfaces the reported paid cash.</li><li><code>phases</code> unit tests: paid turns record <code>cash_usd &gt; 0</code>; free turns stay <code>$0</code>.</li></ul>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="reliability-hardening.html">⟲ reliability-hardening</a><span class="step">step 18 / 31 in the ring</span><a href="b1-extraction.html">b1-extraction ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">paid-route-evidence.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

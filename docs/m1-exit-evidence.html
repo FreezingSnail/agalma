@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="m1-exit-evidence.md">m1-exit-evidence.md</a></div>
+<div class="ring"><a href="m0-exit-evidence.html">⟲ m0-exit-evidence</a><span class="step">step 15 / 31 in the ring</span><a href="hardening-evidence.html">hardening-evidence ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li class="here"><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="m18-seeded-batch-exit-evidence">M1.8 — seeded batch exit evidence</h1>
+<p>Bead: <code>agalma-52k.9</code> (M1.8). Base HEAD: <code>726fd6e</code>. Date: 2026-10-10. M1 exit run: the queue-driven <code>agalma work</code> loop processing real repo tasks end to end.</p>
+<p>Environment:</p>
+<ul><li>Scratch target (never the live repo): <code>git clone --no-hardlinks</code> of agalma at <code>726fd6e</code> into <code>target/test-runs/m1-batch/run-1/target</code>, with an isolated bd store (<code>.beads</code> in the clone). All merges, tags, and bd writes happened only in the clone; the live repo has no commits or pushes.</li><li>Harness <code>opencode@opencode-adapter/v1</code>, free model <code>opencode/mimo-v2.6-flash-free</code> via the parent-owned loopback egress proxy (<code>AGALMA_PROXY_ALLOW</code> default <code>opencode.ai</code>). Turn timeout 600 s, verify timeout 900 s, per-task <code>budget_usd: 2.00</code>, <code>max_attempts: 2</code>.</li><li>Command: <code>cargo run --offline -p agalma-conductor -- work --repo &lt;clone&gt; --max-tasks 4 --state-dir &lt;state&gt; --harness opencode</code> (live mode; no <code>AGALMA_ACTIVITY_MODE</code>).</li></ul>
+<h2 id="seed-tasks">Seed tasks</h2>
+<p>Four real data/docs bd issues, each carrying the fenced <code>directive/v0</code> block (<code>target: agalma</code>, <code>ref: main</code>, deterministic shell <code>acceptance</code>, <code>budget_usd: 2.00</code>, <code>priority: normal</code>, <code>max_attempts: 2</code>). Acceptance runs inside the pristine sandboxed verification checkout and needs no network. Every task ends with a scope-guard command asserting the candidate diff touches no <code>Cargo.toml</code> and no crate <code>src/**/*.rs</code>:</p>
+<pre class="code"><code>sh -c '! git diff --name-only HEAD~1 HEAD | grep -qE &quot;Cargo\.toml$|/src/.*\.rs$&quot;'</code></pre>
+<table><thead><tr><th>#</th><th>Issue</th><th>Family</th><th>Title (abridged)</th></tr></thead><tbody><tr><td>1</td><td><code>agalma-8yr</code></td><td>fix</td><td>README roles/loop drift fix (verifier role; checkout/integrate in loop)</td></tr><tr><td>2</td><td><code>agalma-9cu</code></td><td>feature</td><td>new <code>docs/task-authoring.md</code> describing the fenced block</td></tr><tr><td>3</td><td><code>agalma-vc6</code></td><td>fix</td><td><code>crates/agalma-conductor/prompts/builder.md</code> acceptance/no-test-edits guidance</td></tr><tr><td>4</td><td><code>agalma-on7</code></td><td>feature</td><td>new <code>docs/conventions.md</code> phase-handoff rules</td></tr></tbody></table>
+<p>Triage order (all normal priority, id tiebreak): <code>8yr</code> → <code>9cu</code> → <code>on7</code> → <code>vc6</code>.</p>
+<h2 id="batch-results">Batch results</h2>
+<table><thead><tr><th>Issue</th><th>Exec</th><th>Family</th><th>Attempts</th><th>Verdict</th><th>Failing acceptance (attempt 1 / attempt 2)</th><th>Digest</th></tr></thead><tbody><tr><td><code>agalma-8yr</code></td><td><code>exec:agalma-8yr:1</code></td><td>fix</td><td>2</td><td><strong>parked</strong></td><td>3/4 (<code>grep verifier README.md</code>; <code>! grep tester</code>; <code>grep checkout &amp;&amp; integrate</code>); same on attempt 2</td><td><code>state/runs/exec-agalma-8yr-1/artifacts/digest.json</code></td></tr><tr><td><code>agalma-9cu</code></td><td><code>exec:agalma-9cu:1</code></td><td>feature</td><td>1</td><td><strong>done</strong></td><td>none (4/4 pass)</td><td><code>state/runs/exec-agalma-9cu-1/artifacts/digest.json</code></td></tr><tr><td><code>agalma-on7</code></td><td><code>exec:agalma-on7:1</code></td><td>feature</td><td>1</td><td><strong>done</strong></td><td>none (4/4 pass)</td><td><code>state/runs/exec-agalma-on7-1/artifacts/digest.json</code></td></tr><tr><td><code>agalma-vc6</code></td><td><code>exec:agalma-vc6:1</code></td><td>fix</td><td>2</td><td><strong>parked</strong></td><td>2/3 (<code>grep &quot;acceptance commands&quot;</code>; <code>grep &quot;do not edit the tests&quot;</code>); same on attempt 2</td><td><code>state/runs/exec-agalma-vc6-1/artifacts/digest.json</code></td></tr></tbody></table>
+<p>Batch wall: <code>00:09:20Z → 01:52:12Z</code> = <strong>6172 s (102.9 min)</strong>, <code>EXIT=0</code>, all four tasks processed (<code>--max-tasks 4</code>).</p>
+<p>Terminal evidence in the clone:</p>
+<ul><li>Merge on green + CAS + tag: <code>main</code> advanced <code>cc6d021 → 423fa9e → 345b743</code>; tags <code>m1/exec-agalma-9cu-1</code> (<code>423fa9e</code>) and <code>m1/exec-agalma-on7-1</code> (<code>345b743</code>), each pointing at merged <code>main</code>.</li><li>Done tasks: bd <code>closed</code>, digest comment + <code>phase=done</code> projection recorded.</li><li>Parked tasks: bd <code>in_progress</code> + label <code>parked</code> + <code>phase=parked</code>, <code>digest … verdict=red</code>, and <code>parked: max_attempts (2) exhausted …</code> comments; <code>artifacts/postmortem.md</code> written for both.</li><li>Every execution has a persisted digest (ledger <code>digests</code> row + <code>artifacts/digest.json</code>).</li></ul>
+<h2 id="metrics-m1-exit-criteria">Metrics (M1 exit criteria)</h2>
+<ul><li><strong>Success rate: 2/4 = 50%</strong> (both successes on the first attempt; both failures parked after exhausting 2 attempts).</li><li><strong>$/merge: $0.00</strong> — total recorded cost <code>0.000000 USD</code> over 2 merges. Free model; successful turns recorded 41 970 tokens in / 3 361 out at $0.</li><li><strong>Wall time per task</strong> (digest <code>wall_ms</code>, the sum of recorded usage windows):</li></ul>
+<table><thead><tr><th>Exec</th><th><code>wall_ms</code></th><th>≈</th></tr></thead><tbody><tr><td><code>exec:agalma-9cu:1</code> (done)</td><td>407 786</td><td>6.8 min</td></tr><tr><td><code>exec:agalma-on7:1</code> (done)</td><td>297 702</td><td>5.0 min</td></tr><tr><td><code>exec:agalma-8yr:1</code> (parked)</td><td>2 470 897</td><td>41.2 min</td></tr><tr><td><code>exec:agalma-vc6:1</code> (parked)</td><td>2 474 727</td><td>41.2 min</td></tr></tbody></table>
+<p>  Batch wall <strong>102.9 min</strong>; productive model time ≈ 11.8 min, stall/timeout   time ≈ 82 min (8 harness sessions that ended with zero recorded tokens after   the 600 s deadline).</p>
+<ul><li>Acceptance: 4 commands × 4 tasks executed in pristine verification checkouts (rerun on retries); each ≤ ~1.6 s (the guard command's <code>git</code> launch dominates).</li></ul>
+<h2 id="fencing-and-rebind-evidence-m1-exit-clauses">Fencing and rebind evidence (M1 exit clauses)</h2>
+<p>Deterministic suites (unchanged by this bead; regression below re-runs them):</p>
+<ul><li><strong>Cannot merge twice</strong> — <code>crates/agalma-conductor/tests/fencing.rs</code>: <code>duplicate_integrate_delivery_merges_once</code>, <code>stale_lease_operation_is_rejected</code>, <code>reclaim_single_winner_and_merged_effect_completes</code>.</li><li><strong>Projection reconcile</strong> — <code>fencing.rs</code>: <code>projection_reconcile_after_crash_is_idempotent</code>; the batch boot logged <code>reconcile: checked=0 fixed=0 stale=0 skipped=0</code>.</li><li><strong>Staged harness rebind / pinned recovery</strong> — <code>crates/agalma-conductor/tests/rebind.rs</code>: <code>red_reference_fail_then_rebind_reference_completes</code>, <code>recovery_uses_pinned_binding_not_flipped_config</code>, <code>new_generation_after_completion_uses_new_binding</code>, <code>bind_gate_rejects_missing_required_and_falls_back_for_optional</code>, <code>binary_work_harness_flag_and_status_binding</code>.</li><li>Batch recorded <code>harness=opencode@opencode-adapter/v1</code> per execution (binding pinned at attempt start; <code>agalma status</code> reports it).</li></ul>
+<h2 id="deviations-open-items">Deviations / open items</h2>
+<ol><li><strong>Batch exceeded the 60-minute timebox (102.9 min).</strong> The batch was launched as one background command and driven to completion by the conductor; it was not stopped at 60 min (no partial-run interrupt). Recorded honestly rather than trimmed.</li><li><strong>Free-model stalls dominate wall time.</strong> 8 of 10 harness build/verifier sessions ended with zero recorded tokens after the 600 s deadline; the interrupt then returned <code>SessionNotFoundError</code> (server-side session already gone). The conductor behaved correctly — timeout → advance to verify → recorded <code>retry.escalate</code> (<code>retry</code> then <code>park</code>) → bound → park — but a fixed 600 s deadline cannot distinguish stalled from slow. Needs a token/step idle watchdog and provider-health signal (follow-up hardening bead).</li><li><strong>Timeout attempts record no usage.</strong> Because a timed-out build never reaches a terminal turn, no <code>usage</code> event is written; the parked digests show <code>tokens=0/0</code>. Cost is honest ($0) but token accounting is incomplete for stalled attempts (measurement gap).</li><li><strong>Verifier fallback.</strong> Both live verifier sessions timed out and produced no diagnosis file; the conductor wrote its structured fallback <code>artifacts/diagnosis@&lt;n&gt;.md</code> (confidence 0.0) which the retry prompt then referenced. No crash; honest artifact.</li><li><strong>Model quality, not loop mechanics.</strong> <code>vc6</code> produced empty diffs on both attempts; <code>8yr</code> attempt 1 wrote an unrelated <code>fixtures/target-template/Cargo.lock</code> (a file outside the intended docs scope, but not <code>Cargo.toml</code>/<code>src/**</code>, so the guard admitted it). Verify runs before merge, so neither reached <code>main</code>.</li><li><strong>Scope guard is coarse.</strong> The <code>Cargo.toml$|/src/.*\.rs$</code> guard admits other non-doc edits (e.g. the stray lockfile). The M1 ladder was still respected for the two merges (only <code>docs/**</code> landed).</li><li><strong>Sandboxed <code>git</code> xcrun noise.</strong> The guard command launched <code>git</code> under Seatbelt and macOS <code>xcrun</code> could not create its cache under <code>/var/folders/...</code> (<code>Operation not permitted</code>); the command still exited with the correct status. Follow-up: allow/redirect the xcrun cache dir (TMPDIR) in the verify launch.</li><li><strong>Setup side effect, reverted.</strong> The first <code>bd init</code> attempt walked up to the live repo's <code>.beads</code> and aborted; a follow-up init appended beads ignore lines to the live <code>.gitignore</code>. This was reverted with <code>git checkout -- .gitignore</code>; no live commits, pushes, or bd issue writes occurred. A separate concurrent writer had left an untracked <code>docs/m1-exit-evidence.md</code> (overwritten here with this run's data) and <code>docs/research/</code> (left untouched).</li></ol>
+<h2 id="open-items-carried">Open items carried</h2>
+<ul><li>Stall watchdog + provider-health accounting (deviation 2/3).</li><li>xcrun cache / TMPDIR in sandboxed acceptance (deviation 7).</li><li>Prefer a stronger model tier via the provider-auth proxy before M3 budgets.</li><li>Park projection stays <code>in_progress</code> + <code>parked</code> label — confirm board semantics before M2 intake.</li><li><code>OPENCODE_CONFIG_DIR</code> discovery workaround; mach-lookup narrowing; durable session-log reconciliation.</li></ul>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="m0-exit-evidence.html">⟲ m0-exit-evidence</a><span class="step">step 15 / 31 in the ring</span><a href="hardening-evidence.html">hardening-evidence ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">m1-exit-evidence.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

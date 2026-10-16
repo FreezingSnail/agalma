@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="ipc-connect-design.md">ipc-connect-design.md</a></div>
+<div class="ring"><a href="component-contracts.html">⟲ component-contracts</a><span class="step">step 2 / 31 in the ring</span><a href="b1-ledger-evidence.html">b1-ledger-evidence ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li class="here"><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="ipcx-connectrpc-transport-for-nano-services-design">IPCX — ConnectRPC transport for nano services (design)</h1>
+<p>Bead: <code>agalma-ebg.1</code> (IPCX-D1). Epic: <code>agalma-ebg</code>. Status: design; orchestrator-authored; gates all IPC v2 beads. Refs: <code>docs/component-contracts.md</code> (§Boundaries and local deployment, §Shared contract rules, §Runtime replacement), <code>docs/b1-extraction.md</code> (recipe, evidence, D1 superseded), <code>docs/m0-dependencies.md</code>, <code>docs/tui-design.md</code> (live transport), <code>agalma-www</code> (head-of-line), <code>agalma-5de</code> (execution gap), <code>agalma-rvj</code>/<code>agalma-ud1</code>/<code>agalma-fez</code> (default flips).</p>
+<h2 id="goal">Goal</h2>
+<p>Replace the byte transport under the already-extracted Tier-1 seams with ConnectRPC (<a href="https://github.com/connectrpc/connect-rust">connectrpc</a>) over Unix domain sockets, envelope-first: the Agalma contract schemas (<code>agalma-contracts</code>, serde JSON) and the ledger's persisted JSON shapes stay unchanged. In-process bindings stay unchanged. Each boundary migrates one at a time with the B1 recipe — dual-binding parity, staged rebind, rollback, evidence.</p>
+<p>Rationale (the review that selected this): connection multiplexing (<code>agalma-www</code>), standard deadlines/cancellation plumbing, typed RPC interceptors for binding pins and caller identity, server streaming for future event push, health/reflection tooling, and a conformance-tested protocol instead of hand-rolled framing. Proto-first schema migration was rejected for now: contracts are frozen and the wire JSON is also the ledger's at-rest format.</p>
+<h2 id="decisions">Decisions</h2>
+<h3 id="d1-transport-connectrpc-envelope-over-a-unix-socket">D1 — Transport: ConnectRPC envelope over a Unix socket</h3>
+<ul><li>Wire: HTTP/2 over UDS. Client: <code>Http2ConnectionBuilder::connect_unix(path, authority)</code> (<code>connectrpc::client</code>, <code>client</code> feature). Server: custom accept loop — accept on a <code>tokio::net::UnixListener</code> and hand each connection to <code>Server::serve_connection</code> (<code>connectrpc::server</code>; documented path for &quot;listen on a Unix socket&quot;). No TCP listener, no network server per component.</li><li>Protocol: Connect (not gRPC) on the client (<code>Protocol::Connect</code>); the server router answers all three ConnectRPC protocols by default.</li><li>Envelope (<code>crates/agalma-ipc/proto/ipc.proto</code>), payloads stay serde JSON:</li></ul>
+<pre class="code"><code class="lang-proto">syntax = &quot;proto3&quot;;
+package agalma.ipc.v1;
+
+message IpcError { string code = 1; string message = 2; }
+
+message IpcRequest {
+  uint32 v = 1;            // protocol version (1)
+  uint64 id = 2;           // client-assigned; replay key
+  string method = 3;       // snake_case method name
+  bytes params_json = 4;   // serde_json encoding of params
+}
+
+message IpcResponse {
+  uint32 v = 1;
+  uint64 id = 2;           // echo
+  optional bytes result_json = 3; // present even for JSON null
+  optional IpcError error = 4;
+}
+
+service Ipc {
+  rpc Call(IpcRequest) returns (IpcResponse);
+  // Reserved for later event push (server streaming); no Tier-1 seam needs it
+  // for parity:
+  // rpc Stream(IpcRequest) returns (stream IpcResponse);
+}</code></pre>
+<ul><li><code>result_json</code> presence preserves the current result-vs-null distinction (JSON <code>null</code> is a present field containing <code>null</code>; an error response omits it).</li><li>Envelope semantics preserved verbatim: duplicate <code>id</code> returns the recorded receipt/result; unknown-outcome surfaces as <code>UnknownOutcome</code> through <code>IpcError.code</code>; missing socket maps to <code>Unavailable</code>. <code>IpcError.code</code> carries the frozen <code>ContractError</code> variant names; the Connect error path is reserved for protocol/transport faults (see D5).</li><li>Concurrency: HTTP/2 multiplexing removes the one-connection-one-call constraint (<code>agalma-www</code>). Server dispatch keeps the current ordering guarantee — one mutating call at a time per boundary (a per-server guard); read-side concurrency is a per-seam decision recorded in the boundary's evidence. A fresh <code>id</code> never runs concurrent with its own replay window.</li><li>Lifetime: sockets stay directly under the run state dir (<code>&lt;state_dir&gt;/&lt;name&gt;.sock</code>) to respect the Unix path-length limit noted in the B1 evidence.</li></ul>
+<h3 id="d2-codegen-and-dependency-pins">D2 — Codegen and dependency pins</h3>
+<ul><li><code>ipc.proto</code> lives in <code>agalma-ipc</code>; code is generated in <code>build.rs</code> with <code>connectrpc-build</code> (no extra binaries, regenerates on change, offline after the first fetch). <code>pub mod proto { connectrpc::include_generated!(); }</code>. Fallback only if a blocker appears: checked-in <code>buf generate</code> output with the pinned plugins (<code>protoc-gen-buffa</code>, <code>protoc-gen-connect-rust</code>, <code>protoc-gen-buffa-packaging</code>) and a documented <code>scripts/</code> regen — plugin binaries are downloaded code and require explicit user approval.</li><li>Pins (exact <code>=</code>): <code>connectrpc = 0.9.1</code>, <code>buffa = 0.9.2</code>, <code>connectrpc-build = 0.9.0</code> (build-dependency, <code>agalma-ipc</code> only). Features: <code>connectrpc</code> <code>default-features = false</code>, features <code>server</code>, <code>client</code> — no TLS, no <code>gzip</code>/<code>zstd</code>, and no protobuf-JSON codec (<code>json</code> refers to proto3-JSON; Agalma's JSON rides in <code>bytes</code>). <code>buffa-types</code> only if well-known types ever appear. MSRV 1.88 ≤ workspace toolchain (1.97.1); edition 2024 alongside the workspace's 2021 is fine.</li><li>Transitives arriving with the approved direct crates (hyper, hyper-util, tower, tower-http, futures, http, bytes, tracing, …) stay inside the policy's approval; rows added to <code>docs/m0-dependencies.md</code>. <code>agalma-ipc</code> is the only product crate depending on the Connect stack (architecture test addition).</li><li>Builds stay offline: codegen reads a local <code>.proto</code>; <code>cargo build --offline</code> after the one-time fetch, as in M0.</li></ul>
+<h3 id="d3-process-model-unchanged">D3 — Process model unchanged</h3>
+<p>Each implementation crate keeps its server binary, <code>CommandSpec</code>, stdout <code>READY {json}</code> line, and supervised launch (<code>SandboxChild</code>). The bind gate (<code>plan_from_describe</code> semantics) is unchanged. Clients in <code>agalma-ipc</code> implement the same contract traits over the transport. Readiness does not wait for anything new.</p>
+<h3 id="d4-shadow-parity-methodology-unchanged-from-b1-d4">D4 — Shadow parity methodology (unchanged from B1 D4)</h3>
+<p>Per boundary: run the scenario against identical scratch state under in-process and Connect bindings; normalized transcript (event kinds/payloads, receipts, git digest, ledger snapshot, <code>Describe</code>); structural-difference checker; artifacts under <code>target/test-runs/ipcx/&lt;boundary&gt;/&lt;run&gt;/</code>; evidence doc <code>docs/ipcx-&lt;boundary&gt;-evidence.md</code> structured like the B1 docs.</p>
+<h3 id="d5-error-mapping-and-receipts">D5 — Error mapping and receipts</h3>
+<ul><li>In-band authoritative: <code>IpcError.code</code> = <code>ContractError</code> variant name (<code>KnownFailure</code>, <code>UnsupportedCapability</code>, <code>Conflict</code>, <code>UnknownOutcome</code>) or <code>Unavailable</code>/<code>Protocol</code> for transport faults, exactly as <code>agalma-ipc</code> does today. No lossy translation to the 16 Connect codes on the primary path.</li><li>Protocol-level mapping, documented for tooling only: transport failure → <code>Unavailable</code>; deadline → <code>DeadlineExceeded</code>; decode failure → <code>Internal</code>.</li><li>Duplicate delivery, receipt replay, changed-input rejection, and <code>UnknownOutcome</code> reconciliation remain as implemented in <code>agalma-ipc</code> (<code>envelope.rs</code>, <code>server.rs</code>); the envelope gains no new semantics.</li></ul>
+<h3 id="d6-consumer-invariance-and-architecture-tests">D6 — Consumer invariance and architecture tests</h3>
+<ul><li>Allowed diffs per boundary bead: <code>ipc.proto</code>/generated module, Connect client/server plumbing in <code>agalma-ipc</code>, server bin wiring in the impl crate, composition/construction sites, new tests, evidence docs. <code>git diff --name-only</code> is part of the evidence; conductor phase/work logic unchanged.</li><li>Architecture test: keep the impl→impl Cargo edge check; add: only <code>agalma-ipc</code> lists <code>connectrpc</code>/<code>buffa</code> as a normal dependency; extracted servers still do not import conductor internals.</li></ul>
+<h3 id="d7-migration-order-mirror-b1">D7 — Migration order (mirror B1)</h3>
+<table><thead><tr><th>#</th><th>Boundary</th><th>Why this position</th></tr></thead><tbody><tr><td>1</td><td><code>HarnessApi</code></td><td>first in B1; smallest full-vertical slice to prove Connect/UDS end to end</td></tr><tr><td>2</td><td><code>SandboxApi</code></td><td>serves every confined launch; harness server switches here when needed</td></tr><tr><td>3</td><td><code>WorkspaceApi</code></td><td>small surface, single consumer</td></tr><tr><td>4</td><td><code>TaskQueueApi</code></td><td>small surface, single consumer; <code>agalma-www</code> already closed by foundation</td></tr><tr><td>5</td><td><code>LedgerApi</code></td><td>durable state: quiesced export/import via files preserved</td></tr><tr><td>6</td><td><code>ExecutionApi</code></td><td>largest boundary, last; folds in the <code>agalma-5de</code> handler-registry resolution</td></tr></tbody></table>
+<p>Extraction stays strictly one boundary per bead, chained by <code>blocks</code> deps. Current defaults after <code>agalma-ud1</code>/<code>agalma-fez</code>: harness, ledger, workspace and task queue use process transport; sandbox always uses a process. Execution keeps its in-process default pending production integration (<code>agalma-pob.1</code>). The <code>AGALMA_*_TRANSPORT=in-process</code> override retains direct embedding, while <code>AGALMA_IPC_WIRE=framed</code> selects framed JSON for process-wire parity. Process bindings otherwise use Connect. Evidence: <code>docs/b1-f3-evidence.md</code> §§5–6.</p>
+<h2 id="bead-plan">Bead plan</h2>
+<table><thead><tr><th>Bead</th><th>Scope</th></tr></thead><tbody><tr><td><code>agalma-ebg.1</code></td><td>IPCX-D1 design (this doc) — gates all IPC v2 beads</td></tr><tr><td><code>agalma-ebg.2</code></td><td>IPCX.1 foundation: <code>ipc.proto</code>, Connect stack + pins, UDS accept loop, client core, Connect-level conformance harness, architecture-test additions; closes <code>agalma-www</code></td></tr><tr><td><code>agalma-ebg.3</code></td><td>IPCX.2 Harness boundary</td></tr><tr><td><code>agalma-ebg.4</code></td><td>IPCX.3 Sandbox boundary</td></tr><tr><td><code>agalma-ebg.5</code></td><td>IPCX.4 Workspace boundary</td></tr><tr><td><code>agalma-ebg.6</code></td><td>IPCX.5 TaskQueue boundary</td></tr><tr><td><code>agalma-ebg.7</code></td><td>IPCX.6 Ledger boundary</td></tr><tr><td><code>agalma-ebg.8</code></td><td>IPCX.7 Execution/kernel boundary</td></tr><tr><td><code>agalma-ebg.9</code></td><td>IPCX.8 exit evidence: component map on Connect, epic close</td></tr></tbody></table>
+<h2 id="risks-open-items">Risks / open items</h2>
+<ul><li><strong>Pre-1.0 churn.</strong> <code>connectrpc</code> 0.9.x may break in 0.x; exact pins and a reviewed <code>cargo update</code> policy (M0 rule) hold the line.</li><li><strong>Codegen offline policy.</strong> <code>connectrpc-build</code> compiles <code>.proto</code> at build time with no external binaries; the buf fallback would add downloaded plugin binaries and needs explicit approval.</li><li><strong>Concurrency semantics.</strong> Multiplexing changes failure interleavings; the D1 guard preserves ordering, and parity checkers normalize timing. Per-seam read-concurrency decisions go in the boundary evidence.</li><li><strong>Transitive dependency surface.</strong> First non-hand-rolled HTTP stack in the workspace; the D2 architecture check keeps it confined to <code>agalma-ipc</code>, and the M0.8 <code>Cargo.lock</code> audit applies.</li><li><strong><code>ExecutionApi</code> adapter gap</strong> (<code>agalma-5de</code>) is inherited, not solved, until IPCX.7.</li><li><strong>TUI.</strong> <code>docs/tui-design.md</code> v1 stays a polling refresh loop; Connect server streaming is the enabling step if push is later wanted.</li></ul>
+<h2 id="review-outcome-docs-touched">Review outcome (docs touched)</h2>
+<ul><li><code>docs/component-contracts.md</code> — transport sentence now points at this doc.</li><li><code>docs/m0-dependencies.md</code> — approved additions: connectrpc/buffa/ connectrpc-build.</li><li><code>docs/tui-design.md</code> — live-transport paragraph notes multiplexing and the reserved streaming option; v1 polling unchanged.</li><li><code>docs/b1-extraction.md</code> remains historical; its D1 is superseded for transport only, its recipe and evidence method stay in force.</li></ul>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="component-contracts.html">⟲ component-contracts</a><span class="step">step 2 / 31 in the ring</span><a href="b1-ledger-evidence.html">b1-ledger-evidence ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">ipc-connect-design.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

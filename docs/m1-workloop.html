@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="m1-workloop.md">m1-workloop.md</a></div>
+<div class="ring"><a href="b0-kernel.html">⟲ b0-kernel</a><span class="step">step 11 / 31 in the ring</span><a href="self-hosting-roadmap.html">self-hosting-roadmap ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li class="here"><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="m1-working-loop-design">M1 — working loop design</h1>
+<p>Task: <code>agalma-52k.1</code> (M1-D1). Epic: <code>agalma-52k</code> (M1). Status: design. Authored by orchestrator; gates all M1 implementation beads. Implementation via worker waves; orchestrator reviews, commits, closes.</p>
+<p>Refs: <code>docs/architecture.md</code> §4 (loop), §5 (task model), §6 (sessions), §7 (evaluation), §13 M1; <code>docs/component-contracts.md</code>; <code>docs/m0-skeleton.md</code> (implemented M0 surface); <code>docs/m0-exit-evidence.md</code>.</p>
+<h2 id="scope-and-exit">Scope and exit</h2>
+<p>M1 turns the M0 single-task conductor into a queue-driven loop over real repo tasks. Exit (architecture §13 M1):</p>
+<ul><li>seeded batch processed; success rate and $/merge measured;</li><li>bd intake with stable execution IDs, fenced claims, reconciled status projections;</li><li>builder/verifier phases, independent checkouts, separate sandboxed verification, deterministic acceptance, merge on green, cost recorded, digest generated;</li><li>routing/triage through the versioned decision contract with static policies and recorded outcomes;</li><li>duplicate dispatch and expired-lease recovery cannot merge twice;</li><li>staged harness rebind between attempts preserves the conductor scenario and keeps recovery on the pinned implementation.</li></ul>
+<p>Decisions fixed here:</p>
+<ul><li><strong>Target</strong>: agalma repo; seeded batch is data/docs scope (prompts, docs, fixtures) per the M1 mutation ladder (§8). No pipeline Rust in tasks.</li><li><strong>Cost basis</strong>: free model via the M0 egress proxy; <code>$0.00</code> merges are expected and valid; provider-auth proxy and paid models remain open items (needed before M3 budgets).</li><li><strong>Verifier</strong>: agent-side diagnosis only; Rust runs acceptance commands. Fresh session per (task, phase, attempt); handoff via files.</li></ul>
+<p>Out of scope: budgets enforcement, scheduler/cadence, bench/promotion, code self-modification, GitHub intake, parallelism, paid credentials.</p>
+<h2 id="task-model-and-bd-adapter">Task model and bd adapter</h2>
+<p>Crate <code>agalma-taskqueue</code>; <code>TaskQueueApi</code> trait added to <code>agalma-contracts</code>. bd CLI (<code>std::process::Command</code>) is private to the crate. Machine interface: <code>bd list --json</code>, <code>bd show &lt;id&gt; --json --include-comments</code>, <code>bd update &lt;id&gt; --claim</code> (atomic), <code>bd comment &lt;id&gt;</code>, <code>bd close &lt;id&gt;</code>, <code>bd update --add-label</code>.</p>
+<p>Task = bd issue + fenced YAML block in the description:</p>
+<pre class="code"><code class="lang-yaml">directive: directive/v0
+target: agalma
+ref: main
+acceptance:
+  - sh -c '...'
+budget_usd: 2.00
+priority: normal
+family: fix
+max_attempts: 2</code></pre>
+<p>Hand-rolled strict subset parser (scalars + string lists); missing/invalid block → issue is not a task (skipped, counted in reconcile report).</p>
+<p>Identity: <code>TaskId</code> = bd issue id; <code>ExecutionId = exec:&lt;task_id&gt;:&lt;task_generation&gt;</code>; <code>task_generation</code> increments when a claim cycle starts fresh (reconcile keeps the existing generation). <code>lease_generation</code> is a ledger counter fenced against <code>OperationId</code>s and worker records.</p>
+<p>Claim: <code>bd --claim</code> first (atomic), then ledger commit records claim + lease before dispatch; interrupted starts reconcile by identity (§3.6). Local bd locking makes multi-conductor claims safe for M1 (single conductor anyway).</p>
+<p>Projection: on every phase transition the adapter appends a <code>bd comment</code> (<code>phase=… execution=… lease=…</code>); terminal: <code>done</code> → <code>bd close</code>, <code>parked</code> → status <code>blocked</code> + label <code>parked</code> + comment with reason. Ledger is source of truth for execution progress; reconcile compares projection vs ledger and rewrites the projection (never the ledger).</p>
+<h2 id="decision-contract">Decision contract</h2>
+<p>Crate <code>agalma-decision</code>; <code>DecisionApi</code> + request/response types in contracts.</p>
+<ul><li>Versioned <code>DecisionRequest</code>: stable operation ID, decision kind, bounded context/artifact refs, eligible option IDs, deadline, pinned policy versions.</li><li>M1 decision kinds: <code>triage.pick-next</code> (eligible ready tasks → pick via static policy: priority, then age, then id) and <code>retry.escalate</code> (attempt/verdict based mechanical choice). Static baselines first; no model inference required for M1 exit.</li><li>Durability: request persisted (ledger, schema v2 <code>decisions</code>) before apply; validated response or fallback recorded with receipt; recovery reuses the recorded outcome; changed inputs → new operation ID.</li><li>Outcomes: append-only decisions table + projection query for the digest.</li></ul>
+<h2 id="ledger-schema-v2">Ledger schema v2</h2>
+<p>Additive migration from v1: <code>decisions</code>, <code>digests</code> tables; <code>SCHEMA_VERSION</code> becomes 2. <code>open()</code> migrates v1 → v2 only when all executions are terminal; otherwise refuses (no in-flight migration). WAL/FULL pragmas unchanged. Cost and usage are derived from existing <code>execution_events</code> (UsageSnapshot) — no new columns; digests store derived summary rows plus artifact paths.</p>
+<h2 id="loop-conductor">Loop (conductor)</h2>
+<p><code>agalma work --repo &lt;path&gt; [--once] [--max-tasks N] [--state-dir] [--model]</code>:</p>
+<ol><li>intake: queue adapter lists ready tasks; decision <code>triage.pick-next</code> (static policy) picks one; claim + execution identity recorded.</li><li>checkout: workspace <strong>repo mode</strong> — <code>git clone --no-hardlinks &lt;repo&gt; &lt;run&gt;/checkout</code> at task <code>ref</code>, candidate branch <code>candidate/&lt;exec&gt;</code> (own Git metadata; shared object store avoided).</li><li>build: builder session (existing harness path) in the checkout; prompt from <code>crates/agalma-conductor/prompts/builder.md</code>, now parameterized with task acceptance commands and prior diagnosis.</li><li>verify: fresh verification checkout at the candidate SHA (pristine), acceptance commands run by Rust, each as its own sandboxed launch; failures captured. Red → verifier diagnosis session (fresh, read-only diff<ul><li>failure output) produces <code>artifacts/diagnosis@&lt;n&gt;.md</code>; builder retry uses it; bounded by <code>max_attempts</code>; exhausted → postmortem note + parked.</li></ul></li><li>integrate: workspace merges candidate into origin <code>main</code> with expected-SHA CAS (<code>git -C &lt;origin&gt; update-ref refs/heads/main &lt;new&gt; &lt;old&gt;</code>), tag <code>m1/&lt;exec&gt;</code>; MergeReceipt recorded. Green only.</li><li>record + digest: cost/usage summary, files touched, commands+outcomes, repairs, wall time; digest row + JSON artifact; bd projection updated.</li></ol>
+<p>Keep: SIGTERM latch, STOP sentinel, boot recovery ordering, survivor termination, <code>--once</code> for tests.</p>
+<h2 id="state-directory-and-reap-policy">State directory and reap policy</h2>
+<p>Run state lives under the resolved state dir (<code>--state-dir</code>, <code>AGALMA_STATE_DIR</code>, or the platform application-support dir):</p>
+<pre class="code"><code>&lt;state&gt;/
+  ledger.sqlite             durable SQLite ledger
+  conductor.lock            exclusive-state lock (a live pid refuses a second conductor)
+  STOP                      halt sentinel
+  runs/exec-&lt;task&gt;-&lt;gen&gt;/   one run root per execution
+    artifacts/              digests, acceptance captures, diagnosis   (kept)
+    stop/                   survivor-termination evidence             (kept)
+    opencode-log-*/         harness server logs                       (kept)
+    effects.log             scripted-mode effect ledger               (kept)
+    &lt;phase&gt;/                intake/build/verify markers               (kept)
+    checkout/ agent-target/ verify/ cargo-home/ xdg-*/ tmp/ ...       (heavy temp)</code></pre>
+<p>An execution's run root accumulates heavyweight scratch over its lifetime — the checkout clone, the confined <code>target/</code>, the verify sandbox homes/tmp, the isolated cargo home, and the OpenCode XDG runtime dirs (together gigabytes). Once the execution is terminal (<code>Completed</code>/<code>Parked</code>/<code>Failed</code> state, or <code>Done</code>/<code>Parked</code> phase) nothing reads that scratch again, so the conductor deletes exactly those subdirectories — best-effort and symlink-safe — while keeping the small forensic evidence listed above. Reaping is skipped while a live <code>*.worker.json</code> record remains in a phase dir (its worker may still be writing scratch).</p>
+<p>When the sweep runs:</p>
+<ul><li><strong>On terminal</strong> — <code>agalma work</code> reaps the execution's scratch as it finishes (done or parked).</li><li><strong>On boot</strong> — every <code>agalma work</code> start sweeps all terminal executions still on disk (crash leftovers and pre-fix state dirs).</li><li><strong>Manual</strong> — <code>agalma gc [--state-dir DIR]</code> runs the same sweep on demand for older or hand-managed state dirs. It refuses while a conductor holds the state-dir lock, applies the same ledger-schema gate as <code>work</code>, prints one line per reaped execution plus a total (<code>agalma gc: reaped N executions, X MB</code>), or <code>agalma gc: nothing to reap</code> when nothing was left, and exits 0.</li></ul>
+<p>The sweep is idempotent: a second run over an already-reaped state dir is a no-op.</p>
+<h2 id="fencing-and-recovery-cannot-merge-twice">Fencing and recovery (cannot merge twice)</h2>
+<ul><li>Claim → ledger records lease_generation; dispatch intents carry it.</li><li>Duplicate dispatch: operation receipt returns recorded result; integration effect probe = origin main already at candidate SHA.</li><li>Expired lease: recovery reconciles first (workspace git state, worker liveness, bd claim); merge already landed → record receipt, complete; no re-merge. Ambiguous → park.</li><li>Crash between CAS merge and completion: boot detects <code>origin main == candidate_sha</code> (existing M0.8 probe generalizes) and completes.</li><li>bd projection reconcile on boot (comments/status vs ledger), ledger wins.</li></ul>
+<h2 id="harness-rebind-drill">Harness rebind drill</h2>
+<p>New crate <code>agalma-harness-reference</code>: deterministic <code>HarnessApi</code> adapter (scripted turns from files; no vendor, no network). Binding selection: <code>AGALMA_HARNESS=opencode|reference</code> resolved at attempt start; binding record persisted per operation (S0d <code>BindingRecord</code>). Test: attempt 1 red via reference, config flipped, attempt 2 via opencode (or vice versa) completes; crash between attempts recovers on the <strong>pinned</strong> binding for in-flight operations. Recovery stays on the pinned implementation; new attempts may rebind between operations.</p>
+<h2 id="seed-batch-datadocs-scope">Seed batch (data/docs scope)</h2>
+<p>Four real bd tasks created at M1.8 start (exact wording then), all against agalma with <code>acceptance</code> shell one-liners run by Rust:</p>
+<ol><li>README drift fix (roles/loop) — grep-based checks.</li><li><code>docs/task-authoring.md</code> describing the fenced block — file/content checks.</li><li><code>crates/agalma-conductor/prompts/builder.md</code> improvement (acceptance commands + no test edits) — content checks.</li><li><code>docs/conventions.md</code> (or similar) phase-handoff rules — content checks.</li></ol>
+<p>Sequence rule: seed tasks must not touch pipeline Rust or <code>Cargo.toml</code> (<code>sh -c 'git diff --name-only &lt;base&gt;..&lt;cand&gt; | grep -v &quot;\.md$|prompts/&quot;'</code> style guard expressed as acceptance). The running conductor reads its prompts per dispatch, so prompt tasks take effect next attempt (intended M1 data self-improvement).</p>
+<h2 id="test-strategy-and-verification-commands">Test strategy and verification commands</h2>
+<ul><li>Unit tests co-located per crate; integration in <code>agalma-conductor/tests/</code>; run dirs <code>target/test-runs/*</code> (never /tmp); state dirs via <code>AGALMA_STATE_DIR</code>.</li><li>Deterministic tests use the reference adapter + scripted activity mode; one live e2e per wave where useful (free model, ~3 min).</li><li>Per-bead: <code>cargo build --workspace --offline</code>, <code>cargo test --workspace --offline</code>, <code>cargo clippy --workspace --all-targets --offline -- -D warnings</code>, <code>cargo fmt --check --all</code>.</li><li>M1.8 exit run: seeded batch, then <code>docs/m1-exit-evidence.md</code> with success rate, $/merge, wall time, fencing/rebind evidence.</li></ul>
+<h2 id="crate-map-delta">Crate map delta</h2>
+<ul><li>new: <code>agalma-taskqueue</code>, <code>agalma-decision</code>, <code>agalma-harness-reference</code>.</li><li>changed: contracts (TaskQueueApi, DecisionApi), workspace (repo mode + origin CAS integrate), ledger (schema v2), conductor (work loop, digest, projection), harness-opencode (prompt parameterization only).</li></ul>
+<h2 id="worker-waves">Worker waves</h2>
+<ul><li>B: M1.1 <code>agalma-52k.2</code> (queue), M1.5 <code>agalma-52k.6</code> (decision+ledger v2) — parallel.</li><li>C: M1.2 <code>agalma-52k.3</code> (loop + workspace repo mode) — single.</li><li>D: M1.3 <code>agalma-52k.4</code> (verifier), M1.4 <code>agalma-52k.5</code> (acceptance+digest), M1.6 <code>agalma-52k.7</code> (fencing) — parallel.</li><li>E: M1.7 <code>agalma-52k.8</code> (rebind) — single.</li><li>F: M1.8 <code>agalma-52k.9</code> (seeded batch + evidence) — single.</li></ul>
+<h2 id="open-items-carried">Open items carried</h2>
+<ul><li>Provider-auth proxy / paid models (before M3 budgets).</li><li><code>OPENCODE_CONFIG_DIR</code> discovery workaround; mach-lookup narrowing.</li><li><code>OperationState::Cancelled</code> freeze question.</li><li>Durable session log persistence.</li><li>Workspace CAS integrate assumes local origin path (single-host MVP).</li></ul>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="b0-kernel.html">⟲ b0-kernel</a><span class="step">step 11 / 31 in the ring</span><a href="self-hosting-roadmap.html">self-hosting-roadmap ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">m1-workloop.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="b0-exit-evidence.md">b0-exit-evidence.md</a></div>
+<div class="ring"><a href="b1-f3-evidence.html">⟲ b1-f3-evidence</a><span class="step">step 22 / 31 in the ring</span><a href="ipc-exit-evidence.html">ipc-exit-evidence ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li class="here"><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="b0-exit-evidence-durable-execution-kernel">B0 exit evidence — durable execution kernel</h1>
+<p>Bead: <code>agalma-9n4.7</code> (B0.6). Epic: <code>agalma-9n4</code>. Base revision: <code>845fe4b</code> (B0.5). This is the B0 exit artifact: the per-case gate report for the protected recovery pack, the upgrade/activation/rollback procedure, the measured seed resource baseline and proposed regression limits, and deviations/open items.</p>
+<p>Design: <code>docs/b0-kernel.md</code>. Requirements: <code>docs/durable-execution-bootstrap.md</code> (Bootstrap sequence, Acceptance and evaluation). Fixtures: <code>fixtures/recovery-pack/</code> (untouched; <code>MANIFEST.sha256</code> verifies, <code>pack_integrity.rs</code> green).</p>
+<h2 id="gate-report-all-10-protected-cases">Gate report — all 10 protected cases</h2>
+<p>The pack (<code>fixtures/recovery-pack/cases/*.json</code>) is immutable and judged by <code>crates/agalma-kernel/tests/*</code>. Every case is covered by a named test; all pass on this revision.</p>
+<table><thead><tr><th>#</th><th>Case</th><th>Test</th><th>File</th></tr></thead><tbody><tr><td>1</td><td><code>transition-commit-before-dispatch</code></td><td><code>crash_after_transition_commit_before_dispatch</code></td><td><code>tests/recovery.rs</code></td></tr><tr><td>2</td><td><code>duplicate-delivery-after-completion</code></td><td><code>duplicate_delivery_returns_recorded_receipt</code></td><td><code>tests/recovery.rs</code></td></tr><tr><td>3</td><td><code>restart-after-decision-commit</code></td><td><code>restart_after_decision_commit_reuses_recorded_outcome</code></td><td><code>tests/recovery.rs</code></td></tr><tr><td>4</td><td><code>merge-before-completion</code></td><td><code>merge_before_completion_reconciles_without_remerge</code></td><td><code>tests/recovery.rs</code></td></tr><tr><td>5</td><td><code>stale-lease-worker</code></td><td><code>stale_lease_worker_cannot_advance_after_conductor_failure</code></td><td><code>tests/ownership.rs</code></td></tr><tr><td>6</td><td><code>restart-during-retry-delay</code></td><td><code>restart_during_retry_delay_fires_timer_once</code></td><td><code>tests/waiting.rs</code></td></tr><tr><td>7</td><td><code>directive-update-restart</code></td><td><code>directive_update_survives_restart_and_applies_once</code></td><td><code>tests/waiting.rs</code></td></tr><tr><td>8</td><td><code>upgrade-with-pending-executions</code></td><td><code>upgrade_with_pending_executions_resumes_or_parks</code></td><td><code>tests/upgrade.rs</code></td></tr><tr><td>9</td><td><code>kernel-adapter-replacement</code></td><td><code>kernel_adapter_replacement_preserves_pending_work</code></td><td><code>tests/activation.rs</code></td></tr><tr><td>10</td><td><code>rollback-restore-reconcile</code></td><td><code>rollback_restore_reconciles_before_dispatch</code></td><td><code>tests/activation.rs</code></td></tr></tbody></table>
+<p>Supporting B0.6 tests:</p>
+<table><thead><tr><th>Concern</th><th>Test</th></tr></thead><tbody><tr><td>Candidate check is reducer-only, no external effects</td><td><code>check_candidate_reconstructs_pending_state_without_effects</code> (<code>tests/upgrade.rs</code>)</td></tr><tr><td>Canonical snapshot round-trip preserves pending work + receipts</td><td><code>export_import_round_trip_preserves_pending_work_and_receipts</code> (<code>tests/upgrade.rs</code>)</td></tr><tr><td>Import refuses incompatible format/schema</td><td><code>import_refuses_incompatible_versions</code> (<code>tests/upgrade.rs</code>)</td></tr><tr><td>Staged activation settles a present in-flight effect</td><td><code>staged_activation_happy_path_settles_present_effect</code> (<code>tests/activation.rs</code>)</td></tr><tr><td>S0d bind gate (unmet required capability)</td><td><code>staged_activation_refuses_unmet_capabilities</code> (<code>tests/activation.rs</code>)</td></tr><tr><td>Seed resource baseline</td><td><code>seed_executor_resource_baseline</code> (<code>tests/resources.rs</code>)</td></tr><tr><td>Pack integrity (manifest append-only)</td><td><code>protected_pack_matches_manifest</code>, <code>every_case_file_matches_schema</code>, <code>tamper_detection_self_test</code> (<code>tests/pack_integrity.rs</code>)</td></tr></tbody></table>
+<p>Cases 8/9/10 build a durable pending execution, so a compatible swap has work to preserve and reconcile.</p>
+<h2 id="upgrade-activation-rollback-procedure">Upgrade, activation, rollback (procedure)</h2>
+<p>Persisted contract versions live in <code>kernel_meta</code> (<code>exec_def_version</code>, <code>kernel_version</code>) and the physical ledger schema version is checked (<code>KernelEngine::EXPECTED_LEDGER_SCHEMA_VERSION</code>). An unknown <code>exec_def</code> version or a mismatched schema parks every execution rather than guessing.</p>
+<h3 id="candidate-check-reducer-only">Candidate check (reducer-only)</h3>
+<p><code>agalma_kernel::check_candidate(&amp;ledger, migrations)</code> replays every execution from <code>execution_events</code> and compares the derived state with the <code>executions</code> projection. It writes nothing and runs no external effect (verified by an empty effect journal). It reports per-execution <code>Compatible</code>, <code>NeedsMigration</code>, or <code>Parks</code>.</p>
+<h3 id="explicit-migration">Explicit migration</h3>
+<p><code>MigrationRegistry</code> holds explicit <code>Migration</code>s. <code>KernelEngine::open_with_migrations</code> applies a resolved <code>stored → exec_def/v1</code> migration <strong>before</strong> reconstructing work, through <code>LedgerApi</code> only. Incompatible state with no migration parks. <code>VersionLabelMigration</code> is the safe case (a byte-compatible relabel); it records a durable <code>migration:&lt;from&gt;</code> marker. Real history-rewriting migrations register additional <code>Migration</code> implementations.</p>
+<h3 id="state-export-import-compatible-replacement">State export / import (compatible replacement)</h3>
+<p><code>LedgerApi::export_state</code> / <code>import_state</code> produce/consume a canonical JSON <code>StateSnapshot</code> (format header <code>agalma-state/v1</code>; <code>schema_version</code>; <code>exec_def_version</code>; <code>kernel_version</code>; kill latch; every <code>kernel_meta</code> row incl. worker records; lease generations; projection; history; receipts; dispatch intents incl. their <code>consumed</code> flag; timers; directives; bindings). Import refuses a format/schema mismatch atomically (nothing partially applied) and is canonical: export → import → export is byte-identical. Canonical ids, receipts, and pending work survive; consumer APIs are unchanged.</p>
+<h3 id="staged-activation-staged_activate">Staged activation (<code>staged_activate</code>)</h3>
+<ol><li><strong>Set latch</strong> — physical conductor latch and the durable per-execution <code>KillLatch</code> command (blocks new and recovered dispatch).</li><li><strong>Settle/reconcile in-flight</strong> — probe every pending operation through its <strong>pinned</strong> binding; a present effect is completed (never repeated), an absent effect is left pending for the post-activation resume, an ambiguous effect aborts activation with the latch still set.</li><li><strong>Stage candidate</strong> — upsert the candidate as <code>Staged</code> after the bind gate (<code>required_capabilities ⊆ capabilities</code>).</li><li><strong>Swap binding</strong> (S0d rebind rules) — previous active → <code>Draining</code> (retained for pinned operations), candidate → <code>Active</code>.</li><li><strong>Schema check</strong> — refuse on a mismatched ledger schema.</li><li><strong>Clear latch</strong> — resume. Events are recorded in <code>kernel_meta::activation_evidence:&lt;component_api&gt;</code>.</li></ol>
+<h3 id="rollback-rollback">Rollback (<code>rollback</code>)</h3>
+<p>Settle in-flight, mark the candidate <code>Retired</code> (kept for reconciliation), reactivate the seed binding, keep every pending operation pinned to the binding it started under, record <code>rollback_evidence:&lt;component_api&gt;</code>, resume. The seed's recovery path stays available.</p>
+<h3 id="restore-restore">Restore (<code>restore</code>)</h3>
+<p>Check schema compatibility first, then reconcile <strong>ledger, bd, Git, processes</strong> through the <code>RestoreReconciler</code> seam before any dispatch, with the latch set. An ambiguous domain parks the execution and leaves the latch set (nothing dispatches on stale/ambiguous state); a clean reconcile clears the latch and resumes. Evidence is recorded in <code>kernel_meta::restore_evidence:&lt;execution&gt;</code>.</p>
+<h2 id="resource-gates-seed-baseline">Resource gates — seed baseline</h2>
+<p>Reproducible measurement: <code>sh scripts/b0-seed-baseline.sh</code> (wraps <code>cargo test -p agalma-kernel --offline --test resources -- --nocapture</code>). The harness measures <code>agalma-execution</code> in-process and writes <code>target/test-runs/b0-resources/seed-baseline.json</code>. Numbers below are a debug (<code>unoptimized</code>) build on the development host (macOS, arm64); they are seed reference values, not cross-host guarantees.</p>
+<table><thead><tr><th>Metric</th><th>Measured seed</th><th>Proposed numeric limit</th></tr></thead><tbody><tr><td>Idle RSS</td><td>4 400 KiB</td><td>≤ 8 800 KiB (2.0×)</td></tr><tr><td>Idle CPU (200 ms sample)</td><td>0.0 ms</td><td>≈ 0 (no busy-wait)</td></tr><tr><td>Restart (reopen + recover)</td><td>5.64 ms</td><td>≤ 16.9 ms (3.0×)</td></tr><tr><td>Dispatch latency</td><td>4 044 µs/op</td><td>≤ 16 177 µs/op (4.0×)</td></tr><tr><td>DB growth</td><td>27 405 B/op</td><td>≤ 55 834 B/op (2.0× + 1 KiB)</td></tr></tbody></table>
+<p>Benchmark shape: 25 sequential seed executions (150 logical steps), one SQLite ledger with <code>synchronous=FULL</code> under <code>target/test-runs/b0-resources/</code>. Correctness is a veto: a candidate must pass every case above regardless of resource numbers; these limits bound <em>regressions</em> only.</p>
+<h2 id="verification-this-revision">Verification (this revision)</h2>
+<pre class="code"><code>cargo test -p agalma-kernel --offline        # all green (incl. cases 8/9/10, resources)
+cargo test --workspace --offline             # all green
+cargo build --workspace --offline            # ok
+cargo clippy --workspace --all-targets --offline -- -D warnings   # ok
+cargo fmt --check --all                       # ok
+sh scripts/b0-seed-baseline.sh               # writes target/test-runs/b0-resources/seed-baseline.json</code></pre>
+<h2 id="deviations-and-open-items">Deviations and open items</h2>
+<ul><li><strong>Consumer API unchanged.</strong> <code>export_state</code>/<code>import_state</code> were added to the <code>LedgerApi</code> contract (additive) and implemented for <code>SqliteLedger</code>; the <code>ExecutionApi</code> seed executor and conductor are untouched and all their tests pass. The kernel carries its own <code>EXPECTED_LEDGER_SCHEMA_VERSION = 3</code> so it still depends only on <code>agalma-contracts</code>.</li><li><strong>Restore seam.</strong> <code>RestoreReconciler</code> is a contract-level seam; B0.6 tests a deterministic fake. Wiring the live conductor's bd/Git/process reconciliation into it is integration (out of the B0 kernel crate), tracked as a follow-up.</li><li><strong>Activation not yet switched on.</strong> The staged-activation/rollback mechanics are implemented and tested, but the conductor still runs the seed binding; performing the controlled-restart rebind in the live conductor is the activation step owned by the accepted conductor.</li><li><strong>Migration coverage.</strong> Only <code>VersionLabelMigration</code> ships (a compatible relabel, which is what the current <code>exec_def/v1</code> needs). A future definition change adds a payload-rewriting <code>Migration</code>; the registry already supports it.</li><li><strong>Kernel schema-mismatch park</strong> is exercised via the candidate report and the snapshot schema refusal; a live ledger can only reach a non-3 schema through a future migration (the ledger refuses commits under a mismatch).</li><li><strong>Resource limits</strong> are derived from a debug build on one host and should be re-measured in release at promotion; the harness is re-runnable and deterministic in shape.</li></ul>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="b1-f3-evidence.html">⟲ b1-f3-evidence</a><span class="step">step 22 / 31 in the ring</span><a href="ipc-exit-evidence.html">ipc-exit-evidence ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">b0-exit-evidence.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

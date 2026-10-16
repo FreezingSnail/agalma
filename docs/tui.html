@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="tui.md">tui.md</a></div>
+<div class="ring"><a href="tui-design.html">⟲ tui-design</a><span class="step">step 26 / 31 in the ring</span><a href="self-mutation-contracts.html">self-mutation-contracts ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li class="here"><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="agalma-watch-full-screen-tui"><code>agalma watch</code> — full-screen TUI</h1>
+<p><code>agalma watch</code> is the human-operated control plane for the Agalma factory: a full-screen terminal view of every execution, component, cost row, and timeline event, with the gated control actions (pause / resume / cancel) on keybindings. It rides the existing read model (<code>agalma status --json</code>) and control plane; it adds no privileges the CLI does not have.</p>
+<p>Terminal stack: <strong>ratatui 0.30.2 + crossterm 0.29.0</strong> (exact <code>=</code> pins in the workspace <code>[workspace.dependencies]</code>, used only by <code>agalma-conductor</code>). See <code>docs/tui-design.md</code> §Terminal stack and <code>docs/m0-dependencies.md</code>.</p>
+<h2 id="usage">Usage</h2>
+<pre class="code"><code class="lang-sh">agalma watch                 # interactive full-screen view (requires a TTY)
+agalma watch --once          # render a single frame, print it, exit 0
+agalma watch --interval-ms 500
+agalma watch --state-dir /path/to/state</code></pre>
+<ul><li><code>--interval-ms &lt;MS&gt;</code> — refresh interval (default <code>1000</code>). Polling, not push: every tick the snapshot is rebuilt and the view re-rendered.</li><li><code>--once</code> — render exactly one frame through an off-screen backend and print it. Never enters the alternate screen or raw mode.</li><li><code>--state-dir &lt;DIR&gt;</code> — defaults to <code>AGALMA_STATE_DIR</code> or the platform application-support directory.</li></ul>
+<p>An absent ledger is not an error: the view reports <code>exists:false</code> with empty panes and exits 0.</p>
+<h3 id="non-interactive-piped-output">Non-interactive / piped output</h3>
+<p>When stdout is not a terminal (piped or redirected), <code>watch</code> behaves as if <code>--once</code> were passed: it renders a single frame and exits. This is the path used by scripts and by the render-level tests.</p>
+<h2 id="panes">Panes</h2>
+<p>The body is a 2×2 grid; the footer lists the keybindings.</p>
+<table><thead><tr><th>Pane</th><th>Contents</th></tr></thead><tbody><tr><td><strong>Executions</strong></td><td>one row per durable execution: id, phase, state, attempt, pending operations. The selected row is highlighted (<code>j</code>/<code>k</code>).</td></tr><tr><td><strong>Components</strong></td><td>per boundary: transport (<code>in-process</code>/<code>process</code>), <code>api@version</code>, socket liveness (<code>up</code>/<code>down</code>), bindings (<code>impl@ver State genN [caps] pins:N</code>), and watchdog/provider-health signals.</td></tr><tr><td><strong>Economics</strong></td><td>per execution: spend vs allowance, token totals, digest rollup, and parked/degradation alerts. Allowance is display-only (no enforcement).</td></tr><tr><td><strong>Timeline</strong></td><td>curated <code>execution_events</code> + digest milestones, oldest first, tail-windowed to the visible height.</td></tr></tbody></table>
+<h2 id="keybindings">Keybindings</h2>
+<table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody><tr><td><code>q</code> / <code>Ctrl-C</code></td><td>quit (restores the terminal)</td></tr><tr><td><code>r</code></td><td>refresh now</td></tr><tr><td><code>Tab</code> / <code>Shift-Tab</code></td><td>move focus to the next / previous pane</td></tr><tr><td><code>1</code> <code>2</code> <code>3</code> <code>4</code></td><td>focus Executions / Components / Economics / Timeline</td></tr><tr><td><code>j</code> / <code>↓</code>, <code>k</code> / <code>↑</code></td><td>move the execution selection</td></tr><tr><td><code>p</code></td><td><strong>pause</strong> — set the durable kill latch (no typed confirmation)</td></tr><tr><td><code>R</code></td><td><strong>resume</strong> — clear the latch and remove <code>STOP</code> (typed confirmation)</td></tr><tr><td><code>c</code> / <code>x</code></td><td><strong>cancel</strong> the selected execution (typed confirmation)</td></tr><tr><td><code>Esc</code></td><td>cancel a pending confirmation</td></tr><tr><td><code>Enter</code></td><td>submit the typed confirmation</td></tr></tbody></table>
+<p>The focused pane is marked with <code>▶</code> and a highlighted border.</p>
+<h2 id="control-actions">Control actions</h2>
+<p>Control is human-only and durable. Every attempt — applied or denied — writes exactly one <code>control_receipt</code> (ledger schema v4); a cancel additionally records the <code>cancel_requested</code> event. Nothing rewinds Git or the ledger: pause sets the latch, resume clears it, cancel requests cancellation through <code>ExecutionApi::cancel</code>. A denial (e.g. resume when nothing is stopped) is shown in the footer and leaves state unchanged.</p>
+<p>Destructive actions (<code>R</code> resume, <code>c</code>/<code>x</code> cancel) require the operator to type the action name (<code>resume</code> / <code>cancel</code>) and press <code>Enter</code>. The typed input is kept on a mismatch so it can be corrected; <code>Esc</code> abandons the action.</p>
+<h2 id="terminal-lifecycle">Terminal lifecycle</h2>
+<p><code>watch</code> enters raw mode and the alternate screen through a RAII guard. The guard restores the cursor, alt screen, and raw mode on <strong>every</strong> exit path: normal quit, an early error return, and unwinding panics (its <code>Drop</code> runs during unwind). An additional panic hook restores the terminal before any other hook runs, so a panic never leaves the shell in a broken state.</p>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="tui-design.html">⟲ tui-design</a><span class="step">step 26 / 31 in the ring</span><a href="self-mutation-contracts.html">self-mutation-contracts ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">tui.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

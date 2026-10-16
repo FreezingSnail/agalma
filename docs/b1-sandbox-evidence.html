@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="b1-sandbox-evidence.md">b1-sandbox-evidence.md</a></div>
+<div class="ring"><a href="b1-harness-evidence.html">⟲ b1-harness-evidence</a><span class="step">step 6 / 31 in the ring</span><a href="sandbox-removal-design.html">sandbox-removal-design ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li class="here"><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="b13-sandbox-extraction-evidence">B1.3 — sandbox extraction evidence</h1>
+<p>Bead: <code>agalma-0ht.4</code>. Design: <code>docs/b1-extraction.md</code> (D1–D5, D7). Depends on <code>agalma-0ht.3</code> (B1.2 harness extraction). HEAD at start: <code>dfa6142</code>.</p>
+<p>Goal: move <code>SandboxApi</code> behind a process (Unix-socket) boundary without changing any contract schema or consumer (phase) logic, and prove replacement through the declared API with dual-binding parity, staged rebind, rollback, and IPC conformance. As a derived requirement (D2), the already-extracted OpenCode harness server switches from embedding <code>agalma-sandbox</code> in-process to driving the extracted sandbox client.</p>
+<h2 id="deliverables">Deliverables</h2>
+<table><thead><tr><th>#</th><th>Deliverable</th><th>Where</th></tr></thead><tbody><tr><td>1</td><td><code>SandboxClient</code> implementing <code>SandboxApi</code> over <code>Client</code></td><td><code>crates/agalma-ipc/src/sandbox_client.rs</code></td></tr><tr><td>2</td><td><code>register_sandbox</code> + <code>SANDBOX_METHODS</code> registration helper</td><td><code>crates/agalma-ipc/src/sandbox_server.rs</code></td></tr><tr><td>2</td><td>Sandbox server bin hosting <code>SeatbeltSandbox</code> + <code>server_command</code></td><td><code>crates/agalma-sandbox/src/bin/agalma-sandbox-server.rs</code> + <code>src/server.rs</code></td></tr><tr><td>3</td><td><code>SandboxProcess</code> supervisor + lazy <code>SandboxSource</code> (reuses <code>harness_process</code> spawn/stop)</td><td><code>crates/agalma-conductor/src/sandbox_process.rs</code></td></tr><tr><td>3</td><td>Build/verify harness construction through the transport factory</td><td><code>crates/agalma-conductor/src/phases.rs</code>, <code>harness_process.rs</code> (<code>LiveHarness</code>, <code>open_opencode_harness</code>)</td></tr><tr><td>4</td><td>OpenCode harness server → sandbox client; <code>agalma-sandbox</code> dropped from normal deps; <code>SERVER_HOST_EDGES</code>/<code>is_server_host_edge</code> removed</td><td><code>crates/agalma-harness-opencode/src/server.rs</code>, <code>Cargo.toml</code>; <code>crates/agalma-conductor/tests/architecture.rs</code></td></tr><tr><td>5</td><td><code>AGALMA_HARNESS_TRANSPORT</code> wired into the build/verify phase path</td><td><code>phases.rs</code> (<code>run_live</code>/<code>run_verifier_session</code>/<code>run_reference</code>)</td></tr><tr><td>6</td><td>Parity / rebind / rollback / IPC-conformance tests</td><td><code>crates/agalma-conductor/tests/sandbox_process.rs</code></td></tr><tr><td>7</td><td>This evidence doc + invariance proof</td><td><code>docs/b1-sandbox-evidence.md</code></td></tr></tbody></table>
+<h3 id="new-interfaces">New interfaces</h3>
+<ul><li><code>agalma_ipc</code>: <code>SandboxClient</code> + <code>map_ipc_error</code> (<code>sandbox_client.rs</code>); <code>register_sandbox</code>, <code>SANDBOX_METHODS</code> (<code>sandbox_server.rs</code>); <code>sandbox_server::ensure_all_handlers</code>.</li><li><code>agalma_sandbox</code>: <code>server</code> module — <code>SERVER_BIN</code>, <code>server_command</code>, <code>build_server</code>, <code>serve</code>, <code>run_from_args</code>, <code>server_info</code>, <code>default_socket_for</code>, <code>API_NAME</code>, <code>API_VERSION</code>, <code>IMPL_NAME</code>, <code>IMPL_VERSION</code>.</li><li><code>agalma_harness_opencode</code>: <code>SANDBOX_SOCKET_ENV</code>; <code>build_server</code> now takes <code>Box&lt;dyn SandboxApi + Send&gt;</code> (the client).</li><li><code>agalma_conductor::sandbox_process</code>: <code>SandboxProcess</code> (<code>spawn</code>, <code>spawn_with_spec</code>, <code>socket</code>, <code>pid</code>, <code>client</code>, <code>stop</code>), <code>SandboxSource</code> (<code>new</code>, <code>socket</code>, <code>ensure</code>, <code>client</code>, <code>pid</code>), <code>sandbox_server_spec</code>, <code>SANDBOX_SOCKET_NAME</code>.</li><li><code>agalma_conductor::harness_process</code>: <code>LiveHarness</code> (<code>InProcess</code>/<code>Process</code>, <code>attempt_pid</code>, <code>HarnessApi</code>), <code>OpenCodeHarnessInit</code>, <code>open_opencode_harness</code>; <code>spawn_supervised</code>/<code>stop_supervised</code> (shared supervision, <code>pub(crate)</code>).</li></ul>
+<h2 id="results">Results</h2>
+<p>All commands from the repo root, <code>--offline</code>.</p>
+<table><thead><tr><th>Command</th><th>Observed</th></tr></thead><tbody><tr><td><code>cargo test --offline -p agalma-ipc</code></td><td>exit 0; <code>30 passed</code> (unit, incl. sandbox client) + <code>12 passed</code> (conformance) + doc-tests</td></tr><tr><td><code>cargo test --offline -p agalma-sandbox</code></td><td>exit 0; <code>17 passed</code> (unit) + <code>0 passed</code> (server bin) + <code>3 passed</code> (sandbox integration) + doc-tests</td></tr><tr><td><code>cargo test --offline -p agalma-conductor</code></td><td>exit 0; 17 test binaries <code>test result: ok</code>, 0 failures (incl. <code>sandbox_process</code>: <code>6 passed</code>, <code>architecture</code>: <code>4 passed</code>)</td></tr><tr><td><code>cargo test --offline -p agalma-kernel</code></td><td>exit 0; 13 test binaries <code>test result: ok</code>, 0 failures</td></tr><tr><td><code>cargo test --offline</code> (full workspace)</td><td>exit 0; 61 test binaries <code>test result: ok</code>, 0 failures</td></tr></tbody></table>
+<p><code>tests/sandbox_process.rs</code> cases:</p>
+<table><thead><tr><th>Test</th><th>What it proves</th></tr></thead><tbody><tr><td><code>shadow_parity_in_process_vs_process_sandbox</code></td><td>The same <code>LaunchSpec</code> scenario (<code>/bin/sh</code> writes a marker under the attempt dir, sleeps; <code>alive</code>; <code>terminate</code>) produces an identical, timing/ID-free transcript in-process (<code>SeatbeltSandbox</code> under a Tokio reactor) vs through the supervised sandbox server: <code>alive_before</code>, <code>file_written</code>, <code>process_group_gone</code>, non-empty termination detail.</td></tr><tr><td><code>staged_rebind_keeps_inflight_child_alive</code></td><td>An in-flight confined child launched on server A stays alive across a swap to candidate server B; the next operation launches on B; both children are distinct and terminable through their own server with process-group evidence. Mirrors the harness rebind intent (in-flight pinned; stateless components rebind between operations, D3).</td></tr><tr><td><code>rollback_keeps_prior_child_and_server</code></td><td>A candidate server is staged then rolled back (stopped, pid gone); the prior server and its already-launched child survive and remain terminable — no state loss.</td></tr><tr><td><code>sandbox_client_duplicate_id_replay_and_connection_loss</code></td><td>Raw <code>Client</code>: duplicate request id replays the recorded <code>launch</code> receipt (same <code>SandboxChild</code>, no second process); a fresh id launches a distinct child; both terminate; post-death call surfaces <code>Unavailable</code>/<code>UnknownOutcome</code>; a missing socket is <code>Unavailable</code>.</td></tr><tr><td><code>sandbox_server_child</code></td><td>Child entry point (no-op under a normal run).</td></tr><tr><td><code>ready_marker_is_parsed</code></td><td>The <code>READY {json}</code> handshake marker is recognized when libtest prefixes the line.</td></tr></tbody></table>
+<p>The process tests spawn the sandbox server either from the real <code>agalma-sandbox-server</code> binary (when built, e.g. full-workspace runs) or by re-exec'ing the test binary as the server (<code>current_exe sandbox_server_child --exact --nocapture</code>, socket via <code>AGALMA_TEST_SANDBOX_SOCKET</code>), so a package-scoped <code>cargo test -p agalma-conductor</code> run still exercises the real process boundary. Both paths were run green.</p>
+<h2 id="default-transport-decision">Default transport decision</h2>
+<p><code>HarnessTransport::from_env()</code> reads <code>AGALMA_HARNESS_TRANSPORT</code> (<code>in-process</code> default, <code>process</code> optional). The default remains <strong><code>in-process</code></strong>.</p>
+<p>Deviation #2 from B1.2 is resolved: the build/verify construction sites now consult the transport factory. <code>run_live</code>/<code>run_verifier_session</code> build the live harness through <code>harness_process::open_opencode_harness(OpenCodeHarnessInit { transport, .. })</code>, and <code>run_reference</code> builds the reference harness through <code>open_reference_harness(kind, transport, ..)</code>. With the default the phase path is byte-for-byte behaviourally unchanged; with <code>AGALMA_HARNESS_TRANSPORT=process</code> the phase path spawns the selected component server (<code>ProcessBinding</code> / <code>LiveHarness::Process</code>). Phase dispatch, ordering, recovery, and activity bodies are unchanged; only the harness construction sites and the shared <code>drive</code> helper's parameter type (<code>&amp;mut LiveHarness</code> / <code>&amp;mut dyn HarnessApi</code>) changed.</p>
+<p>The OpenCode process branch is constructed but not exercised against a live <code>opencode</code> install offline (it needs a real install and provider egress). The reference transport is proven end-to-end offline by <code>tests/harness_process.rs</code>; the sandbox transport is proven by <code>tests/sandbox_process.rs</code>.</p>
+<h2 id="conductor-sandbox-supervision-and-injection">Conductor sandbox supervision and injection</h2>
+<p><code>SandboxProcess</code> spawns <code>agalma-sandbox-server --socket &lt;state_dir&gt;/sandbox.sock</code> as a process-group leader, waits for <code>READY</code>, and connects <code>SandboxClient</code>s. It reuses the exact <code>spawn_supervised</code>/<code>stop_supervised</code> helpers extracted from <code>harness_process</code> (one supervision implementation for every boundary). <code>SandboxSource</code> starts the server lazily on first use and keeps it alive for the phase activities.</p>
+<p>Injection points (where a <code>Box&lt;dyn SandboxApi&gt;</code> was constructed or passed):</p>
+<ul><li><code>phases.rs</code> build (<code>run_live</code>) and verifier (<code>run_verifier_session</code>) harness construction: the in-process branch injects <code>Box::new(SandboxClient)</code> connected to the supervised server; the process branch passes the sandbox socket to the OpenCode server via <code>AGALMA_SANDBOX_SOCKET</code>.</li><li><code>agalma-harness-opencode/src/server.rs</code>: the server connects a <code>SandboxClient</code> from <code>AGALMA_SANDBOX_SOCKET</code> and injects it into <code>OpenCodeHarness::new</code>.</li></ul>
+<p><code>composition.rs</code>/<code>work.rs</code> construct the phase activities (not a <code>Box&lt;dyn SandboxApi&gt;</code>), so they are unchanged; <code>activities_with_mode</code> builds the <code>SandboxSource</code> from <code>PhaseDeps::state_dir</code>.</p>
+<h2 id="component-server-confinement-d2">Component-server confinement (D2)</h2>
+<p>Per the B1 design clarification (commit <code>717a70f</code>), component servers are <strong>trusted code</strong>: the conductor supervises them (spawn as group leader, <code>READY</code> gate, <code>SIGTERM</code>/<code>SIGKILL</code> evidence) but does <strong>not</strong> OS-confine them. OS confinement (<code>SandboxApi</code> + <code>PRODUCT_PROFILE</code>) is reserved for candidate or untrusted implementations and the harness's confined <code>opencode serve</code> child, which the sandbox server launches. The harness child's loopback allowance is unchanged: provider egress tunnels through the parent-owned loopback proxy (<code>provider_proxy</code>) and the S0b profile permits that loopback path. No new profile work was required for component servers, because they are not confined.</p>
+<h2 id="deviations-and-design-corrections-noted-not-applied-to-docsb1-extractionmd">Deviations and design corrections (noted, not applied to <code>docs/b1-extraction.md</code>)</h2>
+<ol><li><strong>Kernel seam is wiring-only; no code change.</strong> <code>KernelEngine::with_sandbox</code> already takes <code>Box&lt;dyn SandboxApi&gt;</code>, and there is no production construction site in the conductor today (only kernel tests inject a fake). <code>SandboxClient</code> satisfies the seam; <code>agalma-ipc</code> asserts <code>SandboxClient: SandboxApi + Send</code> at compile time (<code>sandbox_client::tests::sandbox_client_is_a_send_sandbox_api</code>). No <code>agalma-kernel/**</code> file changed.</li><li><strong>Sandbox has no <code>Describe</code>/binding record.</strong> <code>SandboxApi</code> is a stateless three-method contract, so the &quot;staged rebind&quot; is a supervised-server swap with the in-flight child pinned to its launching server, rather than a <code>BindingRecord</code> swap (the harness boundary, which has <code>Describe</code>, keeps the record-based rebind in <code>tests/harness_process.rs</code>).</li><li><strong>One-shot <code>SeatbeltSandbox::run</code> stays in-process.</strong> <code>run</code> is an inherent one-shot used by the conductor's verify phase (exit code as verdict); it is <strong>not</strong> part of <code>SandboxApi</code>, so it is out of scope for this boundary. Likewise <code>build_probe</code> reconciles survivors through the in-process backend, because boot recovery probes run before any component server is supervised.</li><li><strong>Unix socket path length.</strong> Sandbox and harness sockets live directly under the run state dir (<code>sandbox.sock</code>, <code>harness-&lt;phase&gt;-&lt;attempt&gt;.sock</code>) to stay within <code>SUN_LEN</code> (~104 bytes). Tests use short <code>target/test-runs/sp-&lt;pid&gt;-&lt;n&gt;/</code> run dirs.</li><li><strong><code>Cargo.lock</code>.</strong> Modified only for the new intra-workspace dependency edges (<code>agalma-sandbox -&gt; agalma-ipc</code>; <code>agalma-sandbox</code> moved from <code>agalma-harness-opencode</code>'s normal deps to dev-deps). No external crate was added.</li></ol>
+<h2 id="consumer-invariance-proof">Consumer-invariance proof</h2>
+<p><code>crates/agalma-conductor/src/phases.rs</code> changes are limited to construction sites: <code>run_live</code>/<code>run_verifier_session</code> build the harness through <code>open_opencode_harness</code>, and <code>run_reference</code> builds it through <code>open_reference_harness</code> (transport-aware). The shared <code>drive</code>/<code>drive_reference</code> helpers take the harness behind the contract trait (<code>&amp;mut LiveHarness</code> / <code>&amp;mut dyn HarnessApi</code>); phase dispatch, phase ordering, recovery, and every activity body are unchanged. <code>build_probe</code> and the one-shot verify runs are unchanged.</p>
+<p><code>git diff --name-only</code> (tracked) plus new files, all within the allowed set:</p>
+<pre class="code"><code>Cargo.lock                                                    # intra-workspace dep edges only
+crates/agalma-conductor/src/harness_process.rs
+crates/agalma-conductor/src/lib.rs
+crates/agalma-conductor/src/phases.rs
+crates/agalma-conductor/src/sandbox_process.rs                # new
+crates/agalma-conductor/tests/architecture.rs
+crates/agalma-conductor/tests/sandbox_process.rs              # new
+crates/agalma-harness-opencode/Cargo.toml
+crates/agalma-harness-opencode/src/lib.rs
+crates/agalma-harness-opencode/src/server.rs
+crates/agalma-ipc/src/lib.rs
+crates/agalma-ipc/src/sandbox_client.rs                       # new
+crates/agalma-ipc/src/sandbox_server.rs                       # new
+crates/agalma-sandbox/Cargo.toml
+crates/agalma-sandbox/src/bin/agalma-sandbox-server.rs        # new
+crates/agalma-sandbox/src/lib.rs
+crates/agalma-sandbox/src/server.rs                           # new
+docs/b1-sandbox-evidence.md                                   # this file</code></pre>
+<p>No file under <code>crates/agalma-contracts/**</code> changed; no contract schema changed; no file under <code>crates/agalma-kernel/**</code> changed. The B1.2 architecture carve-out (<code>SERVER_HOST_EDGES</code> + <code>is_server_host_edge</code>) is removed, so both the Cargo.toml edge check and the source-token check are strict again (verified by <code>cargo test -p agalma-conductor --test architecture</code>: <code>4 passed</code>).</p>
+<h1 id="ipcx3-sandbox-boundary-on-the-connect-transport">IPCX.3 — sandbox boundary on the Connect transport</h1>
+<p>Bead: <code>agalma-ebg.4</code>. Design: <code>docs/ipc-connect-design.md</code> (D1–D7). Foundation: <code>agalma-ebg.2</code> (<code>ipc.proto</code>, Connect stack + pins, UDS accept loop, client core, Connect-level conformance harness). Depends on <code>agalma-ebg.3</code> (IPCX.2 harness boundary, the migration pattern). HEAD at start: <code>e76fbca</code>.</p>
+<p>Goal: move the already-extracted <code>SandboxApi</code> process boundary onto the Connect transport (IPCX D7, boundary #2) <strong>without changing the envelope semantics or any consumer logic</strong>, and prove it with the B1 recipe — dual-binding parity, staged rebind, rollback, IPC conformance — extended to the Connect wire. As in IPCX.2, the per-boundary evidence named by D4 (<code>docs/ipcx-&lt;boundary&gt;-evidence.md</code>) is folded into this file so the sandbox boundary's B1 and IPCX evidence stay together.</p>
+<h2 id="what-migrated">What migrated</h2>
+<p>The typed sandbox client and its method-registration helper stay the entry points; only the byte transport under them changed.</p>
+<table><thead><tr><th>Concern</th><th>Where</th></tr></thead><tbody><tr><td><code>SandboxClient</code> speaks either wire (<code>connect_wire</code>); <code>connect</code> stays framed</td><td><code>crates/agalma-ipc/src/sandbox_client.rs</code></td></tr><tr><td><code>serve_sandbox(server, socket, wire)</code> sandbox serve entry point</td><td><code>crates/agalma-ipc/src/sandbox_server.rs</code></td></tr><tr><td>Sandbox server serves the selected wire (<code>serve</code> reads <code>AGALMA_IPC_WIRE</code>)</td><td><code>crates/agalma-sandbox/src/server.rs</code></td></tr><tr><td><code>SandboxProcess</code> selects the wire, exports it to the child, connects matching client</td><td><code>crates/agalma-conductor/src/sandbox_process.rs</code></td></tr></tbody></table>
+<ul><li>The sandbox process wire <strong>defaults to <code>Connect</code></strong> (<code>sandbox_wire()</code>); a parity run sets <code>AGALMA_IPC_WIRE=framed</code> to compare the two against the same scenario. The selected wire is exported to the child in the same variable, so the server serves the matching transport. Both wires announce the identical <code>READY {json}</code> line, so the supervisor handshake is unchanged; <code>SandboxApi</code> has no binding gate (<code>Describe</code>-free), so there is nothing else to keep wire-agnostic.</li><li>Envelope semantics are preserved verbatim on both wires: <code>v</code>/<code>id</code>/<code>method</code>/ <code>params_json</code>; duplicate-id receipt replay; <code>UnknownOutcome</code>/contract errors in-band; version refusal; unknown-method <code>UnsupportedCapability</code>. The Connect path reuses <code>Server::dispatch</code>, so no envelope code was forked.</li><li>No new dependency. <code>connectrpc</code>/<code>buffa</code> stay confined to <code>agalma-ipc</code> (architecture test unchanged and green); no <code>Cargo.toml</code>/<code>Cargo.lock</code> change.</li></ul>
+<h3 id="new-interfaces">New interfaces</h3>
+<ul><li><code>agalma_ipc</code>: <code>sandbox_client::SandboxClient::connect_wire</code> (framed <code>connect</code>/ <code>from_client</code> retained); <code>sandbox_server::serve_sandbox</code>.</li><li><code>agalma_sandbox::server</code>: <code>serve_wire</code>; <code>serve</code> now reads <code>AGALMA_IPC_WIRE</code> (<code>connect</code> default, <code>framed</code> optional).</li><li><code>agalma_conductor::sandbox_process</code>: <code>sandbox_wire</code>, <code>SandboxProcess::wire</code>, <code>SandboxProcess::spawn_with_spec_wire(.., wire, ..)</code> (<code>spawn</code>/<code>spawn_with_spec</code> retained, defaulting to <code>sandbox_wire</code>).</li></ul>
+<h2 id="results">Results</h2>
+<p>All commands from the repo root, <code>--offline</code>.</p>
+<table><thead><tr><th>Command</th><th>Observed</th></tr></thead><tbody><tr><td><code>cargo build --offline --workspace</code></td><td>exit 0</td></tr><tr><td><code>cargo test --offline -p agalma-ipc</code></td><td>48 unit + 14 conformance + 9 connect-conformance + 4 harness-connect + <strong>2 sandbox-connect</strong> (new) + doc-tests; 0 failures</td></tr><tr><td><code>cargo test --offline -p agalma-conductor --test sandbox_process</code></td><td><strong>7 passed; 0 failed</strong></td></tr><tr><td><code>cargo test --offline -p agalma-conductor --lib sandbox_process</code></td><td>3 passed; 0 failed</td></tr><tr><td><code>cargo test --offline -p agalma-conductor --test architecture</code></td><td>6 passed; 0 failed</td></tr><tr><td><code>cargo test --offline -p agalma-conductor --test harness_process</code></td><td>14 passed; 0 failed (shared supervision unaffected)</td></tr><tr><td><code>cargo test --offline -p agalma-sandbox</code></td><td>17 unit + 4 integration; 0 failures</td></tr></tbody></table>
+<p><code>tests/sandbox_connect.rs</code> (new, <code>agalma-ipc</code>):</p>
+<table><thead><tr><th>Test</th><th>What it proves</th></tr></thead><tbody><tr><td><code>sandbox_api_over_connect_matches_framed</code></td><td>The typed <code>SandboxClient</code> drives all three <code>SandboxApi</code> methods (<code>launch</code>/<code>alive</code>/<code>terminate</code>) over a <code>register_sandbox</code> server; a framed and a Connect server produce an <strong>identical typed transcript</strong> (child handle, liveness, termination evidence).</td></tr><tr><td><code>sandbox_connect_missing_socket_is_unavailable</code></td><td>A missing Connect socket surfaces as <code>Unavailable</code>.</td></tr></tbody></table>
+<p><code>tests/sandbox_process.rs</code> (conductor):</p>
+<table><thead><tr><th>Test</th><th>What it proves</th></tr></thead><tbody><tr><td><code>wire_parity_framed_vs_connect_matches_in_process</code> (new)</td><td>The same <code>LaunchSpec</code> scenario (<code>/bin/sh</code> writes a marker, sleeps; <code>alive</code>; <code>terminate</code>) yields an identical normalized transcript in-process, over the <strong>framed</strong> process wire, and over the <strong>Connect</strong> process wire. This is the dual-binding parity proof for the migrated boundary.</td></tr><tr><td><code>shadow_parity_in_process_vs_process_sandbox</code></td><td>In-process vs process parity, now over <strong>Connect</strong> (<code>process.client()</code> over the stored wire).</td></tr><tr><td><code>staged_rebind_keeps_inflight_child_alive</code></td><td>An in-flight confined child launched on server A stays alive across a swap to candidate server B; both children distinct and terminable — over <strong>Connect</strong>.</td></tr><tr><td><code>rollback_keeps_prior_child_and_server</code></td><td>Candidate retired (pid gone); prior server and its child survive and remain terminable — no state loss.</td></tr><tr><td><code>sandbox_client_duplicate_id_replay_and_connection_loss</code></td><td>Raw framed <code>Client</code>: duplicate-id <code>launch</code> receipt replay, fresh id advances, post-death <code>Unavailable</code>/<code>UnknownOutcome</code>, missing socket <code>Unavailable</code> (framed path still proven; the server is spawned explicitly framed).</td></tr><tr><td><code>sandbox_server_child</code></td><td>Child entry point serving the env-selected wire (no-op under a normal run).</td></tr><tr><td><code>ready_marker_is_parsed</code></td><td>The <code>READY {json}</code> handshake marker is recognized when libtest prefixes the line.</td></tr></tbody></table>
+<h2 id="consumer-invariance-proof">Consumer-invariance proof</h2>
+<p>Phase/activity logic is unchanged: <code>SandboxSource</code> keeps its signatures (<code>new</code>/<code>socket</code>/<code>ensure</code>/<code>client</code>/<code>pid</code>); only the private wire selection and the client construction sites changed. The injected <code>Box&lt;dyn SandboxApi + Send&gt;</code> (OpenCode harness) is unchanged; <code>SandboxClient</code> still satisfies it. No contract schema changed. <code>git diff --name-only</code> (tracked) plus the new file, all within the allowed set:</p>
+<pre class="code"><code>crates/agalma-conductor/src/sandbox_process.rs
+crates/agalma-conductor/tests/sandbox_process.rs
+crates/agalma-ipc/src/sandbox_client.rs
+crates/agalma-ipc/src/sandbox_server.rs
+crates/agalma-ipc/tests/sandbox_connect.rs               # new
+crates/agalma-sandbox/src/server.rs
+docs/b1-sandbox-evidence.md                              # this file</code></pre>
+<p>No file under <code>crates/agalma-contracts/**</code> changed; no contract schema changed. <code>harness_process.rs</code>, the harness client/server, <code>cli.rs</code>, <code>lib.rs</code>, and <code>phases.rs</code> are untouched.</p>
+<h2 id="deviations-and-notes">Deviations and notes</h2>
+<ol><li>The IPCX design D4 names a per-boundary <code>docs/ipcx-&lt;boundary&gt;-evidence.md</code>; this bead's scope extends the existing B1 sandbox evidence instead, keeping the framed and Connect proofs side by side (matching IPCX.2's choice).</li><li>The sandbox process wire defaults to <code>Connect</code>. <code>SandboxApi</code> is <code>Describe</code>-free, so the &quot;staged rebind&quot; remains a supervised-server swap (B1.3 note 2), now over the Connect wire.</li><li><code>SandboxProcess::spawn</code>/<code>spawn_with_spec</code> keep their signatures (defaulting to <code>sandbox_wire()</code>), so the shared-boundary startup-cleanup test in <code>tests/harness_process.rs</code> (<code>SandboxProcess::spawn_with_spec</code>, which never reaches <code>serve</code>) is unchanged; <code>spawn_with_spec_wire</code> is the explicit-wire entry point the sandbox parity test uses.</li><li><code>serve_wire</code> installs a multithread Tokio runtime for both wires (the framed branch runs the serial accept loop under <code>block_on</code>), so sandbox methods that create processes through <code>tokio::process</code> keep working on both.</li></ol>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="b1-harness-evidence.html">⟲ b1-harness-evidence</a><span class="step">step 6 / 31 in the ring</span><a href="sandbox-removal-design.html">sandbox-removal-design ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">b1-sandbox-evidence.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

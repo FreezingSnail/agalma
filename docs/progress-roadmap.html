@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agalma — Progress Roadmap</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --grey:#64748b; --purple:#a78bfa; --red:#f87171;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1150px;margin:0 auto;padding:32px 24px 80px}
+  h1{font-size:26px;margin:0 0 4px}
+  h2{font-size:19px;margin:44px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:15px;margin:20px 0 8px;color:var(--text)}
+  a{color:var(--blue);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .sub{color:var(--muted);font-size:13.5px}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+  .grid{display:grid;gap:12px}
+  .kpis{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-top:22px}
+  .kpi{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+  .kpi .n{font-size:26px;font-weight:700;line-height:1.1}
+  .kpi .l{color:var(--muted);font-size:12.5px;margin-top:4px}
+  .kpi .s{font-size:11.5px;margin-top:6px}
+  .c-green{color:var(--green)} .c-blue{color:var(--blue)} .c-amber{color:var(--amber)}
+  .c-grey{color:var(--grey)} .c-purple{color:var(--purple)} .c-red{color:var(--red)}
+  .snapshot{background:var(--card);border:1px solid var(--border);border-radius:10px;
+            padding:14px 18px;margin-top:22px;font-size:13px;color:var(--muted)}
+  .snapshot b{color:var(--text)}
+  .chip{display:inline-block;border-radius:999px;padding:1px 9px;font-size:11.5px;
+        font-weight:600;border:1px solid transparent;vertical-align:middle}
+  .chip.done{background:rgba(52,211,153,.14);color:var(--green);border-color:rgba(52,211,153,.35)}
+  .chip.active{background:rgba(251,191,36,.14);color:var(--amber);border-color:rgba(251,191,36,.35)}
+  .chip.open{background:rgba(96,165,250,.14);color:var(--blue);border-color:rgba(96,165,250,.35)}
+  .chip.gated{background:rgba(100,116,139,.16);color:#9fb0c8;border-color:rgba(100,116,139,.4)}
+  .chip.planned{background:rgba(167,139,250,.12);color:var(--purple);border-color:rgba(167,139,250,.3)}
+  .timeline{list-style:none;padding:0;margin:10px 0 0}
+  .timeline li{display:grid;grid-template-columns:120px 1fr;gap:14px;
+               padding:10px 0;border-bottom:1px dashed var(--border)}
+  .timeline .when{color:var(--muted);font-size:12.5px;padding-top:2px}
+  .bars{margin-top:8px}
+  .barrow{display:grid;grid-template-columns:270px 1fr 110px;gap:14px;align-items:center;
+          padding:5px 0;font-size:13px}
+  .barrow .name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .bar{height:10px;border-radius:6px;background:#1c2b47;overflow:hidden;display:flex}
+  .bar .fill{height:100%;border-radius:6px 0 0 6px}
+  .bar .active{height:100%;border-radius:0 6px 6px 0;opacity:.85}
+  .barrow .cnt{text-align:right;color:var(--muted);font-size:12.5px;white-space:nowrap}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin-top:10px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  .note{background:var(--card2);border-left:3px solid var(--blue);border-radius:6px;
+        padding:10px 14px;margin:14px 0;font-size:13px;color:#c6d3e8}
+  .warn{border-left-color:var(--amber)}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 18px}
+  .two{grid-template-columns:1fr 1fr}
+  @media (max-width:860px){.two{grid-template-columns:1fr}.barrow{grid-template-columns:1fr;gap:4px}.barrow .cnt{text-align:left}}
+  svg text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);margin-top:10px}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .sw{width:11px;height:11px;border-radius:3px;display:inline-block}
+  ul.tight,ol.tight{margin:8px 0 0;padding-left:20px}
+  ul.tight li,ol.tight li{margin:4px 0}
+  footer{margin-top:60px;color:var(--muted);font-size:12.5px;border-top:1px solid var(--border);padding-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Agalma — Progress Roadmap</h1>
+<div class="sub">Static snapshot of repository, bead backlog, and service build-out. Generated 2026-10-16 ·
+<b class="mono">main @ 8319b3a</b> · sources: <span class="mono">bd</span> database (239 tracked beads, gate beads excluded), git, <span class="mono">docs/architecture.md</span>,
+<span class="mono">docs/component-contracts.md</span>, <span class="mono">docs/self-hosting-roadmap.md</span>, <span class="mono">docs/self-mutation-standup.md</span>.
+Not authoritative — bd and docs are. Regenerate after waves complete (commands at bottom).</div>
+
+<div class="snapshot">
+  <b>Status since 2026-10-15:</b> SF.9 and the parity/normalization repairs (SF.12–SF.17) merged; the SF epic is now
+  <b>15/17</b> with only SF.10/.11 (staging + epic-closure proof) open. Unified focused test runner landed
+  (<span class="mono">scripts/test.sh</span>, <span class="mono">agalma-i15</span>); sandbox-removal design (P4, <span class="mono">agalma-o1i</span>) is the one ready leaf.
+  Docs are now also rendered to rich-text HTML with an ingestion map (<span class="mono">make docs-html</span>).
+</div>
+
+<!-- ======================= KPIs ======================= -->
+<div class="grid kpis">
+  <div class="kpi"><div class="n">239</div><div class="l">total beads</div><div class="s c-green">153 closed · 64%</div></div>
+  <div class="kpi"><div class="n c-blue">86</div><div class="l">open</div><div class="s">incl. 12 SR tasks</div></div>
+  <div class="kpi"><div class="n c-amber">0</div><div class="l">in progress</div><div class="s">SF.9 · SF.14 now closed</div></div>
+  <div class="kpi"><div class="n">0</div><div class="l">active deferrals</div><div class="s">gated epics now block via deps</div></div>
+  <div class="kpi"><div class="n">81</div><div class="l">dependency-blocked</div><div class="s">of 86 non-closed; ready leaves: 1</div></div>
+  <div class="kpi"><div class="n">14</div><div class="l">Rust crates</div><div class="s">100.3k LOC</div></div>
+  <div class="kpi"><div class="n c-green">9</div><div class="l">epics shipped</div><div class="s">M0 M1 M1.5 M1.6 B0 B1 IPCv2 + TUI(3kr/63m)</div></div>
+</div>
+
+<!-- ======================= STATUS BAR / FUNNEL ======================= -->
+<h2>Backlog state</h2>
+<svg viewBox="0 0 1000 210" width="100%" role="img" aria-label="Backlog status distribution">
+  <defs>
+    <linearGradient id="gclosed" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2dd4a0"/><stop offset="1" stop-color="#22c55e"/>
+    </linearGradient>
+  </defs>
+  <!-- stacked bar: 239 total -->
+  <rect x="40" y="46" width="920" height="44" rx="8" fill="#1c2b47"/>
+  <rect x="40" y="46" width="589" height="44" rx="8" fill="url(#gclosed)"/>          <!-- 153 -->
+  <rect x="629" y="46" width="331" height="44" rx="8" fill="#3b82f6"/>                <!-- 86 -->
+  <text x="46" y="74" fill="#06281c" font-size="15" font-weight="700">Closed 153</text>
+  <text x="637" y="74" fill="#eaf2ff" font-size="13.5" font-weight="600">Open 86</text>
+  <!-- legend -->
+  <circle cx="48" cy="124" r="6" fill="#22c55e"/><text x="62" y="129" fill="#8fa3c0" font-size="13">shipped work</text>
+  <circle cx="196" cy="124" r="6" fill="#3b82f6"/><text x="210" y="129" fill="#8fa3c0" font-size="13">queued</text>
+  <circle cx="300" cy="124" r="6" fill="#fbbf24"/><text x="314" y="129" fill="#8fa3c0" font-size="13">in flight (0 — none active)</text>
+  <circle cx="470" cy="124" r="6" fill="#475569"/><text x="484" y="129" fill="#8fa3c0" font-size="13">no active deferrals — gated epics block by dependency edges, not defer_until</text>
+  <text x="48" y="162" fill="#8fa3c0" font-size="13">Blocked (blocks-edge rule): <tspan fill="#e6edf7" font-weight="600">81 of 86</tspan> non-closed beads — one ready leaf (sandbox-removal P4, agalma-o1i). bd status incl. gates: 81 blocked / 65 ready.</text>
+  <text x="48" y="184" fill="#8fa3c0" font-size="13">No blocking edge: 4 epics (SF 5fy, LIVE qne, SR myx, CP i5h) + the ready leaf (o1i).</text>
+  <text x="48" y="204" fill="#8fa3c0" font-size="13">Closed split: 9 done epics (70 children) + 23 children of still-open epics (SF 15, CP 8) + 60 standalone.</text>
+</svg>
+
+<!-- ======================= MILESTONES ======================= -->
+<h2>Milestones</h2>
+<ul class="timeline">
+  <li><div class="when">M0 · ✅ 11/11</div><div><b>Skeleton</b> <span class="chip done">shipped</span><br>
+    <span class="sub">Recovery matrix 6/6, kill switch, schema gate — <a href="m0-exit-evidence.html">docs/m0-exit-evidence.md</a></span></div></li>
+  <li><div class="when">M1 · ✅ 9/9</div><div><b>Working loop</b> <span class="chip done">shipped</span><br>
+    <span class="sub">Seeded batch on scratch clone, metrics, digest — <a href="m1-exit-evidence.html">docs/m1-exit-evidence.md</a></span></div></li>
+  <li><div class="when">M1.5 · ✅ 5/5</div><div><b>Reliability hardening</b> <span class="chip done">shipped</span><br>
+    <span class="sub">Watchdog, routing, xcrun/TMPDIR — <a href="hardening-evidence.html">docs/hardening-evidence.md</a> · <a href="reliability-hardening.html">docs/reliability-hardening.md</a></span></div></li>
+  <li><div class="when">M1.6 · ✅ 3/3</div><div><b>Stall root cause + paid route</b> <span class="chip done">shipped</span><br>
+    <span class="sub"><a href="paid-route-evidence.html">docs/paid-route-evidence.md</a></span></div></li>
+  <li><div class="when">B0 · ✅ 7/7</div><div><b>Durable execution kernel</b> <span class="chip done">shipped</span><br>
+    <span class="sub">History, timers, cancellation, upgrade/rollback; protected recovery pack 10/10 — <a href="b0-exit-evidence.html">docs/b0-exit-evidence.md</a> · <a href="b0-kernel.html">docs/b0-kernel.md</a></span></div></li>
+  <li><div class="when">B1 · ✅ 9/9</div><div><b>Component extraction</b> <span class="chip done">shipped</span><br>
+    <span class="sub">Tier-1 seams behind process boundaries; per-boundary parity/rebind/rollback — <a href="b1-exit-evidence.html">docs/b1-exit-evidence.md</a>, <a href="b1-f3-evidence.html">docs/b1-f3-evidence.md</a>, <a href="b1-extraction.html">docs/b1-extraction.md</a></span></div></li>
+  <li><div class="when">IPC v2 · ✅ 9/9</div><div><b>ConnectRPC transport</b> <span class="chip done">shipped</span><br>
+    <span class="sub">All Tier-1 seams on Connect envelopes, conformance harness, exit evidence (agalma-ebg.9) — <a href="ipc-exit-evidence.html">docs/ipc-exit-evidence.md</a> · <a href="ipc-connect-design.html">design</a></span></div></li>
+  <li><div class="when">UI pilots · ✅ 17/17</div><div><b>TUI control plane</b> <span class="chip done">shipped</span><br>
+    <span class="sub">Read model → watch loop → vision → economics/timeline → control actions → full-screen TUI (3kr + 63m) — <a href="tui.html">docs/tui.md</a> · <a href="tui-design.html">design</a></span></div></li>
+  <li><div class="when">CP · ◐ 8/8</div><div><b>Intake + planning pipeline</b> <span class="chip active">close recheck</span><br>
+    <span class="sub">Concierge → designer → staged decomposition → per-epic review gate; all 8 children closed (i5h.8 native human approval gates); epic close recheck pending — <a href="planning-pipeline.html">docs/planning-pipeline.md</a></span></div></li>
+  <li><div class="when">SF · ◐ 15/17</div><div><b>Reliable self-build + rich Flash delivery</b> <span class="chip active">near done</span><br>
+    <span class="sub">Done: SF.1–SF.8 (frozen builder context, immutable task package, replay/reconciliation, durable cancellation, fail-closed stop admission, protected file scope, cash admission, builder-only Flash routing) + SF.9 self-build evidence + SF.12–SF.17 repairs.
+    Open: SF.10 fresh-goal→design staging · SF.11 review admission + epic closure — <a href="self-mutation-roadmap.html">docs/self-mutation-roadmap.md</a> · <a href="self-mutation-standup.html">standup</a></span></div></li>
+  <li><div class="when">LIVE · ○ 0/0</div><div><b>Living-roadmap generator</b> <span class="chip open">new</span><br>
+    <span class="sub">Productize this dashboard into an on-demand <span class="mono">track</span> generator over bd + git + LOC; later a first-party HP reporting plugin (qne). Filed from the 2026-10-14 manual run — <a href="self-hosting-roadmap.html">docs/self-hosting-roadmap.md</a></span></div></li>
+  <li><div class="when">SR · ○ 0/12</div><div><b>Smart routing v2 cost governor</b> <span class="chip open">queued</span><br>
+    <span class="sub">Engine/billing registry, peak clock, rolling budget, catalog discovery, governor policy, Codex adapter, RouterApi crate → process-hosted spoke (myx) — <a href="smart-routing-design.html">docs/smart-routing-design.md</a></span></div></li>
+  <li><div class="when">HP/WEB/CV/MX · ○ 0/32</div><div><b>Hub-and-spoke plugin platform</b> <span class="chip open">un-frozen</span><br>
+    <span class="sub">HP manifest/registry/supervisor/reporting/actions (8) · WEB browser dashboard over plugin reports (8) · CV production convergence (8) · MX nerve/memory/deciders (8). Design accepted; deferrals cleared, now dependency-blocked on SF/hub results — <a href="component-contracts.html">docs/component-contracts.md</a> · <a href="self-mutation-roadmap.html#production-service-convergence">convergence</a> · <a href="self-mutation-roadmap.html#m2-extensions-nerve-model-onboarding-memory-and-deciders">MX</a> · <a href="web-dashboard-design.html">WEB design</a></span></div></li>
+  <li><div class="when">M2 · ○ 0/9</div><div><b>Bench + promotion + nerve</b> <span class="chip open">un-frozen</span><br>
+    <span class="sub">Immutable genome/bench pack, paired runner, evaluator + regression veto, evidence-gated promotion, canary rollback (cg9). RD-D1 contract freeze (agalma-16k) now blocks on jmr.8 + cg9.8 — <a href="self-mutation-roadmap.html#sequence-and-milestone-accounting">docs/self-mutation-roadmap.md</a> · <a href="self-mutation-contracts.html">contracts</a></span></div></li>
+  <li><div class="when">M3 · ○ 0/9</div><div><b>Always-on baseline</b> <span class="chip open">un-frozen</span><br>
+    <span class="sub">Scheduler owner fencing, aggregate cash governor, backups/restore, supervision, 72h unattended baseline (3q5) — MVP exit — <a href="self-mutation-roadmap.html#m3-always-on-operations">docs/self-mutation-roadmap.md §M3</a></span></div></li>
+  <li><div class="when">P1 · ○ 0/8</div><div><b>Autonomy gate</b> <span class="chip open">un-frozen</span><br>
+    <span class="sub">Core update candidate, reproducible build + protected evaluation, external supervisor handover, drain/activate/rollback, shadow canary, code autonomy proof (52v) — <a href="self-mutation-roadmap.html#p1-core-update-and-removal-of-transitional-code-oversight">docs/self-mutation-roadmap.md §P1</a></span></div></li>
+</ul>
+
+<!-- ======================= SERVICE MAP ======================= -->
+<h2>Service map — as built today</h2>
+<svg viewBox="0 0 1010 690" width="100%" role="img" aria-label="Agalma runtime topology diagram">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8fa3c0"/>
+    </marker>
+  </defs>
+
+  <!-- External left column -->
+  <text x="30" y="30" fill="#8fa3c0" font-size="13" font-weight="600" letter-spacing=".06em">EXTERNAL / HOST</text>
+  <rect x="20" y="46" width="210" height="86" rx="10" fill="#152238" stroke="#233350"/>
+  <text x="34" y="70" fill="#e6edf7" font-size="13.5" font-weight="700">OpenCode runtime</text>
+  <text x="34" y="89" fill="#8fa3c0" font-size="11.5">opencode serve child · HTTP/SSE</text>
+  <text x="34" y="105" fill="#8fa3c0" font-size="11.5">nerve plugin → normalized events</text>
+  <text x="34" y="121" fill="#8fa3c0" font-size="11.5">fresh session per phase</text>
+
+  <rect x="20" y="148" width="210" height="74" rx="10" fill="#152238" stroke="#233350"/>
+  <text x="34" y="172" fill="#e6edf7" font-size="13.5" font-weight="700">bd backlog</text>
+  <text x="34" y="191" fill="#8fa3c0" font-size="11.5">.beads/ SQLite + CLI, native IDs</text>
+  <text x="34" y="207" fill="#8fa3c0" font-size="11.5">claims, deps, status projections</text>
+
+  <rect x="20" y="238" width="210" height="74" rx="10" fill="#152238" stroke="#233350"/>
+  <text x="34" y="262" fill="#e6edf7" font-size="13.5" font-weight="700">Git repositories</text>
+  <text x="34" y="281" fill="#8fa3c0" font-size="11.5">scratch clone per task · merge on green</text>
+  <text x="34" y="297" fill="#8fa3c0" font-size="11.5">tag / reconcile / revert</text>
+
+  <rect x="20" y="328" width="210" height="74" rx="10" fill="#152238" stroke="#233350"/>
+  <text x="34" y="352" fill="#e6edf7" font-size="13.5" font-weight="700">Process launcher</text>
+  <text x="34" y="371" fill="#8fa3c0" font-size="11.5">agalma-process · process-group launch</text>
+  <text x="34" y="387" fill="#8fa3c0" font-size="11.5">Seatbelt (legacy) → removal P4</text>
+
+  <rect x="20" y="418" width="210" height="74" rx="10" fill="#152238" stroke="#233350"/>
+  <text x="34" y="442" fill="#e6edf7" font-size="13.5" font-weight="700">State dirs / artifacts</text>
+  <text x="34" y="461" fill="#8fa3c0" font-size="11.5">ledger.sqlite · run dirs · evidence</text>
+  <text x="34" y="477" fill="#8fa3c0" font-size="11.5">target/test-runs · worker-output</text>
+
+  <!-- Conductor core -->
+  <rect x="268" y="46" width="430" height="520" rx="14" fill="#111c31" stroke="#2f4a77" stroke-width="1.5"/>
+  <text x="290" y="74" fill="#e6edf7" font-size="15" font-weight="700">agalma conductor</text>
+  <text x="290" y="93" fill="#8fa3c0" font-size="11.5">composition root · rust · 54.3k LOC (crate agalma-conductor, incl. tests)</text>
+  <text x="290" y="109" fill="#8fa3c0" font-size="11.5">CLI: run · work · reconcile · resume · status · digest · models · gc</text>
+
+  <rect x="288" y="124" width="190" height="52" rx="8" fill="#152238" stroke="#233350"/>
+  <text x="300" y="146" fill="#e6edf7" font-size="12.5" font-weight="600">Supervisor / bindings</text>
+  <text x="300" y="163" fill="#8fa3c0" font-size="11">registry · stage/drain/activate</text>
+
+  <rect x="490" y="124" width="190" height="52" rx="8" fill="#152238" stroke="#233350"/>
+  <text x="502" y="146" fill="#e6edf7" font-size="12.5" font-weight="600">Scheduler / Policy</text>
+  <text x="502" y="163" fill="#8fa3c0" font-size="11">serial · budgets · guards · kill switch</text>
+
+  <rect x="288" y="188" width="190" height="52" rx="8" fill="#152238" stroke="#233350"/>
+  <text x="300" y="210" fill="#e6edf7" font-size="12.5" font-weight="600">Directive</text>
+  <text x="300" y="227" fill="#8fa3c0" font-size="11">versioned goals, scope, authority</text>
+
+  <rect x="490" y="188" width="190" height="52" rx="8" fill="#152238" stroke="#233350"/>
+  <text x="502" y="210" fill="#e6edf7" font-size="12.5" font-weight="600">Decision</text>
+  <text x="502" y="227" fill="#8fa3c0" font-size="11">static policy · model routing table</text>
+
+  <rect x="288" y="252" width="392" height="64" rx="8" fill="#152238" stroke="#fbbf24" stroke-dasharray="5 4"/>
+  <text x="300" y="276" fill="#e6edf7" font-size="12.5" font-weight="600">Execution service + durable kernel
+    <tspan fill="#fbbf24" font-size="11">◐ in-process default</tspan></text>
+  <text x="300" y="294" fill="#8fa3c0" font-size="11">history · timers · cancellation · recovery gate (SF.3/SF.6/SF.7 in production) · 13.6k LOC (execution+kernel)</text>
+  <text x="300" y="309" fill="#8fa3c0" font-size="11">→ process hosting planned CV.1 (agalma-pob.1)</text>
+
+  <rect x="288" y="330" width="392" height="64" rx="8" fill="#152238" stroke="#233350" stroke-dasharray="2 4"/>
+  <text x="300" y="354" fill="#e6edf7" font-size="12.5" font-weight="600">Verification / Evaluation · Memory / Telemetry · Genome</text>
+  <text x="300" y="372" fill="#8fa3c0" font-size="11">Tier-2 declared boundaries — schemas frozen, Describe/Health only,</text>
+  <text x="300" y="387" fill="#8fa3c0" font-size="11">full replacement ceremony when a second implementation is scheduled</text>
+
+  <rect x="288" y="408" width="392" height="64" rx="8" fill="#152238" stroke="#2f4a77"/>
+  <text x="300" y="432" fill="#e6edf7" font-size="12.5" font-weight="600">Intake + planning pipeline <tspan fill="#34d399" font-size="11">✓ shipped</tspan></text>
+  <text x="300" y="450" fill="#8fa3c0" font-size="11">concierge → designer → staged decomposition → per-epic review gate (i5h)</text>
+  <text x="300" y="465" fill="#8fa3c0" font-size="11">supervised, one task at a time, scratch clone</text>
+
+  <rect x="288" y="486" width="392" height="64" rx="8" fill="#152238" stroke="#2f4a77"/>
+  <text x="300" y="510" fill="#e6edf7" font-size="12.5" font-weight="600">TUI control plane <tspan fill="#34d399" font-size="11">✓ shipped</tspan></text>
+  <text x="300" y="528" fill="#8fa3c0" font-size="11">read model + live watch · component vision · economics/timeline</text>
+  <text x="300" y="543" fill="#8fa3c0" font-size="11">gated pause/resume + cancel with typed confirmation and receipts</text>
+
+  <!-- Vertical seam bus -->
+  <rect x="726" y="46" width="16" height="520" rx="8" fill="#1d3b63"/>
+  <text x="734" y="316" fill="#60a5fa" font-size="11" font-weight="700" transform="rotate(90 734 316)" text-anchor="middle">PROCESS SEAMS · ConnectRPC v2 over bounded UDS (framed JSON envelopes)</text>
+
+  <!-- Hosted spokes -->
+  <text x="770" y="30" fill="#8fa3c0" font-size="13" font-weight="600" letter-spacing=".06em">PROCESS-HOSTED SEAMS ✓</text>
+
+  <rect x="766" y="46" width="224" height="76" rx="10" fill="#12291f" stroke="#2f7d5c"/>
+  <text x="780" y="70" fill="#e6edf7" font-size="13" font-weight="700">HarnessApi ✓</text>
+  <text x="780" y="88" fill="#8fa3c0" font-size="11.5">agalma-harness-opencode · 3.9k LOC</text>
+  <text x="780" y="104" fill="#8fa3c0" font-size="11.5">attempt/session/turn · SSE normalize</text>
+  <text x="780" y="118" fill="#34d399" font-size="10.5">default = process (fez/ud1 flips, live smokes)</text>
+
+  <rect x="766" y="132" width="224" height="70" rx="10" fill="#12291f" stroke="#2f7d5c"/>
+  <text x="780" y="156" fill="#e6edf7" font-size="13" font-weight="700">SandboxApi ⚠</text>
+  <text x="780" y="174" fill="#fbbf24" font-size="11.5">process · Seatbelt — being removed (P4)</text>
+  <text x="780" y="190" fill="#8fa3c0" font-size="11.5">1.3k LOC</text>
+
+  <rect x="766" y="212" width="224" height="70" rx="10" fill="#12291f" stroke="#2f7d5c"/>
+  <text x="780" y="236" fill="#e6edf7" font-size="13" font-weight="700">WorkspaceApi ✓</text>
+  <text x="780" y="254" fill="#8fa3c0" font-size="11.5">git checkout/merge/revert · 1.6k LOC</text>
+  <text x="780" y="270" fill="#8fa3c0" font-size="11.5">pristine verification checkout</text>
+
+  <rect x="766" y="292" width="224" height="70" rx="10" fill="#12291f" stroke="#2f7d5c"/>
+  <text x="780" y="316" fill="#e6edf7" font-size="13" font-weight="700">TaskQueueApi ✓</text>
+  <text x="780" y="334" fill="#8fa3c0" font-size="11.5">bd adapter · claims · projections</text>
+  <text x="780" y="350" fill="#8fa3c0" font-size="11.5">4.1k LOC</text>
+
+  <rect x="766" y="372" width="224" height="82" rx="10" fill="#12291f" stroke="#2f7d5c"/>
+  <text x="780" y="396" fill="#e6edf7" font-size="13" font-weight="700">LedgerApi ✓</text>
+  <text x="780" y="414" fill="#8fa3c0" font-size="11.5">SQLite WAL · ledger wins over projections</text>
+  <text x="780" y="430" fill="#8fa3c0" font-size="11.5">atomic commits, receipts, export/import</text>
+  <text x="780" y="446" fill="#8fa3c0" font-size="11.5">3.3k LOC</text>
+
+  <rect x="766" y="464" width="224" height="82" rx="10" fill="#152238" stroke="#233350"/>
+  <text x="780" y="488" fill="#e6edf7" font-size="13" font-weight="700">agalma-ipc ✓</text>
+  <text x="780" y="506" fill="#8fa3c0" font-size="11.5">framed JSON + ConnectRPC transport,</text>
+  <text x="780" y="522" fill="#8fa3c0" font-size="11.5">clients/server runtimes, conformance</text>
+  <text x="780" y="538" fill="#8fa3c0" font-size="11.5">8.8k LOC</text>
+
+  <!-- arrows conductor<->external -->
+  <line x1="230" y1="89" x2="268" y2="150" stroke="#8fa3c0" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="216" y="130" fill="#8fa3c0" font-size="10.5">HTTP/SSE</text>
+  <line x1="268" y1="185" x2="230" y2="185" stroke="#8fa3c0" stroke-width="1.4" marker-end="url(#arr)"/>
+  <line x1="230" y1="275" x2="268" y2="300" stroke="#8fa3c0" stroke-width="1.4" marker-end="url(#arr)"/>
+  <line x1="230" y1="365" x2="268" y2="380" stroke="#8fa3c0" stroke-width="1.4" marker-end="url(#arr)"/>
+  <line x1="230" y1="455" x2="268" y2="450" stroke="#8fa3c0" stroke-width="1.4" marker-end="url(#arr)"/>
+  <!-- arrows conductor<->spokes -->
+  <line x1="698" y1="200" x2="726" y2="200" stroke="#8fa3c0" stroke-width="1.4" marker-end="url(#arr)"/>
+  <line x1="726" y1="290" x2="698" y2="290" stroke="#8fa3c0" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="700" y="580" fill="#8fa3c0" font-size="10.5" text-anchor="middle"></text>
+
+  <!-- Planned band -->
+  <rect x="20" y="596" width="970" height="80" rx="12" fill="#111c31" stroke="#a78bfa" stroke-dasharray="6 5"/>
+  <text x="36" y="622" fill="#a78bfa" font-size="13" font-weight="700">PLANNED — hub-and-spoke platform (design accepted; deferrals cleared, dependency-blocked on SF/hub results)</text>
+  <text x="36" y="644" fill="#c6d3e8" font-size="12">HP registry/supervisor/manifest/reporting/actions (jmr) → plugin install + UI + action + restart proof ·</text>
+  <text x="36" y="661" fill="#c6d3e8" font-size="12">WEB browser dashboard over common reports (rwn) · CV production convergence incl. execution process hosting (pob) · Router spoke (myx) · MX nerve/memory/deciders (xlw)</text>
+</svg>
+<div class="legend">
+  <span><i class="sw" style="background:#34d399"></i>process-hosted seam, shipped with evidence</span>
+  <span><i class="sw" style="background:#fbbf24"></i>in-process default, migration planned (CV)</span>
+  <span><i class="sw" style="background:#a78bfa"></i>planned platform</span>
+</div>
+
+<!-- ======================= EPIC PROGRESS ======================= -->
+<h2>Progress by epic</h2>
+<div class="bars">
+
+  <h3 class="c-green">Shipped (children burned down, evidence reviewed)</h3>
+  <div class="barrow"><span class="name"><a href="m0-exit-evidence.html">agalma-4ui · M0 skeleton</a></span><span class="bar"><span class="fill" style="width:100%;background:var(--green)"></span></span><span class="cnt">11/11 ✅</span></div>
+  <div class="barrow"><span class="name"><a href="m1-exit-evidence.html">agalma-52k · M1 working loop</a></span><span class="bar"><span class="fill" style="width:100%;background:var(--green)"></span></span><span class="cnt">9/9 ✅</span></div>
+  <div class="barrow"><span class="name"><a href="hardening-evidence.html">agalma-zxi · M1.5 hardening</a></span><span class="bar"><span class="fill" style="width:100%;background:var(--green)"></span></span><span class="cnt">5/5 ✅</span></div>
+  <div class="barrow"><span class="name"><a href="paid-route-evidence.html">agalma-csw · M1.6 stall + paid route</a></span><span class="bar"><span class="fill" style="width:100%;background:var(--green)"></span></span><span class="cnt">3/3 ✅</span></div>
+  <div class="barrow"><span class="name"><a href="b0-exit-evidence.html">agalma-9n4 · B0 durable kernel</a></span><span class="bar"><span class="fill" style="width:100%;background:var(--green)"></span></span><span class="cnt">7/7 ✅</span></div>
+  <div class="barrow"><span class="name"><a href="b1-exit-evidence.html">agalma-0ht · B1 extraction</a></span><span class="bar"><span class="fill" style="width:100%;background:var(--green)"></span></span><span class="cnt">9/9 ✅</span></div>
+  <div class="barrow"><span class="name"><a href="ipc-exit-evidence.html">agalma-ebg · IPC v2 ConnectRPC</a></span><span class="bar"><span class="fill" style="width:100%;background:var(--green)"></span></span><span class="cnt">9/9 ✅</span></div>
+  <div class="barrow"><span class="name"><a href="tui.html">agalma-3kr + 63m · TUI control plane</a></span><span class="bar"><span class="fill" style="width:100%;background:var(--green)"></span></span><span class="cnt">7/7 + 10/10 ✅</span></div>
+
+  <h3 class="c-amber">Close recheck</h3>
+  <div class="barrow"><span class="name"><a href="planning-pipeline.html">agalma-i5h · intake + planning pipeline</a></span><span class="bar"><span class="fill" style="width:100%;background:var(--green)"></span></span><span class="cnt">8/8 ✅ · epic open</span></div>
+
+  <h3 class="c-amber">In flight</h3>
+  <div class="barrow"><span class="name"><a href="self-mutation-roadmap.html">agalma-5fy · SF self-build + Flash delivery</a></span><span class="bar"><span class="fill" style="width:88.2%;background:var(--green)"></span></span><span class="cnt">15/17 · 2 open</span></div>
+
+  <h3 class="c-blue">Queued</h3>
+  <div class="barrow"><span class="name"><a href="smart-routing-design.html">agalma-myx · Smart routing v2</a></span><span class="bar"></span><span class="cnt">0/12 ○ open</span></div>
+  <div class="barrow"><span class="name"><a href="self-hosting-roadmap.html">agalma-qne · LIVE roadmap generator</a></span><span class="bar"></span><span class="cnt">0/0 ○ new</span></div>
+
+  <h3 class="c-grey">Blocked (blocks-edge deps — no leaf task ready)</h3>
+  <div class="barrow"><span class="name"><a href="component-contracts.html">agalma-jmr · HP hub plugin platform</a></span><span class="bar"></span><span class="cnt">0/8 ⛔</span></div>
+  <div class="barrow"><span class="name"><a href="web-dashboard-design.html">agalma-rwn · WEB dashboard</a></span><span class="bar"></span><span class="cnt">0/8 ⛔</span></div>
+  <div class="barrow"><span class="name"><a href="self-mutation-roadmap.html#production-service-convergence">agalma-pob · CV production convergence</a></span><span class="bar"></span><span class="cnt">0/8 ⛔</span></div>
+  <div class="barrow"><span class="name"><a href="self-mutation-roadmap.html#m2-extensions-nerve-model-onboarding-memory-and-deciders">agalma-xlw · MX nerve/memory/deciders</a></span><span class="bar"></span><span class="cnt">0/8 ⛔</span></div>
+  <div class="barrow"><span class="name"><a href="self-mutation-roadmap.html#sequence-and-milestone-accounting">agalma-cg9 · M2 bench + promotion</a></span><span class="bar"></span><span class="cnt">0/9 ⛔</span></div>
+  <div class="barrow"><span class="name"><a href="self-mutation-roadmap.html#m3-always-on-operations">agalma-3q5 · M3 always-on baseline</a></span><span class="bar"></span><span class="cnt">0/9 ⛔</span></div>
+  <div class="barrow"><span class="name"><a href="self-mutation-roadmap.html#p1-core-update-and-removal-of-transitional-code-oversight">agalma-52v · P1 autonomy gate</a></span><span class="bar"></span><span class="cnt">0/8 ⛔</span></div>
+  <div class="barrow"><span class="name"><a href="self-mutation-contracts.html">agalma-16k · RD-D1 contract freeze</a></span><span class="bar"></span><span class="cnt">blocks on jmr.8 + cg9.8</span></div>
+</div>
+
+<!-- ======================= CRATE INVENTORY ======================= -->
+<h2>Crate inventory</h2>
+<p class="sub">All <b>14</b> workspace crates compile into the product build and each owns a shipped wave. Completion below is per-wave
+(nothing is half-built): <span class="chip done">shipped</span> = owning wave closed with evidence, <span class="chip active">active</span> = shipping
+code under an open epic, <span class="chip planned">planned</span> = a scheduled production migration. "Boundary" is the transport used at MVP runtime.</p>
+<table>
+  <tr><th>Crate</th><th>Role / use</th><th>Owning wave</th><th>Boundary</th><th>LOC</th><th>Completion</th></tr>
+
+  <tr><td class="mono"><a href="component-contracts.html">agalma-contracts</a></td>
+      <td>Canonical IDs, normalized events, errors, and every component API trait. No I/O, no vendor types — the dependency floor every other crate builds on.</td>
+      <td>M0.1</td><td>in-proc library</td><td class="mono">3.4k</td><td><span class="chip done">shipped</span></td></tr>
+
+  <tr><td class="mono"><a href="self-hosting-roadmap.html">agalma-conductor</a></td>
+      <td>CLI (<span class="mono">agalma</span>), composition root, daemon: supervisor/bindings, scheduler, policy/budgets, directive, decision, TUI control plane, intake+planning pipeline, and the SF self-build work path. Wires every seam and supervises the process servers.</td>
+      <td>M0.1 → now</td><td>composition root (in-proc, spawns seams)</td><td class="mono">57.3k</td><td><span class="chip active">active</span> — SF/LIVE/CP</td></tr>
+
+  <tr><td class="mono"><a href="ipc-connect-design.html">agalma-ipc</a></td>
+      <td>Framed-JSON envelope + ConnectRPC transport, server runtime, client core, conformance harness. Infrastructure behind every process seam.</td>
+      <td>B1.1</td><td>infrastructure</td><td class="mono">8.8k</td><td><span class="chip done">shipped</span></td></tr>
+
+  <tr><td class="mono"><a href="b1-ledger-evidence.html">agalma-ledger</a></td>
+      <td>SQLite WAL ledger behind <span class="mono">LedgerApi</span>: canonical state, atomic commits, receipts, export/import. Ledger wins over projections; SQL/schema private. Referenced by every durable path.</td>
+      <td>M0.2</td><td>Tier-1 seam · <b>process</b> (default)</td><td class="mono">3.3k</td><td><span class="chip done">shipped</span></td></tr>
+
+  <tr><td class="mono"><a href="b1-taskqueue-evidence.html">agalma-taskqueue</a></td>
+      <td>bd backlog adapter behind <span class="mono">TaskQueueApi</span>: fenced intake, atomic claims, status projection, import/export. Native IDs stay private.</td>
+      <td>M1.1</td><td>Tier-1 seam · <b>process</b> (default)</td><td class="mono">4.1k</td><td><span class="chip done">shipped</span></td></tr>
+
+  <tr><td class="mono"><a href="b1-harness-evidence.html">agalma-harness-opencode</a></td>
+      <td>OpenCode adapter behind <span class="mono">HarnessApi</span>: attempt/session/turn lifecycle, HTTP/SSE normalization, config rendering, auth, nerve hooks. Vendor details confined here.</td>
+      <td>M0.6</td><td>Tier-1 seam · <b>process</b> (default)</td><td class="mono">3.9k</td><td><span class="chip done">shipped</span></td></tr>
+
+  <tr><td class="mono"><a href="m1-workloop.html">agalma-harness-reference</a></td>
+      <td>Deterministic in-memory <span class="mono">HarnessApi</span> reference adapters. No vendor, no network — the backbone of scripted tests and benches.</td>
+      <td>M1.7</td><td>in-proc reference</td><td class="mono">0.9k</td><td><span class="chip done">shipped</span></td></tr>
+
+  <tr><td class="mono"><a href="sandbox-removal-design.html">agalma-sandbox</a></td>
+      <td>macOS Seatbelt launcher behind <span class="mono">SandboxApi</span>: confined launch, process-group status/kill, profile rendering. Supervised process. <b>Slated for removal</b> — replaced by the process launcher.</td>
+      <td>M0.4</td><td>Tier-1 seam · <b>process</b></td><td class="mono">1.3k</td><td><span class="chip planned">removal P4</span></td></tr>
+
+  <tr><td class="mono"><a href="sandbox-removal-design.html">agalma-process</a></td>
+      <td>Local process launcher behind <span class="mono">ProcessApi</span> (sandbox-removal P1): process-group launch, liveness, evidence-backed termination, no confinement profile. Infrastructure crate; one-shot <span class="mono">LocalLauncher::run</span> supplies the verify verdict.</td>
+      <td>sandbox-removal P1</td><td>infrastructure (in-proc)</td><td class="mono">0.6k</td><td><span class="chip done">shipped</span> · <span class="chip planned">cutover P4</span></td></tr>
+
+  <tr><td class="mono"><a href="b1-workspace-evidence.html">agalma-workspace</a></td>
+      <td>git adapter behind <span class="mono">WorkspaceApi</span>: isolated checkout, artifact/diff inspection, compare-and-update merge, tag/revert, reconciliation. Pristine verification checkouts.</td>
+      <td>M0.5</td><td>Tier-1 seam · <b>process</b> (default)</td><td class="mono">1.6k</td><td><span class="chip done">shipped</span></td></tr>
+
+  <tr><td class="mono"><a href="b1-execution-evidence.html">agalma-execution</a></td>
+      <td>Seed serial executor behind <span class="mono">ExecutionApi</span>: dispatch, receipts, reconciliation. The production default execution engine today.</td>
+      <td>M0.3</td><td>Tier-1 seam · <b>in-proc</b> (process optional)</td><td class="mono">2.6k</td><td><span class="chip done">shipped</span> — superseded-by kernel</td></tr>
+
+  <tr><td class="mono"><a href="b0-kernel.html">agalma-kernel</a></td>
+      <td>B0 durable execution kernel: history, timers, cancellation, recovery gate. <span class="mono">agalma-kernel-server</span> process binding exists but is not the default.</td>
+      <td>B0</td><td>Tier-1 seam · <b>in-proc</b> (process at CV.1)</td><td class="mono">11.0k</td><td><span class="chip done">shipped</span> · <span class="chip planned">process migration</span></td></tr>
+
+  <tr><td class="mono"><a href="m1-workloop.html">agalma-decision</a></td>
+      <td>Static decision baselines and durable outcomes behind <span class="mono">DecisionApi</span>. No model inference in this wave; inference stays behind the same contract.</td>
+      <td>M1.5</td><td>Tier-2 boundary</td><td class="mono">0.9k</td><td><span class="chip done">shipped</span> (static)</td></tr>
+
+  <tr><td class="mono"><a href="testing-strategy.html">agalma-testkit</a></td>
+      <td>Dev-only test helper: a unique, self-cleaning <span class="mono">ScratchDir</span> under <span class="mono">target/test-runs</span>. Not shipped in the product binary.</td>
+      <td>testing</td><td>dev-only</td><td class="mono">1.0k</td><td><span class="chip done">shipped</span></td></tr>
+</table>
+<div class="note">Five Tier-1 seams run as supervised process servers by default at MVP (harness, workspace, taskqueue, ledger, and the sandbox boundary);
+the conductor, contracts, ipc, process, decision, harness-reference and testkit are in-process. The sandbox boundary is being replaced by the
+in-process <span class="mono">agalma-process</span> launcher (<span class="mono">ProcessApi</span>, cutover P4 = <span class="mono">agalma-o1i</span>) per
+<a href="sandbox-removal-design.html">docs/sandbox-removal-design.md</a>, which supersedes the frozen <a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a>.
+Execution/kernel has a process binding but stays in-process until CV.1 production convergence (<span class="mono">agalma-pob</span>).
+Tier-2 boundaries (decision + the declared Directive/Policy/Genome/Verification/Evaluation/Memory/Telemetry/ProviderAuth/FactoryTools contracts)
+are frozen but not yet separate crates.</div>
+
+<!-- ======================= INGESTION MAP ======================= -->
+<h2>Component ingestion map</h2>
+<p class="sub">Recommended reading order for the linked docs — contracts first, then transport, the Tier-1 seams, the execution engine, the loop/runtime docs, and the supporting evidence. Every doc's HTML page carries this same map plus a wrapping <b>⟲ prev / next ⟳</b> ring (the last doc loops back to the first).</p>
+<ol class="tight">
+  <li><a href="component-contracts.html">component-contracts</a> — the contracts every component implements</li>
+  <li><a href="ipc-connect-design.html">ipc-connect-design</a> — transport that carries every seam</li>
+  <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a> — Tier-1 seam: canonical durable state</li>
+  <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a> — Tier-1 seam: backlog</li>
+  <li><a href="b1-harness-evidence.html">b1-harness-evidence</a> — Tier-1 seam: agent runtime</li>
+  <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a> — Tier-1 seam: confinement (frozen historical)</li>
+  <li><a href="sandbox-removal-design.html">sandbox-removal-design</a> — amendment: remove sandbox → process launcher</li>
+  <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a> — Tier-1 seam: git</li>
+  <li><a href="b1-execution-evidence.html">b1-execution-evidence</a> — Tier-1 seam: executor</li>
+  <li><a href="b0-kernel.html">b0-kernel</a> — durable execution kernel design</li>
+  <li><a href="m1-workloop.html">m1-workloop</a> — reference harness + decision baselines</li>
+  <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a> — target architecture / plan</li>
+  <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a> — remaining roadmap</li>
+  <li><a href="m0-exit-evidence.html">m0-exit-evidence</a> — milestone evidence</li>
+  <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+  <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+  <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+  <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+  <li><a href="b1-extraction.html">b1-extraction</a></li>
+  <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+  <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+  <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+  <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+  <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+  <li><a href="tui-design.html">tui-design</a></li>
+  <li><a href="tui.html">tui</a></li>
+  <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+  <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+  <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+  <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+  <li><a href="testing-strategy.html">testing-strategy</a> ↺ wraps back to component-contracts</li>
+</ol>
+
+<!-- ======================= IN FLIGHT ======================= -->
+<h2>Next up — no bead in flight</h2>
+<div class="grid two">
+  <div class="card">
+    <h3>agalma-o1i · Sandbox removal P4 <span class="chip open">ready leaf</span></h3>
+    <p class="sub">Delete the sandbox crate and seams; architecture lint and handle-less terminate regression. The only non-closed bead with no open
+    blocker: the cutover from the Seatbelt boundary to the in-process <span class="mono">agalma-process</span> launcher
+    (<a href="sandbox-removal-design.html">docs/sandbox-removal-design.md</a>).</p>
+  </div>
+  <div class="card">
+    <h3>agalma-5fy.10 + .11 · SF epic closure <span class="chip open">open</span></h3>
+    <p class="sub">SF.10 fresh goal → design staging, execution, review and epic-closure proof · SF.11 prerequisite-aware epic review admission and
+    closure recheck. The last two SF children (15/17 done) — closing them burns the SF epic.</p>
+  </div>
+</div>
+<div class="note">SF.9 (self-build evidence) and SF.12–SF.17 (parity/fixture repairs) are merged to <span class="mono">main @ 8319b3a</span>.
+No bead is <span class="mono">in_progress</span> at generation time; the working tree holds only this dashboard plus rendered doc HTML.</div>
+
+<!-- ======================= NEXT ======================= -->
+<h2>Sequencing — what unlocks what</h2>
+<table>
+  <tr><th>Order</th><th>Work</th><th>Gate / dependency</th></tr>
+  <tr><td>1</td><td>Sandbox removal P4 (<span class="mono">agalma-o1i</span>) — delete the sandbox crate/seams, swap to <span class="mono">agalma-process</span></td>
+      <td>the only ready leaf (no open blocker); unblocks the process-launcher cutover</td></tr>
+  <tr><td>2</td><td>SF.10/.11 (staging + review admission) close the SF epic (15/17)</td>
+      <td>last two SF children; also insulate the self-build path from sandbox removal</td></tr>
+  <tr><td>3</td><td>Close-recheck <span class="mono">agalma-i5h</span> (8/8 children closed, epic still open)</td><td>per-epic review gate (CP.5) evidence</td></tr>
+  <tr><td>4</td><td>agalma-16k RD-D1 contract freeze for M2/CV/M3/P1</td><td>now blocks on jmr.8 + cg9.8; unblocks SM.1/.2 + CV/M3/P1 design inputs</td></tr>
+  <tr><td>5</td><td>SR.11 RouterApi + agalma-router crate → SR.1/.2 registries → governor</td><td>Router spoke feeds HP plugin platform and CV convergence; SR epic currently first-pass open (12 tasks)</td></tr>
+  <tr><td>6</td><td>HP hub platform (jmr 8) → WEB dashboard (rwn 8) / CV convergence (pob 8)</td><td>un-frozen but dependency-blocked on SF self-build + hub contracts; acceptance = unknown plugin install→launch→UI→action→restart</td></tr>
+  <tr><td>7</td><td>M2 bench/promotion (cg9) · MX nerve/memory (xlw) → M3 always-on (3q5) → P1 autonomy (52v)</td><td>evidence-gated; protected regressions veto promotion</td></tr>
+</table>
+
+<h2>What is true today (caveats)</h2>
+<ul class="tight">
+  <li>Loop is <b>supervised</b>: one task at a time, scratch clone; no unattended operation yet (README).</li>
+  <li>Tier-1 seams default to <b>process transport</b>; execution/kernel remains in-process until CV.1. Harness/sandbox/workspace/taskqueue/ledger are all process-hosted with parity/rebind/rollback evidence — but the <b>sandbox boundary is being removed</b>, replaced by the in-process <span class="mono">agalma-process</span> launcher (<a href="sandbox-removal-design.html">sandbox-removal-design</a>, cutover P4 = <span class="mono">agalma-o1i</span>).</li>
+  <li>Hub-and-spoke plugin platform is <b>planned, not runtime</b>; unknown-plugin end-to-end acceptance not established. Existing compiled wiring is migration work.</li>
+  <li>No active deferrals remain: the former ~63 <span class="mono">defer_until 2099</span> freezes were cleared on 2026-10-15; the gated epics now block through dependency edges instead. One ready leaf (<span class="mono">agalma-o1i</span>); the other 85 non-closed beads carry ≥1 open blocker — only 4 epics (SF, LIVE, SR, CP) have none. 10 stale <span class="mono">defer_until 2099</span> stamps still linger on closed TUI (63m) beads.</li>
+  <li>Paid live-provider checks are gated separately and require explicit authorization.</li>
+</ul>
+
+<footer>
+  Sources of truth: <span class="mono">bd</span> backlog · <span class="mono">docs/self-hosting-roadmap.md</span> ·
+  <span class="mono">docs/self-mutation-roadmap.md</span> · <span class="mono">docs/self-mutation-standup.md</span> · <span class="mono">docs/web-dashboard-design.md</span> · <span class="mono">docs/architecture.md</span> ·
+  evidence under <span class="mono">docs/*-evidence.md</span>. Regenerate: <span class="mono">bd list --all --json -n 0</span> + <span class="mono">bd status</span> (gates incl.) + <span class="mono">git status/log</span> + LOC via
+  <span class="mono">wc -l crates/**/*.rs</span>. "Blocked" = non-closed bead with ≥1 <span class="mono">blocks</span> edge to an open target (calibrates to bd status's Blocked count).
+  Snapshot updated by opencode-go/deepseek-v4.1-flash on 2026-10-16 (<b class="mono">main @ 8319b3a</b>); edit in place or re-run after each bead wave.
+</footer>
+
+</div>
+</body>
+</html>

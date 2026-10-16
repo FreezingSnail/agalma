@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="b1-f3-evidence.md">b1-f3-evidence.md</a></div>
+<div class="ring"><a href="b1-exit-evidence.html">⟲ b1-exit-evidence</a><span class="step">step 21 / 31 in the ring</span><a href="b0-exit-evidence.html">b0-exit-evidence ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li class="here"><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="b1-f3-live-opencode-process-transport-smoke-default-flip">B1-F3 — live OpenCode process-transport smoke + default flip</h1>
+<p>Bead: <code>agalma-rvj</code> (B1-F3). Epic: <code>agalma-0ht</code> (B1). Date: 2026-10-11. Base HEAD: <code>79e3b42</code>. Design refs: <code>docs/b1-exit-evidence.md</code> (§Limitations 3), <code>docs/b1-harness-evidence.md</code>, <code>docs/paid-route-evidence.md</code>, <code>docs/m1-exit-evidence.md</code>.</p>
+<p>B1 left every Tier-1 boundary defaulted to <code>in-process</code>; process transport was proven only by the offline boundary tests. <code>docs/b1-exit-evidence.md</code> §3 tracked the missing <em>live</em> OpenCode process-transport smoke as the gate before any default flip. This is that smoke, plus the resulting default-flip decision.</p>
+<h2 id="0-result">0. Result</h2>
+<p>The live smoke ran the conductor against a scratch clone with <code>AGALMA_HARNESS_TRANSPORT=process</code>, drove the OpenCode harness <strong>across the process boundary</strong>, and <strong>merged on <code>main</code> with real cash cost</strong>:</p>
+<table><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody><tr><td>Scratch clone</td><td><code>target/test-runs/b1-f3/run-1/target</code> (<code>git clone --no-hardlinks</code>, <code>79e3b42</code>)</td></tr><tr><td>bd store</td><td>isolated <code>.beads</code> in the clone (<code>bd init --prefix b1f3</code>); live store never read/written</td></tr><tr><td>Seed task</td><td><code>b1f3-z92</code> (data/docs; <code>directive/v0</code>; budget $2.00; max_attempts 2; scope-guard)</td></tr><tr><td>Harness transport</td><td><code>process</code> (<code>AGALMA_HARNESS_TRANSPORT=process</code>)</td></tr><tr><td>Harness impl</td><td><code>opencode@opencode-adapter/v1</code>, binding <code>binding:opencode:1</code> (generation 1, <code>Active</code>)</td></tr><tr><td>Model / route</td><td><code>opencode-go/deepseek-v4.1-flash</code> / <code>builder:feature</code></td></tr><tr><td>Execution</td><td><code>exec:b1f3-z92:1</code></td></tr><tr><td>Attempts</td><td>1 (0 stalls)</td></tr><tr><td>Verdict</td><td><strong>green / done</strong> (bd <code>closed</code>, <code>close_reason = done: green</code>)</td></tr><tr><td>Acceptance</td><td>2/2 exit 0 (marker grep + scope guard)</td></tr><tr><td>Tokens</td><td>19 665 (18 316 in / 1 349 out)</td></tr><tr><td><code>cash_usd</code></td><td><strong>0.005782104</strong> (<code>quota_usd</code> 0.0035568)</td></tr><tr><td>Wall</td><td>44.4 s</td></tr><tr><td>Candidate = result</td><td><code>9fbf85a</code> = <code>main</code>, tag <code>m1/exec-b1f3-z92-1</code></td></tr><tr><td>Files touched</td><td><code>docs/b1f3-smoke.md</code> (added)</td></tr></tbody></table>
+<h2 id="1-command">1. Command</h2>
+<p>Run from the clone; <code>--repo</code> the clone, <code>--state-dir</code> outside it, live mode (no <code>AGALMA_ACTIVITY_MODE</code>). The paid route follows <code>docs/paid-route-evidence.md</code> §1; the <code>--model</code> pin forces the H3 paid builder turn.</p>
+<pre class="code"><code class="lang-text">AGALMA_HARNESS_TRANSPORT=process AGALMA_ALLOW_PAID=1 AGALMA_PROXY_LOG=1 \
+  AGALMA_IDLE_TIMEOUT_SECS=240 \
+  cargo run --offline -p agalma-conductor -- work \
+    --repo target/test-runs/b1-f3/run-1/target \
+    --state-dir target/test-runs/b1-f3/run-1/state \
+    --model opencode-go/deepseek-v4.1-flash \
+    --harness opencode --max-tasks 1 --once</code></pre>
+<p>Seeded issue (<code>b1f3-z92</code>), fenced <code>directive/v0</code>:</p>
+<pre class="code"><code class="lang-yaml">directive: directive/v0
+target: agalma
+ref: main
+acceptance:
+  - sh -c 'grep -q &quot;b1f3-process-smoke&quot; docs/b1f3-smoke.md'
+  - sh -c '! git diff --name-only HEAD~1 HEAD | grep -qE &quot;Cargo\.toml$|/src/.*\.rs$&quot;'
+budget_usd: 2.00
+priority: normal
+family: feature
+max_attempts: 2</code></pre>
+<h2 id="2-process-boundary-evidence">2. Process-boundary evidence</h2>
+<p>The run took the <code>HarnessTransport::Process</code> branch of <code>harness_process::open_opencode_harness</code>: the conductor spawns the <code>agalma-harness-opencode-server</code> component server, waits for its <code>READY</code> handshake, runs the bind gate, and calls it over the framed <code>HarnessClient</code> socket. Direct artifacts:</p>
+<ul><li><code>state/harness-build-1.sock</code> — the process-bound harness server socket (<code>&lt;state&gt;/harness-build-&lt;attempt&gt;.sock</code>), created <strong>only</strong> by the process branch (<code>ProcessBinding</code>/<code>spawn_supervised</code>). The in-process branch connects a sandbox client and constructs <code>OpenCodeHarness</code> directly, with no such socket.</li><li><code>state/sandbox.sock</code> — the sandbox component server (B1.3), always process.</li><li>Ledger <code>component_bindings</code> row: <code>binding:opencode:1</code>, <code>implementation=opencode</code>, <code>implementation_version=opencode-adapter/v1</code>, <code>generation=1</code>, <code>state=active</code> — the announced server identity accepted by the process bind gate.</li><li>Ledger <code>harness_binding</code> event pins that binding for <code>op:exec:b1f3-z92:1:build@1</code>.</li></ul>
+<p>The full explicit launch config (<code>agalma-tqf</code>) crossed the boundary inside <code>AGALMA_HARNESS_LAUNCH_CONFIG</code>; the server reconstructed the identical sandbox <code>LaunchSpec</code> (profile, attempt/protected/sock roots, model, proxy URL, paid-provider flag, extra env/roots), so the confined <code>opencode</code> launch matched the in-process one. Proxy path evidence (stderr):</p>
+<pre class="code"><code class="lang-text">agalma: paid provider credential present (host=opencode.ai, fingerprint=65f71dcdab6a9cef)
+provider-proxy: allow CONNECT models.opencode.ai:443
+provider-proxy: allow CONNECT opencode.ai:443
+provider-proxy: allow POST opencode.ai:443   (×N; OpenCode tool-loop turns)</code></pre>
+<p>Usage event (builder turn), from the ledger:</p>
+<pre class="code"><code class="lang-text">phase=build role=builder model=opencode-go/deepseek-v4.1-flash route=builder:feature
+tokens_in=18316 tokens_out=1349 cost_usd=0.005782104
+cash_usd=0.005782104 quota_usd=0.0035568</code></pre>
+<h2 id="3-default-flip-decision">3. Default-flip decision</h2>
+<p><strong>Deferred, with the live gate satisfied.</strong> The live OpenCode process route is proven (§2), so the <em>only</em> thing standing between B1-F3 and the flip is a downstream integration defect that the flip exposes. Flipping <code>HarnessTransport::from_env</code> to default <code>Process</code> turns the <strong>deterministic scripted reference path</strong> (<code>phases::run_reference</code>) into a process spawn, and the reference server socket it opens is <code>&lt;state_dir&gt;/harness-ref-&lt;attempt&gt;.sock</code>. In the test scratch dirs (and any long production state dir) that path exceeds <code>SUN_LEN</code> (~104 bytes), so the server cannot bind:</p>
+<pre class="code"><code class="lang-text">agalma-harness-reference-server: serve …/state/harness-ref-1.sock:
+  path must be shorter than SUN_LEN
+test …rebind… FAILED: step: KnownFailure(&quot;server did not announce READY within 20s&quot;)</code></pre>
+<p>With the default flip applied, <code>cargo test --offline -p agalma-conductor --test rebind</code> went <strong>4 failed / 1 passed</strong>; with the default unchanged it is green. This is a latent path-length defect on the reference process boundary, not a fault in the OpenCode route the smoke exercised (the smoke's state dir was short enough that <code>&lt;state&gt;/harness-build-1.sock</code> bound). Because the mandated gate cannot pass with the flip, the <strong>default is left <code>in-process</code></strong> and the flip is deferred to a follow-up that shortens the reference socket path (a short per-run socket dir, as the <code>harness_process</code> boundary tests already do) — the <code>HarnessTransport</code> enum, the <code>process</code> selection, and the single env-default site are unchanged from B1.</p>
+<h3 id="gate-status-default-unchanged">Gate status (default unchanged)</h3>
+<ul><li><code>cargo test --offline -p agalma-harness-opencode</code> — <strong>55 passed; 0 failed</strong>.</li><li><code>cargo test --offline -p agalma-conductor --lib</code> — <strong>113 passed; 0 failed</strong>.</li><li><code>cargo test --offline -p agalma-conductor --test rebind</code> (with an explicit <code>AGALMA_HARNESS_TRANSPORT=process</code>) — fails on the <code>SUN_LEN</code> socket path above; this reproduces the flip's blocker directly.</li><li><code>cargo test --offline -p agalma-conductor</code> (full) — additionally blocked at the time of this run by a <strong>concurrent worker</strong> mid-migration of the same file (<code>ProcessBinding::spawn</code> gained a <code>Wire</code> argument under <code>agalma-ebg.2</code>, with <code>tests/designer_payload.rs</code> not yet updated). Re-run once that edit lands.</li></ul>
+<h3 id="recommended-follow-up-not-applied-here">Recommended follow-up (not applied here)</h3>
+<p>Shorten the reference/index socket paths in <code>phases::run_reference</code> (and the OpenCode build/verify sockets, which share the same <code>&lt;state_dir&gt;/…sock</code> shape) to a bounded per-run directory, then flip <code>HarnessTransport::from_env</code>'s default to <code>Process</code> and re-run both suites.</p>
+<h2 id="4-artifacts-scratch-never-committed">4. Artifacts (scratch, never committed)</h2>
+<ul><li>Clone: <code>target/test-runs/b1-f3/run-1/target</code> (isolated <code>.beads</code>).</li><li>State/ledger: <code>target/test-runs/b1-f3/run-1/state/ledger.sqlite</code>.</li><li>Digest: <code>…/state/runs/exec-b1f3-z92-1/artifacts/digest.json</code>.</li><li>Acceptance outputs: <code>…/artifacts/accept@1-0.txt</code>, <code>…/accept@1-1.txt</code>.</li><li>Runner log: <code>target/test-runs/b1-f3/run-1/work.log</code>.</li><li>Seed body: <code>target/test-runs/b1-f3/run-1/task.md</code>.</li></ul>
+<p>No commit/push was performed in the live repo; all bd, merge, and tag activity happened in the clone.</p>
+<h2 id="5-agalma-ud1-default-flip-to-process-live-connect-wire-smoke-green">5. agalma-ud1 — default flip to <code>process</code> + live Connect-wire smoke (GREEN)</h2>
+<p>Date 2026-10-12, base HEAD <code>69db198</code> (agalma-3ej; on top of agalma-acs). Full detail: <code>target/worker-output/agalma-ud1.md</code>.</p>
+<p>The B1-F3 default flip is <strong>applied and proven live</strong> on the Connect wire. Both prior blockers are cleared: agalma-acs bounded the harness socket paths under <code>SUN_LEN</code>, and agalma-3ej aligned the harness server's outbound sandbox client onto the env-selected Connect wire.</p>
+<h3 id="51-result">5.1 Result</h3>
+<p>The conductor ran against a scratch clone with <strong>default transport</strong> (no <code>AGALMA_HARNESS_TRANSPORT</code>) and <strong>default wire</strong> (no <code>AGALMA_IPC_WIRE</code>), drove the OpenCode harness across the process boundary, and <strong>merged on <code>main</code> with real cash cost</strong>:</p>
+<table><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody><tr><td>Scratch clone</td><td><code>target/test-runs/ud1/run-2/target</code> (<code>git clone --no-hardlinks</code>, <code>69db198</code>)</td></tr><tr><td>bd store</td><td>isolated <code>.beads</code> (<code>bd init --prefix ud1</code>); live store never written</td></tr><tr><td>Seed task</td><td><code>ud1-7re</code> (docs; <code>directive/v0</code>; budget $2.00; max_attempts 2)</td></tr><tr><td>Harness transport</td><td><code>process</code> (<strong>default — env unset</strong>)</td></tr><tr><td>Wire</td><td><code>connect</code> (<strong>default — <code>AGALMA_IPC_WIRE</code> unset</strong>)</td></tr><tr><td>Model / route</td><td><code>opencode-go/deepseek-v4.1-flash</code> / <code>builder:feature</code></td></tr><tr><td>Execution</td><td><code>exec:ud1-7re:1</code></td></tr><tr><td>Attempts</td><td>2 (1 idle stall on attempt 1, attempt 2 green)</td></tr><tr><td>Verdict</td><td><strong>green / done</strong> (bd <code>closed</code>, <code>close_reason = done: green</code>)</td></tr><tr><td>Acceptance</td><td>2/2 exit 0 (marker grep + scope guard)</td></tr><tr><td>Tokens</td><td>33 030 in / 3 371 out</td></tr><tr><td><code>cash_usd</code></td><td><strong>0.011532468</strong> (<code>quota_usd</code> 0.0069771)</td></tr><tr><td>Wall</td><td>669.1 s</td></tr><tr><td>Candidate = result</td><td><code>669dccd</code> = <code>main</code>, tag <code>m1/exec-ud1-7re-1</code></td></tr><tr><td>Files touched</td><td><code>docs/ud1-smoke.md</code> (added)</td></tr></tbody></table>
+<h3 id="52-command">5.2 Command</h3>
+<pre class="code"><code class="lang-text">AGALMA_ALLOW_PAID=1 AGALMA_PROXY_LOG=1 AGALMA_IDLE_TIMEOUT_SECS=420 \
+  cargo run --offline -p agalma-conductor -- work \
+    --repo …/ud1/run-2/target --state-dir ../state \
+    --model opencode-go/deepseek-v4.1-flash \
+    --harness opencode --max-tasks 1 --once</code></pre>
+<p>Process-boundary evidence: <code>state/harness-build-1.sock</code> and <code>…-2.sock</code> (created only by the process branch), <code>state/sandbox.sock</code>, and the paid proxy path (<code>provider-proxy: allow POST opencode.ai:443</code> × many turns).</p>
+<h3 id="53-flip-follow-on-fixes">5.3 Flip + follow-on fixes</h3>
+<p>The flip is a single site (<code>HarnessTransport::from_env</code>: default <code>Process</code>, explicit <code>in-process</code> override preserved; doc comments and the unit test updated).</p>
+<p>Completing the flip's production path also required two fixes that agalma-3ej left out (both exercised by the live smoke):</p>
+<ol><li><code>crates/agalma-ipc/src/sandbox_client.rs</code> — the Connect backend called a raw <code>Runtime::block_on</code> per request. The harness server both <em>serves</em> over Connect and drives the sandbox client from inside its async handler, so the call panicked with &quot;Cannot start a runtime from within a runtime&quot; (the live run failed <code>h2 send failed: http2 error</code>). Routed through the existing <code>block_on_nested</code> helper the harness/ledger/execution clients already use.</li><li><code>crates/agalma-conductor/tests/designer_payload.rs</code> — the process-transport mock sandbox served legacy framed JSON; with 3ej's Connect client the mock now serves the matching wire per test (<code>serve_wire</code> + a readiness probe).</li></ol>
+<h3 id="54-gate-status-default-process">5.4 Gate status (default = process)</h3>
+<ul><li><code>cargo build --offline --workspace</code> — clean.</li><li><code>cargo test --offline -p agalma-conductor</code> — <strong>305 passed; 0 failed</strong> (includes <code>rebind</code> 5/0 and the process-transport <code>designer_payload</code>).</li><li><code>cargo test --offline -p agalma-ipc -p agalma-harness-opencode -p agalma-sandbox</code> — 165 passed; 0 failed.</li></ul>
+<h3 id="55-peer-boundaries-deferred">5.5 Peer boundaries (deferred)</h3>
+<p><code>AGALMA_{LEDGER,WORKSPACE,TASKQUEUE,EXECUTION}_TRANSPORT</code> remain <code>in-process</code> default. Deferred to <strong><code>agalma-fez</code></strong>: their sockets still use the raw unbounded <code>&lt;state_dir&gt;/&lt;name&gt;.sock</code> shape (only the harness socket was bounded by agalma-acs — the always-process sandbox socket is also unbounded), and none has a live process smoke. Flip each only after the bounded-socket scheme is generalised and a live smoke per boundary proves the production path.</p>
+<h2 id="6-agalma-fez-peer-boundary-flips-bounded-sockets-live-smokes-green">6. agalma-fez — peer boundary flips: bounded sockets + live smokes (GREEN)</h2>
+<p>Date 2026-10-12, base HEAD <code>3ddcd98</code> (on top of agalma-ud1). Design frozen by the orchestrator. Full detail: <code>target/worker-output/agalma-fez.md</code>.</p>
+<p>The peer boundaries now share the bounded socket scheme and their transport defaults are flipped where a production consumer exists. <code>ledger</code>, <code>workspace</code>, and <code>taskqueue</code> default to <code>Process</code> (mirroring the agalma-ud1 harness pattern: <code>Some(&quot;in-process&quot;) =&gt; InProcess, _ =&gt; Process</code>). <code>execution</code> keeps <code>InProcess</code> (deferral — no production consumer). <code>sandbox</code> has no transport selector and is always process.</p>
+<h3 id="61-per-boundary-result">6.1 Per-boundary result</h3>
+<table><thead><tr><th>Boundary</th><th>Bounded socket</th><th>Live process smoke</th><th>Default after flip</th><th>Notes</th></tr></thead><tbody><tr><td>ledger</td><td><code>ledger_socket</code> → <code>bounded_socket_path</code></td><td><code>live_process_smoke_ledger_long_state_dir</code></td><td><strong><code>Process</code></strong></td><td>spawn + handle + lib.rs signal handler all use <code>ledger_socket</code></td></tr><tr><td>workspace</td><td><code>WorkspaceProcess::spawn</code></td><td><code>live_process_smoke_workspace_long_state_dir</code></td><td><strong><code>Process</code></strong></td><td><code>WorkspaceHandle::process</code> spawns through it</td></tr><tr><td>taskqueue</td><td><code>TaskQueueProcess::spawn</code></td><td><code>live_process_smoke_taskqueue_long_state_dir</code></td><td><strong><code>Process</code></strong></td><td><code>TaskQueueHandle::process</code> spawns through it</td></tr><tr><td>execution</td><td><code>execution_socket</code></td><td><code>live_process_smoke_execution_long_state_dir</code></td><td><code>InProcess</code> (<strong>deferred</strong>)</td><td>kernel binding is a candidate with <strong>no production consumer</strong>; a flip would change nothing on the production path</td></tr><tr><td>sandbox</td><td><code>SandboxSource::socket</code></td><td><code>live_process_smoke_sandbox_long_state_dir</code></td><td>n/a (always process)</td><td>no transport selector; bounded now</td></tr><tr><td>session harness</td><td><code>session_harness_socket</code> (Process only)</td><td><code>session_harness_socket_is_bounded_for_long_state_dirs</code> (unit)</td><td><code>Process</code> (agalma-ud1)</td><td>designer/concierge/reviewer harness socket is bounded on the production path</td></tr></tbody></table>
+<p>Each smoke spawns the <strong>real</strong> server through the production spawn path (<code>LedgerProcess::spawn</code> / <code>WorkspaceProcess::spawn</code> / <code>TaskQueueProcess::spawn</code> / <code>ExecutionProcess::spawn</code> / <code>SandboxSource::ensure</code>) under a <strong>long</strong> state dir (so the direct <code>&lt;state_dir&gt;/&lt;name&gt;.sock</code> path exceeds <code>SUN_LEN</code>), round-trips one real call, and asserts the socket file exists at <code>&lt;state_dir&gt;/&lt;name&gt;.sock</code> through the alias. Smokes are ungated, local-only, and never mutate the process environment (defaults are asserted by unit tests; smokes run with the explicit <code>Process</code> path).</p>
+<h3 id="62-alias-mechanics">6.2 Alias mechanics</h3>
+<p><code>crate::phases::bounded_socket_path(state_dir, name)</code> returns the direct <code>&lt;state_dir&gt;/&lt;name&gt;</code> when <code>as_os_str().len() &lt; SUN_LEN_LIMIT</code> (104), else <code>&lt;temp_dir&gt;/agalma-sock/&lt;8hex-state-hash&gt;/&lt;name&gt;</code>. The bounded parent is a <strong>symlink to the state dir</strong>, so the socket file still lands in <code>state_dir</code> — components.rs liveness/watch/GC (<code>state_dir.join(&quot;&lt;name&gt;.sock&quot;).exists()</code> and the <code>harness*.sock</code> glob) stay valid. Alias construction failure falls back to the direct path (unchanged semantics; the caller reports the bind error). <code>harness_socket_path</code> delegates: <code>InProcess</code> → direct, <code>Process</code> → <code>bounded_socket_path</code>. Unit tests: <code>process_harness_socket_path_is_bounded_for_long_state_dirs</code> (long dir canonicalize proof, short dir direct, in-process direct) and <code>bounded_socket_path_reuses_alias_and_bounds_long_dirs</code> (alias reuse/stable base).</p>
+<h3 id="63-required-follow-on-fixes-agalma-ipc">6.3 Required follow-on fixes (agalma-ipc)</h3>
+<p>Flipping the defaults exposed two latent defects on the Connect client path that the in-process defaults had masked (the same class agalma-ud1 fixed for the harness/sandbox clients):</p>
+<ol><li><strong>Nested-runtime connect/call.</strong> <code>ledger</code>/<code>workspace</code>/<code>taskqueue</code>/<code>execution</code> <code>connect_wire</code> and <code>workspace</code>/<code>taskqueue</code> <code>call</code> used a raw <code>Runtime::block_on</code> from inside the conductor's Tokio runtime → &quot;Cannot start a runtime from within a runtime&quot;. Routed through the existing <code>block_on_nested</code> helper (mirrors harness/sandbox clients).</li><li><strong>Blocking runtime drop.</strong> <code>ConnectBackend</code> dropped a multithread <code>Runtime</code> inside the async conductor → &quot;Cannot drop a runtime in a context where blocking is not allowed&quot;. Added the agalma-ud1 <code>runtime: Option&lt;Runtime&gt;</code> + <code>shutdown_background()</code> <code>Drop</code> to the four clients.</li><li><strong>Orphaned supervised servers on conductor <code>SIGKILL</code>.</strong> A supervised server outlived a hard-killed conductor and kept its state-dir lock, so a restart (<code>recovery</code> case 1/4) could not rebind. <code>spawn_supervised</code> now spawns the server with a <strong>piped stdin</strong> held open for the server's lifetime and sets <code>AGALMA_SERVER_PARENT_DEATH_STDIN</code>; <code>agalma_ipc::serve_wire</code> watches stdin for EOF and exits, so a server never outlives its supervisor. (Also fixed the signal-handler wire: <code>LedgerClient::connect</code> now uses the env-selected wire — Connect default — matching the server, so the kill latch persists under the flipped default.)</li></ol>
+<h3 id="64-commands-results">6.4 Commands + results</h3>
+<pre class="code"><code class="lang-text">cargo test -p agalma-conductor --test ledger_process      # 11 passed; 0 failed
+cargo test -p agalma-conductor --test workspace_process   # 8 passed; 0 failed
+cargo test -p agalma-conductor --test taskqueue_process   # 9 passed; 0 failed
+cargo test -p agalma-conductor --test execution_process   # 11 passed; 0 failed
+cargo test -p agalma-conductor --test sandbox_process     # 8 passed; 0 failed
+cargo test -p agalma-conductor --lib                      # 153 passed; 0 failed
+cargo test -p agalma-ipc                                  # 49 + 14 + 9 + … passed; 0 failed
+cargo test -p agalma-conductor                            # (full) green with the new defaults
+cargo build --workspace --offline                         # clean</code></pre>
+<h3 id="65-deferrals">6.5 Deferrals</h3>
+<ul><li><strong>Execution default flip</strong> — the kernel binding is a candidate with no production consumer; <code>ExecutionTransport::from_env</code> keeps <code>InProcess</code>. The socket is bounded and the smoke proves the spawn path, so the flip can follow once a production caller selects the kernel binding.</li><li><strong><code>docs/self-hosting-roadmap.md</code> and <code>docs/self-mutation-*.md</code></strong> — carry uncommitted user edits; not touched by this bead.</li></ul>
+<h3 id="66-sol-repair-verification-and-cold-executable-launches">6.6 Sol repair verification and cold executable launches</h3>
+<p>The required five smoke cases now fail when their real server binary is missing; they report the binary, state directory, addressed socket, wire and PID, require an addressed path shorter than 104 bytes, and check server cleanup. Execution also checks its ledger's stop evidence; sandbox checks both its launched child and server teardown. Six isolated missing-binary checks passed, including a kernel-present/ledger-missing execution case. They are recorded in <code>target/test-runs/fez-repair/results.json</code>, with the earlier smoke failures retained.</p>
+<p>Shared startup diagnostics distinguish stdout EOF/read failure from an actual READY timeout and include executable, socket, PID and exit status. The new EOF regression case checks that failed startup reaps the child. The production READY timeout remains 20 seconds.</p>
+<p>The raw verification run reproduced READY timeouts, so those failures are not counted as passing evidence. The captured sandbox failure provides a concrete host-side explanation for that instance: PID 94623 launched at 2026-10-12 22:30:16.176 EDT; its sample contains 779 observations at <code>_dyld_start + 0</code>, before Rust <code>main</code>. macOS execution-policy logs assess the same executable at 22:30:30.828 and report its provenance at 22:30:44.590, after the service deadline. This supports execution assessment as the delay in that cold launch; it does not establish the cause of every historical timeout. Artifacts: <code>sandbox-1-server-94623-sample.txt</code>, <code>sandbox-smoke-1.log</code>, and <code>sandbox-execution-policy.log</code> under <code>target/test-runs/fez-repair/</code>.</p>
+<p>The explicit offline verification recipe is:</p>
+<pre class="code"><code class="lang-sh">bash scripts/verify-peer-transports.sh</code></pre>
+<p>It builds the workspace binaries, records their SHA-256 hashes, invokes each peer executable without arguments and requires its missing-socket rejection, then runs the five required smokes and the full conductor suite with transport, wire and paid-live overrides unset. The argument-parser preflight has no socket or task effects and lets host assessment finish before the measured service startup. It changes no macOS security settings. The runner rejects zero executed smokes and skipped cases, and propagates a failed test command.</p>
+<p>Final outcome and counts are in <code>docs/fez-acceptance-receipt.json</code>; the complete log is <code>target/test-runs/fez-repair/qualified-acceptance.log</code>. Qualified acceptance does not claim that a previously unassessed executable can always start within 20 seconds. Binary-install qualification belongs in the later plugin lifecycle; durable cancellation and descendant settlement remain SF.4/SF.5 work.</p>
+<p>Historical stopping point: the user requested a stop to conserve usage. The qualified run passed all five required smokes and 231 conductor checks without failures, then was interrupted with exit 130 before the full suite completed. This supersedes any full-green claim in §6.4 for that interrupted run. The original receipt is retained as <code>docs/fez-interrupted-receipt.json</code>.</p>
+<p>Resumed 2026-10-13: all recorded FEZ source hashes matched the checkpoint, while the rebuilt server binaries were explicitly preflighted and smoke-tested again. All five fresh smokes passed. The saved checkpoint and resumed targets together cover every conductor unit/integration target: <strong>335 passed, zero failed, two live-provider tests ignored</strong>. The resumed command exited 0, and all five server hashes remained stable. Doctests were not rerun in this resumption. The consolidated receipt is <code>docs/fez-acceptance-receipt.json</code>; the resumed output is <code>target/test-runs/fez-repair/resumed-acceptance.log</code>. FEZ is closed, and no unit/integration verification targets remain outstanding.</p>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="b1-exit-evidence.html">⟲ b1-exit-evidence</a><span class="step">step 21 / 31 in the ring</span><a href="b0-exit-evidence.html">b0-exit-evidence ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">b1-f3-evidence.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

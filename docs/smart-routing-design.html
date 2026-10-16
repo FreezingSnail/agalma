@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="smart-routing-design.md">smart-routing-design.md</a></div>
+<div class="ring"><a href="self-mutation-standup.html">⟲ self-mutation-standup</a><span class="step">step 29 / 31 in the ring</span><a href="web-dashboard-design.html">web-dashboard-design ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li class="here"><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="smart-routing-v2-engine--and-budget-aware-cost-governor-design">Smart routing v2 — engine- and budget-aware cost governor (design)</h1>
+<p>Status: planning design. Date: 2026-10-12. Epic: <code>agalma-myx</code>. Supersedes the static policy shape of H3 (<code>docs/reliability-hardening.md</code> §H3, <code>crates/agalma-conductor/src/routing.rs</code>); v1 is retained as the fallback baseline and the comparison arm. Routing ships as a <strong>nano service</strong> (Router) on the hub-spoke topology: <code>docs/component-contracts.md</code>, <code>docs/ipc-connect-design.md</code>.</p>
+<h2 id="1-goal">1. Goal</h2>
+<p>Maximize accepted merges per unit of cost across every inference engine and billing mode Agalma can reach:</p>
+<ul><li>do not burn scarce rolling-subscription quota on work that free or cheaper adequate capacity can do;</li><li>do not let subscription allowance expire unused at a window reset when it would have replaced cash;</li><li>do not pay peak rates for deferrable work;</li><li>never route a model whose cost or billing class is unknown.</li></ul>
+<p>Metrics (recorded per run, ledger-derived):</p>
+<table><thead><tr><th>Metric</th><th>Definition</th><th>Target</th></tr></thead><tbody><tr><td>cash $/merge</td><td>real dollars per merged task</td><td>no regression vs v1; lower on peak-heavy workloads</td></tr><tr><td>quota efficiency</td><td>qualified merges per $ of allowance consumed</td><td>up vs v1</td></tr><tr><td>window waste</td><td>allowance unconsumed at reset while cash was spent in-window</td><td>0</td></tr><tr><td>quota-blocked attempts</td><td>429/quota exhaustion mid-attempt leading to a lost attempt</td><td>0</td></tr><tr><td>peak cash share</td><td>cash spend inside peak windows on deferrable tasks</td><td>~0</td></tr></tbody></table>
+<h2 id="2-current-state-h3-v1">2. Current state (H3 v1)</h2>
+<ul><li>Static <code>MODEL_TABLE</code> (10 models, OpenCode Zen/Go only) plus route classes (builder/verifier/planner) with fixed preference lists.</li><li>Paid gate: <code>AGALMA_ALLOW_PAID=1</code> <strong>and</strong> a present <code>opencode-go</code> credential; <code>--model</code> override; every selection recorded as a <code>route.model</code> decision.</li><li>One engine: OpenCode (<code>agalma-harness-opencode</code>); the harness is a process-global kind (<code>--harness</code>), not a per-route property.</li><li>Per-turn <code>cash_usd</code> / <code>quota_usd</code> are recorded, but there is no window state, no pacing, no peak clock. DeepSeek rows pin off-peak prices only; peak/off-peak is not classified at request time.</li><li>Routing is a conductor module, not a boundary. This epic lifts it into the <strong>Router</strong> nano service behind <code>RouterApi</code> (spoke), consumed by the conductor (hub) exactly like the other components.</li><li><code>economics.rs</code> allowances are display-only; &quot;no budget enforcement&quot; is a current design non-goal. This epic turns <strong>quota</strong> into a routing input (cash spend stays report-only).</li></ul>
+<h2 id="3-fact-base-verified-2026-10-12">3. Fact base (verified 2026-10-12)</h2>
+<table><thead><tr><th>Engine</th><th>Provider(s)</th><th>Billing</th><th>Rolling windows</th><th>Notes</th></tr></thead><tbody><tr><td>OpenCode (<code>opencode serve</code>)</td><td><code>opencode</code> (Zen)</td><td>pay-per-token cash</td><td>none documented; free-model rate limits unknown</td><td>free models are limited-time; some train on data</td></tr><tr><td>OpenCode</td><td><code>opencode-go</code></td><td>$10/$40 per month; at-cost token rates charged against a per-model $ allowance</td><td>20% per 5h, 50% weekly, 100% monthly, per model</td><td>window exhaustion blocks requests (429) unless Zen-balance fallback is enabled</td></tr><tr><td>Codex (<code>codex exec</code>)</td><td>ChatGPT plan (OAuth <code>~/.codex/auth.json</code>)</td><td>plan allowance</td><td>5-hour rolling + weekly, model- and plan-dependent; credits purchasable</td><td>CLI <code>/status</code> and status line expose window usage</td></tr><tr><td>Codex</td><td>OpenAI API key via Codex</td><td>pay-per-token cash</td><td>RPM/TPM per project</td><td>the documented automation default</td></tr></tbody></table>
+<p>Host inventory: <code>codex-cli 0.162.0</code> (configured model <code>gpt-6.1-sol</code>; status line includes <code>five-hour-limit</code>, <code>thread-credits</code>, <code>estimated-thread-cost</code>) and <code>opencode v2.0.15</code>; both credential stores present.</p>
+<p>DeepSeek peak clock (billing): peak = Mon–Fri 01:00–04:00 and 06:00–10:00 UTC (2× rate), Chinese public holidays excluded; all other hours and weekends are off-peak. Go allowance drains at peak rates inside these windows, so peak avoidance helps quota as well as cash.</p>
+<p>Rolling-window semantics that must be modeled, not assumed: Go limits are per-model $ allowances split 20/50/100 across 5h/week/month windows; Codex limits are percentage windows with provider-reported resets. Both are <strong>use-it-or-lose-it</strong>: headroom at reset is lost.</p>
+<h2 id="4-design">4. Design</h2>
+<h3 id="41-router-nano-service-boundary-sr11-sr12">4.1 Router nano service boundary (SR.11, SR.12)</h3>
+<p>Routing becomes a first-class nano service — the <strong>Router</strong> — on the hub-spoke topology: the conductor is the hub; the Router is a spoke reachable only through its contract.</p>
+<ul><li><strong>Contract</strong>: <code>RouterApi</code> in <code>agalma-contracts</code> (canonical IDs, requests, results, events, errors; no vendor types). Operations: <code>Describe</code>/<code>Health</code>, <code>EvaluateRoute</code> (idempotent by <code>(scope, policy revision, budget-snapshot hash, clock)</code>; returns the chosen route, per-option scores, elimination reasons, and the durable decision receipt), <code>BudgetSnapshot</code>, <code>CatalogSnapshot</code>/<code>Refresh</code>, <code>RecordObservation</code> (provider-reported window state), <code>Explain</code>.</li><li><strong>Implementation</strong>: <code>crates/agalma-router</code> (new crate, subject to the dependency policy). Registry rows, price schedules, window derivation, and policy evaluation are private to it.</li><li><strong>State</strong>: the Router owns no database. Route decisions and budget observations are durably committed through <code>LedgerApi</code>; in-memory snapshots are disposable and rebuildable. The conductor never reads Router internals; the Router never issues ledger SQL.</li><li><strong>Deployment</strong>: in-process binding first (typed module behind the contract); then a supervised process spoke over the existing IPC Connect envelope (<code>docs/ipc-connect-design.md</code>: <code>READY {json}</code>, <code>CommandSpec</code>, bind gate, capability negotiation). <code>AGALMA_ROUTER_TRANSPORT</code> selects the binding.</li><li><strong>Replacement</strong>: every recorded decision pins the Router binding id/version/generation; recovery never silently redirects. The process binding lands with dual-binding parity, staged rebind, and rollback evidence — the B1 recipe at this boundary (SR.12).</li><li><strong>Failure</strong>: Router unavailable or failing closed → dispatch parks with a clear reason. The conductor never falls back to a compiled-in table except for an explicit <code>--model</code> override, recorded as <code>origin=override</code>.</li><li><strong>Tier</strong>: declared boundary (Tier 2 posture: canonical schemas, ownership declaration, <code>Describe</code>/<code>Health</code>, no private-state access) at introduction; Tier-1 ceremony applies to the process binding because routing sits on the dispatch path.</li></ul>
+<h3 id="42-registry-sr1">4.2 Registry (SR.1)</h3>
+<p><code>Engine</code> enum (<code>opencode</code>, <code>codex</code>) and <code>RouteSpec</code> rows extending <code>ModelSpec</code>: engine, provider, model id, capability (context, tool use, strict schema), billing class (<code>free</code> | <code>subscription</code> | <code>cash</code>), quota bucket + window set (unit: <code>usd</code> | <code>percent</code> | <code>credits</code>), price-schedule reference, data policy (<code>training</code> | <code>zero-retention</code>), credential scope, provenance note. Rows are reviewed static data owned by the Router; the registry carries a content revision hash recorded in decisions. A model without a reviewed billing row is never selectable.</p>
+<h3 id="43-peak-clock-sr2">4.3 Peak clock (SR.2)</h3>
+<p><code>PriceSchedule</code> (UTC windows, weekday mask, static holiday exclusion list) and <code>BillingClock::classify(spec, now) -&gt; Free | OffPeak | Peak</code>. The clock is injected; unit tests never read wall time.</p>
+<h3 id="44-budget-state-sr3">4.4 Budget state (SR.3)</h3>
+<p>Durable accounting rebuilt from the ledger:</p>
+<ul><li><code>budget_observations</code> events: provider-reported consumed/limit/reset per bucket, with source (<code>opencode-usage</code> | <code>codex-rate-limits</code> | <code>local</code>);</li><li>local usage events (already recorded) recomputed over rolling 5h/7d/30d windows from timestamps;</li><li>reconciliation: a provider observation wins for <code>remaining</code>; local accounting is a lower bound when no observation exists;</li><li><code>BudgetSnapshot { bucket -&gt; { limit, consumed, remaining, resets_at, source } }</code> is deterministic given ledger + clock; a passed reset restores the window.</li></ul>
+<h3 id="45-discovery-sr4">4.5 Discovery (SR.4)</h3>
+<ul><li>OpenCode catalog snapshot (models.dev cache / catalog tool) with revision and <code>fetched_at</code>, diffed into reviewed registry rows.</li><li>Codex: binary version + auth presence; plan declared by the operator (<code>AGALMA_CODEX_PLAN</code>, conservative default) until provider observations calibrate the windows.</li><li>Credential detection stays parent-side and token-free (existing fingerprint audit pattern).</li><li>Drift guard: a disappeared or changed model invalidates affected routes and records an event; re-promotion is a reviewed change.</li></ul>
+<h3 id="46-governor-policy-sr5">4.6 Governor policy (SR.5)</h3>
+<p>Deterministic, pure, clock-injected policy exposed as <code>RouterApi::EvaluateRoute</code>:</p>
+<ol><li>Hard gates: engine available + credentialed, capability/context fit, data policy allows the task content, reviewed cost row, window headroom ≥ reserve (p95 attempt cost + floor).</li><li>Effective cost: <code>free = 0</code>; <code>subscription = shadow price λ(bucket)</code>; <code>cash = price × peak multiplier</code>. λ falls toward 0 when projected leftover at reset exceeds slack (use-it-or-lose-it) and rises toward blocking as remaining approaches reserve.</li><li>Order by effective cost, tie-break on the existing quality notes; deferrable work prefers off-peak windows (park until the window opens when the deadline allows).</li><li>Urgency override: near-deadline or interactive work may exceed the pacing target or pay peak rates; recorded as <code>urgency=high</code>.</li><li>Every decision records offered options with score and elimination reason, the budget snapshot hash, the clock, and the policy pin. The v1 static baseline remains the fallback when v2 has no eligible candidate or fails closed.</li></ol>
+<h3 id="47-engine-selection-per-attempt-sr6">4.7 Engine selection per attempt (SR.6)</h3>
+<p>The route carries <code>engine</code>; harness binding selects the adapter per route instead of the process-global kind. Recovery, rebind, and dual-binding rules are unchanged; the digest records the engine.</p>
+<h3 id="48-codex-adapter-sr7">4.8 Codex adapter (SR.7)</h3>
+<p><code>agalma-harness-codex</code> implements <code>HarnessApi</code> over <code>codex exec --json</code>: JSONL normalization (<code>turn.*</code>, token usage, rate-limit observations, <code>error</code>), prompt via stdin, final message capture (<code>--output-last-message</code>), working directory = sandboxed checkout, Seatbelt confinement with Codex's own sandbox disabled so Agalma is the only boundary. Credentials stay parent-side; Codex token refresh hosts go through the parent proxy allowlist, never into the sandbox. Exact flags and stream shape are pinned from a captured fixture during implementation (one gated live smoke); nothing is assumed from docs alone.</p>
+<h3 id="49-observability-sr8">4.9 Observability (SR.8)</h3>
+<p>Agalma CLI commands become Router clients, not private-module readers: <code>agalma models</code> (engine column, window state, pace, peak status, per-route skip reasons via <code>Explain</code>) and <code>agalma budget</code> (per-bucket windows, consumption source, resets). Digest gains engine, peak, and quota-window fields.</p>
+<h3 id="410-failure-recovery-sr9">4.10 Failure recovery (SR.9)</h3>
+<p>Provider quota/rate errors (429, quota-exhausted) are classified, reported to the Router as budget observations, the bucket is cooled down to its reset, and the attempt is re-evaluated on the next eligible route without burning a semantic attempt; a <code>route.fallback</code> + <code>provider_health</code> event is recorded.</p>
+<h3 id="411-evidence-sr10">4.11 Evidence (SR.10)</h3>
+<p>Deterministic scenario suite (fake ledger + injected clock): pacing, use-it-or-lose-it, peak deferral, window reset, drift fail-closed, Codex adapter fixtures, <code>RouterApi</code> conformance (replay, changed-input rejection). Process binding evidence per the B1 recipe (dual-binding parity, staged rebind, rollback). Gated live evidence in <code>docs/smart-routing-evidence.md</code>: an off-peak shifted run, a budgeted v1-vs-v2 comparison batch, and a Codex smoke. Epic exit is the metric table in §1.</p>
+<h2 id="5-non-goals">5. Non-goals</h2>
+<ul><li>Quality evaluation, benchmark promotion, and auto-mutation of the routing table (M2 model-onboarding door owns that).</li><li>Parallel dispatch, hedging, or multi-engine racing.</li><li>Cash budget enforcement: spend remains report-only.</li><li>Direct OpenAI/Anthropic/Google API integrations beyond what an engine already serves.</li><li>Scraping holiday calendars; the exclusion list is static config.</li><li>A new database per service: the Router stores durable facts through <code>LedgerApi</code> only.</li></ul>
+<h2 id="6-verification-rules">6. Verification rules</h2>
+<ul><li>Every route decision carries the policy pin, Router binding pin, reasons, budget snapshot hash, and clock; <code>resolve_route</code> tests are extended, not replaced.</li><li><code>RouterApi</code> conformance: duplicate <code>EvaluateRoute</code> returns the recorded receipt; changed inputs under the same operation ID are rejected; unknown outcomes reconcile.</li><li>Clock-dependent behavior is unit-tested with an injected clock only.</li><li>A model without a reviewed billing row cannot be selected (registry test).</li><li>Process binding: dual-binding parity, staged rebind, rollback evidence; the architecture test forbids impl→impl dependencies (conductor may not import <code>agalma-router</code> internals).</li><li>Live spend runs only through the existing gated flags (<code>AGALMA_ALLOW_PAID</code>, <code>AGALMA_PAID_LIVE</code>), with artifacts under <code>target/test-runs/</code>.</li></ul>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="self-mutation-standup.html">⟲ self-mutation-standup</a><span class="step">step 29 / 31 in the ring</span><a href="web-dashboard-design.html">web-dashboard-design ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">smart-routing-design.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

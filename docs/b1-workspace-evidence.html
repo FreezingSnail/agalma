@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="b1-workspace-evidence.md">b1-workspace-evidence.md</a></div>
+<div class="ring"><a href="sandbox-removal-design.html">⟲ sandbox-removal-design</a><span class="step">step 8 / 31 in the ring</span><a href="b1-execution-evidence.html">b1-execution-evidence ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li class="here"><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="b14-workspace-extraction-evidence">B1.4 — workspace extraction evidence</h1>
+<p>Bead: <code>agalma-0ht.5</code>. Design: <code>docs/b1-extraction.md</code> (D1–D5, D7). Depends on <code>agalma-0ht.4</code> (B1.3 sandbox extraction). HEAD at start: <code>127f49f</code>.</p>
+<p>Goal: move <code>WorkspaceApi</code> (plus the M1 repo-mode operations the conductor drives) behind a process (Unix-socket) boundary without changing any contract schema or consumer (phase) logic, and prove replacement through the declared API with dual-binding parity, staged rebind, rollback, and IPC conformance.</p>
+<h2 id="deliverables">Deliverables</h2>
+<table><thead><tr><th>#</th><th>Deliverable</th><th>Where</th></tr></thead><tbody><tr><td>1</td><td><code>WorkspaceClient</code> implementing <code>WorkspaceApi</code> + <code>WorkspaceOps</code> over <code>Client</code></td><td><code>crates/agalma-ipc/src/workspace_client.rs</code></td></tr><tr><td>1</td><td><code>WorkspaceOps</code> trait (frozen <code>WorkspaceApi</code> + M1 repo-mode surface)</td><td><code>crates/agalma-ipc/src/workspace_client.rs</code></td></tr><tr><td>2</td><td><code>register_workspace</code> + <code>WORKSPACE_METHODS</code> registration helper</td><td><code>crates/agalma-ipc/src/workspace_server.rs</code></td></tr><tr><td>2</td><td>Workspace server bin hosting <code>Workspace</code> + <code>server_command</code></td><td><code>crates/agalma-workspace/src/bin/agalma-workspace-server.rs</code> + <code>src/server.rs</code></td></tr><tr><td>3</td><td><code>WorkspaceProcess</code> supervisor + <code>WorkspaceHandle</code> transport handle (reuses <code>spawn_supervised</code>/<code>stop_supervised</code>)</td><td><code>crates/agalma-conductor/src/workspace_process.rs</code></td></tr><tr><td>3</td><td>Construction sites switched to the transport handle</td><td><code>crates/agalma-conductor/src/composition.rs</code>, <code>work.rs</code>, <code>phases.rs</code></td></tr><tr><td>4</td><td>Parity / rebind / rollback / IPC-conformance tests</td><td><code>crates/agalma-conductor/tests/workspace_process.rs</code></td></tr><tr><td>5</td><td>This evidence doc + invariance proof</td><td><code>docs/b1-workspace-evidence.md</code></td></tr></tbody></table>
+<h3 id="new-interfaces">New interfaces</h3>
+<ul><li><code>agalma_ipc</code>: <code>WorkspaceClient</code> (<code>connect</code>, <code>from_client</code>), <code>map_ipc_error</code>, param structs (<code>PrepareParams</code>, <code>PrepareRepoParams</code>, <code>CheckoutCall</code>, <code>IntegrateParams</code>, <code>IntegrateOriginParams</code>, <code>TagParams</code>, <code>RevertParams</code>, <code>PrepareVerifyParams</code>, <code>OriginReceiptParams</code>, <code>RevertOriginParams</code>), <code>WorkspaceOps</code> (the server-hosted full surface); <code>register_workspace</code>, <code>WORKSPACE_METHODS</code>, <code>workspace_server::ensure_all_handlers</code>.</li><li><code>agalma_workspace</code>: <code>impl WorkspaceOps for Workspace</code> (<code>src/lib.rs</code>); <code>server</code> module — <code>SERVER_BIN</code>, <code>server_command</code>, <code>build_server</code>, <code>serve</code>, <code>run_from_args</code>, <code>server_info</code>, <code>default_socket_for</code>, <code>API_NAME</code>, <code>API_VERSION</code>, <code>IMPL_NAME</code>, <code>IMPL_VERSION</code>.</li><li><code>agalma_conductor::workspace_process</code>: <code>WorkspaceTransport</code> (<code>from_env</code>, <code>as_str</code>), <code>TRANSPORT_ENV</code>, <code>WORKSPACE_SOCKET_NAME</code>, <code>workspace_server_spec</code>, <code>WorkspaceProcess</code> (<code>spawn</code>, <code>spawn_with_spec</code>, <code>socket</code>, <code>pid</code>, <code>client</code>, <code>stop</code>), <code>WorkspaceHandle</code> (<code>in_process</code>, <code>process</code>, <code>from_transport</code>).</li></ul>
+<h3 id="why-workspaceops-not-just-workspaceapi">Why <code>WorkspaceOps</code>, not just <code>WorkspaceApi</code></h3>
+<p>The conductor drives more than the frozen six-method <code>WorkspaceApi</code>: the verify and integrate phases call the M1 repo-mode operations (<code>prepare_repo</code>/<code>commit_candidate</code>/<code>prepare_verify_checkout</code>/<code>origin_receipt</code>/ <code>integrate_origin</code>/<code>integrated_receipt</code>/<code>revert_origin</code>/<code>candidate_sha</code>). To keep phase/work logic unchanged (D5) while carrying those operations across the boundary, <code>agalma-ipc</code> defines <code>WorkspaceOps: WorkspaceApi</code> holding the full surface. <code>agalma-workspace</code> implements it for the git-backed <code>Workspace</code>; <code>WorkspaceClient</code> and the conductor's <code>WorkspaceHandle</code> implement it over the transport (the handle delegates to whichever backend is bound). This is an internal helper trait in infrastructure; no contract schema changed.</p>
+<h2 id="results">Results</h2>
+<p>All commands from the repo root, <code>--offline</code>.</p>
+<table><thead><tr><th>Command</th><th>Observed</th></tr></thead><tbody><tr><td><code>cargo test --offline -p agalma-ipc</code></td><td>exit 0; <code>34 passed</code> (unit, incl. workspace client) + <code>12 passed</code> (conformance) + doc-tests</td></tr><tr><td><code>cargo test --offline -p agalma-workspace</code></td><td>exit 0; <code>3 passed</code> (server module) + <code>0 passed</code> (server bin) + <code>11 passed</code> (workspace integration) + doc-tests</td></tr><tr><td><code>cargo test --offline -p agalma-conductor</code></td><td>exit 0; 17 test binaries <code>test result: ok</code>, 0 failures (incl. <code>workspace_process</code>: <code>6 passed</code>, <code>architecture</code>: <code>4 passed</code>)</td></tr><tr><td><code>cargo test --offline</code> (full workspace)</td><td>exit 0; 0 failures</td></tr></tbody></table>
+<p><code>tests/workspace_process.rs</code> cases:</p>
+<table><thead><tr><th>Test</th><th>What it proves</th></tr></thead><tbody><tr><td><code>shadow_parity_template_ops</code></td><td>The template-mode scenario (<code>prepare</code>/<code>diff</code>/<code>integrate</code>/<code>tag</code>/<code>revert</code>) produces an identical, sha/timing-free transcript in-process (<code>Workspace</code>) vs through the supervised workspace server: the diff carries the candidate edit, the CAS is a fast-forward (<code>candidate_sha == result_sha</code>), the tag points at the candidate, and <code>revert</code> restores the base tree. The produced <code>main^{tree}</code> digests match.</td></tr><tr><td><code>shadow_parity_repo_ops</code></td><td>The repo-mode scenario the checkout/verify/integrate phases use (<code>prepare_repo</code>/<code>diff</code>/<code>commit_candidate</code>/<code>prepare_verify_checkout</code>/<code>origin_receipt</code>/<code>integrate_origin</code>/<code>revert_origin</code>) produces an identical transcript in-process vs via the server, including the <code>main^{tree}</code> digest and the &quot;no receipt before / candidate receipt after&quot; integration observations.</td></tr><tr><td><code>staged_rebind_keeps_pinned_checkout_usable</code></td><td>An in-flight checkout (prepared + committed on server A) stays pinned across a swap: candidate server B integrates A's committed SHA into the origin, the origin <code>main</code> lands on that SHA, and A remains alive and reports the same candidate. Mirrors the stateless-component rebind intent (D3: rebind between operations; the artifact is pinned to its preparing server).</td></tr><tr><td><code>rollback_keeps_prior_checkout_and_server</code></td><td>A candidate server is staged then rolled back (stopped, pid gone); the prior server and its committed checkout survive and still land the candidate into the origin — no state loss.</td></tr><tr><td><code>workspace_client_duplicate_id_replay_and_connection_loss</code></td><td>Raw <code>Client</code>: a duplicate request id replays the recorded <code>prepare_repo</code> receipt; a duplicate <code>integrate_origin</code> id replays the receipt while a fresh id re-runs and returns <code>Conflict</code> (main moved) — proving the effect ran once; post-death call surfaces <code>Unavailable</code>/<code>UnknownOutcome</code>; a missing socket is <code>Unavailable</code>.</td></tr><tr><td><code>workspace_server_child</code></td><td>Child entry point (no-op under a normal run).</td></tr></tbody></table>
+<p>The process tests spawn the workspace server either from the real <code>agalma-workspace-server</code> binary (when built, e.g. full-workspace runs) or by re-exec'ing the test binary as the server (<code>current_exe workspace_server_child --exact --nocapture</code>, socket via <code>AGALMA_TEST_WORKSPACE_SOCKET</code>, base dir via <code>AGALMA_TEST_WORKSPACE_BASE_DIR</code>), so a package-scoped <code>cargo test -p agalma-conductor</code> run still exercises the real process boundary. Both paths were run green (the real-binary path and, with the binary moved aside, the re-exec path).</p>
+<h2 id="default-transport-decision">Default transport decision</h2>
+<p><code>WorkspaceTransport::from_env()</code> reads <code>AGALMA_WORKSPACE_TRANSPORT</code> (<code>in-process</code> default, <code>process</code> optional). The default remains <strong><code>in-process</code></strong>, matching B1.2/B1.3. The construction sites now consult the transport factory: <code>Composition::build</code> and <code>work::build_executor</code> build the workspace through <code>WorkspaceHandle::from_transport(&amp;state_dir, WorkspaceTransport::from_env())</code>. With the default the phase path is behaviourally unchanged; with <code>AGALMA_WORKSPACE_TRANSPORT=process</code> the sites spawn the supervised workspace server (rooted at the run state dir, socket <code>&lt;state_dir&gt;/workspace.sock</code>) and bind a <code>WorkspaceClient</code>.</p>
+<h2 id="conductor-workspace-supervision">Conductor workspace supervision</h2>
+<p><code>WorkspaceProcess</code> spawns <code>agalma-workspace-server --socket &lt;state_dir&gt;/workspace.sock --base-dir &lt;state_dir&gt;</code> as a process-group leader, waits for <code>READY</code>, and connects <code>WorkspaceClient</code>s. It reuses the exact <code>spawn_supervised</code>/<code>stop_supervised</code> helpers shared with the harness/sandbox boundaries (one supervision implementation for every boundary). The server is rooted at the same base dir the in-process backend used, so <code>&lt;base_dir&gt;/runs/&lt;exec&gt;</code> checkout paths are identical across bindings.</p>
+<p><code>WorkspaceHandle</code> holds either the in-process <code>Workspace</code> or a <code>WorkspaceClient</code> plus the <code>Rc&lt;WorkspaceProcess&gt;</code> that keeps the server alive for the handle's lifetime (stopped on drop). It exposes the full surface by delegation, so the phase/work call bodies are unchanged — only the constructed type differs.</p>
+<h2 id="deviations-and-design-corrections-noted-not-applied-to-docsb1-extractionmd">Deviations and design corrections (noted, not applied to <code>docs/b1-extraction.md</code>)</h2>
+<ol><li><strong><code>WorkspaceOps</code> carries the M1 repo-mode surface.</strong> The design names <code>WorkspaceClient</code> as implementing &quot;the same contract trait&quot;; the conductor also drives the M1 repo-mode operations, so the wire surface is the frozen <code>WorkspaceApi</code> plus those operations, unified by <code>WorkspaceOps</code>. No contract schema changed.</li><li><strong>Workspace has no <code>Describe</code>/binding record.</strong> <code>WorkspaceApi</code> has no <code>Describe</code>, so (as for the sandbox boundary) the &quot;staged rebind&quot; is a supervised-server swap with the in-flight checkout pinned to its preparing server, rather than a <code>BindingRecord</code> swap (the harness boundary keeps the record-based rebind).</li><li><strong>The workspace server needs a base dir.</strong> Unlike the sandbox/harness servers (socket only), the git backend is rooted at a directory, so the server takes <code>--base-dir &lt;path&gt;</code>; <code>run_from_args</code> parses both <code>--socket</code> and <code>--base-dir</code>.</li><li><strong>No Tokio runtime in the workspace server.</strong> The backend shells out to <code>git</code> via <code>std::process</code>, so the serial serve loop runs synchronously (mirroring the reference harness server, not the Tokio-based sandbox/OpenCode servers).</li><li><strong>Unix socket path length.</strong> The workspace socket lives directly under the run state dir (<code>workspace.sock</code>) to stay within <code>SUN_LEN</code> (~104 bytes). Tests use short <code>target/test-runs/wp-&lt;pid&gt;-&lt;n&gt;/</code> run dirs.</li><li><strong><code>Cargo.lock</code>.</strong> Modified only for the new intra-workspace dependency edge (<code>agalma-workspace -&gt; agalma-ipc</code>). No external crate was added.</li></ol>
+<h2 id="consumer-invariance-proof">Consumer-invariance proof</h2>
+<p><code>crates/agalma-conductor/src/phases.rs</code> changes are limited to the import and the field/parameter type (<code>Rc&lt;RefCell&lt;Workspace&gt;&gt;</code> → <code>Rc&lt;RefCell&lt;WorkspaceHandle&gt;&gt;</code>); every call site, phase dispatch, ordering, recovery, and activity body is unchanged. <code>composition.rs</code>/<code>work.rs</code> changes are limited to the workspace construction site (now <code>WorkspaceHandle::from_transport</code>). <code>reconcile.rs</code> is unchanged (it never used the workspace). The conductor tests that construct a workspace for the activities were updated to construct the handle (<code>WorkspaceHandle::in_process</code>).</p>
+<p><code>git diff --name-only</code> (tracked) plus new files, all within the allowed set:</p>
+<pre class="code"><code>Cargo.lock                                                    # intra-workspace dep edge only
+crates/agalma-conductor/src/composition.rs                    # construction site
+crates/agalma-conductor/src/lib.rs                            # module registration
+crates/agalma-conductor/src/phases.rs                         # field/param type only
+crates/agalma-conductor/src/work.rs                           # construction site
+crates/agalma-conductor/src/workspace_process.rs              # new
+crates/agalma-conductor/tests/conductor.rs                    # handle construction
+crates/agalma-conductor/tests/fencing.rs                      # handle construction
+crates/agalma-conductor/tests/rebind.rs                       # handle construction
+crates/agalma-conductor/tests/recovery.rs                     # handle construction
+crates/agalma-conductor/tests/workspace_process.rs            # new
+crates/agalma-conductor/tests/xcrun.rs                        # handle construction
+crates/agalma-ipc/src/lib.rs                                  # module + re-exports
+crates/agalma-ipc/src/workspace_client.rs                     # new
+crates/agalma-ipc/src/workspace_server.rs                     # new
+crates/agalma-workspace/Cargo.toml                            # + agalma-ipc dep
+crates/agalma-workspace/src/lib.rs                            # WorkspaceOps impl + server module
+crates/agalma-workspace/src/server.rs                         # new
+crates/agalma-workspace/src/bin/agalma-workspace-server.rs    # new
+docs/b1-workspace-evidence.md                                 # this file</code></pre>
+<p>No file under <code>crates/agalma-contracts/**</code> changed; no contract schema changed; no <code>docs/b1-extraction.md</code> edit. The architecture lint is strict and green (<code>cargo test -p agalma-conductor --test architecture</code>: <code>4 passed</code>): no implementation crate depends on another, and no implementation source references another implementation crate.</p>
+<h1 id="ipcx4-workspace-boundary-on-the-connect-transport">IPCX.4 — workspace boundary on the Connect transport</h1>
+<p>Bead: <code>agalma-ebg.5</code>. Design: <code>docs/ipc-connect-design.md</code> (D1–D7). Foundation: <code>agalma-ebg.2</code> (<code>ipc.proto</code>, Connect stack + pins, UDS accept loop, client core, Connect-level conformance harness). Depends on <code>agalma-ebg.4</code> (IPCX.3 sandbox boundary, the migration pattern). HEAD at start: <code>4628801</code>.</p>
+<p>Goal: move the already-extracted <code>WorkspaceApi</code> (+ the <code>WorkspaceOps</code> repo-mode surface) process boundary onto the Connect transport (IPCX D7, boundary #3) <strong>without changing the envelope semantics or any consumer logic</strong>, and prove it with the B1 recipe — dual-binding parity, staged rebind, rollback, IPC conformance — extended to the Connect wire. As in IPCX.2/IPCX.3, the per-boundary evidence named by D4 (<code>docs/ipcx-&lt;boundary&gt;-evidence.md</code>) is folded into this file so the workspace boundary's B1 and IPCX evidence stay together.</p>
+<h2 id="what-migrated">What migrated</h2>
+<p>The typed workspace client and its method-registration helper stay the entry points; only the byte transport under them changed.</p>
+<table><thead><tr><th>Concern</th><th>Where</th></tr></thead><tbody><tr><td><code>WorkspaceClient</code> speaks either wire (<code>connect_wire</code>); <code>connect</code> stays framed</td><td><code>crates/agalma-ipc/src/workspace_client.rs</code></td></tr><tr><td><code>serve_workspace(server, socket, wire)</code> workspace serve entry point</td><td><code>crates/agalma-ipc/src/workspace_server.rs</code></td></tr><tr><td>Workspace server serves the selected wire (<code>serve</code> reads <code>AGALMA_IPC_WIRE</code>)</td><td><code>crates/agalma-workspace/src/server.rs</code></td></tr><tr><td><code>WorkspaceProcess</code> selects the wire, exports it to the child, connects matching client</td><td><code>crates/agalma-conductor/src/workspace_process.rs</code></td></tr></tbody></table>
+<ul><li>The workspace process wire <strong>defaults to <code>Connect</code></strong> (<code>workspace_wire()</code>); a parity run sets <code>AGALMA_IPC_WIRE=framed</code> to compare the two against the same scenario. The selected wire is exported to the child in the same variable, so the server serves the matching transport. Both wires announce the identical <code>READY {json}</code> line, so the supervisor handshake is unchanged; <code>WorkspaceApi</code> is <code>Describe</code>-free, so there is no binding gate to keep wire-agnostic.</li><li>Envelope semantics are preserved verbatim on both wires: <code>v</code>/<code>id</code>/<code>method</code>/ <code>params_json</code>; duplicate-id receipt replay; <code>UnknownOutcome</code>/contract errors in-band; version refusal; unknown-method <code>UnsupportedCapability</code>. The Connect path reuses <code>Server::dispatch</code>, so no envelope code was forked.</li><li><code>WorkspaceOps</code> (the frozen <code>WorkspaceApi</code> plus the M1 repo-mode operations) is unchanged; only the transport beneath it differs.</li><li>No new dependency. <code>connectrpc</code>/<code>buffa</code> stay confined to <code>agalma-ipc</code> (architecture test green); no <code>Cargo.toml</code>/<code>Cargo.lock</code> change.</li></ul>
+<h3 id="new-interfaces">New interfaces</h3>
+<ul><li><code>agalma_ipc</code>: <code>workspace_client::WorkspaceClient::connect_wire</code> (framed <code>connect</code>/<code>from_client</code> retained); <code>workspace_server::serve_workspace</code>.</li><li><code>agalma_workspace::server</code>: <code>serve_wire</code>; <code>serve</code> now reads <code>AGALMA_IPC_WIRE</code> (<code>connect</code> default, <code>framed</code> optional).</li><li><code>agalma_conductor::workspace_process</code>: <code>workspace_wire</code>, <code>WorkspaceProcess::wire</code>, <code>WorkspaceProcess::spawn_with_spec_wire(.., wire, ..)</code> (<code>spawn</code>/<code>spawn_with_spec</code> retained, defaulting to <code>workspace_wire</code>).</li></ul>
+<h2 id="results">Results</h2>
+<p>All commands from the repo root, <code>--offline</code>.</p>
+<table><thead><tr><th>Command</th><th>Observed</th></tr></thead><tbody><tr><td><code>cargo build --offline --workspace</code></td><td>exit 0</td></tr><tr><td><code>cargo test --offline -p agalma-ipc -p agalma-workspace</code></td><td>ipc: 48 unit + 14 conformance + 9 connect-conformance + 4 harness-connect + 2 sandbox-connect + 2 taskqueue-connect + 2 ledger-connect + <strong>2 workspace-connect</strong> (new) + doc-tests; workspace: 3 unit + 11 integration; 0 failures</td></tr><tr><td><code>cargo test --offline -p agalma-conductor --test workspace_process</code></td><td><strong>7 passed; 0 failed</strong></td></tr><tr><td><code>cargo test --offline -p agalma-conductor --lib</code></td><td>143 passed; 0 failed</td></tr><tr><td><code>cargo test --offline -p agalma-conductor --test architecture</code></td><td>6 passed; 0 failed</td></tr></tbody></table>
+<p><code>tests/workspace_connect.rs</code> (new, <code>agalma-ipc</code>):</p>
+<table><thead><tr><th>Test</th><th>What it proves</th></tr></thead><tbody><tr><td><code>workspace_api_over_connect_matches_framed</code></td><td>The typed <code>WorkspaceClient</code> drives the full <code>WorkspaceOps</code> surface (all six <code>WorkspaceApi</code> methods plus the eight repo-mode operations) over a <code>register_workspace</code> server; a framed and a Connect server produce an <strong>identical typed transcript</strong>. A deterministic stub workspace keeps the transcript clock/disk-free.</td></tr><tr><td><code>workspace_connect_missing_socket_is_unavailable</code></td><td>A missing Connect socket surfaces as <code>Unavailable</code>.</td></tr></tbody></table>
+<p><code>tests/workspace_process.rs</code> (conductor):</p>
+<table><thead><tr><th>Test</th><th>What it proves</th></tr></thead><tbody><tr><td><code>wire_parity_framed_vs_connect_matches_in_process</code> (new)</td><td>The same template-mode scenario yields an identical normalized transcript in-process, over the <strong>framed</strong> process wire, and over the <strong>Connect</strong> process wire. This is the dual-binding parity proof for the migrated boundary.</td></tr><tr><td><code>shadow_parity_template_ops</code></td><td>In-process vs process parity (<code>prepare</code>/<code>diff</code>/<code>integrate</code>/<code>tag</code>/<code>revert</code>), now over <strong>Connect</strong> (<code>process.client()</code> over the stored wire).</td></tr><tr><td><code>shadow_parity_repo_ops</code></td><td>Repo-mode parity (<code>prepare_repo</code>/<code>commit_candidate</code>/<code>prepare_verify_checkout</code>/<code>origin_receipt</code>/<code>integrate_origin</code>/<code>revert_origin</code>), now over <strong>Connect</strong>.</td></tr><tr><td><code>staged_rebind_keeps_pinned_checkout_usable</code></td><td>An in-flight checkout (prepared + committed on server A) stays pinned across a swap: candidate server B integrates A's committed SHA, and A stays alive and reports the same candidate — over <strong>Connect</strong>.</td></tr><tr><td><code>rollback_keeps_prior_checkout_and_server</code></td><td>Candidate retired (pid gone); prior server and its committed checkout survive and still land the candidate — no state loss.</td></tr><tr><td><code>workspace_client_duplicate_id_replay_and_connection_loss</code></td><td>Raw framed <code>Client</code>: duplicate-id <code>prepare_repo</code> receipt replay, duplicate <code>integrate_origin</code> id replays while a fresh id re-runs and returns <code>Conflict</code>, post-death <code>Unavailable</code>/<code>UnknownOutcome</code>, missing socket <code>Unavailable</code> (framed path still proven; the server is spawned explicitly framed).</td></tr><tr><td><code>workspace_server_child</code></td><td>Child entry point serving the env-selected wire (no-op under a normal run).</td></tr></tbody></table>
+<h2 id="consumer-invariance-proof">Consumer-invariance proof</h2>
+<p>Phase/work logic is unchanged: <code>WorkspaceHandle</code> keeps its surface (<code>in_process</code>/<code>process</code>/<code>from_transport</code>) and delegates to whichever backend is bound; only the private wire selection and the client-construction sites changed. No contract schema changed. <code>git diff --name-only</code> (tracked) plus the new file, all within the allowed set:</p>
+<pre class="code"><code>crates/agalma-conductor/src/workspace_process.rs
+crates/agalma-conductor/tests/workspace_process.rs
+crates/agalma-ipc/src/workspace_client.rs
+crates/agalma-ipc/src/workspace_server.rs
+crates/agalma-ipc/tests/workspace_connect.rs            # new
+crates/agalma-workspace/src/server.rs
+docs/b1-workspace-evidence.md                           # this file</code></pre>
+<p>No file under <code>crates/agalma-contracts/**</code> changed; no contract schema changed. <code>crates/agalma-ipc/src/lib.rs</code> is untouched (the new entry points are reached through their module paths). The harness/sandbox/taskqueue/ledger boundary files are untouched.</p>
+<h2 id="deviations-and-notes">Deviations and notes</h2>
+<ol><li>The IPCX design D4 names a per-boundary <code>docs/ipcx-&lt;boundary&gt;-evidence.md</code>; this bead's scope extends the existing B1 workspace evidence instead, keeping the framed and Connect proofs side by side (matching IPCX.2/IPCX.3).</li><li>The workspace process wire defaults to <code>Connect</code>. <code>WorkspaceApi</code> is <code>Describe</code>-free, so the &quot;staged rebind&quot; remains a supervised-server swap with the in-flight checkout pinned to its preparing server (B1.4 note 2), now over the Connect wire.</li><li><code>WorkspaceProcess::spawn</code>/<code>spawn_with_spec</code> keep their signatures (defaulting to <code>workspace_wire()</code>); <code>spawn_with_spec_wire</code> is the explicit-wire entry point the parity test uses. The re-exec'd child serves the env-selected wire because <code>spawn_with_spec_wire</code> exports <code>AGALMA_IPC_WIRE</code> to it.</li><li><code>serve_wire</code> installs a multithread Tokio runtime for both wires. The git backend still shells out through <code>std::process</code> and needs no reactor itself, but the Connect accept loop does, so (unlike B1.4) the server now hosts one.</li><li>The Connect accept loop logs peer resets (<code>connect connection error</code>) at most; the workspace scenario's heavier disconnect/stopping sequence surfaces these benign lines in test output without affecting the transcripts.</li></ol>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="sandbox-removal-design.html">⟲ sandbox-removal-design</a><span class="step">step 8 / 31 in the ring</span><a href="b1-execution-evidence.html">b1-execution-evidence ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">b1-workspace-evidence.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

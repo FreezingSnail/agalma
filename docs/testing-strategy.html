@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="testing-strategy.md">testing-strategy.md</a></div>
+<div class="ring"><a href="web-dashboard-design.html">⟲ web-dashboard-design</a><span class="step">step 31 / 31 in the ring</span><a href="component-contracts.html">component-contracts ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li class="here"><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="testing-strategy">Testing strategy</h1>
+<p>Requested on 2026-10-14; the runner below was implemented in <code>agalma-i15</code>. <code>bash scripts/test.sh &lt;scope&gt; [selection]</code> implements concurrent focused execution and retains the existing peers/full contracts. Its own bounded verification tests live in <code>scripts/tests/</code> (<code>bash scripts/tests/run.sh</code>).</p>
+<h2 id="select-behavior-before-commands">Select behavior before commands</h2>
+<p>Each bounded bead or handoff records:</p>
+<ul><li>Changed behavior and the callers, contracts, persistence, or process boundaries that could regress.</li><li>Required cases and explicit crate/target selections; for unit tests, the relevant module or case filter. Explain why each selection belongs.</li><li>Required server binaries, environment, isolated fixture paths, and any shared resource that prevents concurrent execution.</li><li>The chosen scope, concurrency budget, and stopping condition.</li><li>A named implementation worktree/task branch, base commit, and persistent artifact root outside any worktree scheduled for removal.</li><li>Changed invariants, required property tests, generation/case budget, and replay strategy. Property tests complement concrete regression and boundary tests.</li></ul>
+<p>Start with the regression test for the changed behavior, then affected consumer tests. A source filename alone is insufficient to decide coverage: changes to a shared contract can require tests in several consuming crates. Missing coverage requires a meaningful test in the implementation task.</p>
+<p>Every behavioral change includes saved property tests that assert independent invariants over generated inputs or operation sequences. Use reproducible seeds or deterministic generation and bounded case counts. Preserve failing/minimized inputs as regression fixtures. Reuse existing infrastructure; this requirement does not authorize a new test framework or dependency.</p>
+<p>Implementation and repairs reuse a named Git worktree. Save all test sources, generators, and regression fixtures in the reviewed changes. Retain every run's logs, command/environment, source identity, seeds, results, and fixture data under <code>target/test-runs/&lt;bead-id&gt;/&lt;run-id&gt;/</code> at the recorded persistent root, including passing and interrupted runs. Use existing ScratchDir retention APIs as needed. Evidence must survive worktree removal and is never deleted without explicit user direction. After reviewed task changes are committed and merged into <code>main</code>, remove the clean task worktree as part of delivery, following the evidence checks in development-workflow.md. Preserve dirty or unmerged worktrees; no forced removal. Build that worktree with <code>CARGO_TARGET_DIR=target/worktree-caches/&lt;bead&gt;/target</code> so its cache stays outside the worktree, and reclaim the cache with <code>make sweep-apply</code> (or <code>make worktree-remove BEAD=&lt;id&gt;</code>) once the worktree is gone. <code>target/test-runs</code> is retained evidence and is never swept.</p>
+<p>Do not routinely run whole-crate or workspace suites before editing. A baseline is useful only to reproduce a concrete failure or satisfy required paired evidence; use the same necessary selection. After repair, rerun failed selections and those affected by the repair. Passing selections need repetition only when their inputs or prerequisites changed.</p>
+<p>A whole-crate run requires a stated coverage reason. Workspace acceptance belongs to an integration or release gate, once for its coherent source state, or a named integration risk that focused checks cannot resolve. Frozen acceptance and protected promotion checks remain mandatory. Narrowing a task's frozen commands requires the existing amendment authority; do not silently replace them.</p>
+<h2 id="current-commands-and-an-example">Current commands and an example</h2>
+<p>Use the unified runner: <code>bash scripts/test.sh focused &lt;selection&gt;</code> (or <code>make test-focused SELECTION='&lt;selection&gt;'</code>). A selection is one or more units, each naming an explicit crate and target/module:</p>
+<pre class="code"><code>-p &lt;crate&gt; (--test &lt;name&gt;|--lib|--bin &lt;name&gt;|--example &lt;name&gt;|--bench &lt;name&gt;) [filter...] [--exact]</code></pre>
+<p>Multiple units select multiple crates/targets in one invocation, and each unit's filter applies only to its own target. The runner compiles exactly the selected targets once, then runs the compiled binaries through a bounded pool. It records the exact commands, raw logs, exit status, compile and execution durations, resource groups, and observed peak concurrency under <code>target/test-runs/&lt;bead&gt;/&lt;run-id&gt;/</code>.</p>
+<p>Focused-runner controls:</p>
+<ul><li>Isolation markers, per unit, default to conservative serialization: <code>--isolated</code> (known-isolated; may overlap), <code>--group &lt;name&gt;</code> (named exclusive resource; the same group serializes), or no marker (unknown; serializes with every unit). Two <code>--isolated</code> units overlap when <code>JOBS=2</code>.</li><li>Prerequisites: <code>--prereq &lt;crate&gt;</code> builds that crate's bins; <code>--prereq-bins</code> builds all workspace bins. They are runner options, not Cargo test args.</li><li>Budget: <code>JOBS</code> (default 2, capped by CPUs) and <code>THREADS</code> (per-binary case threads; default divides the CPU budget). The effective budget is printed.</li><li>Rejections: an empty or invalid focused selection fails before a build; a filter matching no required cases fails; an ignored-only required selection cannot pass; any failing selection fails the run even when another passes.</li><li>Evidence: <code>$RUN_ROOT/$BEAD/$RUN_ID/</code> (<code>RUN_ROOT</code> defaults to the primary checkout's <code>target/test-runs</code>, so it survives worktree removal). Raw logs and status are authoritative.</li><li>Prerequisites on PATH: <code>jq</code> (focused-selection validation against <code>cargo metadata</code>, and compile-output parsing) and <code>rg</code> (peer-scope smoke-evidence checks). A missing tool fails the scope; the runner does not silently fall back to a narrower check.</li></ul>
+<p>Keep Rust's existing case concurrency unless the selected cases require isolation.</p>
+<p>For SF.4 cancellation, retain the required conductor <code>sf_cancel</code> acceptance target. Candidate supporting kernel selections are <code>exec_api</code>, <code>transition</code>, and <code>recovery</code> because cancellation changes adapter semantics, state transitions, and restart behavior. Review the actual change before finalizing these selections:</p>
+<pre class="code"><code class="lang-sh">cargo test --offline --locked -p agalma-kernel --test exec_api --test transition --test recovery
+cargo test --offline --locked -p agalma-conductor --test sf_cancel</code></pre>
+<p>These are a selection example, not executed evidence or an amendment to SF.4's frozen inputs. They do not establish coverage of every cancellation case. Build only their required server prerequisites and record them separately.</p>
+<p>The available <code>target/test-runs/agalma-5fy.4/kernel-pre.log</code> records 58.71 seconds of compilation followed by unrelated targets such as activation, activity, and pack integrity. It ends during waiting; it does not establish a complete pass. Compilation time and test execution time must be reported separately before claiming a performance improvement.</p>
+<h2 id="unified-runner-concurrency-contract">Unified runner concurrency contract</h2>
+<p>The implemented runner (<code>bash scripts/test.sh &lt;scope&gt; [selection]</code>, agalma-i15) follows the contract below. Use Cargo and the native Rust test harness; introducing a test framework or automatic dependency graph is outside this task.</p>
+<ol><li>Validate a bounded list of explicit selections. Reject a focused request with no target/module selection. Support several crates/targets in one request; preserve target-specific filters rather than applying one filter accidentally to every target. Never evaluate selections as shell code.</li><li>Coordinate compilation in the stable Cargo cache. Build only selected test executables and declared prerequisites, capturing executable paths from Cargo's machine output. Do not run multiple competing Cargo builds against that cache as a substitute for parallel test execution. Freeze the build inputs for the run; a relevant concurrent edit invalidates completion for the prior selection.</li><li>Execute the compiled native test binaries through a bounded worker pool. Default to at most two simultaneous binaries, capped by available CPUs, with per-binary thread budgets whose sum does not exceed the CPU budget. Allow explicit job/thread overrides and print the effective budget. Keep child-process capacity in mind; process-heavy checks can need a lower budget.</li><li>Only overlap selections with known isolated resources. Assign named exclusion groups for shared ports, fixed fixture paths, global services, or binaries that another build might overwrite. Unknown isolation serializes conservatively. A per-binary <code>--test-threads=1</code> does not prevent interference between binaries. Reuse established alternate caches only when necessary for executable safety.</li><li>Preserve Cargo-provided runtime library paths, working directory, task environment, and required compile-time binary prerequisites. Process and crash tests must retain their child re-execution semantics. Direct execution must reproduce the selected Cargo command's behavior before it is accepted.</li><li>Discover matching required cases before execution and reject empty required selections. Required ignored cases cannot count as coverage. Record selected, executed, failed, and ignored cases per target; child harness output must not inflate the top-level counts. Preserve case filters and any required <code>--exact</code>.</li><li>Give each target a raw log and exit status under one run directory in <code>target/test-runs/</code>. Record exact commands, compilation and execution duration, resource groups, and the observed peak concurrent binaries. Stream labeled progress. Every launched child must be reaped; any failure fails the run and interruption leaves an incomplete outcome with cleanup of owned processes.</li></ol>
+<p>Keep focused, peers, and full as the only scopes. The delivered runner implements concurrent focused execution and retains the existing peers/full contracts. Full retains ordinary Cargo execution; accelerating it is outside this task. The peer script is retained only as the documented compatibility entry, forwarding to the <code>peers</code> scope and preserving the broader checks for callers that require them. Paid-provider checks remain separately authorized.</p>
+<h2 id="acceptance-for-the-implementation">Acceptance for the implementation</h2>
+<ul><li>An empty or invalid focused selection fails before a build; a filter matching no required cases fails. Ignored-only required selections cannot pass.</li><li>Two independent selected binaries overlap when jobs=2; an exclusion group serializes them. jobs=1 runs the same cases and yields equivalent results.</li><li>Target-specific filters select the intended nonzero cases across multiple targets and crates. An unrelated test target is neither built nor executed.</li><li>A failing selection propagates failure even when another selection passes. Interruption records incomplete status, reaps children, and preserves logs.</li><li>At least one existing process/crash selection runs through the new focused path with its prerequisites and child re-execution intact. Validate environment parity against the documented scoped Cargo command.</li><li>Existing peers/full scope requirements in development-workflow.md are retained. Required acceptance scopes execute once; do not append a workspace suite to focused-runner development by default.</li><li>Report durations and observed concurrency for the same selection in serial and concurrent mode. Accept behavioral correctness without inventing a speedup threshold; compilation may dominate and process contention may erase savings.</li><li>Save bounded property tests for selection isolation, concurrency/exclusion limits, and outcome aggregation using independent invariants over generated selections and result sequences. Retain their replay inputs and all run evidence at the persistent artifact root; implement and repair in the named task worktree.</li></ul>
+<p>Stop after this runner and its guidance satisfy these checks. These acceptance items are covered by <code>scripts/tests/run.sh</code> (property tests in <code>scripts/tests/runner-properties.sh</code>; end-to-end cases in <code>scripts/tests/runner-focused.sh</code>), with evidence under the persistent <code>target/test-runs/&lt;bead&gt;/&lt;run-id&gt;/</code> root. Automatic selection, factory scheduling changes, a new framework, build-trigger repair, and changes to frozen historical receipts require separate decisions.</p>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="web-dashboard-design.html">⟲ web-dashboard-design</a><span class="step">step 31 / 31 in the ring</span><a href="component-contracts.html">component-contracts ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">testing-strategy.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

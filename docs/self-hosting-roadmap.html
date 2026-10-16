@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="self-hosting-roadmap.md">self-hosting-roadmap.md</a></div>
+<div class="ring"><a href="m1-workloop.html">⟲ m1-workloop</a><span class="step">step 12 / 31 in the ring</span><a href="self-mutation-roadmap.html">self-mutation-roadmap ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li class="here"><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="self-hosting-roadmap">Self-hosting roadmap</h1>
+<p>Planning snapshot 2026-10-12. The path is reliable self-build -&gt; hub plugins -&gt; measured prompt/skill improvement -&gt; remaining M2 services -&gt; M3 operation -&gt; P1 core autonomy. Exact first-tranche contracts are in <a href="self-mutation-contracts.html">self-mutation-contracts.md</a>; later implementation contracts and acceptance are in <a href="self-mutation-roadmap.html">self-mutation-roadmap.md</a>. The original architecture milestone requirements remain in force.</p>
+<h2 id="current-evidence-and-gaps">Current evidence and gaps</h2>
+<table><thead><tr><th>Area</th><th>Observed state</th><th>Required successor</th></tr></thead><tbody><tr><td>M0/B0/M1, replaceable B1 seams and Connect transport</td><td>Existing delivery/evidence; isolated boundary parity does not establish every production binding</td><td>CV production service convergence</td></tr><tr><td>Harness readiness/socket path/process default</td><td><code>agalma-qww</code>, <code>agalma-acs</code>, <code>agalma-3ej</code>, <code>agalma-ud1</code> closed</td><td>Reuse receipts; SF.9 uses the real current path</td></tr><tr><td>Planning pipeline</td><td>CP implementation landed; <code>agalma-i5h.7</code> closed for authored/validated/staged decomposition</td><td>SF.10 fresh goal through execution/review/closure; SF.11 prerequisite-aware review</td></tr><tr><td>TUI</td><td><code>agalma-3kr</code> closed; duplicate pilot reconciled with 38 passing focused tests</td><td>HP.6 dynamic plugin content; SF.4 durable cancellation</td></tr><tr><td>Reliable self-build</td><td>Missing immutable inputs, protected oracle, settled cancellation, fail-closed stop and pre-request spending admission</td><td>SF, <code>agalma-5fy</code>, 11 staged tasks</td></tr><tr><td>Independently installed plugins</td><td>Common platform is planned, not implemented</td><td>HP, <code>agalma-jmr</code>, 8 staged tasks</td></tr><tr><td>Measured first mutation</td><td>User selected builder prompts/context skills first, task success with regression/spending limits</td><td>SM, <code>agalma-cg9</code>, 9 staged tasks</td></tr><tr><td>Remaining M2</td><td>Nerve/context/repair, memory, model onboarding and evaluated deciders remain required</td><td>MX, <code>agalma-xlw</code>, 8 staged tasks</td></tr><tr><td>Production API convergence</td><td>Current work still uses concrete seed; auxiliary SQLite deviation remains historical</td><td>CV, <code>agalma-pob</code>, 8 staged tasks</td></tr><tr><td>Always-on operation</td><td>No complete 72-hour operations proof</td><td>M3, <code>agalma-3q5</code>, 9 staged tasks</td></tr><tr><td>Core autonomy</td><td>Transitional human code oversight remains</td><td>P1, <code>agalma-52v</code>, 8 staged tasks</td></tr></tbody></table>
+<h2 id="sequencing-and-release">Sequencing and release</h2>
+<p>The shared first-tranche design gate is <code>agalma-fjq</code>; its design receipt records schemas, examples, failure/compatibility semantics, ownership and decomposition checks. Closing that design gate does not release implementation tasks. At that design audit, all 61 planned children were staged/deferred. Subsequent explicit operator releases and implementation reviews are recorded in bd and <a href="opencode-parallel-batch-1.html">the batch handoff</a>; this planning snapshot does not override their current status. Later MX/CV/M3/P1 work also blocks on <code>agalma-16k</code>, which freezes those seams against actual HP/SM runtime evidence. See <a href="self-mutation-standup-beads.html">standup beads</a> and <a href="self-mutation-roadmap-beads.html">later roadmap beads</a> for exact IDs/dependencies.</p>
+<ol><li>SF builds reliable immutable task delivery, execution-scoped recovery, cancellation, stop/scope enforcement, request liability reservations and independently selected builder/planner/reviewer routes. SF.9 and SF.10 prove self-build and the fresh full pipeline under bootstrap oversight.</li><li>HP supplies independent packages, discovery, registry/supervision, common IPC, ledger namespaces, declarative UI and durable actions. Its exit installs an unfamiliar plugin without rebuilding the hub.</li><li>SM proposes and directive-authorizes prompt/skill tasks, compares immutable baseline/candidate on protected paired trials, qualifies success gains with regression/economic limits, canaries and retains or rolls back an improvement. Screening never substitutes for qualification. Plugins follow an allowlist.</li><li>MX completes remaining M2 obligations; CV migrates actual consumers onto the common platform. M2 cannot close solely because its first SM children close.</li><li>M3 extends release policy with cadence, durable scheduling, aggregate cash/quota/local limits, supervision, complete backups, restore/fault drills and genuine 72-hour evidence. Display-only or post-spend budget checks do not satisfy admission enforcement.</li><li>P1 adds reproducible immutable core candidates, an external recovery owner, isolated shadow/canary, fenced drain/activation and automatic compatible rollback. Initial autonomous core updates preserve the ledger schema. Binary rollback never rewinds the live database. Enable code autonomy only after the original protected acceptance/evaluator, budget, reconciliation and rollback requirements have independent evidence.</li></ol>
+<p>Live provider prices/request limits are not certified by this planning session. Unsupported profiles deny paid dispatch until SF.7 records reviewed evidence. Future test names in beads are implementation deliverables, not current passing tests. This session neither releases tasks nor performs paid inference.</p>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="m1-workloop.html">⟲ m1-workloop</a><span class="step">step 12 / 31 in the ring</span><a href="self-mutation-roadmap.html">self-mutation-roadmap ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">self-hosting-roadmap.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

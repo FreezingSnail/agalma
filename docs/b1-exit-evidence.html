@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="b1-exit-evidence.md">b1-exit-evidence.md</a></div>
+<div class="ring"><a href="b1-extraction.html">⟲ b1-extraction</a><span class="step">step 20 / 31 in the ring</span><a href="b1-f3-evidence.html">b1-f3-evidence ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li class="here"><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="b1-exit-evidence-component-extraction">B1 exit evidence — component extraction</h1>
+<p>Bead: <code>agalma-0ht.9</code> (B1.8). Epic: <code>agalma-0ht</code> (B1). Date: 2026-10-10. Design: <code>docs/b1-extraction.md</code>. Base at B1 start: <code>d0ece01</code> (README), design <code>c63f210</code>; HEAD at exit: <code>767c3b0</code>.</p>
+<p>Epic exit criteria (<code>docs/durable-execution-bootstrap.md</code> §Follow-on bootstrap project, <code>docs/architecture.md</code> §13 B1): the component map is realized where replacement pressure exists; every extraction passed dual-binding evidence, staged rebind, and rollback without state loss. An extraction is complete when replacement through the declared API is proven, not when a process was split.</p>
+<h2 id="extractions">Extractions</h2>
+<p>All Tier-1 seams now have a process boundary behind their frozen contract. The transport is the framed JSON protocol from <code>agalma-ipc</code> (D1); clients and server runtimes follow the same shape per boundary.</p>
+<table><thead><tr><th>Boundary</th><th>Bead</th><th>Commit</th><th>Evidence</th><th>Selection</th><th>Parity</th><th>Rebind</th><th>Rollback</th></tr></thead><tbody><tr><td><code>HarnessApi</code></td><td><code>agalma-0ht.3</code></td><td><code>dfa6142</code></td><td><code>docs/b1-harness-evidence.md</code></td><td><code>AGALMA_HARNESS_TRANSPORT</code></td><td>in-process vs process, reference impl, transcript + artifact digest</td><td>between attempts, pinned in-flight op</td><td>without state loss</td></tr><tr><td><code>SandboxApi</code></td><td><code>agalma-0ht.4</code></td><td><code>127f49f</code></td><td><code>docs/b1-sandbox-evidence.md</code></td><td>supervised <code>SandboxProcess</code>/<code>SandboxSource</code> (spawned where a sandbox-backed server runs)</td><td>launch/alive/terminate incl. process-group kill</td><td>between operations</td><td>without state loss</td></tr><tr><td><code>WorkspaceApi</code></td><td><code>agalma-0ht.5</code></td><td><code>78ab8e6</code></td><td><code>docs/b1-workspace-evidence.md</code></td><td><code>AGALMA_WORKSPACE_TRANSPORT</code></td><td>prepare/diff/integrate/tag/revert, produced git state</td><td>between operations, pinned checkout</td><td>without state loss</td></tr><tr><td><code>TaskQueueApi</code></td><td><code>agalma-0ht.6</code></td><td><code>53ebe0c</code></td><td><code>docs/b1-taskqueue-evidence.md</code></td><td><code>AGALMA_TASKQUEUE_TRANSPORT</code></td><td>scratch bd store sequences, projection compare</td><td>between operations, pinned claim</td><td>without state loss</td></tr><tr><td><code>LedgerApi</code></td><td><code>agalma-0ht.7</code></td><td><code>adf21d0</code></td><td><code>docs/b1-ledger-evidence.md</code></td><td><code>AGALMA_LEDGER_TRANSPORT</code></td><td>recovery-pack scenarios, normalized snapshot</td><td>quiesced, snapshot export/import, pinned op settles on new server</td><td>without state loss</td></tr><tr><td><code>ExecutionApi</code> (kernel candidate)</td><td><code>agalma-0ht.8</code></td><td><code>767c3b0</code></td><td><code>docs/b1-execution-evidence.md</code></td><td><code>AGALMA_EXECUTION_TRANSPORT</code> (candidate only)</td><td>recovery-pack scenarios at engine-op level; <code>start</code>/<code>cancel</code>/<code>status</code> faithful over the contract</td><td>pinned <code>begin_lease</code> op across swap</td><td>prior binding survives with pending work</td></tr></tbody></table>
+<p>Boundary resolution records, per extraction, are in each evidence doc's deliverables/deviations sections, including the B1.7 finding that the seed executor's activity closures are consumer code and cannot cross a process boundary — the B0 kernel is the process-ready execution boundary.</p>
+<h2 id="cross-cutting-gates">Cross-cutting gates</h2>
+<ul><li><strong>Architecture test.</strong> B1.1 extended it with the Cargo.toml normal-dependency edge check (no impl→impl edges; <code>agalma-ipc</code> infrastructure). One temporary sanctioned server-host edge (harness→sandbox, B1.2) was removed in B1.3; both checks are strict at HEAD and green.</li><li><strong>Contracts unchanged.</strong> <code>git diff c63f210..HEAD --stat -- crates/agalma-contracts/</code> is empty: no schema, ID, trait, or error change across all extractions.</li><li><strong>Consumer invariance.</strong> Each evidence doc carries its <code>git diff --name-only</code> proof; conductor changes are construction-site/wiring only, phase logic and activity bodies unchanged. Kernel/execution source changes were seam wiring (generics, <code>Send</code> bounds, serde derives for the wire) — no behavior change.</li><li><strong>Test suite.</strong> At HEAD: <code>cargo test --offline</code> — 70 test-result groups, 0 failures (workspace + all boundary process suites; real-binary and re-exec fallback paths both exercised).</li></ul>
+<h2 id="limitations-and-open-items">Limitations and open items</h2>
+<ol><li><strong><code>ExecutionApi</code> adapter gap (tracked: <code>agalma-5de</code>, B1-F1).</strong> <code>step</code>/<code>recover</code> return <code>UnsupportedCapability</code> over the process boundary because effect dispatch needs a handler registry that can cross it. Parity for those flows is proven at the engine-op level (<code>ExecutionOps</code>). The kernel remains a candidate; the production default is still the seed executor (<code>docs/b1-execution-evidence.md</code>).</li><li><strong>Auxiliary ledger connections (tracked: <code>agalma-1o3</code>, B1-F2).</strong> A few short-lived conductor helpers still open direct SQLite (secondary WAL) connections under <code>AGALMA_LEDGER_TRANSPORT=process</code>; the durable-state owner and export/import generation remain the supervised server.</li><li><strong>Process defaults and the execution deferral.</strong> Harness defaults to process after <code>agalma-ud1</code>'s live Connect smoke. <code>agalma-fez</code> bounds peer sockets and changes ledger, workspace, and task queue to process defaults; sandbox is always process. Explicit <code>in-process</code> overrides remain available. Execution keeps its in-process default until CV.1 (<code>agalma-pob.1</code>) integrates the kernel into the production work loop. See <code>docs/b1-f3-evidence.md</code> §§5–6.</li><li><strong>Live OpenCode process path.</strong> <code>agalma-ud1</code> proved the default process path with a paid Connect-wire run on an isolated scratch clone. FEZ peer smokes exercise real local server processes without inference; they do not establish unattended operation or the later plugin platform acceptance.</li></ol>
+<h2 id="verdict">Verdict</h2>
+<p>The component map is realized for the harness, sandbox, workspace, task-queue, and ledger boundaries with full dual-binding parity, staged rebind, and rollback evidence; the execution boundary is realized at the kernel's engine surface with the <code>ExecutionApi</code> adapter gap explicitly tracked (<code>agalma-5de</code>). Residual items are tracked as <code>agalma-1o3</code> and <code>agalma-rvj</code>. Epic <code>agalma-0ht</code> closes on this record.</p>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="b1-extraction.html">⟲ b1-extraction</a><span class="step">step 20 / 31 in the ring</span><a href="b1-f3-evidence.html">b1-f3-evidence ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">b1-exit-evidence.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

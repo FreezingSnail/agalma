@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="ipc-exit-evidence.md">ipc-exit-evidence.md</a></div>
+<div class="ring"><a href="b0-exit-evidence.html">⟲ b0-exit-evidence</a><span class="step">step 23 / 31 in the ring</span><a href="planning-pipeline.html">planning-pipeline ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li class="here"><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="ipcx-exit-evidence-connectrpc-transport-for-nano-services">IPCX exit evidence — ConnectRPC transport for nano services</h1>
+<p>Bead: <code>agalma-ebg.9</code> (IPCX.8). Epic: <code>agalma-ebg</code> (IPC v2). Date: 2026-10-12. Design: <code>docs/ipc-connect-design.md</code> (<code>agalma-ebg.1</code>, commit <code>ca172d2</code>). B1 recipe: <code>docs/b1-extraction.md</code> (its D1 superseded for transport only). Foundation: <code>agalma-ebg.2</code> (commit <code>79e3b42</code>). HEAD at exit: <code>ca64d9e</code>.</p>
+<p>Epic exit criteria (<code>agalma-ebg</code> description): swap the cross-process nano-service transport from custom framed JSON to ConnectRPC over Unix domain sockets, envelope-first — <code>agalma-contracts</code> serde JSON schemas and the ledger's persisted JSON stay unchanged; all six Tier-1 seams migrate with the B1 evidence recipe (dual-binding parity, staged rebind, rollback); the <code>agalma-www</code> head-of-line issue is resolved; no consumer-code diff beyond construction sites.</p>
+<h2 id="component-map-every-tier-1-seam-on-the-connect-envelope">Component map — every Tier-1 seam on the Connect envelope</h2>
+<p>The byte transport under every already-extracted process boundary is now ConnectRPC (Connect protocol, HTTP/2 over a Unix domain socket) with the frozen <code>IpcRequest</code>/<code>IpcResponse</code>/<code>IpcError</code> envelope (<code>crates/agalma-ipc/proto/ipc.proto</code>). Envelope semantics are unchanged: <code>v</code>, <code>id</code>, <code>method</code>, <code>params_json</code>; duplicate-<code>id</code> receipt replay; in-band <code>ContractError</code> codes; <code>UnknownOutcome</code>; version refusal; unknown-method <code>UnsupportedCapability</code>. The in-process bindings are untouched.</p>
+<p>Each boundary reads the wire it serves from the shared selector <code>Wire::from_env(Wire::Connect)</code> — the env var is <code>AGALMA_IPC_WIRE</code> (<code>connect</code> default, <code>framed</code> restores the B1 length-prefixed transport for parity runs). This is distinct from the B1 binding selector <code>AGALMA_*_TRANSPORT</code> (<code>in-process</code> default, <code>process</code> optional), which chooses in-process vs process, not the wire under a process binding.</p>
+<table><thead><tr><th>Boundary</th><th>Bead</th><th>Commit</th><th>Wire default</th><th>Wire selector</th><th>Evidence</th><th>Parity</th><th>Rebind</th><th>Rollback</th></tr></thead><tbody><tr><td><code>HarnessApi</code></td><td><code>agalma-ebg.3</code></td><td><code>1c1d89c</code></td><td><code>Connect</code></td><td><code>AGALMA_IPC_WIRE</code> (<code>Wire::from_env(Wire::Connect)</code>)</td><td><code>docs/b1-harness-evidence.md</code> §IPCX.2</td><td>in-process vs framed vs Connect, typed transcript + wire-independent bind plan</td><td>pinned in-flight op across swap</td><td>prior binding restored, no state loss</td></tr><tr><td><code>SandboxApi</code></td><td><code>agalma-ebg.4</code></td><td><code>dd18375</code></td><td><code>Connect</code></td><td><code>AGALMA_IPC_WIRE</code></td><td><code>docs/b1-sandbox-evidence.md</code> §IPCX.3</td><td>in-process vs framed vs Connect, launch/alive/terminate</td><td>between operations (supervised swap)</td><td>prior server, no state loss</td></tr><tr><td><code>WorkspaceApi</code></td><td><code>agalma-ebg.5</code></td><td><code>2adf23c</code></td><td><code>Connect</code></td><td><code>AGALMA_IPC_WIRE</code></td><td><code>docs/b1-workspace-evidence.md</code> §IPCX.4</td><td>full <code>WorkspaceOps</code> surface, framed vs Connect</td><td>pinned checkout across swap</td><td>prior checkout + server survive</td></tr><tr><td><code>TaskQueueApi</code></td><td><code>agalma-ebg.6</code></td><td><code>5a0a359</code></td><td><code>Connect</code></td><td><code>AGALMA_IPC_WIRE</code></td><td><code>docs/b1-taskqueue-evidence.md</code> §IPCX.5</td><td>scratch bd sequences, projection compare</td><td>pinned claim across swap</td><td>prior claim + server survive</td></tr><tr><td><code>LedgerApi</code></td><td><code>agalma-ebg.7</code></td><td><code>062a9b4</code></td><td><code>Connect</code></td><td><code>AGALMA_IPC_WIRE</code></td><td><code>docs/b1-ledger-evidence.md</code> §IPCX.6</td><td>33 methods incl. control receipts; file-based snapshot path unchanged</td><td>quiesced export/import, pinned op settles</td><td>prior state + server survive</td></tr><tr><td><code>ExecutionApi</code> / kernel</td><td><code>agalma-ebg.8</code></td><td><code>ca64d9e</code></td><td><code>Connect</code></td><td><code>AGALMA_IPC_WIRE</code></td><td><code>docs/b1-execution-evidence.md</code> §IPCX.7</td><td>engine-op transcript + caller-side effect dispatch (<code>step</code>/<code>recover</code>)</td><td>export/import rebind, <code>recover()</code> reconciles pending</td><td>prior binding survives with pending work</td></tr></tbody></table>
+<p>Sandbox has no <code>in-process</code> transport (it is always the supervised process boundary, per B1); every other boundary keeps its B1 <code>AGALMA_*_TRANSPORT</code> binding selector and only gains the <code>AGALMA_IPC_WIRE</code> wire selector.</p>
+<p>Foundation (<code>agalma-ebg.2</code>, <code>79e3b42</code>): <code>ipc.proto</code> envelope, <code>connectrpc-build</code> codegen in <code>build.rs</code>, the UDS accept loop and Connect client core (<code>crates/agalma-ipc/src/connect.rs</code>), and the Connect-level conformance harness (<code>crates/agalma-ipc/tests/connect_conformance.rs</code>). <code>agalma-www</code> (IPCX.1) is closed by the HTTP/2 multiplexing this replaces serial framed connections with.</p>
+<h2 id="per-boundary-evidence-links">Per-boundary evidence links</h2>
+<p>Each IPCX section extends the boundary's existing B1 evidence doc so the framed and Connect proofs sit side by side (IPCX.2 deviation 1):</p>
+<ul><li>Harness — <code>docs/b1-harness-evidence.md</code>, section <code># IPCX.2 — harness boundary on the Connect transport</code>.</li><li>Sandbox — <code>docs/b1-sandbox-evidence.md</code>, section <code># IPCX.3 — sandbox boundary on the Connect transport</code>.</li><li>Workspace — <code>docs/b1-workspace-evidence.md</code>, section <code># IPCX.4 — workspace boundary on the Connect transport</code>.</li><li>Task queue — <code>docs/b1-taskqueue-evidence.md</code>, section <code># IPCX.5 — task-queue boundary migration to Connect (agalma-ebg.6)</code>.</li><li>Ledger — <code>docs/b1-ledger-evidence.md</code>, section <code>## IPCX.6 — ledger boundary migration to Connect (agalma-ebg.7)</code>.</li><li>Execution / kernel — <code>docs/b1-execution-evidence.md</code>, section <code>## IPCX.7 — execution/kernel boundary on Connect (agalma-ebg.8)</code>.</li></ul>
+<p>Per-bead implementation reports: <code>target/worker-output/agalma-ebg.2.md</code> … <code>target/worker-output/agalma-ebg.8.md</code>.</p>
+<h2 id="architecture-tests-design-d6">Architecture tests (design D6)</h2>
+<p><code>crates/agalma-conductor/tests/architecture.rs</code> — 9 tests, all green (<code>cargo test --offline -p agalma-conductor --test architecture</code>). The design D6 checks and the IPCX.8 additions:</p>
+<table><thead><tr><th>Test</th><th>What it pins</th></tr></thead><tbody><tr><td><code>implementation_crates_do_not_depend_on_each_other_in_cargo_toml</code></td><td>no impl→impl normal dependency edge (B1.1)</td></tr><tr><td><code>implementation_crates_do_not_reference_each_other</code></td><td>no cross-impl source reference (B1.1)</td></tr><tr><td><code>connect_stack_is_confined_to_agalma_ipc</code></td><td><code>connectrpc</code>/<code>buffa</code> <strong>and</strong> the build-time <code>connectrpc-build</code>/<code>buffa-codegen</code> appear in normal <em>or</em> build dependency tables only in <code>agalma-ipc</code>; <code>agalma-ipc</code> owns all four (IPCX.1 + IPCX.8)</td></tr><tr><td><code>connect_stack_source_is_confined_to_agalma_ipc</code></td><td>no crate but <code>agalma-ipc</code> <em>names</em> the Connect stack in source (comments/strings stripped) — the transport is reached only through the <code>agalma-ipc</code> boundary (IPCX.8)</td></tr><tr><td><code>implementation_crates_do_not_reference_conductor</code></td><td>no impl crate imports <code>agalma_conductor</code> in source (IPCX.1)</td></tr><tr><td><code>implementation_crates_do_not_depend_on_conductor_in_cargo_toml</code></td><td>no impl crate declares a normal/build/dev Cargo dependency on <code>agalma-conductor</code> (IPCX.8)</td></tr><tr><td><code>build_dependency_parser_reads_only_build_table</code></td><td>parser unit test for the build-dependency scan (IPCX.8)</td></tr><tr><td><code>cargo_toml_scan_ignores_dev_dependencies</code></td><td>parser unit test: dev-deps out of scope for impl→impl (B1.1)</td></tr><tr><td><code>comment_stripper_ignores_comments_but_keeps_code</code></td><td>scanner unit test (B1.1)</td></tr></tbody></table>
+<p>The confinement proofs are manifest-level (normal + build tables) and source-level; dependency direction <code>conductor -&gt; implementations -&gt; contracts</code> holds at both levels.</p>
+<h2 id="offline-build-proof">Offline build proof</h2>
+<p>The Connect stack was fetched once at the foundation (<code>agalma-ebg.2</code>: <code>cargo fetch</code>), after which every bead built <code>--offline</code> with no hidden fetch (design D2; <code>docs/m0-dependencies.md</code>).</p>
+<table><thead><tr><th>Command</th><th>Result</th></tr></thead><tbody><tr><td><code>cargo fetch --offline</code></td><td>exit 0, <strong>empty output</strong> — the fetch-needed list is empty (all reads already cached)</td></tr><tr><td><code>cargo build --offline --workspace</code></td><td>exit 0, clean (compiles all crates incl. the Connect stack)</td></tr><tr><td><code>cargo test --offline -p agalma-conductor --test architecture</code></td><td>9 passed, 0 failed</td></tr></tbody></table>
+<p>No new dependency was added by any boundary bead (IPCX.2–IPCX.7); the pins (<code>connectrpc = 0.9.1</code>, <code>buffa = 0.9.2</code>, <code>connectrpc-build = 0.9.0</code>, <code>buffa-codegen = 0.9.2</code>, plus the hyper/hyper-util/tower/http transitives) are unchanged from the foundation.</p>
+<h2 id="conformance-suite-summary">Conformance-suite summary</h2>
+<p><code>cargo test --offline -p agalma-ipc</code> — <strong>88 passed, 0 failed</strong> (49 unit + 39 integration; doc-tests ignored):</p>
+<table><thead><tr><th>Suite</th><th>Tests</th><th>Focus</th></tr></thead><tbody><tr><td><code>src/lib.rs</code> unittests</td><td>49</td><td>envelope, framing, receipts, dispatch, errors</td></tr><tr><td><code>tests/conformance.rs</code></td><td>14</td><td>framed-wire conformance (envelope semantics retained)</td></tr><tr><td><code>tests/connect_conformance.rs</code></td><td>9</td><td>Connect-level: echo round trip, duplicate-id replay, replay across reconnect, <code>UnknownOutcome</code> in-band, contract error, unknown method, missing socket → <code>Unavailable</code>, version mismatch → <code>Protocol</code>, HTTP/2 multiplexing</td></tr><tr><td><code>tests/harness_connect.rs</code></td><td>4</td><td><code>HarnessApi</code> framed-vs-Connect transcript, live <code>describe</code>, missing socket, wire selector</td></tr><tr><td><code>tests/sandbox_connect.rs</code></td><td>2</td><td><code>SandboxApi</code> framed-vs-Connect, missing socket</td></tr><tr><td><code>tests/workspace_connect.rs</code></td><td>2</td><td><code>WorkspaceOps</code> framed-vs-Connect, missing socket</td></tr><tr><td><code>tests/taskqueue_connect.rs</code></td><td>2</td><td>task-queue framed-vs-Connect, missing socket</td></tr><tr><td><code>tests/ledger_connect.rs</code></td><td>3</td><td>33-method surface framed-vs-Connect, missing socket, control-receipt ops present</td></tr><tr><td><code>tests/execution_connect.rs</code></td><td>3</td><td>execution + handler-registry framed-vs-Connect, missing socket, handler ops present</td></tr></tbody></table>
+<p>Per-boundary conductor process suites run the same scenario over both wires and match the in-process transcript (counts recorded at each bead landing): <code>harness_process</code> 14, <code>sandbox_process</code> 7, <code>workspace_process</code> 7, <code>taskqueue_process</code> 8, <code>ledger_process</code> 10, <code>execution_process</code> 10.</p>
+<h2 id="consumer-invariance">Consumer invariance</h2>
+<ul><li><code>crates/agalma-contracts/**</code> is unchanged across the epic: no schema, ID, trait, or error change (each boundary evidence doc carries its <code>git diff --name-only</code> proof).</li><li>Conductor changes are construction-site/wiring only: private wire selection, <code>spawn_with_spec_wire</code>s, client construction. Phase/activity logic is unchanged during IPCX. Subsequent <code>agalma-ud1</code> and <code>agalma-fez</code> work makes the Connect process transport the default for harness, ledger, workspace and task queue; sandbox already uses a process. See <code>docs/b1-f3-evidence.md</code> §§5–6.</li><li>Envelope semantics are preserved verbatim — the Connect path reuses <code>Server::dispatch</code>; no envelope code was forked.</li></ul>
+<h2 id="residual-risks-and-deviations">Residual risks and deviations</h2>
+<ol><li><strong>Hand-rolled proto reader (foundation deviation, tracked in <code>docs/m0-dependencies.md</code>).</strong> <code>connectrpc-build</code> shells out to <code>protoc</code>/<code>buf</code>; neither exists offline and neither may be downloaded, so <code>crates/agalma-ipc/build.rs</code> reads <code>ipc.proto</code> with a small in-repo proto3 reader and hands the codegen a <code>FileDescriptorSet</code>. <code>ipc.proto</code> stays the source of truth; codegen runs at build time; builds stay offline.</li><li><strong><code>Stream</code> RPC reserved, not generated.</strong> The envelope proto carries only <code>rpc Call(...)</code>; server streaming for future event push is reserved in a comment. No Tier-1 seam needs streaming for parity. The hand-rolled proto reader does not yet parse <code>stream</code> modifiers, so adding the reserved RPC later needs a reader extension.</li><li><strong>hyper-util accept loop.</strong> <code>connectrpc</code> 0.9.1 has no public <code>Server::serve_connection</code>; the UDS accept loop uses <code>hyper_util::server::conn::auto::Builder::serve_connection</code>, one task per accepted connection (<code>crates/agalma-ipc/src/connect.rs::serve</code>). This is the documented UDS path and supplies the HTTP/2 multiplexing that closes <code>agalma-www</code>.</li><li><strong>Nested <code>block_on</code> fix (<code>agalma-ebg.8</code>).</strong> The kernel server both <em>serves</em> over Connect and calls its <code>LedgerClient</code> synchronously from inside the async Connect handler; the framed client was synchronous so this was latent, but over Connect <code>Runtime::block_on</code> panics (&quot;cannot start a runtime from within a runtime&quot;). <code>agalma_ipc::block_on_nested</code> (<code>tokio::task::block_in_place</code>) steps the worker aside so the peer reactor progresses; <code>ledger_client::call</code> uses it, and the execution client applies it defensively. Other Connect clients are not nested today and were left untouched.</li><li><strong>Execution default still deferred.</strong> Harness's default process flip is live proven by <code>agalma-ud1</code>; ledger, workspace and task queue switch to process in <code>agalma-fez</code>, with bounded production sockets and local server smokes. Sandbox is always process. Process bindings default to Connect, with framed wire and <code>in-process</code> transport overrides retained. Execution/kernel remains in-process by default until production selection/integration in CV.1 (<code>agalma-pob.1</code>). See <code>docs/b1-f3-evidence.md</code> §§5–6.</li><li><strong><code>ExecutionApi</code> adapter gap resolved, not residual.</strong> The <code>agalma-5de</code> B1-F1 gap (<code>step</code>/<code>recover</code> returning <code>UnsupportedCapability</code> over the process boundary) is closed by caller-side effect dispatch (commit <code>6e8d69a</code>); IPCX.7 proves <code>step</code>/<code>recover</code> and the handler-registry protocol faithful over both wires at the engine-op level.</li><li><strong>Test-only lint nit.</strong> <code>cargo build --offline --workspace</code> is warning-free; the <code>harness_connect</code> test target emits one unused-import warning (<code>ServerInfo</code>). Out of this bead's scope (docs + architecture tests only); harmless.</li></ol>
+<h2 id="verdict">Verdict</h2>
+<p>All six Tier-1 seams — harness, sandbox, workspace, task queue, ledger, and the execution/kernel boundary — speak the ConnectRPC envelope over UDS with full B1-recipe evidence (dual-binding parity, staged rebind, rollback) recorded in the per-boundary docs above. The <code>agalma-www</code> head-of-line constraint is gone (HTTP/2 multiplexing), contracts and the ledger at-rest JSON are unchanged, and the Connect stack is confined to <code>agalma-ipc</code> at the manifest and source levels (9 architecture tests green). Builds are offline (<code>cargo fetch --offline</code> empty; <code>cargo build --offline --workspace</code> clean). Residual items are tracked (<code>agalma-pob.1</code> production kernel integration; the reserved <code>Stream</code> RPC for TUI push). Epic <code>agalma-ebg</code> closes on this record.</p>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="b0-exit-evidence.html">⟲ b0-exit-evidence</a><span class="step">step 23 / 31 in the ring</span><a href="planning-pipeline.html">planning-pipeline ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">ipc-exit-evidence.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

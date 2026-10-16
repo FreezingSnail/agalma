@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="planning-pipeline.md">planning-pipeline.md</a></div>
+<div class="ring"><a href="ipc-exit-evidence.html">⟲ ipc-exit-evidence</a><span class="step">step 24 / 31 in the ring</span><a href="tui-design.html">tui-design ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li class="here"><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="intake-planning-pipeline-concierge-designer-staged-decomposition">Intake + planning pipeline — concierge → designer → staged decomposition</h1>
+<p>Bead: <code>agalma-i5h.1</code> (CP-D1). Epic: <code>agalma-i5h</code>. Orchestrator-authored; gates all CP beads. Ported from maduin (<code>harness/agents/slugineer-planner-concierge.md</code>, <code>slugineer-planner-designer.md</code>, <code>harness/maduin-decomp.el:241-324</code>, <code>.agents/planning/maduin/design/v0.2-orchestration.md:104-112,187-221</code>).</p>
+<p>Goal: a stated goal (&quot;stand up TUI dashboard&quot;) travels intake → epic + design → decomposition → deterministic validation → human approval → fleet execution, with LLM sessions supplying content and Rust code deciding consequences.</p>
+<h2 id="roles">Roles</h2>
+<ul><li><strong>Concierge</strong> (intake; interactive or one-shot): rough idea → epic(s) + design doc. Clarify ≤3 questions. Scope to 8–12 decomposable children per epic; split larger ideas into multiple epics with explicit inter-epic dependency direction. MUST NOT decompose, create children, fill acceptance, defer, or implement.</li><li><strong>Designer</strong> (autonomous, one-shot): reads the epic design (source of truth), spikes unknowns, authors child tickets + dep edges, runs the self-audit. MUST NOT implement, review, repair, resolve an approval gate, undefer, or claim children.</li><li><strong>Validator</strong> (deterministic Rust): judges the decomposition; pass/fail with a rule-named violation list.</li><li><strong>Human</strong>: approves by resolving a child's native human execution-approval gate (<code>bd gate resolve &lt;gate&gt;</code>); rejection feedback is a comment, design revised in place (never supersede).</li></ul>
+<h2 id="bd-conventions">bd conventions</h2>
+<ul><li>Epic: <code>bd create &quot;&lt;one-line ASCII title&gt;&quot; -t epic --body-file &lt;desc&gt;</code> then <code>bd update &lt;epic&gt; --design-file &lt;design&gt;</code>.</li><li>Child: <code>bd create &quot;&lt;title&gt;&quot; -t task --parent &lt;epic&gt; --body-file &lt;desc&gt; --design-file &lt;design&gt; --labels staged,difficulty:low|high</code>; created <strong>open</strong> (no <code>--defer</code> sentinel), and each child gets exactly one native human execution-approval gate (CP.3 / <code>agalma-i5h.8</code>) that pins it.</li><li>Child description fixed headings, in order: <code># Scope</code>, <code># Files</code>, <code># Contract</code>, <code># Invariants</code>, <code># Non-goals</code>, <code># MACHINE</code>. MACHINE keys exactly one per line: <code>provides:</code>, <code>consumes:</code>, <code>files:</code>, <code>tier:</code>.</li><li>Caps: description prose ≤400 words (excluding <code># Contract</code>/<code># MACHINE</code>); acceptance ≤80 words, one plain-ASCII line; design ≤150 words for low tier.</li><li>Every executable child carries the factory intake block (<code>directive/v0</code> YAML fence: target, ref, acceptance list, budget_usd, priority, family, max_attempts) authored by the designer; acceptance commands are shell-safe and scope-guarded. The validator parses it with the existing taskqueue parser.</li><li>Labels: <code>staged</code> + exactly one <code>difficulty:*</code>; after the gate, <code>decomp-approved</code> or <code>decomp-rejected</code>; rework task label <code>decomp-fix</code>; review-gate label <code>drift-fix</code>; human escalation label <code>human</code>; native human execution-approval gate label <code>execution-approval</code>.</li><li>Native human execution-approval gate (the human gate primitive). The designer authors one gate per child in the same session that creates the child:</li></ul>
+<pre class="code"><code>  bd gate create --type human --blocks &lt;child&gt; --reason &quot;Execution approval for &lt;child&gt;&quot;
+  bd update &lt;gate&gt; --add-label human,execution-approval --set-metadata approval_for=&lt;child&gt;</code></pre>
+<p>  The gate is a standalone issue (no parent), pinned to the child by a direct   <code>blocks</code> edge. It is created <strong>unresolved</strong>; only a human resolves it with   <code>bd gate resolve &lt;gate&gt;</code>, which is the explicit bootstrap authorization. The   designer never resolves a gate and never sets <code>decomp-approved</code>.</p>
+<ul><li>Approval state (two independent bits, never auto-run):<ul><li><strong>validator approval</strong> — <code>decomp-approved</code> (never alongside <code>decomp-rejected</code>), applied by the sweep gate on a clean decomposition and exactly one well-formed gate per staged child;</li><li><strong>human execution authorization</strong> — the child's associated native human gate resolved (closed). Clearing a defer date or changing a status never authorizes; <code>defer</code> is reserved for deliberate postponement.</li></ul></li><li>Ready contract: the adapter admits a <code>staged</code> child only when it is <code>decomp-approved</code>, carries no defer date, has <strong>exactly one</strong> well-formed associated native human gate (<code>issue_type=gate</code>, <code>await_type=human</code>, labels <code>human,execution-approval</code>, <code>approval_for=&lt;child&gt;</code>) that a human has resolved, and has no unresolved prerequisites. Missing, conflicting, or malformed approval associations deny release. The adapter excludes epics, gate issues, <code>human</code>, <code>parked</code>, <code>decomp-fix</code>, <code>drift-fix</code>, and any issue with a set defer date. An accidental <code>bd update --status open</code> never releases staged work; ordinary open work needs no gate.</li></ul>
+<h2 id="difficulty-tier-derived-never-judged">Difficulty tier (derived, never judged)</h2>
+<p><code>low</code> iff exactly one implementation module/file, no new cross-module interface (<code>provides</code> empty), fully specified contract, ≲100 changed lines, and none of: async/process lifecycle, external-format parsing, data migration, performance constraint. Otherwise <code>high</code>. Never a model name or effort level.</p>
+<h2 id="validator-rules-pure-functions-port-of-maduin-decompel">Validator rules (pure functions; port of <code>maduin-decomp.el</code>)</h2>
+<table><thead><tr><th>Rule</th><th>Check</th></tr></thead><tbody><tr><td><code>count-budget</code></td><td>8 ≤ children ≤ 12 (below 8 fails without an explicit human verdict comment; above 12 fails)</td></tr><tr><td><code>schema-section</code></td><td>fixed headings present, exact order</td></tr><tr><td><code>cap-prose</code></td><td>description ≤400 words (minus Contract/MACHINE)</td></tr><tr><td><code>cap-acceptance</code></td><td>acceptance ≤80 words, single plain-ASCII line</td></tr><tr><td><code>cap-design</code></td><td>design ≤150 words when tier=low</td></tr><tr><td><code>tier-mismatch</code></td><td><code>difficulty:*</code> label equals derived tier</td></tr><tr><td><code>interim-value</code></td><td>rejects &quot;until then&quot;, &quot;placeholder&quot;, &quot;for now pass nil&quot;, &quot;temporary stub&quot; phrasing</td></tr><tr><td><code>unprovided-symbol</code></td><td>each <code>consumes:</code> symbol is <code>provides:</code>d by the child or a transitive dependency</td></tr><tr><td><code>graph-cycle</code></td><td>no dependency cycles</td></tr><tr><td><code>graph-width</code></td><td>median dependency-wave width ≥ fleet concurrency (serial MVP: 1; parameterized)</td></tr><tr><td><code>intake-block</code></td><td><code>directive/v0</code> fence parses; acceptance non-empty; budget present</td></tr></tbody></table>
+<p>Violations are emitted with rule names so a <code>decomp-fix</code> task can carry an ordered list. The validator never edits tickets.</p>
+<h2 id="routing-and-prompts">Routing and prompts</h2>
+<ul><li><code>RouteClass::Planner</code> gains real candidates, strongest-first: <code>opencode-go/deepseek-v4-pro</code>, <code>opencode-go/gpt-6-luna</code>, <code>opencode-go/claude-haiku-5-5</code> — all paid/subscription, gated by <code>AGALMA_ALLOW_PAID</code> + credential presence. When no planner candidate is eligible the planner path fails closed with a clear error (never silently downgrades to a free builder model). Decisions recorded as <code>route.model</code> class=planner.</li><li>Concierge/designer prompts are canonical role prompts (<code>prompts/concierge.md</code>, <code>prompts/designer.md</code>) alongside builder/verifier; model assignment stays single-source in the routing table, never in prompt files.</li><li>Sessions are ephemeral and task-scoped: one designer session per epic, one concierge session per intake; continuity via epic design + bd history.</li></ul>
+<h2 id="epic-sweep-work-loop">Epic sweep (work loop)</h2>
+<p>After recovery, before claiming ordinary work:</p>
+<ol><li>Query open epics with zero children, or epics whose latest decomposition was <code>decomp-rejected</code> with retries remaining.</li><li>Spawn one designer session (planner route) with the epic design; concurrency cap 1 in the serial MVP.</li><li>On completion: run the validator and reconcile each staged child's native human approval gate.<ul><li>Pass (validator clean <strong>and</strong> exactly one well-formed gate per staged child) → label children <code>decomp-approved</code> (children stay blocked/staged; validator approval alone releases nothing). A missing, conflicting, or malformed gate association fails closed as an <code>approval-gate</code> violation.</li><li>Fail → label <code>decomp-rejected</code> + create one P1 <code>decomp-fix</code> task (parent epic) carrying the violation list; retry up to 3; then <code>bd human &lt;epic&gt;</code> + comment and stop looping.</li></ul></li><li>Approved children enter <code>bd ready</code> only once a human resolves their native execution-approval gate (and prerequisites close); rejected and never-validated children never do. The sweep never creates or recreates a gate: an absurd association is rework, never invented approval.</li></ol>
+<h2 id="review-gate-post-merge-per-epic">Review gate (post-merge, per epic)</h2>
+<p>When the last child of an epic closes: record the epic start SHA (first child land), spawn a reviewer session over <code>git diff &lt;start&gt;..HEAD</code> vs the epic design/acceptance; parse exactly one marker line <code>REVIEW: APPROVED</code> or <code>REVIEW: DRIFT &lt;feedback&gt;</code>; no marker = error (never silent pass). Drift → P1 <code>drift-fix</code> task under the epic and hold ordinary dispatch until cleared; retry budget then human escalation. (Detailed in CP.5.)</p>
+<p>Durable per-epic state (survives restart), mirroring the epic sweep: <code>review-start:&lt;sha&gt;</code> is the diff baseline recorded at the first child land; <code>review-attempts:&lt;n&gt;</code> counts review attempts (reconciled with the <code>drift-fix</code> tasks); <code>review-drift</code> is the active dispatch hold (removed on a later <code>APPROVED</code>); <code>review-approved</code> is terminal (never re-reviewed); <code>human</code> marks escalation. The reviewer runs on the strongest (planner) route under a <code>review:&lt;epic&gt;</code> scope and fails closed when it is unavailable — never a silent pass or a downgrade to a free builder model. A <code>drift-fix</code> task is rework bookkeeping (deferred, never ordinary fleet work); the hold withholds ordinary dispatch until a re-review approves or a human takes over.</p>
+<h2 id="pilot">Pilot</h2>
+<p><code>agalma-3kr</code> (TUI control plane) is the first goal to travel the full path: concierge design refinement → designer decomposition (existing hand-authored children are reference input, not binding) → validator → human resolves each native execution-approval gate → fleet. Success = the dashboard epic's children are machine-validated, staged, gated, and consumed by the factory.</p>
+<h2 id="bead-plan">Bead plan</h2>
+<table><thead><tr><th>Bead</th><th>Scope</th></tr></thead><tbody><tr><td><code>.1</code></td><td>this design</td></tr><tr><td><code>.2</code> CP.1</td><td>decomposition schema + validator (pure Rust) + <code>agalma plan-check</code> CLI</td></tr><tr><td><code>.3</code> CP.2</td><td>planner routing + concierge/designer prompts</td></tr><tr><td><code>.4</code> CP.3</td><td>epic sweep + staged decomposition gate</td></tr><tr><td><code>.5</code> CP.4</td><td>concierge intake session</td></tr><tr><td><code>.6</code> CP.5</td><td>per-epic review gate</td></tr><tr><td><code>.7</code> CP.6</td><td>TUI pilot through the pipeline</td></tr></tbody></table>
+<h2 id="risks-open-items">Risks / open items</h2>
+<ul><li>Designer session quality on paid models is unproven in agalma; the validator is the safety net, and <code>decomp-fix</code> keeps rework bounded.</li><li>Per-task factory intake still requires <code>directive/v0</code>; the designer must author it per child — validator rule <code>intake-block</code> enforces parseability.</li><li><code>defer</code> is date-based bd semantics, reserved for deliberate postponement. The ready predicate keys on two independent bits — validator <code>decomp-approved</code> and a resolved native human execution-approval gate — plus no set defer date and no open prerequisite, so it never confuses postponed work, still-blocked staged children, or rejected work with an authorized child; the <code>staged</code> label alone authorizes nothing, and clearing a defer date authorizes nothing.</li></ul>
+<h2 id="planned-promptskill-release-extension">Planned prompt/skill release extension</h2>
+<p>The implemented CP gate above remains the bootstrap default. SM.9 (<code>agalma-cg9.9</code>) adds a distinct, directive-authorized automatic release service for allowlisted builder prompts and builder-context skills, per <code>docs/self-mutation-contracts.md</code>. It journals a release receipt before queue projection and revalidates source digest, active directive, scope and budget at claim. Decomposition approval, a cleared defer date, or a resolved bootstrap human gate alone does not grant this automated authority. Plugin packages follow a later explicit allowlist; bootstrap code keeps transitional oversight until P1. This amendment is a future contract, not a claim that the current queue gate already implements automated release.</p>
+<p>The closed TUI pilot proved authored/validated/staged decomposition. SF.10 (<code>agalma-5fy.10</code>) owns a fresh goal -&gt; design -&gt; staging -&gt; authorized execution -&gt; independent review -&gt; epic closure proof; retired duplicate TUI work cannot substitute for that evidence.</p>
+<p>SF.11 (<code>agalma-5fy.11</code>) adds prerequisite-aware epic review. The current CP.5 implementation only checks staged child closure; it can prematurely review an epic whose blocking prerequisite remains open. Revision-1 contracts require visible waiting with no paid reviewer/drift mutation, all-child closure and graph/design revalidation before approval. SF.10 exercises this guard.</p>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="ipc-exit-evidence.html">⟲ ipc-exit-evidence</a><span class="step">step 24 / 31 in the ring</span><a href="tui-design.html">tui-design ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">planning-pipeline.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

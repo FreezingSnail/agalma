@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="sandbox-removal-design.md">sandbox-removal-design.md</a></div>
+<div class="ring"><a href="b1-sandbox-evidence.html">⟲ b1-sandbox-evidence</a><span class="step">step 7 / 31 in the ring</span><a href="b1-workspace-evidence.html">b1-workspace-evidence ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li class="here"><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="sandbox-layer-removal-design">Sandbox layer removal design</h1>
+<p>Status: proposed (design, not implemented). Owner: Sol. Implementers: GPT-6 Luna / DeepSeek Flash. Supersedes the confinement boundary documented in <code>docs/b1-sandbox-evidence.md</code> (that file is a frozen historical receipt and is <strong>not</strong> rewritten; this document is its amendment).</p>
+<h2 id="1-decision">1. Decision</h2>
+<p>Remove the sandbox layer entirely and replace it with a small in-process <strong>process launcher</strong>. Concretely:</p>
+<ul><li>delete the <code>agalma-sandbox</code> crate (Seatbelt backend, profile, server binary);</li><li>delete the <code>SandboxApi</code> contract and the <code>agalma-ipc</code> sandbox client/server;</li><li>delete the conductor's sandbox supervisor (<code>sandbox_process.rs</code>);</li><li>delete the kernel/harness socket plumbing that only existed to reach the sandbox server;</li><li>add one crate <code>agalma-process</code> exposing <code>LocalLauncher</code>, which owns the process-group/lifecycle logic that was previously entangled with the Seatbelt profile.</li></ul>
+<p>Retained properties: <strong>multiple in-flight children</strong>, <strong>environment separation</strong>, and a <strong>kill switch</strong> (whole-descendant-tree termination with evidence). Anything enforced solely by Seatbelt is dropped:</p>
+<ul><li>OS read/write confinement (the protected-oracle read-only root),</li><li>network-egress denial (the loopback proxy is no longer a security boundary),</li><li>the fail-closed profile validate/preflight gate.</li></ul>
+<p>The loss of the first two is a deliberate human decision, recorded as an accepted guarantee reduction in §7. It weakens <code>docs/sf6-protected-inputs.md</code> and the self-mutation contracts from <em>enforced</em> to <em>advisory</em> properties.</p>
+<h2 id="2-motivation">2. Motivation</h2>
+<p>All four stated drivers:</p>
+<ol><li><strong>Portability</strong> — <code>sandbox-exec</code> and the <code>.sb</code> profile are macOS-only, so the factory cannot run on Linux/CI without a parallel confinement path.</li><li><strong>Maintenance</strong> — <code>sandbox-exec</code> is deprecated (S0b open item: re-verify on every macOS upgrade); the profile carries seven parameters, an inert-slot padding rule, and an xcrun-cache carve-out that must be re-audited.</li><li><strong>Complexity</strong> — reaching a <code>sandbox-exec</code> wrap required a whole supervised component server, a Unix socket, two wire transports, framed-JSON clients, and parity tests, all to launch a subprocess.</li><li><strong>Dead weight</strong> — the process-group kill, liveness, and env isolation that the factory actually depends on are plain Unix and never needed Seatbelt.</li></ol>
+<h2 id="3-what-the-layer-is-today">3. What the layer is today</h2>
+<p>Three stacked pieces:</p>
+<table><thead><tr><th>Layer</th><th>Pieces</th></tr></thead><tbody><tr><td>Backend</td><td><code>crates/agalma-sandbox</code>: <code>seatbelt.rs</code>, <code>profile.rs</code>, <code>profiles/worker.sb</code>, <code>bin/agalma-sandbox-server.rs</code></td></tr><tr><td>Contract seam</td><td><code>agalma_contracts::sandbox</code> (<code>SandboxApi</code>/<code>LaunchSpec</code>/<code>SandboxChild</code>); <code>agalma-ipc::{sandbox_client,sandbox_server}</code></td></tr><tr><td>Wiring</td><td><code>conductor/sandbox_process.rs</code> supervisor; call sites in <code>phases.rs</code>, <code>session.rs</code>, <code>work.rs</code>, <code>concierge.rs</code>, <code>review.rs</code>, <code>sweep.rs</code>, <code>composition.rs</code>, <code>workers.rs</code>, <code>harness_process.rs</code>, <code>execution_process.rs</code>, <code>components.rs</code>; <code>harness-opencode</code> adapter; <code>kernel</code> <code>with_sandbox</code> seam</td></tr></tbody></table>
+<h3 id="31-properties-and-their-disposition">3.1 Properties and their disposition</h3>
+<table><thead><tr><th>Property</th><th>Provided by</th><th>Disposition</th></tr></thead><tbody><tr><td>Multiple concurrent children</td><td><code>SeatbeltSandbox.children: HashMap&lt;pid, Child&gt;</code></td><td><strong>Keep</strong> (same mechanism in <code>LocalLauncher</code>)</td></tr><tr><td>Environment separation</td><td>caller-supplied <code>LaunchSpec.env</code> + <code>env_clear().envs()</code></td><td><strong>Keep</strong> (unchanged)</td></tr><tr><td>Tree kill + <code>StopEvidence</code></td><td><code>process_group(0)</code> + <code>killpg</code> + <code>pgrep -g</code> sweep + <code>SIGKILL</code> escalation</td><td><strong>Keep</strong> (lifted from <code>seatbelt.rs</code>)</td></tr><tr><td>Liveness (<code>alive</code>)</td><td><code>/bin/kill -0</code>, EPERM counts as alive</td><td><strong>Keep</strong></td></tr><tr><td>Terminate from pid/pgid only</td><td><code>terminate</code> works without an owned <code>Child</code> (post-restart)</td><td><strong>Keep</strong> (kernel depends on it)</td></tr><tr><td>Attempt-scoped <code>TMPDIR</code>/<code>XDG</code>/<code>HOME</code></td><td>caller-driven env, conductor-owned attempt dirs</td><td><strong>Keep</strong> (dirs still reaped by <code>reap.rs</code>)</td></tr><tr><td>OS read/write confinement (deny-default profile)</td><td>Seatbelt</td><td><strong>Drop</strong></td></tr><tr><td>Protected-oracle read-only root</td><td>Seatbelt <code>PROTECTED</code></td><td><strong>Drop</strong> (accepted)</td></tr><tr><td>Network-egress denial</td><td>Seatbelt loopback-only profile</td><td><strong>Drop</strong> (accepted)</td></tr><tr><td>Fail-closed profile validate/preflight</td><td><code>profile::validate</code> + <code>preflight</code></td><td><strong>Drop</strong></td></tr><tr><td>Profile parameter substitution + inert slots</td><td><code>profile.rs</code></td><td><strong>Drop</strong></td></tr></tbody></table>
+<h2 id="4-target-architecture">4. Target architecture</h2>
+<h3 id="41-contract-agalma_contractsprocess">4.1 Contract: <code>agalma_contracts::process</code></h3>
+<p>Rename the <code>sandbox</code> module to <code>process</code> and trim the types:</p>
+<pre class="code"><code class="lang-rust">// crates/agalma-contracts/src/process.rs
+pub struct ProcessSpec {
+    pub program: String,
+    pub args: Vec&lt;String&gt;,
+    pub cwd: String,
+    pub env: BTreeMap&lt;String, String&gt;, // complete child environment
+    pub attempt: AttemptId,            // reconciliation key
+}
+
+pub struct ProcessChild {
+    pub pid: u32,
+    pub pgid: u32,                     // == pid (group leader)
+    pub attempt: AttemptId,
+    pub started_at_unix_ms: u64,
+}
+
+pub trait ProcessApi {
+    fn launch(&amp;mut self, spec: ProcessSpec) -&gt; Result&lt;ProcessChild, ContractError&gt;;
+    fn alive(&amp;self, child: &amp;ProcessChild) -&gt; Result&lt;bool, ContractError&gt;;
+    fn terminate(&amp;mut self, child: &amp;ProcessChild) -&gt; Result&lt;StopEvidence, ContractError&gt;;
+}</code></pre>
+<p>Dropped fields: <code>profile</code>, <code>attempt_dir</code>, <code>protected_dir</code>, <code>sock_dir</code>, <code>extra_ro_roots</code>, <code>extra_rw_roots</code>. <code>StopEvidence</code> stays in <code>agalma_contracts::harness</code>. <code>agalma-contracts</code> remains pure (types + trait only; no spawning).</p>
+<p>The trait is kept (not inlined to a concrete type) so the kernel test doubles (<code>FakeLauncher</code>/<code>GoneLauncher</code>/<code>StubbornLauncher</code>) can still be injected. It costs nothing at runtime.</p>
+<h3 id="42-backend-new-crate-agalma-process">4.2 Backend: new crate <code>agalma-process</code></h3>
+<p><code>LocalLauncher</code> is <code>SeatbeltSandbox</code> <strong>minus the profile</strong>:</p>
+<ul><li><code>launch(spec)</code>: <code>Command::new(spec.program)</code>, <code>args</code>, <code>current_dir(cwd)</code>, <code>env_clear().envs(spec.env)</code>, <code>process_group(0)</code>; store the <code>tokio::Child</code> in <code>HashMap&lt;u32, Child&gt;</code>; return <code>ProcessChild { pid, pgid: pid, attempt, started_at_unix_ms }</code>.</li><li><code>alive(child)</code>: <code>/bin/kill -0 &lt;pid&gt;</code>; EPERM ⇒ alive (mirrors <code>seatbelt.rs</code>).</li><li><code>terminate(child)</code>: group <code>SIGTERM</code>, explicit per-descendant signal from <code>pgrep -g &lt;pgid&gt;</code>, reap the owned child when present, verify the group is empty, escalate to <code>SIGKILL</code>; return <code>StopEvidence</code>.</li><li><code>run(spec, timeout) -&gt; Result&lt;ProcessOutput, ContractError&gt;</code>: one-shot counterpart used by the verifier (exit code is the verdict); same teardown on timeout. <code>ProcessOutput { exit_code, stdout, stderr }</code>.</li></ul>
+<p>No profile, no <code>sandbox-exec</code>, no <code>preflight</code>, no <code>serde</code>. <code>/bin/kill</code> and <code>/usr/bin/pgrep</code> exist on macOS and Linux; this is the portability win.</p>
+<p>Dependency direction: <code>agalma-process</code> → <code>agalma-contracts</code> (+ <code>tokio</code>). No IPC.</p>
+<h3 id="43-deletions">4.3 Deletions</h3>
+<ul><li><code>crates/agalma-sandbox/</code> (whole crate) and its workspace member entry.</li><li><code>agalma_contracts::sandbox</code> module + <code>pub use</code> re-exports.</li><li><code>agalma-ipc/src/sandbox_client.rs</code>, <code>sandbox_server.rs</code> + re-exports in <code>agalma-ipc/src/lib.rs</code>.</li><li><code>agalma-conductor/src/sandbox_process.rs</code> + <code>pub mod sandbox_process</code>.</li><li><code>agalma-harness-opencode</code>: <code>SANDBOX_SOCKET_ENV</code>, <code>connect_sandbox</code>, the <code>profile_path</code> config field, <code>PROFILE_PATH_ENV</code>, the <code>extra_ro_roots</code> config field, the <code>attempt_dir</code>/<code>protected_dir</code>/<code>sock_dir</code> constructor arguments, and the <code>agalma-sandbox</code> dev-dependency.</li><li><code>agalma-kernel</code>: <code>AGALMA_KERNEL_SANDBOX_SOCKET</code> (<code>SANDBOX_SOCKET_ENV</code> in <code>kernel/src/server.rs</code>), the env-bound <code>SandboxClient</code> build.</li><li><code>components.rs</code>: the <code>sandbox</code> component row and <code>Transports.sandbox</code>.</li><li><code>execution_process.rs</code>: the <code>sandbox_socket</code> parameter and its <code>SANDBOX_SOCKET_ENV</code> export.</li><li><code>scripts/verify-peer-transports.sh</code>: <code>sandbox</code> from the component loop and <code>--test sandbox_process</code> from the smoke invocation.</li></ul>
+<h2 id="5-migration-by-area">5. Migration by area</h2>
+<h3 id="51-conductor">5.1 Conductor</h3>
+<ul><li><code>SandboxSource</code>/<code>SandboxProcess</code> disappear; each activity holds a <code>LocalLauncher</code> (or <code>Box&lt;dyn ProcessApi&gt;</code>) directly.</li><li><code>phases.rs</code>: <code>SeatbeltSandbox::new()</code> → <code>LocalLauncher::new()</code>; drop the <code>profile</code>/<code>attempt_dir</code>/<code>protected_dir</code>/<code>sock_dir</code>/<code>extra_*</code> fields from the two <code>LaunchSpec</code> constructions (<code>phases.rs:1757</code>, <code>phases.rs:2281</code>). The <code>env</code> map (which already carries <code>TMPDIR</code>/<code>XDG</code>/<code>CARGO_*</code>/<code>AGALMA_PROTECTED_DIR</code>/ <code>AGALMA_CANDIDATE_DIR</code>) is unchanged.</li><li><code>session.rs</code>, <code>work.rs</code>, <code>composition.rs</code>: drop the <code>worker.sb</code> <code>PRODUCT_PROFILE</code> writes; <code>SandboxSource::ensure()</code> → a <code>LocalLauncher</code>; <code>LiveSession.profile_path</code> is removed. <code>review.rs</code>, <code>concierge.rs</code>, <code>sweep.rs</code> only mention the profile in comments — update those.</li><li>Phase deps (<code>phases.rs:153,169</code>): remove <code>profile_path</code> and <code>extra_ro_roots</code>; the harness config (<code>config.rs:17,32</code>) likewise drops <code>profile_path</code> and <code>extra_ro_roots</code>.</li><li><code>workers.rs</code>: <code>SandboxChild</code> → <code>ProcessChild</code>; <code>reconcile_survivor</code> logic is unchanged (it already only needs <code>alive</code>/<code>terminate</code>).</li><li><code>VerifyActivity.sandboxed</code> (<code>phases.rs:1510</code>) is deleted; the <code>ActivityMode</code>- driven branch collapses to one path. One-shot verify uses <code>LocalLauncher::run</code> (timeout + tree-kill); <code>run_in_process</code> (<code>phases.rs:688</code>) is retired because it has no timeout.</li><li><code>harness_process.rs</code>: the in-process harness receives a <code>LocalLauncher</code> instead of a <code>SandboxClient</code>; the <code>sandbox_socket</code> init field is removed. The process-bound harness server constructs its own <code>LocalLauncher</code>.</li><li><code>execution_process.rs</code>: drop the <code>sandbox_socket</code> parameter; the kernel server no longer receives a sandbox socket.</li><li><code>reap.rs</code>: keep the <code>verify-runtime</code>/<code>xdg-*</code> scratch reaping (they serve env isolation, not confinement); update the naming/comments.</li><li><code>provider_proxy.rs</code> / <code>provider_auth.rs</code>: <strong>kept</strong>, not deleted (§7.2).</li></ul>
+<h3 id="52-harness-and-kernel">5.2 Harness and kernel</h3>
+<ul><li><code>harness-opencode/src/adapter.rs</code>: <code>Box&lt;dyn SandboxApi + Send&gt;</code> → <code>Box&lt;dyn ProcessApi + Send&gt;</code>; <code>LaunchSpec</code> → <code>ProcessSpec</code>; drop profile/env plumbing and the <code>profile_path</code> config field.</li><li><code>harness-opencode/src/server.rs</code>: delete <code>connect_sandbox</code> and <code>SANDBOX_SOCKET_ENV</code>; build a <code>LocalLauncher</code>.</li><li><code>kernel/src/engine.rs</code>: <code>Option&lt;Box&lt;dyn SandboxApi + Send&gt;&gt;</code> → <code>Option&lt;Box&lt;dyn ProcessApi + Send&gt;&gt;</code>; <code>with_sandbox</code>/<code>has_sandbox</code>/ <code>sandbox_mut</code> → <code>with_launcher</code>/<code>has_launcher</code>/<code>launcher_mut</code> (or keep the method names if that minimizes churn — decide in the bead).</li><li><code>kernel/src/ownership.rs</code>: reconstruct <code>ProcessChild</code>.</li><li><code>kernel/src/server.rs</code>: delete <code>SANDBOX_SOCKET_ENV</code>; construct a <code>LocalLauncher</code>.</li><li>Cross-process kill still works: the kernel only needs <code>alive</code>/<code>terminate</code> from a pid/pgid, which is exactly the &quot;terminate without an owned handle&quot; path.</li></ul>
+<h3 id="53-build-tooling">5.3 Build / tooling</h3>
+<ul><li><code>Cargo.toml</code>: remove <code>crates/agalma-sandbox</code>, add <code>crates/agalma-process</code>.</li><li><code>scripts/verify-peer-transports.sh</code>: component loop becomes <code>ledger workspace taskqueue kernel</code>; smoke set drops <code>--test sandbox_process</code> and the expected-passing count drops <code>5 → 4</code>.</li><li><code>scripts/md-to-html.mjs</code>: not owned by these beads — another session holds staged docs-tooling work there. Regenerating the HTML set (frozen <code>b1-sandbox-evidence.md</code> entry included) is deferred until that work lands.</li></ul>
+<h2 id="6-interfaces-deliberately-preserved">6. Interfaces deliberately preserved</h2>
+<ul><li><code>terminate</code> remains valid from pid/pgid alone (no owned <code>Child</code>), because the kernel reclaims survivors across a process boundary and after restart.</li><li><code>alive</code> keeps the EPERM-is-alive rule.</li><li><code>reconcile_survivor</code> keeps writing <code>&lt;run&gt;/stop/&lt;phase&gt;-&lt;attempt&gt;.json</code> evidence.</li><li>Attempt-scoped <code>TMPDIR</code>/<code>XDG</code>/<code>HOME</code>/<code>CARGO_*</code> env construction is untouched.</li><li>The provider proxy stays functional (only its security claim changes).</li></ul>
+<h2 id="7-accepted-guarantee-reduction">7. Accepted guarantee reduction</h2>
+<h3 id="71-protected-oracle-read-only-sf6">7.1 Protected-oracle read-only (SF.6)</h3>
+<p><code>docs/sf6-protected-inputs.md:44-49</code> requires the protected judge to be materialized in a read-only root outside every candidate-writable root, and requires proof the runner &quot;cannot write protected files.&quot; Today that is enforced by Seatbelt. After removal it is <strong>advisory only</strong>: the runner still receives <code>AGALMA_PROTECTED_DIR</code> and the frozen commands still judge behavior, but a candidate is no longer prevented from tampering with the judge root.</p>
+<p>Doc amendment: <code>sf6-protected-inputs.md</code> gains an amendment stating the read-only property is convention-only, and <code>sf_scope_guard.rs</code> is rewritten to stop asserting OS-enforced read-only isolation (<code>sf_scope_guard.rs:710</code>, <code>:833+</code>, <code>:1652</code>, all of which import <code>SeatbeltSandbox</code>/<code>PRODUCT_PROFILE</code>).</p>
+<h3 id="72-network-egress">7.2 Network egress</h3>
+<p>The loopback proxy was justified by the Seatbelt loopback-only profile. After removal the harness can reach the network directly. <code>provider_proxy.rs</code> is <strong>kept</strong> (it still centralizes provider credentials/audit), but it is no longer a security boundary. <code>provider_proxy_live.rs</code>'s &quot;direct network is denied&quot; assertion is dropped; the proxy behavior test is retained.</p>
+<h3 id="73-fail-closed-launch-gate">7.3 Fail-closed launch gate</h3>
+<p><code>profile::validate</code>/<code>preflight</code> disappear; the only launch gate becomes spawn failure. This removes a deliberate fail-closed check but was only meaningful because a profile existed.</p>
+<h2 id="8-test-plan">8. Test plan</h2>
+<h3 id="delete">Delete</h3>
+<ul><li><code>crates/agalma-sandbox/tests/sandbox.rs</code> (whole crate goes).</li><li><code>crates/agalma-ipc/tests/sandbox_connect.rs</code>.</li><li><code>crates/agalma-conductor/tests/sandbox_process.rs</code>.</li><li><code>crates/agalma-conductor/tests/harness_sandbox_wire.rs</code>.</li></ul>
+<h3 id="rewrite-guarantee-bearing">Rewrite (guarantee-bearing)</h3>
+<ul><li><code>agalma-conductor/tests/sf_scope_guard.rs</code> — remove <code>SeatbeltSandbox</code>/ <code>PRODUCT_PROFILE</code>; keep the behavioral protected-command judging; drop the OS-read-only isolation claim.</li><li><code>agalma-conductor/tests/provider_proxy_live.rs</code> — keep the proxy test, drop the egress-denial assertion.</li><li><code>agalma-conductor/tests/cargo_home.rs</code>, <code>tests/xcrun.rs</code> — drop the <code>PRODUCT_PROFILE</code> write.</li><li><code>agalma-conductor/tests/designer_payload.rs</code> — replace the <code>register_sandbox</code> mock server with a <code>LocalLauncher</code>/<code>ProcessApi</code> double.</li><li><code>agalma-conductor/tests/sf_cancel.rs</code>, <code>tests/sf_recovery_gate.rs</code> — rename the <code>GoneSandbox</code> fake and drop profile setup.</li><li><code>agalma-kernel/tests/support/sandbox.rs</code> → <code>support/process.rs</code>; update <code>sf_cancel_kernel.rs</code>.</li><li><code>agalma-conductor/tests/architecture.rs</code> — drop <code>agalma-sandbox</code> from <code>IMPL_CRATES</code> and the token-scan self-test string; add <code>agalma-process</code> as a non-impl crate (it is a backend, like the old sandbox crate, so it may still be listed as an impl crate — decide in the bead).</li><li><code>agalma-harness-opencode/tests/live_smoke.rs</code> — replace <code>SeatbeltSandbox</code>/ <code>PRODUCT_PROFILE</code> with <code>LocalLauncher</code>; <code>tests/wire_conformance.rs</code> — drop the sandbox-wire agreement case.</li><li><code>agalma-conductor/src/components.rs</code> unit tests and <code>src/session.rs</code> tests — update for the removed sandbox row / profile-materialization assertion.</li></ul>
+<h3 id="new-agalma-process-property-tests-saved-in-the-repo">New — <code>agalma-process</code> property tests (saved in the repo)</h3>
+<ul><li><strong>Concurrency:</strong> launch N long-running children; all report alive; terminate all; each returns <code>process_group_gone</code>.</li><li><strong>Env separation:</strong> child sees exactly the supplied <code>env</code> (nothing inherited); a child given no <code>TMPDIR</code> does not see the parent's.</li><li><strong>Tree kill:</strong> parent spawns a grandchild; terminate the parent; assert the grandchild is gone and <code>StopEvidence.process_group_gone</code> holds.</li><li><strong>Terminate-from-pid-only:</strong> build a <code>ProcessChild</code> from pid/pgid alone (as after a restart) and terminate it; no owned handle.</li><li><strong>One-shot timeout:</strong> <code>run(spec, short)</code> on a sleeper returns <code>KnownFailure</code> and leaves no survivor.</li><li><strong>Alive semantics:</strong> <code>alive</code> false after normal exit.</li></ul>
+<p>Each property test records a deterministic generation scheme (small fixed N, fixed sleep durations) and asserts independently of the implementation.</p>
+<h3 id="not-re-run">Not re-run</h3>
+<p>Historical acceptance receipts that referenced the sandbox boundary remain as frozen evidence; no frozen receipt is rewritten.</p>
+<h2 id="9-bead-breakdown">9. Bead breakdown</h2>
+<p>Each bead merges green; one bead = one implement/verify loop. P2 and P3 are independent (different crates, disjoint file ownership) and run in parallel from the same base after P1.</p>
+<table><thead><tr><th>#</th><th>Bead</th><th>Content</th><th>Depends</th></tr></thead><tbody><tr><td>P1</td><td>Launcher foundation</td><td>Add <code>agalma-process</code> crate + <code>agalma_contracts::process</code>. Old sandbox untouched. Include the property tests of §8.</td><td>—</td></tr><tr><td>P2</td><td>Conductor + harness migration</td><td>Switch all conductor + harness-opencode source and tests to <code>LocalLauncher</code>/<code>ProcessApi</code>; delete <code>sandbox_process.rs</code>; drop profile writes, <code>profile_path</code>, <code>extra_ro_roots</code>, <code>sandboxed</code>; update <code>components.rs</code>/<code>harness_process.rs</code>. The guarantee-bearing conductor tests (<code>sf_scope_guard</code>, <code>provider_proxy_live</code>, <code>cargo_home</code>, <code>xcrun</code>, <code>designer_payload</code>, <code>sf_cancel</code>, <code>sf_recovery_gate</code>) are rewritten here because the sandbox types vanish; the accepted-loss wording goes into the test comments, formal doc amendments in P5.</td><td>P1</td></tr><tr><td>P3</td><td>Kernel + execution migration</td><td><code>kernel</code> engine/ownership/server → <code>ProcessApi</code>/<code>LocalLauncher</code>; <code>ownership</code> reconstructs <code>ProcessChild</code>; drop <code>AGALMA_KERNEL_SANDBOX_SOCKET</code>; <code>execution_process.rs</code> drops the <code>sandbox_socket</code> parameter and its tests; kernel test doubles renamed.</td><td>P1</td></tr><tr><td>P4</td><td>Deletion + lint + handoff regression</td><td>Remove <code>agalma-sandbox</code> crate + workspace member, <code>agalma-ipc</code> sandbox client/server, <code>agalma_contracts::sandbox</code>, dev-deps, <code>scripts/verify-peer-transports.sh</code> entry (5→4 smokes), <code>md-to-html</code> entry; update <code>architecture.rs</code> (<code>agalma-sandbox</code> out, <code>agalma-process</code> documented as infrastructure like <code>agalma-ipc</code>); add the handle-less terminate regression (§10); run <code>peers</code> + one <code>full</code>.</td><td>P2, P3</td></tr><tr><td>P5</td><td>Docs + amendment</td><td>Write the superseding amendment notes; amend live docs (<code>sf6-protected-inputs</code>, <code>self-mutation-contracts</code>, <code>architecture</code>, <code>component-contracts</code>, <code>testing-strategy</code>, <code>development-workflow</code>, <code>tui-design</code>, <code>smart-routing-design</code>, <code>paid-route-evidence</code>, <code>README</code>, <code>m0-skeleton</code>); frozen receipts (<code>b1-sandbox-evidence</code>, <code>b1-exit-evidence</code>, <code>ipc-exit-evidence</code>, other <code>b1-*</code>, <code>m0/m1-exit-evidence</code>) get a superseding note only, never rewritten; record launcher evidence.</td><td>P4</td></tr></tbody></table>
+<p>Workflow per <code>AGENTS.md</code>/<code>docs/development-workflow.md</code>: each bead in a named worktree <code>target/worktrees/&lt;bead&gt;</code> on <code>task/&lt;bead&gt;</code>, redirected cache <code>target/worktree-caches/&lt;bead&gt;/target</code>, commit <code>&lt;what&gt; (agalma-&lt;bead&gt;)</code> after review.</p>
+<h2 id="10-risks-and-open-questions">10. Risks and open questions</h2>
+<p>Resolved at filing (2026-10-15):</p>
+<ul><li><strong><code>agalma-process</code> placement:</strong> new workspace crate (bead <code>agalma-ib2</code>).</li><li><strong><code>IMPL_CRATES</code> classification:</strong> <code>agalma-process</code> is infrastructure, like <code>agalma-ipc</code> — deliberately not in <code>IMPL_CRATES</code>, because <code>agalma-kernel</code> and <code>agalma-harness-opencode</code> (impl crates) depend on it as a normal dependency.</li><li><strong><code>md-to-html.mjs</code>:</strong> deferred. Another session holds staged docs-tooling work (<code>Makefile</code>, <code>scripts/md-to-html.mjs</code>, <code>docs/*.html</code>); the removal beads do not own those files, and regeneration happens after that work lands.</li><li><strong>Kernel rename:</strong> <code>with_launcher</code>/<code>has_launcher</code>/<code>launcher_mut</code> (bead <code>agalma-wmk</code>).</li></ul>
+<p>Remaining risks:</p>
+<ul><li><strong>Guarantee loss is real, not cosmetic.</strong> SF.6's read-only judge and the egress boundary are removed. Downstream self-mutation policy assumes a confinement boundary; the amendment must be explicit that this is now convention. If confinement is later required for portability, a Linux namespace/bubblewrap backend could be reintroduced behind <code>ProcessApi</code> without re-adding the IPC/server seam.</li><li><strong>Cross-process ownership.</strong> With one launcher per process (conductor, harness, kernel) instead of one shared server, termination relies entirely on pid/pgid, which the current code already supports. The harness transport defaults to <code>Process</code> (<code>AGALMA_HARNESS_TRANSPORT</code>), so the production harness server owns its <code>LocalLauncher</code> and the OpenCode child; the conductor keeps its own for build-probe/verify. The P4 bead adds the explicit regression: a fresh <code>LocalLauncher</code> terminates a child whose owning handle was dropped (pid/pgid-only path across processes/restarts).</li></ul>
+<h2 id="11-out-of-scope">11. Out of scope</h2>
+<ul><li>Removing the provider proxy (<code>provider_proxy.rs</code>), which is retained.</li><li>Adding a replacement confinement backend.</li><li>Any change to ledger, workspace, taskqueue, or execution boundaries beyond the sandbox references listed above.</li></ul>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="b1-sandbox-evidence.html">⟲ b1-sandbox-evidence</a><span class="step">step 7 / 31 in the ring</span><a href="b1-workspace-evidence.html">b1-workspace-evidence ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">sandbox-removal-design.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

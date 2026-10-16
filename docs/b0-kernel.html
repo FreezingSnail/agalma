@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="b0-kernel.md">b0-kernel.md</a></div>
+<div class="ring"><a href="b1-execution-evidence.html">⟲ b1-execution-evidence</a><span class="step">step 10 / 31 in the ring</span><a href="m1-workloop.html">m1-workloop ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li class="here"><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="b0-durable-execution-kernel-design">B0 — durable execution kernel design</h1>
+<p>Bead: <code>agalma-9n4.1</code> (B0-D1). Epic: <code>agalma-9n4</code>. Status: design. Orchestrator-authored; gates all B0 beads. Ref: <code>docs/durable-execution-bootstrap.md</code> (requirements), <code>docs/architecture.md</code> §3 (execution/ledger/decisions), <code>docs/component-contracts.md</code> (Tier-1 seams), M0/M1 implementation (<code>crates/agalma-execution</code>, <code>agalma-ledger</code>).</p>
+<h2 id="scope-and-exit">Scope and exit</h2>
+<p>Develop a durable execution kernel behind the frozen <code>ExecutionApi</code>; the M1 seed executor (<code>agalma-execution</code>) keeps running the factory until a candidate passes the gates and is activated at a controlled restart. Candidates never touch the live ledger or replace the running factory during evaluation.</p>
+<p>Exit (bootstrap doc): gate-passing kernel resumes interrupted tasks and waits, rejects stale workers, reconciles crash-after-merge, preserves pending state across a compatible upgrade, meets measured local resource targets; consumer API unchanged; compatible state export/import.</p>
+<h2 id="placement-and-layering">Placement and layering</h2>
+<ul><li>New crate <code>agalma-kernel</code> implementing <code>ExecutionApi</code>; persistence only through <code>LedgerApi</code>; activities registered through component contracts (harness/sandbox/workspace/decision), never called from the transition function.</li><li><code>agalma-execution</code> (seed) remains; both satisfy the same trait. The conductor selects the binding (S0d binding records + staged rebind), so activation and rollback are config flips with pinned recovery.</li><li>Kernel does not own policy, sandbox lifecycle, or integration; it owns progression, retries, deadlines, directive updates, cancellation, recovery.</li></ul>
+<h2 id="execution-model-and-history">Execution model and history</h2>
+<ul><li>Versioned <code>ExecDef</code> (<code>exec_def/v1</code>): named states and commands; M1 phase machine generalized to <code>Pending | Ready | Running | Waiting | Completed | Failed | Parked | Cancelled</code> per execution plus per-operation lifecycle.</li><li>Commands: <code>Start</code>, <code>Deliver(op)</code>, <code>Decision(decider)</code>, <code>TimerFired(id)</code>, <code>DirectiveUpdate(v)</code>, <code>Cancel</code>, <code>KillLatch</code>, <code>Retry</code>.</li><li>Pure transition: <code>transition(state, command, recorded inputs) -&gt; Vec&lt;Effect&gt;</code> where effects are <code>Commit(batch)</code> / <code>Dispatch(intent)</code>; no I/O, no model calls, no tools. Deterministic replay from history.</li><li>History: append-only <code>execution_events</code> (monotonic sequence per execution); current-state projection updated in the same atomic <code>LedgerApi</code> commit; journal and projection must agree (reducer check on load).</li><li>Large artifacts stay outside history as immutable references (artifact refs, diff digests, outputs); history stores references only.</li><li>Unknown <code>exec_def</code> version or ambiguous external effect → parked, never guessed.</li></ul>
+<h2 id="ledger-schema-v3-additive-over-v2">Ledger schema v3 (additive over v2)</h2>
+<p>New tables: <code>timers(timer_id PK, execution_id, kind, fire_at, state, payload)</code>, <code>directives(directive_id PK, version, source, state, payload, received_at)</code>, <code>kernel_meta(key, value)</code> for <code>exec_def_version</code>, <code>kernel_version</code>, <code>resource_baseline</code>. Migration v2→v3 follows the existing rule: only when all executions are terminal; otherwise refuse (no in-flight migration). Export/ import: <code>LedgerApi::export_state</code> / <code>import_state</code> producing a canonical JSON snapshot (history + projection + timers + directives + bindings) with a version header; import refuses incompatible versions.</p>
+<h2 id="activity-protocol">Activity protocol</h2>
+<ul><li><code>ActivityDef { name, version }</code> registered in a kernel registry; handlers expose <code>execute(ctx) -&gt; Outcome</code> and <code>reconcile(ctx) -&gt; EffectProbe</code>.</li><li>Stable operation IDs (<code>op:&lt;execution&gt;:&lt;step&gt;[@attempt]</code>) + input hashes; reusing an ID with different contents is rejected (Conflict).</li><li>Results are persisted before advancing; duplicate delivery returns the stored result. Pending operations reconcile external state before retry.</li><li>Model attempts are explicit budgeted decisions (<code>DecisionApi</code>): request persisted before dispatch; validated choice/fallback recorded before dependent work; recovery reuses the recorded outcome without re-inference; changed inputs require a new operation ID.</li><li>Operations pin component/API binding versions; retries reconcile with the pinned binding (no silent switch to the configured adapter).</li></ul>
+<h2 id="durable-waiting">Durable waiting</h2>
+<ul><li>Retry schedules and deadlines are rows in <code>timers</code>; overdue timers fire once after restart via a recovered <code>TimerFired</code> command (idempotent by timer id).</li><li>Directive updates: unique <code>directive_id</code>, bound to source + version; duplicates harmless; a newer directive can cancel or replace queued work (transition derives queued commands from the active directive).</li><li>Waiting releases agent sessions and workers (no busy-wait; conductor sleeps until the next timer/dispatch).</li></ul>
+<h2 id="cancellation-and-ownership">Cancellation and ownership</h2>
+<ul><li>Cancellation requests are persisted commands; lease generations fence stale workers (M1 machinery retained); reclaiming requires reconciliation of prior processes (evidence recorded, <code>SandboxApi</code> termination).</li><li>Kill latch blocks recovered dispatch as well as new work; latch survives restart; <code>resume</code> clears.</li></ul>
+<h2 id="upgrade-activation-rollback">Upgrade, activation, rollback</h2>
+<ul><li>Persisted-contract versioning: <code>kernel_meta</code>; candidates are checked against saved fixture databases and histories (reducer-only reconstruction, no external effects); explicit migrations only.</li><li>Staged activation: set latch → settle/reconcile in-flight executions → swap <code>ExecutionApi</code> binding at controlled restart (rebind rules from S0d) → schema compatibility check → clear latch → resume. Rollback: keep the seed binding and its recovery path; restore procedure reconciles ledger, bd, Git, and processes before dispatch.</li><li>Resource gates: measure seed baseline first (idle RSS/CPU, restart time, dispatch latency, DB growth) and set numeric regression limits in K5; correctness is a veto.</li></ul>
+<h2 id="protected-recovery-fixture-pack">Protected recovery fixture pack</h2>
+<p><code>fixtures/recovery-pack/</code> with a <code>MANIFEST.sha256</code>; an integrity test (<code>crates/agalma-kernel/tests/pack_integrity.rs</code>) fails if any fixture changed — candidates cannot edit the tests that judge them. Cases (fake effects / disposable repos, crash injection before/after persistence and effect boundaries): transition-commit-before-dispatch; duplicate delivery after completion; restart after decision/fallback commit; merge-before-completion; stale-lease worker; restart during retry delay/directive update; upgrade with pending executions; kernel/adapter replacement; rollback/restore reconcile. The pack runner emits a per-case gate report consumed by K5.</p>
+<h2 id="beads-and-waves">Beads and waves</h2>
+<ul><li>D1 <code>9n4.1</code> design (this doc) — closes before implementation.</li><li>B0.1 <code>9n4.2</code> fixture pack + crash harness (protected).</li><li>B0.2 <code>9n4.3</code> kernel model/history/transition.</li><li>B0.3 <code>9n4.4</code> activity protocol + decisions.</li><li>B0.4 <code>9n4.5</code> durable waiting.</li><li>B0.5 <code>9n4.6</code> cancellation/ownership.</li><li>B0.6 <code>9n4.7</code> upgrade/activation/evidence.</li></ul>
+<p>Waves: B0.1 single → B0.2 single → B0.3 → B0.4 → B0.5 → B0.6 (kernel crate is one evolving module; serial to keep history/transition stable). Each bead: verify → commit → close by orchestrator.</p>
+<h2 id="constraints">Constraints</h2>
+<p>No new crates without approval; offline builds after first fetch; workers do not commit; fixtures/protected pack edits are gate failures; candidates run on isolated state under <code>target/test-runs/</code> (never /tmp).</p>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="b1-execution-evidence.html">⟲ b1-execution-evidence</a><span class="step">step 10 / 31 in the ring</span><a href="m1-workloop.html">m1-workloop ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">b0-kernel.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

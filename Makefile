@@ -84,7 +84,7 @@ TEST_RUNNER := $(shell if [ -x scripts/test.sh ]; then echo scripts/test.sh; fi)
 .DEFAULT_GOAL := all
 
 .PHONY: all build release help test test-focused test-peers test-full \
-        report sweep sweep-apply worktree-remove clean-build clean-caches
+        report sweep sweep-apply worktree-remove docs-html clean-build clean-caches
 
 all: build
 
@@ -136,6 +136,16 @@ ifeq ($(TEST_RUNNER),)
 else
 	@$(call run_logged,$(TEST_RUNNER) full,full)
 endif
+
+# ---------------------------------------------------------------------------
+# Documentation. Renders the markdown linked from docs/progress-roadmap.html
+# into rich, self-contained HTML (no network/CDN/JS needed to read). Each page
+# carries a component-ingestion map and a wrapping prev/next ring. Node stdlib
+# only; it downloads nothing.
+# ---------------------------------------------------------------------------
+
+docs-html:
+	@node scripts/md-to-html.mjs
 
 # ---------------------------------------------------------------------------
 # Build-artifact hygiene. target/test-runs holds retained evidence and is never

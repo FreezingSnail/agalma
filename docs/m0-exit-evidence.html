@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="m0-exit-evidence.md">m0-exit-evidence.md</a></div>
+<div class="ring"><a href="self-mutation-roadmap.html">⟲ self-mutation-roadmap</a><span class="step">step 14 / 31 in the ring</span><a href="m1-exit-evidence.html">m1-exit-evidence ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li class="here"><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="m08-recovery-kill-switch-exit-evidence">M0.8 — recovery + kill-switch exit evidence</h1>
+<p>Bead: <code>agalma-4ui.10</code> (M0.8). Base HEAD: <code>cbbfe25</code>. This is the conductor's M0 exit-gate evidence: recovery reconciliation, survivor termination before redispatch, kill latch across restart, and CLI fixes.</p>
+<p>All run dirs live under <code>target/test-runs/</code> (never a system temp directory).</p>
+<h2 id="recovery-matrix">Recovery matrix</h2>
+<table><thead><tr><th>#</th><th>Case</th><th>Command</th><th>Observed</th><th>Result</th></tr></thead><tbody><tr><td>1</td><td>Crash (SIGKILL) mid-build; survivor terminated with evidence before redispatch</td><td><code>cargo test -p agalma-conductor --test recovery --offline crash_mid_build_terminates_survivor_before_redispatch</code></td><td>Scripted build spawns a recorded worker and sleeps; conductor SIGKILLed; orphan alive; restart writes <code>runs/&lt;exec&gt;/stop/build-1.json</code> with <code>process_group_gone=true</code>, kills the orphan, then rebuilds to done; <code>main == candidate</code>, one candidate commit, tag <code>m0/exec-fix-answer-1</code></td><td>PASS</td></tr><tr><td>2</td><td>Crash after integrate, before completion record; completes without re-merge</td><td><code>cargo test -p agalma-conductor --test recovery --offline crash_after_integrate_completes_without_remerge</code></td><td>Child re-exec arms <code>AGALMA_EXEC_CRASH_AT=after_effect_before_completion</code> after the integrate effect; parent <code>recover()</code> sees <code>main == candidate</code>, records the integrate receipt (event <code>operation_reconciled</code>), advances to <code>Done</code>; <code>git rev-list --count main == 2</code> (no re-merge)</td><td>PASS</td></tr><tr><td>3</td><td>Duplicate delivery of a completed operation</td><td><code>cargo test -p agalma-conductor --test recovery --offline duplicate_delivery_returns_recorded_receipt</code></td><td>First <code>deliver_operation</code> → <code>Executed</code> and one effect line; second → <code>Recorded</code> and effect count unchanged</td><td>PASS</td></tr><tr><td>4</td><td>Kill latch set → restart → no dispatch; <code>resume</code> clears; work continues</td><td><code>cargo test -p agalma-conductor --test recovery --offline kill_latch_survives_restart_then_resume_completes</code></td><td>SIGTERM persists latch and exits 0; <code>status --state-dir</code> reports <code>kill_latch=true</code>; restart reconciles the survivor but blocks (failed exit, build effect count unchanged); <code>resume --state-dir</code> clears; next run completes (<code>phase=Done</code>)</td><td>PASS</td></tr><tr><td>5</td><td>Surviving worker with a stale lease terminated before redispatch</td><td><code>cargo test -p agalma-conductor --test recovery --offline stale_lease_survivor_terminated_before_redispatch</code></td><td>Planted live process-group leader with <code>started_at_unix_ms=1</code>; <code>recover()</code> terminates it (stop evidence <code>process_group_gone=true</code>) without dispatching; the build dispatches only on the next <code>step</code></td><td>PASS</td></tr><tr><td>6</td><td>Schema mismatch refuses to run</td><td><code>cargo test -p agalma-conductor --test recovery --offline schema_mismatch_refuses_to_run</code></td><td>Ledger opened with <code>schema_version=99</code>; <code>agalma run</code> exits failure with <code>incompatible ledger schema</code> and no <code>runs/</code> effects</td><td>PASS</td></tr></tbody></table>
+<p>Full matrix in one run:</p>
+<pre class="code"><code>cargo test -p agalma-conductor --test recovery --offline
+running 6 tests
+test crash_after_integrate_completes_without_remerge ... ok
+test crash_mid_build_terminates_survivor_before_redispatch ... ok
+test duplicate_delivery_returns_recorded_receipt ... ok
+test kill_latch_survives_restart_then_resume_completes ... ok
+test schema_mismatch_refuses_to_run ... ok
+test stale_lease_survivor_terminated_before_redispatch ... ok
+test result: ok. 6 passed; 0 failed</code></pre>
+<h2 id="live-e2e-regression-once">Live e2e regression (once)</h2>
+<pre class="code"><code>cargo run --offline -p agalma-conductor -- run \
+  --fixture fixtures/target-template --once --state-dir target/test-runs/e2e-m0.8
+
+result: phase=Done state=Completed attempt=1 parked_reason=None
+EXIT=0
+
+target/debug/agalma status --state-dir target/test-runs/e2e-m0.8
+exec:fix-answer:1 phase=Done state=Completed attempt=1 parked_reason=None
+kill_latch=false
+
+git -C target/test-runs/e2e-m0.8/runs/exec-fix-answer-1/checkout log --oneline --all --decorate
+279b3b3 (HEAD -&gt; candidate/exec-fix-answer-1, tag: m0/exec-fix-answer-1, main) candidate candidate/exec-fix-answer-1
+efe66d9 baseline</code></pre>
+<p>The model fixed <code>answer()</code> to <code>42</code>; verify went green; integrate landed once and tagged <code>m0/exec-fix-answer-1</code>. No regression.</p>
+<h2 id="workspace-verification">Workspace verification</h2>
+<table><thead><tr><th>Command</th><th>Result</th></tr></thead><tbody><tr><td><code>cargo build --workspace --offline</code></td><td>ok</td></tr><tr><td><code>cargo test --workspace --offline</code></td><td>ok (all suites; recovery 6, crash_matrix 11, conductor 2, sandbox 3+14, workspace 7, ledger 7, harness 18)</td></tr><tr><td><code>cargo clippy --workspace --all-targets --offline -- -D warnings</code></td><td>ok (no warnings)</td></tr><tr><td><code>cargo fmt --check --all</code></td><td>ok (exit 0)</td></tr></tbody></table>
+<h2 id="semantics-implemented">Semantics implemented</h2>
+<ul><li><strong>Boot order</strong> (<code>Composition::build</code> then <code>run_command</code>): ledger schema gate → <code>Executor::recover</code> = event replay (no I/O) → projection agreement → reconcile pending intents → terminate surviving workers via <code>SandboxApi</code> with evidence (before any redispatch) → <code>drive</code> honors the kill latch / <code>STOP</code> sentinel before every dispatch.</li><li><strong>Build/verify effects</strong>: each effect writes a durable completion marker (<code>&lt;run&gt;/&lt;phase&gt;/&lt;attempt&gt;.done</code>) holding the recorded <code>ActivityOutcome</code>. <code>effect_present</code> returns <code>Present</code> when it exists, so <code>reconcile</code> completes without repeating the effect. A live recorded worker is terminated through <code>SandboxApi</code> (evidence in <code>&lt;run&gt;/stop/&lt;phase&gt;-&lt;attempt&gt;.json</code>); a worker that died without completing is <code>Ambiguous</code> and parks. Verify uses started/done markers (one-shot <code>cargo test</code>, no long-lived worker identity).</li><li><strong>Integrate</strong>: <code>integrate</code> detects an already-landed merge (<code>Workspace::integrated_receipt</code>: <code>main == candidate</code> and candidate ahead of base) and completes the ledger/tag from Git state without re-merging.</li><li><strong>Worker identity</strong>: <code>WorkerRecord { pid, pgid, attempt, phase, operation_id, started_at_unix_ms }</code> is persisted at launch under <code>&lt;run&gt;/&lt;phase&gt;/&lt;attempt&gt;.worker.json</code>; removed on clean completion or after termination.</li><li><strong>Kill switch</strong>: SIGTERM/SIGINT persist <code>kill_latch</code> through a second ledger connection and exit 0; restart stays blocked; <code>agalma resume</code> clears the latch and removes the <code>STOP</code> sentinel.</li><li><strong>CLI</strong>: <code>status</code> and <code>resume</code> now accept <code>--state-dir</code> (matching <code>run</code>).</li></ul>
+<h2 id="deviations-open-items">Deviations / open items</h2>
+<ul><li><strong>Scripted mode is test-only.</strong> <code>AGALMA_ACTIVITY_MODE=scripted</code> (plus <code>AGALMA_SCRIPTED_BUILD_SLEEP_MS</code>) selects deterministic build/verify stand-ins wired by <code>activities_with_mode</code>; the default is the live OpenCode harness. Tests use the explicit <code>ActivityMode::Scripted</code> argument instead of the env var where they run in-process, to avoid env races between threads.</li><li><strong>Build ambiguous-park branch is conservative.</strong> A worker record whose process is already gone with no completion marker parks (<code>Ambiguous</code>) rather than blindly re-running the model. The matrix exercises the live-survivor branch; the dead-worker branch is covered by the same probe logic.</li><li><strong>Verify has no persisted worker pid.</strong> <code>cargo test</code> is a bounded one-shot run whose group is torn down by the launcher; a crash mid-verify is detected by the started marker and parks. Only the long-lived harness worker carries a durable pid/pgid lease.</li><li><strong><code>--once</code> is unchanged</strong> (still drives to the terminal phase; it is not a single-step switch). Out of scope for M0.8.</li><li><strong>Exit criteria ordering</strong> is enforced inside <code>Executor::recover</code>; the explicit schema check in <code>run_command</code> runs after <code>Composition::build</code> (which already gates on schema inside <code>recover</code>) and is belt-and-suspenders.</li><li><strong>Termination evidence</strong> for a stray process is obtained through the sandbox contract (<code>SandboxApi::terminate</code>) but the scripted survivor is an ordinary process-group leader rather than a Seatbelt-confined child; the real worker path uses <code>SeatbeltSandbox</code>.</li></ul>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="self-mutation-roadmap.html">⟲ self-mutation-roadmap</a><span class="step">step 14 / 31 in the ring</span><a href="m1-exit-evidence.html">m1-exit-evidence ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">m0-exit-evidence.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

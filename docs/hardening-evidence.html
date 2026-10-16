@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="hardening-evidence.md">hardening-evidence.md</a></div>
+<div class="ring"><a href="m1-exit-evidence.html">⟲ m1-exit-evidence</a><span class="step">step 16 / 31 in the ring</span><a href="reliability-hardening.html">reliability-hardening ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (31 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li class="here"><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="m15-hardening-batch-evidence-h4">M1.5 — hardening batch evidence (H4)</h1>
+<p>Bead: <code>agalma-zxi.5</code> (H4). Epic: <code>agalma-zxi</code> (M1.5). Base HEAD: <code>3b63e1b</code> (H3 model routing v1). Date: 2026-10-10. Baseline: M1.8 exit run (<code>docs/m1-exit-evidence.md</code>, kept unchanged; treated read-only here).</p>
+<p>H4 re-runs the same four M1 seed tasks through the queue-driven <code>agalma work</code> loop after the H1–H3 hardening (stall watchdog + provider health + park projection, scoped xcrun fix, model routing v1) and compares against the M1.8 baseline (50% success, 102.9 min wall, $0/merge, 8×600 s stalls).</p>
+<h2 id="environment">Environment</h2>
+<ul><li>Fresh scratch target (never the live repo): <code>git clone --no-hardlinks</code> of agalma at <code>3b63e1b</code> into <code>target/test-runs/hardening-batch/run-1/target</code>, with an isolated bd store (<code>.beads</code> in the clone, <code>bd init</code>, prefix <code>agalma</code>). All merges, tags, and bd writes happened only in the clone; the live repo has no commits, pushes, or bd writes (live HEAD still <code>3b63e1b</code>, live backlog still 32 issues).</li><li>Harness <code>opencode@opencode-adapter/v1</code> (<code>binding:opencode:1</code>, config <code>72754e858243caf8</code>, pinned per execution). Live mode; provider egress via the parent-owned loopback proxy (<code>AGALMA_PROXY_ALLOW</code> default <code>opencode.ai</code>). Turn timeout 600 s, verify timeout 900 s, idle watchdog default 120 s (<code>AGALMA_IDLE_TIMEOUT_SECS</code> unset), per-task <code>budget_usd: 2.00</code>, <code>max_attempts: 2</code>.</li><li>Command (no <code>--model</code>; routing v1 picks the free default; paid stays gated off because <code>AGALMA_ALLOW_PAID</code> is unset):</li></ul>
+<pre class="code"><code>  cargo run --offline -p agalma-conductor -- work \
+    --repo &lt;clone&gt; --max-tasks 4 --state-dir &lt;clone&gt;/state</code></pre>
+<ul><li>Batch wall: <code>2026-10-10T03:56:27Z → 04:12:47Z</code> = <strong>980 s (16.3 min)</strong> (<code>EXIT=0</code>), well inside the 60-minute timebox. All four tasks processed.</li></ul>
+<h2 id="seed-tasks">Seed tasks</h2>
+<p>Same four real data/docs bd issues as M1.8, re-seeded with their <strong>exact</strong> M1.8 title/description (including the fenced <code>directive/v0</code> block and acceptance commands) from the previous run's store. New ids; content byte-identical to the M1.8 seeds.</p>
+<table><thead><tr><th>H4 id</th><th>M1.8 id</th><th>Family</th><th>Title (abridged)</th></tr></thead><tbody><tr><td><code>agalma-cvr</code></td><td><code>agalma-8yr</code></td><td>fix</td><td>README roles/loop drift fix (verifier role; checkout/integrate in loop)</td></tr><tr><td><code>agalma-hhn</code></td><td><code>agalma-9cu</code></td><td>feature</td><td>new <code>docs/task-authoring.md</code> describing the fenced block</td></tr><tr><td><code>agalma-rxb</code></td><td><code>agalma-vc6</code></td><td>fix</td><td><code>crates/agalma-conductor/prompts/builder.md</code> acceptance/no-test-edits guidance</td></tr><tr><td><code>agalma-9u8</code></td><td><code>agalma-on7</code></td><td>feature</td><td>new <code>docs/conventions.md</code> phase-handoff rules</td></tr></tbody></table>
+<p>Triage order (normal priority, id tiebreak): <code>9u8</code> → <code>cvr</code> → <code>hhn</code> → <code>rxb</code> (i.e. <code>on7</code> → <code>8yr</code> → <code>9cu</code> → <code>vc6</code>).</p>
+<p>Every task ends with the same scope-guard command asserting the candidate diff touches no <code>Cargo.toml</code> and no crate <code>src/**/*.rs</code>:</p>
+<pre class="code"><code>sh -c '! git diff --name-only HEAD~1 HEAD | grep -qE &quot;Cargo\.toml$|/src/.*\.rs$&quot;'</code></pre>
+<h2 id="batch-results">Batch results</h2>
+<table><thead><tr><th>H4 id</th><th>Exec</th><th>Family</th><th>Route</th><th>Build attempts</th><th>Verdict</th><th><code>wall_ms</code></th><th>Stalls</th><th>Tokens in/out</th><th>Digest</th></tr></thead><tbody><tr><td><code>agalma-9u8</code></td><td><code>exec:agalma-9u8:1</code></td><td>feature</td><td><code>builder:feature</code></td><td>2 (both idle-stalled)</td><td><strong>parked</strong></td><td>241 600</td><td>2</td><td>0/0</td><td><code>state/runs/exec-agalma-9u8-1/artifacts/digest.json</code></td></tr><tr><td><code>agalma-cvr</code></td><td><code>exec:agalma-cvr:1</code></td><td>fix</td><td><code>builder:fix</code></td><td>2 (both idle-stalled)</td><td><strong>parked</strong></td><td>241 905</td><td>2</td><td>0/0</td><td><code>state/runs/exec-agalma-cvr-1/artifacts/digest.json</code></td></tr><tr><td><code>agalma-hhn</code></td><td><code>exec:agalma-hhn:1</code></td><td>feature</td><td><code>builder:feature</code></td><td>2 (both idle-stalled)</td><td><strong>parked</strong></td><td>241 438</td><td>2</td><td>0/0</td><td><code>state/runs/exec-agalma-hhn-1/artifacts/digest.json</code></td></tr><tr><td><code>agalma-rxb</code></td><td><code>exec:agalma-rxb:1</code></td><td>fix</td><td><code>builder:fix</code></td><td>2 (attempt 1 idle-stalled, attempt 2 green)</td><td><strong>done</strong></td><td>237 180</td><td>1</td><td>23 003/1 071</td><td><code>state/runs/exec-agalma-rxb-1/artifacts/digest.json</code></td></tr></tbody></table>
+<p>Model for every execution: <code>opencode/big-pickle</code> (routing v1 free default).</p>
+<p>Terminal evidence in the clone:</p>
+<ul><li>Merge on green + CAS + tag: <code>main</code> advanced <code>7885d9d → 6ffa450</code>; tag <code>m1/exec-agalma-rxb-1</code> (<code>6ffa450</code>). Only <code>agalma-rxb</code> merged.</li><li>Done task: bd <code>closed</code>, <code>phase=done</code> + digest comment recorded.</li><li>Parked tasks: bd status <code>blocked</code>, label <code>parked</code>, <code>phase=parked</code> + <code>parked: max_attempts (2) exhausted after attempt 2; last failure artifact:build@2</code> + digest (<code>verdict=red</code>) comments. <strong>Not</strong> <code>in_progress</code> (the H1 park projection).</li><li>Every execution has a persisted digest (ledger <code>digests</code> row + <code>artifacts/digest.json</code>); boot reconcile logged <code>reconcile: checked=0 fixed=0 stale=0 skipped=0</code>.</li></ul>
+<h3 id="merged-task-verification-agalma-rxb-agalma-vc6">Merged-task verification (<code>agalma-rxb</code> → <code>agalma-vc6</code>)</h3>
+<p>Verified against the merged <code>main</code> HEAD (<code>6ffa450</code>, parent <code>7885d9d</code>):</p>
+<ul><li>Scope: only <code>crates/agalma-conductor/prompts/builder.md</code> (<code>M</code>) — a prompt, not <code>docs/**</code> but within the intended docs/prompts scope; no <code>Cargo.toml</code>, no <code>src/**/*.rs</code>.</li><li>Acceptance on merged <code>main</code>: all three commands exit <code>0</code> (<code>grep &quot;acceptance commands&quot;</code> ✓, <code>grep &quot;do not edit the tests&quot;</code> ✓, scope guard ✓). The phrases are present at lines 24/26/31 of the merged file.</li></ul>
+<h2 id="metrics-vs-m18-baseline">Metrics vs M1.8 baseline</h2>
+<table><thead><tr><th>Metric</th><th>M1.8 baseline</th><th>H4 batch</th><th>Change</th></tr></thead><tbody><tr><td>Success rate</td><td>2/4 = <strong>50%</strong></td><td>1/4 = <strong>25%</strong></td><td>−25 pts</td></tr><tr><td>Merges</td><td>2 (<code>9cu</code>, <code>on7</code>)</td><td>1 (<code>vc6</code>)</td><td>−1</td></tr><tr><td>Batch wall</td><td>6172 s (<strong>102.9 min</strong>)</td><td>980 s (<strong>16.3 min</strong>)</td><td><strong>6.3× faster</strong></td></tr><tr><td>$/merge (cash)</td><td>$0.00</td><td>$0.00</td><td>=</td></tr><tr><td>Recorded cost</td><td><code>0.000000 USD</code></td><td><code>0.000000 USD</code> (cash $0, quota $0)</td><td>=</td></tr><tr><td>Stalls (<code>provider_health</code>)</td><td>8</td><td>7</td><td>−1</td></tr><tr><td>Stall detection</td><td>600 s blind deadline</td><td><strong>~120.2 s</strong> idle watchdog</td><td><strong>≈5.0× faster</strong></td></tr><tr><td>Productive model time</td><td>≈11.8 min</td><td>≈1.93 min (<code>rxb</code> attempt 2)</td><td>—</td></tr><tr><td>Park projection</td><td><code>in_progress</code> + <code>parked</code> label</td><td><code>blocked</code> + <code>parked</code> label</td><td>fixed</td></tr><tr><td>Park reason</td><td><code>max_attempts exhausted</code></td><td><code>max_attempts (2) exhausted after attempt 2; last failure artifact:build@2</code></td><td>richer</td></tr></tbody></table>
+<p>Wall/<code>provider_health</code> breakdown: 7 idle stalls (sum <code>wall_ms</code> 842 002 ms ≈ 14.0 min) + 1 productive session (115 752 ms ≈ 1.93 min) + verify (170 ms) ≈ 958 s, consistent with the 980 s batch wall.</p>
+<h2 id="watchdog-and-provider-health-findings-h1">Watchdog and provider-health findings (H1)</h2>
+<ul><li><strong>Detection latency.</strong> The idle watchdog fired 7× at <code>idle_ms</code> 120 160–120 416 (mean ≈120 239 ms) and <code>wall_ms</code> 120 182–120 439 ms, i.e. ~120.2 s — versus the M1.8 blind 600 s deadline. That is the <strong>≈5× detection improvement</strong>; it is the single biggest driver of the wall-time collapse (stall cost fell from ≈80 min to ≈14 min).</li><li><strong>Progress fingerprint.</strong> Every stalled session had zero token/step delta (<code>tokens=0</code>), so the fingerprint never advanced and the watchdog correctly classified them <code>stalled</code>/<code>idle</code>. <code>provider_health</code> records carried <code>{model, binding, attempt, reason:idle, idle_ms, tokens:0, wall_ms}</code> per H1.</li><li><strong>Stall verdict path.</strong> A <code>stalled</code> verdict is treated as a failed attempt: it skips verify and drives <code>retry.escalate</code> directly (7 recorded decisions: <code>retry</code> on attempt 1, <code>park</code> on attempt 2), matching the H1 design. In M1.8 a 600 s timeout instead <em>advanced to verify</em>, producing empty/zero-token verify attempts.</li><li><strong>Session-gone fast-fail.</strong> Not exercised this batch: every cancellation returned <code>SessionNotFound</code> (404) <em>after</em> the idle verdict, not as the terminal poll error. The fast-fail path remains covered by <code>watchdog.rs</code> tests.</li><li><strong>Recovery by retry.</strong> One stall was escaped: <code>rxb</code> attempt 1 stalled at 120.3 s, attempt 2 produced the diff and merged. Retry can still recover a stalled free-tier session.</li></ul>
+<h3 id="provider-health-h3-routing-vs-free-tier">Provider health (H3 routing vs free tier)</h3>
+<ul><li>All 7 stalls were <code>opencode/big-pickle</code> sessions that produced <strong>zero tokens in 120 s</strong>; only 1 of 8 sessions (13%) produced tokens. M1.8's free <code>opencode/mimo-v2.6-flash-free</code> produced 2 productive of 10 sessions (20%).</li><li>Routing v1 therefore did <strong>not</strong> improve free-tier provider health: the free candidate set is still stall-dominated, and <code>big-pickle</code> was at least as flaky as <code>mimo-v2.6-flash-free</code> in this environment. The success regression (25% vs 50%) tracks this flakiness, not loop mechanics — the conductor's stall→retry→park handling was correct throughout.</li><li>Follow-up (not this bead): validate/alternate the free builder candidate, or enable a paid tier behind the auth proxy, before trusting batch throughput.</li></ul>
+<h2 id="model-routing-v1-findings-h3">Model routing v1 findings (H3)</h2>
+<ul><li>8 <code>route.model</code> decisions recorded (builder + verifier per task), all <code>origin=static</code>, class <code>builder</code>/<code>verifier</code>, family <code>fix</code>/<code>feature</code>, chosen free <code>opencode/big-pickle</code>. Paid candidates were skipped (<code>AGALMA_ALLOW_PAID</code> unset → <code>eligible(..., false)</code>).</li><li>Routes surfaced in the digest (<code>route=builder:fix</code> / <code>builder:feature</code>) and in each <code>usage</code> event; attempt model pinned as <code>opencode/big-pickle</code>.</li><li>No <code>--model</code>/<code>AGALMA_MODEL</code> override was set, so routing defaulted builders to the free coder as designed; the verifier free fallback is the same coder.</li></ul>
+<h2 id="park-projection-findings-h1">Park projection findings (H1)</h2>
+<ul><li>3 parks projected to bd status <code>blocked</code> + label <code>parked</code> + reason comment (not <code>in_progress</code>), and the digest/phase comments ride the issue.</li><li><strong>No <code>postmortem.md</code> artifact</strong> was written for the stall-parks: the stall → retry → park path bypasses <code>write_postmortem</code>, which runs only when a <em>red verify</em> exhausts <code>max_attempts</code>. Reason/digest evidence is still on the bd issue and in the ledger, but the structured artifact M1.8 produced is absent on the stall path (observability gap).</li></ul>
+<h2 id="deviations-open-items">Deviations / open items</h2>
+<ol><li><strong>Success rate fell (25% vs 50%) despite the wall-time win.</strong> Model/provider flakiness dominated: 7/8 free sessions stalled with zero tokens. The H1–H3 mechanics behaved as designed; the free tier is the bottleneck. This is reported honestly rather than trimmed.</li><li><strong>Digest under-reports stall-then-success attempts.</strong> <code>rxb</code>'s digest shows <code>attempts=0</code> and empty <code>commands</code> because <code>collect_commands</code> stops at the first missing <code>verify@{attempt}</code> receipt (attempt 1 stalled, so there is no <code>verify@1</code>), even though verify ran at attempt 2 and the <code>accept@2-*</code> artifacts exist. Same for all stall-parks (<code>attempts=0</code>). Measurement gap in the digest, not a correctness bug.</li><li><strong>Stall-parks write no <code>postmortem.md</code></strong> (see above).</li><li><strong>Working tree stale after integrate (pre-existing).</strong> After a merge, <code>main</code> HEAD carries the change but the origin index/worktree still hold the pre-merge content (e.g. <code>M</code>/<code>D</code> entries). This is <em>not</em> an H regression: the M1.8 clone shows the same (<code>D docs/task-authoring.md</code>). Merged-task acceptance was therefore verified against HEAD (restoring the worktree to <code>6ffa450</code>), where all commands pass.</li><li><strong><code>bd init</code> side effect in the clone.</strong> The isolated init created <code>.claude/</code>, <code>AGENTS.md</code>, and a <code>bd init</code> commit in the scratch clone (no live effect). Live repo/bd untouched.</li><li><strong>Timebox met</strong> (16.3 min &lt; 60 min); no partial-run interruption needed.</li></ol>
+<h2 id="post-run-regression-live-repo-read-only">Post-run regression (live repo, read-only)</h2>
+<p>Run after the batch against the live tree at <code>3b63e1b</code>:</p>
+<ul><li><code>cargo test --workspace --offline</code> — <strong>177 passed, 0 failed</strong>.</li><li><code>cargo build --workspace --offline</code> — clean.</li><li><code>cargo clippy --workspace --all-targets --offline -- -D warnings</code> — clean.</li><li><code>cargo fmt --check --all</code> — clean.</li></ul>
+<h2 id="open-items-carried-forward">Open items carried forward</h2>
+<ul><li>Free-tier provider health: validate/alternate the builder candidate or gate a paid tier behind the auth proxy before relying on batch throughput.</li><li>Digest <code>attempts</code>/<code>commands</code> accounting for stall-then-retry paths.</li><li><code>postmortem.md</code> for stall-parks.</li><li>Integrate working-tree refresh (pre-existing, cross-bead).</li></ul>
+<hr>
+<h1 id="m16-stall-fix-batch-evidence-agalma-csw3">M1.6 — stall fix batch evidence (agalma-csw.3)</h1>
+<p>Bead: <code>agalma-csw.3</code> (S1 fix). Epic: <code>agalma-csw</code> (M1.6). Base HEAD: <code>69001ab</code> (S1 root-cause, <code>agalma-csw.1</code>). Date: 2026-10-10. This section is <strong>appended</strong>; the H4 evidence above is unchanged.</p>
+<p>The S1 spike (<code>docs/spikes/stall-root-cause.md</code>) proved the free-route &quot;stall&quot; was an <strong>adapter projection gap</strong>: sessions progressed (tokens, tool steps) while the harness surfaced no events until terminal, so <code>progress_fingerprint</code> stayed constant and the idle watchdog false-classified live turns as idle. The batch's <code>SessionNotFoundError</code> was a second artifact: <code>close_session</code> (DELETE) ran before the stall arm's <code>cancel_operation</code> (interrupt).</p>
+<h2 id="what-changed">What changed</h2>
+<ol><li><strong>Live progress surfacing (adapter).</strong> <code>translate::events_from</code> now emits a best-effort partial <code>UsageSnapshot</code> from the running session projection's live token counters (populated on each completed step), and <code>read_events</code> also translates the live <code>GET /api/session/{id}/message</code> page into a <code>ToolOutcome</code> per terminal tool part (<code>completed</code>→ok, <code>error</code>→err). Terminal behavior is unchanged (<code>Completed</code>/<code>Failed</code> still emit full usage + terminal event).</li><li><strong>Fingerprint advances with those deltas.</strong> <code>progress_fingerprint</code> already sums token deltas and <code>steps = read_events().len()</code>, so the new partial snapshot and per-tool events make it move mid-turn.</li><li><strong>Cancel ordering.</strong> <code>settle_after_poll</code> cancels (<code>cancel_operation</code>) <strong>before</strong> <code>close_session</code> for <code>Stalled</code>/<code>TimedOut</code> in the build, reference, and verifier paths; the adapter's <code>cancel_ack_from_response</code> treats a 404 as &quot;already gone&quot; (Ok, unacknowledged), so our own close can never surface a false <code>SessionNotFoundError</code>.</li><li><strong>Watchdog semantics preserved.</strong> With real progress signals, 120 s idle is a genuine stall; no threshold changed.</li></ol>
+<h2 id="environment">Environment</h2>
+<ul><li>Fresh scratch clone (<code>git clone --no-hardlinks</code> of the live tree at <code>69001ab</code>) into <code>target/test-runs/hardening-batch/run-2/target</code>, isolated bd store (<code>bd init</code>, prefix <code>agalma</code>). The conductor ran from the live working tree (with the uncommitted <code>agalma-csw.3</code> changes); the scratch clone is only the workspace/origin under test.</li><li>Same four seed tasks and exact wording as M1.8/H4 (bodies copied byte-for-byte from the H4 <code>tasks/t{1..4}.md</code>). New ids: <code>agalma-6me</code>=seed-task-1 (README, fix), <code>agalma-85l</code>=seed-task-3 (builder.md, fix), <code>agalma-s08</code>=seed-task-2 (task-authoring.md, feature), <code>agalma-tvz</code>=seed-task-4 (conventions.md, feature).</li><li>Command (no <code>--model</code>; routing v1 free default; <code>AGALMA_ALLOW_PAID</code> unset → free route, paid credential present but gated off):</li></ul>
+<pre class="code"><code>  cargo run --offline -p agalma-conductor -- work \
+    --repo &lt;clone&gt; --max-tasks 4 --state-dir &lt;clone&gt;/state</code></pre>
+<ul><li>Batch wall: <code>2026-10-10T13:49:12Z → 14:01:49Z</code> = <strong>757 s (12.6 min)</strong> (<code>EXIT=0</code>), inside the 60-minute timebox.</li></ul>
+<h2 id="batch-results">Batch results</h2>
+<table><thead><tr><th>id</th><th>Exec</th><th>Family</th><th>Route</th><th>Attempts</th><th>Verdict</th><th><code>wall_ms</code></th><th>Stalls</th><th>Tokens in/out</th></tr></thead><tbody><tr><td><code>agalma-6me</code></td><td><code>exec:agalma-6me:1</code></td><td>fix</td><td><code>builder:fix</code></td><td>1</td><td><strong>done (green)</strong></td><td>153 407</td><td>0</td><td>17 822 / 974</td></tr><tr><td><code>agalma-85l</code></td><td><code>exec:agalma-85l:1</code></td><td>fix</td><td><code>builder:fix</code></td><td>1</td><td><strong>done (green)</strong></td><td>169 263</td><td>0</td><td>21 796 / 2 661</td></tr><tr><td><code>agalma-s08</code></td><td><code>exec:agalma-s08:1</code></td><td>feature</td><td><code>builder:feature</code></td><td>1</td><td><strong>done (green)</strong></td><td>52 542</td><td>0</td><td>25 246 / 2 713</td></tr><tr><td><code>agalma-tvz</code></td><td><code>exec:agalma-tvz:1</code></td><td>feature</td><td><code>builder:feature</code></td><td>2 (attempt 1 stalled, attempt 2 green)</td><td><strong>done (green)</strong></td><td>359 385</td><td>1</td><td>0/0 (att 1) then 16 207 / 1 262</td></tr></tbody></table>
+<p>Model for every execution: <code>opencode/big-pickle</code> (routing v1 free default).</p>
+<p>Terminal evidence in the clone:</p>
+<ul><li>All four <code>m1/exec-*</code> tags exist and <code>main</code> (<code>f6a39e3</code>) carries all four candidate commits (linear). Only merged-on-green paths produce these tags.</li><li>Every task bd status <code>closed</code>, <code>close_reason: done: green</code> (no parks).</li><li>Merged content on <code>main</code> verified: README names <code>verifier</code> (1) and not <code>tester</code> (0); <code>docs/task-authoring.md</code> and <code>docs/conventions.md</code> exist; <code>prompts/builder.md</code> contains both <code>acceptance commands</code> and <code>do not edit the tests</code>.</li><li>Every execution persisted a digest (<code>verdict: green</code>).</li></ul>
+<h2 id="metrics-vs-h4">Metrics vs H4</h2>
+<table><thead><tr><th>Metric</th><th>H4 (<code>agalma-zxi.5</code>)</th><th>run-2 (this fix)</th><th>Change</th></tr></thead><tbody><tr><td>Success rate</td><td>1/4 = <strong>25%</strong></td><td>4/4 = <strong>100%</strong></td><td><strong>+75 pts</strong></td></tr><tr><td>Merges</td><td>1</td><td>4</td><td>+3</td></tr><tr><td>Batch wall</td><td>980 s (16.3 min)</td><td>757 s (<strong>12.6 min</strong>)</td><td><strong>1.29× faster</strong></td></tr><tr><td>Stalls (<code>provider_health</code>)</td><td>7</td><td><strong>1</strong></td><td>−6</td></tr><tr><td>Stalls with <code>tokens:0</code></td><td>7/7</td><td><strong>0/1</strong></td><td>progress now visible</td></tr><tr><td>Stall verdict latency</td><td>~120.2 s idle (wall ≈120.4 s)</td><td>120.1 s idle (wall <strong>232.8 s</strong>)</td><td>progress detected for ~112 s before a genuine idle window</td></tr><tr><td><code>SessionNotFoundError</code> / <code>interrupt -&gt; 404</code></td><td>6 logged</td><td><strong>0 logged</strong></td><td>cancel-before-close fixed</td></tr><tr><td>Parked tasks</td><td>3</td><td>0</td><td>—</td></tr><tr><td>$/merge (cash)</td><td>$0.00</td><td>$0.00</td><td>=</td></tr></tbody></table>
+<h2 id="findings">Findings</h2>
+<ul><li><strong>The projection gap is fixed.</strong> Tokens and tool deltas now reach the watchdog mid-turn. The single stall (<code>agalma-tvz</code> attempt 1) recorded <code>tokens: 9 239</code> on its <code>provider_health</code> event — versus <code>tokens: 0</code> for every H4 stall — and its <code>wall_ms</code> (232.8 s) exceeds the idle bound (120.1 s), i.e. the watchdog saw ~112 s of real progress before firing on a genuinely quiet window. Attempt 2 recovered to green.</li><li><strong>The 404 is gone.</strong> The <code>close_session</code>-before-<code>cancel_operation</code> ordering produced six <code>interrupt -&gt; 404 SessionNotFoundError</code> lines in H4 and <strong>zero</strong> here; <code>cancel_operation</code> now runs against a live session.</li><li><strong>Free-tier tasks complete.</strong> Three of four tasks finished on the first attempt; the fourth needed one retry after a real 120 s quiet window. The false-stall cascade that parked 3/4 tasks in H4 did not recur.</li><li><strong>Known limitation (step granularity).</strong> Liveness is emitted on step/tool <em>completion</em> (projection tokens, message tool parts). A single tool step that runs without completing for &gt;120 s still reads as idle; <code>agalma-tvz</code> attempt 1 is consistent with that boundary. This is a genuine idle by the watchdog's definition and recovered by retry, so no threshold change was made.</li></ul>
+<h2 id="deviations-open-items">Deviations / open items</h2>
+<ol><li><strong>One genuine stall remains</strong> (<code>agalma-tvz</code> attempt 1), recovered by the existing retry path. It is not a false positive: no token/step delta for the full 120 s idle window. Reported honestly rather than hidden by a threshold bump.</li><li><strong>Digest <code>attempts</code>/<code>commands</code> still under-report</strong> the stall-then-retry path (same pre-existing measurement gap noted in H4); token counts now appear in <code>usage</code> events for the productive attempts.</li><li><strong><code>tools/t*.md</code> seed bodies</strong> were reused from the H4 run directory; titles <code>seed-task-1..4</code> and ids differ from H4, so triage order differs, but the per-task wording is byte-identical.</li><li><strong>No product-code commit/push and no bd writes</strong> were performed (per bead constraints); the scratch clone's commits/tags/bd writes are isolated under <code>target/test-runs/hardening-batch/run-2/</code>.</li><li><strong>Timebox met</strong> (12.6 min batch &lt; 60 min).</li></ol>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="m1-exit-evidence.html">⟲ m1-exit-evidence</a><span class="step">step 16 / 31 in the ring</span><a href="reliability-hardening.html">reliability-hardening ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">hardening-evidence.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

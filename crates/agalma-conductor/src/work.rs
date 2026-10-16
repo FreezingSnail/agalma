@@ -44,7 +44,6 @@ use agalma_decision::{StaticDecider, TRIAGE_PICK_NEXT_BASELINE};
 use agalma_execution::{
     Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION, LEDGER_SCHEMA_VERSION,
 };
-use agalma_sandbox::PRODUCT_PROFILE;
 use agalma_taskqueue::{BdTaskQueue, PARKED_LABEL};
 use serde_json::json;
 
@@ -1699,8 +1698,8 @@ fn build_executor(
     Ok(executor)
 }
 
-/// Assemble repo-mode phase wiring, materializing the sandbox profile and the
-/// base builder prompt under the state dir.
+/// Assemble repo-mode phase wiring and materialize the base builder prompt under
+/// the state dir.
 #[allow(clippy::too_many_arguments)]
 fn phase_deps(
     state_dir: &Path,
@@ -1714,14 +1713,6 @@ fn phase_deps(
     builder_prompt_bytes: &[u8],
     stop: Rc<dyn StopControl>,
 ) -> Result<PhaseDeps, ContractError> {
-    let profile_path = state_dir.join("worker.sb");
-    std::fs::write(&profile_path, PRODUCT_PROFILE).map_err(|e| {
-        ContractError::KnownFailure(format!(
-            "cannot write sandbox profile {}: {e}",
-            profile_path.display()
-        ))
-    })?;
-
     let prompts_dir = state_dir.join("prompts");
     std::fs::create_dir_all(&prompts_dir)
         .map_err(|e| ContractError::KnownFailure(format!("cannot create prompts dir: {e}")))?;
@@ -1736,7 +1727,7 @@ fn phase_deps(
         ))
     })?;
 
-    let (extra_ro_roots, toolchain_env) = toolchain()?;
+    let (_, toolchain_env) = toolchain()?;
     Ok(PhaseDeps {
         state_dir: state_dir.to_path_buf(),
         fixture: repo.to_path_buf(),
@@ -1745,12 +1736,10 @@ fn phase_deps(
         route: plan.builder_route.clone(),
         verifier_route: plan.verifier_route.clone(),
         role: "builder".to_string(),
-        profile_path,
         builder_prompt,
         proxy_url,
         verifier_proxy_url,
         paid_proxy: paid_available,
-        extra_ro_roots,
         toolchain_env,
         turn_timeout: DEFAULT_TURN_TIMEOUT,
         verify_timeout: DEFAULT_VERIFY_TIMEOUT,

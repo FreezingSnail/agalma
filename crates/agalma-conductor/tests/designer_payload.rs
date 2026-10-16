@@ -4,23 +4,18 @@
 //! with literal `<epic-id>` placeholders and no repository identity, so two
 //! epics received the same generic text. These tests capture the *actual text
 //! posted to the vendor* (the `{"text": ...}` body of `POST
-//! /api/session/<id>/prompt`) for two distinct crate/epic requests, in both
-//! harness transports:
+//! /api/session/<id>/prompt`) for two distinct crate/epic requests.
 //!
-//! - **in-process**: built through the production `open_opencode_harness`
-//!   factory, whose sandbox client uses the sandbox boundary's env-selected
-//!   wire (`Connect` by default, `agalma-6w8`);
-//! - **process**: the real `agalma-harness-opencode-server` supervised through
-//!   `ProcessBinding`.
-//!
-//! No vendor, no network, no paid call: a mock `SandboxApi` (hosted by an
-//! `agalma-ipc` component server) starts a mock vendor HTTP server on the port
-//! the adapter allocates, records the posted bodies, and reports the child
-//! alive. Scratch state lives under `target/test-runs/dp-*` (a short prefix so
-//! the mock sandbox socket path fits `SUN_LEN`; auto-removed on success, kept on
-//! failure for forensics).
+//! No vendor, no network, no paid call: a local `ProcessApi` double
+//! (`MockLauncher`) starts a mock vendor HTTP server on the port the adapter
+//! allocates — instead of spawning a real process — records the posted bodies,
+//! and reports the child alive. Sandbox removal (P2) deleted the cross-process
+//! mock-sandbox server: the harness server now builds its own `LocalLauncher`,
+//! so there is no remote launcher injection; the launcher double is injected
+//! directly into the adapter. Scratch state lives under `target/test-runs/dp-*`
+//! (auto-removed on success, kept on failure for forensics).
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -29,24 +24,15 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agalma_conductor::harness_process::{
-    open_opencode_harness, resolve_server_binary, HarnessTransport, OpenCodeHarnessInit,
-    ProcessBinding, READY_TIMEOUT,
-};
-use agalma_conductor::sandbox_process::sandbox_wire;
 use agalma_conductor::sweep::{designer_prompt, RetryContext};
 use agalma_contracts::harness::{
     CreateSessionRequest, HarnessApi, Limits, RunTurnRequest, StartAttemptRequest, StopEvidence,
 };
 use agalma_contracts::ids::{ArtifactRef, OperationId};
-use agalma_contracts::sandbox::{LaunchSpec, SandboxApi, SandboxChild};
+use agalma_contracts::process::{ProcessApi, ProcessChild, ProcessSpec};
 use agalma_contracts::ContractError;
-use agalma_harness_opencode::{
-    server_command, OpenCodeHarnessConfig, PROFILE_PATH_ENV, ROOT_ENV, SANDBOX_SOCKET_ENV,
-};
-use agalma_ipc::Wire;
-use agalma_ipc::{register_sandbox, SandboxClient, Server, ServerInfo};
-use agalma_testkit::{retry_connect, ScratchDir};
+use agalma_harness_opencode::{OpenCodeHarness, OpenCodeHarnessConfig};
+use agalma_testkit::ScratchDir;
 use serde_json::Value;
 
 const MODEL: &str = "role-default";
@@ -130,53 +116,21 @@ struct Posted {
 
 static SESSION_SEQ: AtomicU32 = AtomicU32::new(0);
 
-/// Start the mock sandbox component server on `socket` over `wire`; it returns
-/// the shared record log the mock vendor appends posted bodies to.
-///
-/// The wire must match the client the harness under test uses: the in-process
-/// harness (`open_opencode_harness`) connects with the sandbox boundary's
-/// env-selected wire (`sandbox_wire()`: `Connect` by default), while the
-/// supervised OpenCode server env-selects the same wire for its outbound sandbox
-/// client.
-fn start_mock_sandbox(socket: &Path, wire: Wire) -> Arc<Mutex<Vec<Posted>>> {
-    let records: Arc<Mutex<Vec<Posted>>> = Arc::new(Mutex::new(Vec::new()));
-    let mut server = Server::new(ServerInfo {
-        api: "SandboxApi".to_string(),
-        api_version: 0,
-        impl_name: "mock-sandbox".to_string(),
-        impl_version: "mock/v1".to_string(),
-        capabilities: BTreeSet::new(),
-    });
-    register_sandbox(
-        &mut server,
-        MockSandbox {
-            records: Arc::clone(&records),
-        },
-    );
-    let serve_socket = socket.to_path_buf();
-    std::thread::spawn(move || {
-        let _ = agalma_ipc::serve_wire(server, &serve_socket, wire);
-    });
-    // Wait until the server accepts on `wire` before returning, so the caller's
-    // immediate connect cannot race the asynchronous bind.
-    retry_connect(|| SandboxClient::connect_wire(socket, wire).map(|_| ()))
-        .expect("mock sandbox ready");
-    records
-}
-
-/// A sandbox that never launches a real process: it starts a mock vendor HTTP
-/// server on the adapter-allocated port and reports the child alive.
-struct MockSandbox {
+/// A process-launcher double that never spawns a real process: it starts the
+/// mock vendor HTTP server on the adapter-allocated `--port` and reports the
+/// child alive.
+#[derive(Clone, Default)]
+struct MockLauncher {
     records: Arc<Mutex<Vec<Posted>>>,
 }
 
-impl SandboxApi for MockSandbox {
-    fn launch(&mut self, spec: LaunchSpec) -> Result<SandboxChild, ContractError> {
+impl ProcessApi for MockLauncher {
+    fn launch(&mut self, spec: ProcessSpec) -> Result<ProcessChild, ContractError> {
         let port = port_from_args(&spec.args).ok_or_else(|| {
-            ContractError::KnownFailure("mock sandbox: launch has no --port".to_string())
+            ContractError::KnownFailure("mock launcher: launch has no --port".to_string())
         })?;
         start_mock_vendor(port, Arc::clone(&self.records));
-        Ok(SandboxChild {
+        Ok(ProcessChild {
             pid: std::process::id(),
             pgid: std::process::id(),
             attempt: spec.attempt,
@@ -184,14 +138,14 @@ impl SandboxApi for MockSandbox {
         })
     }
 
-    fn alive(&self, _child: &SandboxChild) -> Result<bool, ContractError> {
+    fn alive(&self, _child: &ProcessChild) -> Result<bool, ContractError> {
         Ok(true)
     }
 
-    fn terminate(&mut self, _child: &SandboxChild) -> Result<StopEvidence, ContractError> {
+    fn terminate(&mut self, _child: &ProcessChild) -> Result<StopEvidence, ContractError> {
         Ok(StopEvidence {
             process_group_gone: true,
-            detail: "mock sandbox".to_string(),
+            detail: "mock launcher".to_string(),
         })
     }
 }
@@ -420,42 +374,24 @@ fn assert_payload(text: &str, round: &Round, repo: &Path, other: &str) {
     }
 }
 
-fn harness_config(dir: &Path, attempt: &Path) -> OpenCodeHarnessConfig {
-    let profile = dir.join("worker.sb");
-    std::fs::write(&profile, "(version 1)\n(deny default)\n").expect("write profile");
-    let mut config =
-        OpenCodeHarnessConfig::new(profile, attempt, dir.join("protected"), dir.join("sock"));
+fn harness(_dir: &Path, attempt: &Path, records: &Arc<Mutex<Vec<Posted>>>) -> OpenCodeHarness {
+    let mut config = OpenCodeHarnessConfig::new();
+    config.attempt_dir = attempt.to_path_buf();
     config.program = Some(PathBuf::from(FAKE_PROGRAM));
-    config.extra_ro = Some(PathBuf::from("/usr/bin"));
-    config
+    config.extra_env = BTreeMap::new();
+    OpenCodeHarness::new(
+        Box::new(MockLauncher {
+            records: Arc::clone(records),
+        }),
+        config,
+    )
 }
 
-// ===========================================================================
-// In-process transport
-// ===========================================================================
-
 #[test]
-fn in_process_vendor_payload_identifies_epic_and_repo() {
-    let (_guard, dir) = fresh("in-process");
-    let sandbox_socket = dir.join("sandbox.sock");
-    // Default env (AGALMA_IPC_WIRE unset): the sandbox boundary selects Connect.
-    // The mock server serves the same env-selected wire the production in-process
-    // harness client connects with, so a Framed client here would mismatch the
-    // Connect server (`agalma-6w8`).
-    std::env::remove_var(agalma_ipc::WIRE_ENV);
-    let records = start_mock_sandbox(&sandbox_socket, sandbox_wire());
-
-    let config = harness_config(&dir, &dir.join("attempt"));
-    let mut harness = open_opencode_harness(OpenCodeHarnessInit {
-        transport: HarnessTransport::InProcess,
-        config,
-        root: dir.clone(),
-        model: MODEL.to_string(),
-        generation: 1,
-        sandbox_socket: sandbox_socket.clone(),
-        harness_socket: dir.join("harness.sock"),
-    })
-    .expect("build in-process harness");
+fn vendor_payload_identifies_epic_and_repo() {
+    let (_guard, dir) = fresh("payload");
+    let records: Arc<Mutex<Vec<Posted>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut harness = harness(&dir, &dir.join("attempt"), &records);
 
     let all = rounds();
     let mut fixtures = Vec::new();
@@ -465,59 +401,6 @@ fn in_process_vendor_payload_identifies_epic_and_repo() {
     for (index, round) in all.iter().enumerate() {
         let (repo, prompt_path, _) = &fixtures[index];
         let text = drive_round(&mut harness, repo, prompt_path, &records);
-        let other = all[(index + 1) % all.len()].epic;
-        assert_payload(&text, round, repo, other);
-    }
-}
-
-// ===========================================================================
-// Process transport (supervised agalma-harness-opencode-server)
-// ===========================================================================
-
-#[test]
-fn process_vendor_payload_identifies_epic_and_repo() {
-    let (_guard, dir) = fresh("process");
-    let sandbox_socket = dir.join("sandbox.sock");
-    let records = start_mock_sandbox(&sandbox_socket, Wire::Connect);
-
-    let harness_socket = dir.join("harness.sock");
-    let harness_root = dir.join("harness-root");
-    let profile = dir.join("worker.sb");
-    std::fs::write(&profile, "(version 1)\n(deny default)\n").expect("write profile");
-
-    let spec = server_command()
-        .arg("--socket")
-        .arg(harness_socket.to_string_lossy().into_owned())
-        .env(ROOT_ENV, harness_root.to_string_lossy().into_owned())
-        .env(PROFILE_PATH_ENV, profile.to_string_lossy().into_owned())
-        .env(
-            SANDBOX_SOCKET_ENV,
-            sandbox_socket.to_string_lossy().into_owned(),
-        )
-        .env("AGALMA_MODEL", MODEL)
-        // The confined server never launches opencode for real here; the mock
-        // sandbox ignores the program, but `resolve_program` still needs a path.
-        .env("OPENCODE_BIN", FAKE_PROGRAM);
-    let program = resolve_server_binary(&spec.program).expect("opencode server binary resolves");
-    let mut binding = ProcessBinding::spawn(
-        spec,
-        program,
-        harness_socket,
-        1,
-        MODEL,
-        Wire::Connect,
-        READY_TIMEOUT,
-    )
-    .expect("spawn opencode server");
-
-    let all = rounds();
-    let mut fixtures = Vec::new();
-    for round in &all {
-        fixtures.push(round_fixture(&dir, round));
-    }
-    for (index, round) in all.iter().enumerate() {
-        let (repo, prompt_path, _) = &fixtures[index];
-        let text = drive_round(&mut binding, repo, prompt_path, &records);
         let other = all[(index + 1) % all.len()].epic;
         assert_payload(&text, round, repo, other);
     }

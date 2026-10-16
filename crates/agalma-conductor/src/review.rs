@@ -800,8 +800,8 @@ pub struct LiveReviewerSession {
 }
 
 impl LiveReviewerSession {
-    /// Assemble the live session config (materializing the sandbox profile),
-    /// using the same bound stop control passed for admission (`agalma-5fy.5`).
+    /// Assemble the live session config, using the same bound stop control
+    /// passed for admission (`agalma-5fy.5`).
     pub fn build(
         state_dir: &Path,
         proxy_url: Option<String>,

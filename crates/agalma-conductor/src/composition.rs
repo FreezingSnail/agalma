@@ -2,7 +2,7 @@
 //!
 //! Dependency direction is `conductor -> implementations -> contracts`. Each
 //! implementation crate is constructed here and injected into the executor (the
-//! SQLite ledger), the workspace, the sandbox-backed harness, and the loopback
+//! SQLite ledger), the workspace, the process-launched harness, and the loopback
 //! provider proxy. No implementation is imported by another implementation; the
 //! architecture lint in `tests/architecture.rs` enforces that.
 
@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use agalma_contracts::{ContractError, ExecutionApi, ExecutionPhase, LedgerApi};
 use agalma_execution::{Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
-use agalma_sandbox::PRODUCT_PROFILE;
+use agalma_process::LocalLauncher;
 
 use crate::config::Config;
 use crate::harness_binding::{harness_handle, HarnessChoice};
@@ -39,7 +39,7 @@ pub const BUILDER_FIXTURE_PROMPT: &str = include_str!("../prompts/builder-fixtur
 
 /// Default bound on one model turn (free model can be slow; M0 allows minutes).
 pub const DEFAULT_TURN_TIMEOUT: Duration = Duration::from_secs(600);
-/// Default bound on the sandboxed verify command.
+/// Default bound on the verify command.
 pub const DEFAULT_VERIFY_TIMEOUT: Duration = Duration::from_secs(900);
 /// Default idle bound for the progress watchdog (H1): a session with no
 /// token/state delta for this long is cancelled and classified `stalled`.
@@ -113,7 +113,7 @@ pub(crate) fn reconcile_bound_survivors(state_dir: &Path, ledger: &LedgerHandle)
             return;
         }
     };
-    let mut sandbox = agalma_sandbox::SeatbeltSandbox::new();
+    let mut launcher = LocalLauncher::new();
     for intent in pending {
         if intent.consumed {
             continue;
@@ -131,7 +131,7 @@ pub(crate) fn reconcile_bound_survivors(state_dir: &Path, ledger: &LedgerHandle)
             &intent.execution_id,
             kind,
             attempt,
-            &mut sandbox,
+            &mut launcher,
         ) {
             eprintln!(
                 "agalma: survivor cleanup for {} failed: {err}",
@@ -226,14 +226,6 @@ impl Composition {
             eprintln!("agalma: provider_auth audit: {err}");
         }
 
-        let profile_path = state_dir.join("worker.sb");
-        std::fs::write(&profile_path, PRODUCT_PROFILE).map_err(|e| {
-            ContractError::KnownFailure(format!(
-                "cannot write sandbox profile {}: {e}",
-                profile_path.display()
-            ))
-        })?;
-
         let prompts_dir = state_dir.join("prompts");
         std::fs::create_dir_all(&prompts_dir)
             .map_err(|e| ContractError::KnownFailure(format!("cannot create prompts dir: {e}")))?;
@@ -248,7 +240,7 @@ impl Composition {
             ))
         })?;
 
-        let (extra_ro_roots, toolchain_env) = toolchain()?;
+        let (_, toolchain_env) = toolchain()?;
 
         let deps = PhaseDeps {
             state_dir: state_dir.clone(),
@@ -258,12 +250,10 @@ impl Composition {
             route: "builder:direct".to_string(),
             verifier_route: "verifier:direct".to_string(),
             role: task.role.clone(),
-            profile_path,
             builder_prompt,
             proxy_url: Some(proxy.url()),
             verifier_proxy_url: None,
             paid_proxy: false,
-            extra_ro_roots,
             toolchain_env,
             turn_timeout: DEFAULT_TURN_TIMEOUT,
             verify_timeout: DEFAULT_VERIFY_TIMEOUT,

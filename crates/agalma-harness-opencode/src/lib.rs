@@ -7,10 +7,10 @@
 //! prompt text, and process management — are confined to this crate and never
 //! leak into contracts or the conductor.
 //!
-//! Launch flows through the injected [`agalma_contracts::sandbox::SandboxApi`]
-//! (the composition root supplies `agalma-sandbox`), so this crate depends only
+//! Launch flows through the injected [`agalma_contracts::ProcessApi`]
+//! (the composition root supplies `agalma-process`), so this crate depends only
 //! on `agalma-contracts` in `src/`. See [`OpenCodeHarness`] for the runtime
-//! expectation (sandbox-backed methods run inside a Tokio runtime).
+//! expectation (launcher-backed methods run inside a Tokio runtime).
 
 mod adapter;
 mod config;
@@ -22,7 +22,6 @@ mod translate;
 pub use adapter::{OpenCodeHarness, OpenCodeHarnessConfig, DEFAULT_MODEL, KEEP_STATE_ENV};
 pub use config::{build_config, OpenCodeConfigInit};
 pub use server::{
-    build_server, config_from_env, config_from_lookup, connect_sandbox, run_from_args,
-    server_command, wire_from_env, LaunchConfig, EXTRA_RW_ENV, LAUNCH_CONFIG_ENV, PAID_ENV,
-    PROFILE_PATH_ENV, PROXY_URL_ENV, ROOT_ENV, SANDBOX_SOCKET_ENV, SERVER_BIN,
+    build_server, config_from_env, config_from_lookup, run_from_args, server_command,
+    wire_from_env, LaunchConfig, LAUNCH_CONFIG_ENV, PAID_ENV, PROXY_URL_ENV, ROOT_ENV, SERVER_BIN,
 };

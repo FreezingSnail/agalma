@@ -29,7 +29,8 @@ use agalma_contracts::harness::{
 use agalma_contracts::{BindingRecord, ContractError};
 use agalma_harness_opencode::{self as opencode, OpenCodeHarness, OpenCodeHarnessConfig};
 use agalma_harness_reference::{self as reference, ReferenceProfile};
-use agalma_ipc::{CommandSpec, HarnessClient, SandboxClient, ServerInfo, Wire, WIRE_ENV};
+use agalma_ipc::{CommandSpec, HarnessClient, ServerInfo, Wire, WIRE_ENV};
+use agalma_process::LocalLauncher;
 
 use crate::harness_binding::{self, HarnessKind};
 
@@ -389,8 +390,6 @@ pub struct OpenCodeHarnessInit {
     pub model: String,
     /// Binding generation for the process bind gate.
     pub generation: u32,
-    /// Sandbox component server socket (client target or server env).
-    pub sandbox_socket: PathBuf,
     /// Socket the OpenCode component server should bind (process branch).
     pub harness_socket: PathBuf,
 }
@@ -490,32 +489,18 @@ impl HarnessApi for LiveHarness {
 
 /// Build the live OpenCode harness under `transport`.
 ///
-/// `InProcess` constructs an [`OpenCodeHarness`] whose confined launch goes
-/// through a [`SandboxClient`] connected to `sandbox_socket` over
-/// [`crate::sandbox_process::sandbox_wire`] (the sandbox server's own
-/// env-selected wire: `Connect` by default, `framed` for parity). `Process`
-/// spawns the `agalma-harness-opencode-server` component server (which itself
-/// env-selects the sandbox client wire via `AGALMA_SANDBOX_SOCKET`) and returns
-/// the supervised [`ProcessBinding`]. The process branch is not exercised
-/// against a live OpenCode install offline; the reference transport is proven
-/// by the boundary tests.
+/// `InProcess` constructs an [`OpenCodeHarness`] around a fresh
+/// [`LocalLauncher`] (no confinement profile). `Process` spawns the
+/// `agalma-harness-opencode-server` component server (which builds its own
+/// `LocalLauncher`) and returns the supervised [`ProcessBinding`]. The process
+/// branch is not exercised against a live OpenCode install offline; the
+/// reference transport is proven by the boundary tests.
 pub fn open_opencode_harness(init: OpenCodeHarnessInit) -> Result<LiveHarness, String> {
     match init.transport {
-        HarnessTransport::InProcess => {
-            // Pair with the sandbox server spawned by `SandboxSource::ensure`
-            // (`agalma-6w8`): it serves `sandbox_wire()` (env-selected, default
-            // `Connect`), so a client on the legacy `SandboxClient::connect`
-            // framed default would mismatch under an unset `AGALMA_IPC_WIRE`.
-            let sandbox = SandboxClient::connect_wire(
-                &init.sandbox_socket,
-                crate::sandbox_process::sandbox_wire(),
-            )
-            .map_err(|e| e.to_string())?;
-            Ok(LiveHarness::InProcess(OpenCodeHarness::new(
-                Box::new(sandbox),
-                init.config,
-            )))
-        }
+        HarnessTransport::InProcess => Ok(LiveHarness::InProcess(OpenCodeHarness::new(
+            Box::new(LocalLauncher::new()),
+            init.config,
+        ))),
         HarnessTransport::Process => {
             let spec = opencode_server_spec(&init);
             let program = resolve_server_binary(&spec.program)?;
@@ -536,21 +521,17 @@ pub fn open_opencode_harness(init: OpenCodeHarnessInit) -> Result<LiveHarness, S
 
 /// Build the process-bound launch spec for one OpenCode harness attempt.
 ///
-/// Beyond the socket, attempt root, and sandbox socket, the supervised server is
-/// spawned with the full explicit launch configuration
-/// ([`opencode::LaunchConfig`]) in [`opencode::LAUNCH_CONFIG_ENV`], so the server
-/// reconstructs the same sandbox `LaunchSpec` the in-process transport would use:
-/// the extra child environment (toolchain homes, PATH additions, `CARGO_HOME`)
-/// and the read-only/read-write roots included. Only this explicit,
-/// conductor-built configuration crosses the boundary; the parent environment and
-/// real provider credentials are never forwarded. Split out so the transmitted
-/// config can be asserted without spawning a server.
+/// Beyond the socket and attempt root, the supervised server is spawned with the
+/// full explicit launch configuration ([`opencode::LaunchConfig`]) in
+/// [`opencode::LAUNCH_CONFIG_ENV`], so the server reconstructs the same
+/// launch-driving config the in-process transport would use: the extra
+/// child environment (toolchain homes, PATH additions, `CARGO_HOME`). Only this
+/// explicit, conductor-built configuration crosses the boundary; the parent
+/// environment and real provider credentials are never forwarded. Split out so
+/// the transmitted config can be asserted without spawning a server.
 pub fn opencode_server_spec(init: &OpenCodeHarnessInit) -> CommandSpec {
     let launch = opencode::LaunchConfig {
-        profile_path: init.config.profile_path.clone(),
         attempt_dir: init.config.attempt_dir.clone(),
-        protected_dir: init.config.protected_dir.clone(),
-        sock_dir: init.config.sock_dir.clone(),
         model: init
             .config
             .model
@@ -559,19 +540,12 @@ pub fn opencode_server_spec(init: &OpenCodeHarnessInit) -> CommandSpec {
         proxy_url: init.config.proxy_url.clone(),
         paid_proxy: init.config.provider_base_url.is_some(),
         program: init.config.program.clone(),
-        extra_ro: init.config.extra_ro.clone(),
-        extra_ro_roots: init.config.extra_ro_roots.clone(),
-        extra_rw_roots: init.config.extra_rw_roots.clone(),
         extra_env: init.config.extra_env.clone(),
     };
     opencode::server_command()
         .arg("--socket")
         .arg(init.harness_socket.to_string_lossy().into_owned())
         .env(opencode::ROOT_ENV, init.root.to_string_lossy().into_owned())
-        .env(
-            opencode::SANDBOX_SOCKET_ENV,
-            init.sandbox_socket.to_string_lossy().into_owned(),
-        )
         .env(opencode::LAUNCH_CONFIG_ENV, launch.to_json())
 }
 
@@ -869,12 +843,8 @@ mod tests {
     /// read-write roots — not just root/profile/model (`agalma-tqf`).
     #[test]
     fn opencode_server_spec_forwards_the_explicit_launch_config() {
-        let mut config = OpenCodeHarnessConfig::new(
-            "/state/run/worker.sb",
-            "/state/run",
-            "/state/run/protected",
-            "/state/run/sock",
-        );
+        let mut config = OpenCodeHarnessConfig::new();
+        config.attempt_dir = PathBuf::from("/state/run/build-attempt");
         config.extra_env = BTreeMap::from([
             (
                 "PATH".to_string(),
@@ -886,11 +856,6 @@ mod tests {
             ),
             ("RUSTUP_HOME".to_string(), "/Users/a/.rustup".to_string()),
         ]);
-        config.extra_ro_roots = vec![
-            PathBuf::from("/Users/a/.local/bin"),
-            PathBuf::from("/read only/tool chain"),
-        ];
-        config.extra_rw_roots = vec![PathBuf::from("/repo with spaces")];
         config.proxy_url = Some("http://127.0.0.1:41234".to_string());
         config.provider_base_url = Some("http://127.0.0.1:41234".to_string());
         config.model = Some("opencode-go/deepseek".to_string());
@@ -901,23 +866,16 @@ mod tests {
             root: PathBuf::from("/state/run"),
             model: "opencode-go/deepseek".to_string(),
             generation: 1,
-            sandbox_socket: PathBuf::from("/state/run/sandbox.sock"),
             harness_socket: PathBuf::from("/state/run/harness.sock"),
         };
         let spec = opencode_server_spec(&init);
 
-        // The server still needs the argv socket and root/sandbox env.
+        // The server still needs the argv socket and root env.
         assert_eq!(spec.program, opencode::SERVER_BIN);
         assert_eq!(spec.args, vec!["--socket", "/state/run/harness.sock"]);
         assert_eq!(
             spec.env.get(opencode::ROOT_ENV).map(String::as_str),
             Some("/state/run")
-        );
-        assert_eq!(
-            spec.env
-                .get(opencode::SANDBOX_SOCKET_ENV)
-                .map(String::as_str),
-            Some("/state/run/sandbox.sock")
         );
 
         // The full launch config travels in one structured variable.
@@ -927,16 +885,11 @@ mod tests {
             .expect("launch config env present");
         let transferred =
             opencode::LaunchConfig::from_json(json).expect("launch config json decodes");
-        assert_eq!(transferred.profile_path, init.config.profile_path);
         assert_eq!(transferred.attempt_dir, init.config.attempt_dir);
-        assert_eq!(transferred.protected_dir, init.config.protected_dir);
-        assert_eq!(transferred.sock_dir, init.config.sock_dir);
         assert_eq!(transferred.model, "opencode-go/deepseek");
         assert_eq!(transferred.proxy_url, init.config.proxy_url);
         assert!(transferred.paid_proxy, "provider_base_url set => paid path");
         assert_eq!(transferred.program, init.config.program);
-        assert_eq!(transferred.extra_ro_roots, init.config.extra_ro_roots);
-        assert_eq!(transferred.extra_rw_roots, init.config.extra_rw_roots);
         assert_eq!(transferred.extra_env, init.config.extra_env);
 
         // The parent environment is never forwarded wholesale.
@@ -953,12 +906,8 @@ mod tests {
     #[test]
     fn opencode_server_spec_preserves_attempt_dir_not_re_derived() {
         let attempt_dir = PathBuf::from("/state/run/build-attempt");
-        let mut config = OpenCodeHarnessConfig::new(
-            "/state/run/worker.sb",
-            &attempt_dir,
-            "/state/run/protected",
-            "/state/run/sock",
-        );
+        let mut config = OpenCodeHarnessConfig::new();
+        config.attempt_dir = attempt_dir.clone();
         config.model = Some("opencode/mimo".to_string());
         let init = OpenCodeHarnessInit {
             transport: HarnessTransport::Process,
@@ -966,7 +915,6 @@ mod tests {
             root: PathBuf::from("/state/run"),
             model: "opencode/mimo".to_string(),
             generation: 1,
-            sandbox_socket: PathBuf::from("/state/run/sandbox.sock"),
             harness_socket: PathBuf::from("/state/run/harness.sock"),
         };
         let spec = opencode_server_spec(&init);

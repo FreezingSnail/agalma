@@ -1,4 +1,4 @@
-//! M0.7/M0.8 phase activities: the real Git/Seatbelt/OpenCode effects behind
+//! M0.7/M0.8 phase activities: the real Git/OpenCode effects behind
 //! the executor's [`agalma_execution::Activity`] seam.
 //!
 //! ```text
@@ -28,7 +28,7 @@
 //! (`<run>/<phase>/<attempt>.done`). [`Activity::effect_present`] returns
 //! [`EffectProbe::Present`] when that marker exists, so
 //! [`Activity::reconcile`] can complete the operation without repeating it.
-//! Otherwise a recorded-but-live worker is terminated through [`SandboxApi`]
+//! Otherwise a recorded-but-live worker is terminated through [`ProcessApi`]
 //! with evidence before the operation is redispatched; a worker that died
 //! without completing is an ambiguous effect and parks.
 //!
@@ -52,7 +52,7 @@ use agalma_contracts::harness::{
     OperationState, RunTurnRequest, SessionHandle, StartAttemptRequest, Usage,
 };
 use agalma_contracts::ids::{ArtifactRef, AttemptId};
-use agalma_contracts::sandbox::LaunchSpec;
+use agalma_contracts::process::ProcessSpec;
 use agalma_contracts::{
     Checkout, ContextItem, ContextKind, ContractError, DecisionApi, DecisionAttempt, DecisionKind,
     DecisionOption, DecisionPin, DecisionRequest, LedgerApi, OperationId, TaskPackage,
@@ -65,12 +65,11 @@ use agalma_execution::{
 use agalma_harness_opencode::{build_config, OpenCodeConfigInit};
 use agalma_ipc::WorkspaceOps;
 use agalma_ledger::SqliteLedger;
-use agalma_sandbox::{SandboxOutput, SeatbeltSandbox};
+use agalma_process::LocalLauncher;
 use serde_json::json;
 
 use crate::harness_binding::{self, HarnessHandle, HarnessKind};
 use crate::harness_process::{self, HarnessTransport, LiveHarness, OpenCodeHarnessInit};
-use crate::sandbox_process::SandboxSource;
 use crate::scope_guard::{self, CandidatePin, DeniedChange, ScopeEvidence, ScopePolicy};
 use crate::stop::StopControl;
 use crate::workers::{self, Survivor};
@@ -149,8 +148,6 @@ pub struct PhaseDeps {
     /// Route label for the verifier model (H3).
     pub verifier_route: String,
     pub role: String,
-    /// Rendered, fail-closed sandbox profile.
-    pub profile_path: PathBuf,
     /// Builder prompt file (path passed to the harness as `prompts_ref`).
     pub builder_prompt: PathBuf,
     /// Parent-owned provider proxy URL handed to the confined harness.
@@ -164,10 +161,7 @@ pub struct PhaseDeps {
     /// `AGALMA_ALLOW_PAID`). When true the confined harness config points the
     /// provider at the loopback proxy with a dummy key (`agalma-csw.2`).
     pub paid_proxy: bool,
-    /// Read-only toolchain roots the confined worker/verify need (`~/.cargo`,
-    /// `~/.rustup`).
-    pub extra_ro_roots: Vec<PathBuf>,
-    /// Toolchain environment for the confined worker (`RUSTUP_HOME`,
+    /// Toolchain environment for the launched worker (`RUSTUP_HOME`,
     /// `RUSTUP_TOOLCHAIN`, `PATH`).
     pub toolchain_env: BTreeMap<String, String>,
     /// Bound on one model turn.
@@ -228,24 +222,19 @@ pub fn activities_with_mode(
     state: Rc<RefCell<RunState>>,
     mode: ActivityMode,
 ) -> PhaseActivities {
-    let sandbox = SandboxSource::new(deps.state_dir.clone());
     let build: Box<dyn Activity> = Box::new(BuildActivity {
         deps: deps.clone(),
         state: Rc::clone(&state),
         mode,
-        sandbox: sandbox.clone(),
     });
     // Repo mode always runs the real acceptance runner (`VerifyActivity`); only
-    // the model call is replaced in scripted mode. The `sandboxed` flag selects
-    // Seatbelt (`Live`) vs. an in-process launch (`Scripted`, tests).
+    // the model call is replaced in scripted mode.
     let verify: Box<dyn Activity> = if deps.repo.is_some() {
         Box::new(VerifyActivity {
             deps: deps.clone(),
             workspace: Rc::clone(&workspace),
             state: Rc::clone(&state),
-            sandboxed: mode == ActivityMode::Live,
             scripted: mode == ActivityMode::Scripted,
-            sandbox: sandbox.clone(),
         })
     } else {
         match mode {
@@ -253,9 +242,7 @@ pub fn activities_with_mode(
                 deps: deps.clone(),
                 workspace: Rc::clone(&workspace),
                 state: Rc::clone(&state),
-                sandboxed: true,
                 scripted: false,
-                sandbox: sandbox.clone(),
             }),
             ActivityMode::Scripted => Box::new(ScriptedVerifyActivity {
                 deps: deps.clone(),
@@ -304,10 +291,8 @@ pub fn effects_log_path(state_dir: &Path, execution: &agalma_contracts::Executio
 /// `<state>/scope-pins/<exec>.json` — the immutable verification pin written by
 /// a green repo-mode verify and revalidated before integration (SF.6).
 ///
-/// Deliberately **outside** `<state>/runs/<exec>` (the sandbox `ATTEMPT`,
-/// which the child may write): a read-only `PROTECTED` allowance does not revoke
-/// the parent writable grant over `ATTEMPT`, so the pin must live outside all
-/// child writable roots.
+/// Deliberately **outside** `<state>/runs/<exec>` (the child-writable run tree),
+/// so the pin lives outside all child-writable roots.
 pub fn scope_pin_path(state_dir: &Path, execution: &agalma_contracts::ExecutionId) -> PathBuf {
     state_dir.join("scope-pins").join(format!(
         "{}.json",
@@ -328,16 +313,16 @@ fn scope_evidence_path(
     ))
 }
 
-/// `<run>/build-runtime` — the builder child's narrow sandbox `ATTEMPT` root.
+/// `<run>/build-runtime` — the builder child's narrow runtime root.
 ///
 /// SF.6: parent markers/receipts live under `<run>/<phase>/`, outside this
-/// narrow root, so a confined builder cannot overwrite a parent completion or
-/// worker marker. The checkout the model edits is granted separately.
+/// narrow root, so the builder cannot overwrite a parent completion or worker
+/// marker. The checkout the model edits is the launch workspace, separately.
 pub fn builder_runtime_dir(state_dir: &Path, execution: &agalma_contracts::ExecutionId) -> PathBuf {
     run_root(state_dir, execution).join("build-runtime")
 }
 
-/// `<run>/verify-runtime` — the verifier child's narrow sandbox `ATTEMPT` root
+/// `<run>/verify-runtime` — the verifier child's narrow runtime root
 /// (shared by the acceptance run and the live diagnosis session).
 pub fn verify_runtime_dir(state_dir: &Path, execution: &agalma_contracts::ExecutionId) -> PathBuf {
     run_root(state_dir, execution).join("verify-runtime")
@@ -345,21 +330,18 @@ pub fn verify_runtime_dir(state_dir: &Path, execution: &agalma_contracts::Execut
 
 /// Production builder child config (SF.6).
 ///
-/// The sandbox `ATTEMPT` is the narrow `build-runtime`; the whole run root is
-/// granted **read-only** via `protected_dir` so the builder can read its prompt
-/// and the retry context without granting `<run>` writable; the checkout is the
-/// only extra writable root. All supplied RO roots are preserved.
+/// The runtime root is the narrow `build-runtime`; the child runs in the
+/// checkout workspace, which the caller passes as the attempt workspace. All
+/// supplied toolchain environment is preserved.
 pub fn builder_config_init(
     deps: &PhaseDeps,
-    checkout: &Checkout,
+    _checkout: &Checkout,
     execution: &agalma_contracts::ExecutionId,
 ) -> Result<OpenCodeConfigInit, ActivityError> {
     let root = run_root(&deps.state_dir, execution);
     std::fs::create_dir_all(&root)
         .map_err(|e| ActivityError::KnownFailure(format!("create run root: {e}")))?;
     let runtime = canonical_dir(&builder_runtime_dir(&deps.state_dir, execution))?;
-    let protected = canonical_dir(&root)?;
-    let sock = canonical_dir(&runtime.join("sock"))?;
     let mut env = deps.toolchain_env.clone();
     env.insert(
         "CARGO_HOME".to_string(),
@@ -372,57 +354,40 @@ pub fn builder_config_init(
         runtime.join("agent-target").to_string_lossy().into_owned(),
     );
     Ok(OpenCodeConfigInit {
-        profile_path: deps.profile_path.clone(),
         attempt_dir: runtime,
-        protected_dir: protected,
-        sock_dir: sock,
         model: deps.model.clone(),
         proxy_url: deps.proxy_url.clone(),
         paid_proxy: deps.paid_proxy,
-        extra_ro_roots: deps.extra_ro_roots.clone(),
-        extra_rw_roots: vec![PathBuf::from(&checkout.path)],
         extra_env: env,
     })
 }
 
 /// Production verifier-diagnosis child config (SF.6).
 ///
-/// The sandbox `ATTEMPT` is the narrow `verify-runtime`; the run root is granted
-/// **read-only** via `protected_dir`, so the diagnosis child can read the
-/// checkout and the diff/failure inputs, and the prompt, without any parent
-/// marker being writable and without consuming an `EXTRA_RO` slot. All supplied
-/// RO roots are preserved (no truncation).
+/// The runtime root is the narrow `verify-runtime`. All supplied toolchain
+/// environment is preserved.
 pub fn verifier_config_init(
     deps: &PhaseDeps,
     _checkout: &Checkout,
     execution: &agalma_contracts::ExecutionId,
 ) -> Result<OpenCodeConfigInit, ActivityError> {
-    let root = run_root(&deps.state_dir, execution);
     let runtime = canonical_dir(&verify_runtime_dir(&deps.state_dir, execution))?;
-    let protected = canonical_dir(&root)?;
-    let sock = canonical_dir(&runtime.join("sock"))?;
     Ok(OpenCodeConfigInit {
-        profile_path: deps.profile_path.clone(),
         attempt_dir: runtime,
-        protected_dir: protected,
-        sock_dir: sock,
         model: deps.verifier_model.clone(),
         proxy_url: deps
             .verifier_proxy_url
             .clone()
             .or_else(|| deps.proxy_url.clone()),
         paid_proxy: deps.paid_proxy,
-        extra_ro_roots: deps.extra_ro_roots.clone(),
-        extra_rw_roots: Vec::new(),
         extra_env: deps.toolchain_env.clone(),
     })
 }
 
-/// `<state>/protected/<exec>` — the read-only protected baseline root.
+/// `<state>/protected/<exec>` — the protected baseline root.
 ///
-/// Outside `<state>/runs/<exec>` (the candidate/child writable tree), so a
-/// protected command running under the sandbox cannot write the judge or the
-/// parent pin state.
+/// Outside `<state>/runs/<exec>` (the candidate/child writable tree). Read-only
+/// protection is convention-only after sandbox removal (design §7.1).
 pub fn protected_root(state_dir: &Path, execution: &agalma_contracts::ExecutionId) -> PathBuf {
     state_dir
         .join("protected")
@@ -457,11 +422,10 @@ struct CandidateGuard {
 /// - the candidate's typed change set is authorized against the frozen scope
 ///   with **real symlink resolution** against the pinned candidate tree (deny
 ///   wins);
-/// - a valid baseline's files are materialized into a **separate read-only
-///   protected root outside the candidate tree** (never restored into the
-///   candidate), so the *frozen* acceptance — run through `SandboxApi` in the
-///   acceptance path, with the protected root as the read-only judge — is the
-///   authority.
+/// - a valid baseline's files are materialized into a **separate protected
+///   root outside the candidate tree** (never restored into the candidate), so
+///   the *frozen* acceptance — run through `LocalLauncher::run` in the
+///   acceptance path, with the protected root as the judge — is the authority.
 impl VerifyActivity {
     fn guard_candidate(
         &self,
@@ -588,8 +552,7 @@ fn scope_failure_text(denied: &[DeniedChange]) -> String {
     out
 }
 
-/// Create `path` if needed and return its canonical form (Seatbelt parameters
-/// must be absolute, resolved paths).
+/// Create `path` if needed and return its canonical form.
 fn canonical_dir(path: &Path) -> Result<PathBuf, ActivityError> {
     std::fs::create_dir_all(path)
         .map_err(|e| ActivityError::KnownFailure(format!("mkdir {}: {e}", path.display())))?;
@@ -681,28 +644,6 @@ fn contract_err(err: ContractError) -> ActivityError {
         ContractError::UnknownOutcome(message) => ActivityError::UnknownOutcome(message),
         other => ActivityError::KnownFailure(other.to_string()),
     }
-}
-
-/// Run one acceptance command in-process (scripted/deterministic tests only).
-/// Mirrors the Seatbelt one-shot contract: captured exit code and output.
-fn run_in_process(
-    command: &str,
-    cwd: &str,
-    env: &BTreeMap<String, String>,
-) -> Result<SandboxOutput, ActivityError> {
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .current_dir(cwd)
-        .env_clear()
-        .envs(env)
-        .output()
-        .map_err(|e| ActivityError::KnownFailure(format!("run acceptance `{command}`: {e}")))?;
-    Ok(SandboxOutput {
-        exit_code: output.status.code().unwrap_or(-1),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    })
 }
 
 /// `intake` is a no-op that hands off to `checkout`.
@@ -804,14 +745,12 @@ impl Activity for CheckoutActivity {
 // build (live)
 // ---------------------------------------------------------------------------
 
-/// `build`: one confined OpenCode session that fixes the checkout.
+/// `build`: one OpenCode session that fixes the checkout.
 struct BuildActivity {
     deps: PhaseDeps,
     state: Rc<RefCell<RunState>>,
-    /// Live (Seatbelt/OpenCode) or scripted/deterministic implementation set.
+    /// Live (OpenCode) or scripted/deterministic implementation set.
     mode: ActivityMode,
-    /// Lazily-started sandbox supervisor backing confined OpenCode launches.
-    sandbox: SandboxSource,
 }
 
 /// Probe a build attempt via the durable worker/done markers.
@@ -823,8 +762,8 @@ fn build_probe(
     if workers::read_done(&deps.state_dir, execution, "build", attempt).is_some() {
         return EffectProbe::Present;
     }
-    let mut sandbox = SeatbeltSandbox::new();
-    match workers::reconcile_survivor(&deps.state_dir, execution, "build", attempt, &mut sandbox) {
+    let mut launcher = LocalLauncher::new();
+    match workers::reconcile_survivor(&deps.state_dir, execution, "build", attempt, &mut launcher) {
         Ok(Survivor::Terminated) | Ok(Survivor::AlreadyReconciled) => EffectProbe::Absent,
         Ok(Survivor::Died) => EffectProbe::Ambiguous,
         Ok(Survivor::NoRecord) => {
@@ -930,15 +869,13 @@ impl BuildActivity {
         let prompt_path = write_builder_prompt(&self.deps, &root, ctx)?;
 
         // Production-produced builder config (shared helper, SF.6): narrow
-        // ATTEMPT runtime, run root read-only (PROTECTED), the checkout the only
-        // extra writable root.
+        // runtime root; the checkout workspace is where the model edits.
         let config = build_config(builder_config_init(
             &self.deps,
             &checkout,
             &ctx.execution_id,
         )?);
 
-        let sandbox_socket = self.sandbox.ensure().map_err(contract_err)?;
         let transport = HarnessTransport::from_env();
         let harness_socket = harness_socket_path(
             &self.deps.state_dir,
@@ -951,7 +888,6 @@ impl BuildActivity {
             root: root.clone(),
             model: self.deps.model.clone(),
             generation: 1,
-            sandbox_socket,
             harness_socket,
         })
         .map_err(ActivityError::KnownFailure)?;
@@ -1497,7 +1433,7 @@ impl Activity for BuildActivity {
 // verify (live)
 // ---------------------------------------------------------------------------
 
-/// `verify`: a separate confined `cargo test` run (M0) or the task's acceptance
+/// `verify`: a separate `cargo test` run (M0) or the task's acceptance
 /// command list (repo mode, M1); exit codes are the verdict.
 struct VerifyActivity {
     deps: PhaseDeps,
@@ -1505,14 +1441,9 @@ struct VerifyActivity {
     /// verification checkout (repo mode).
     workspace: Rc<RefCell<WorkspaceHandle>>,
     state: Rc<RefCell<RunState>>,
-    /// Run acceptance commands under Seatbelt (`Live`) or in-process
-    /// (`Scripted`, deterministic tests).
-    sandboxed: bool,
     /// Scripted mode replaces the fresh verifier diagnosis session with a
     /// deterministic, file-backed stand-in (no model call).
     scripted: bool,
-    /// Lazily-started sandbox supervisor backing the live verifier session.
-    sandbox: SandboxSource,
 }
 
 /// Probe a verify attempt via its durable markers.
@@ -1526,7 +1457,7 @@ fn verify_probe(
     }
     if workers::started_exists(&deps.state_dir, execution, "verify", attempt) {
         // A verify that started but never recorded a verdict is ambiguous: the
-        // sandbox may have partially run.
+        // command may have partially run.
         return EffectProbe::Ambiguous;
     }
     EffectProbe::Absent
@@ -1568,14 +1499,11 @@ impl VerifyActivity {
             .ok_or_else(|| ActivityError::KnownFailure("repo mode required".into()))?;
         let root = run_root(&self.deps.state_dir, &ctx.execution_id);
         let artifacts = canonical_dir(&root.join("artifacts"))?;
-        // SF.6: the verifier's sandbox ATTEMPT is a NARROW runtime root, not the
-        // whole run root. Parent receipt/marker state (`<run>/verify/*.done`,
-        // worker records, `checkout.json`, prompts) and the pins/protected root
-        // all live outside it, so a confined verifier command cannot overwrite a
-        // parent completion/worker marker.
+        // SF.6: the verifier's runtime root is a NARROW root, not the whole run
+        // root. Parent receipt/marker state (`<run>/verify/*.done`, worker
+        // records, `checkout.json`, prompts) and the pins/protected root all
+        // live outside it.
         let runtime = canonical_dir(&verify_runtime_dir(&self.deps.state_dir, &ctx.execution_id))?;
-        let attempt_dir = runtime.clone();
-        let sock = canonical_dir(&runtime.join("sock"))?;
         let tmp = canonical_dir(&runtime.join("tmp"))?;
         let home = canonical_dir(&runtime.join("home"))?;
         mark_started(&self.deps, &ctx.execution_id, "verify", ctx.attempt)?;
@@ -1652,9 +1580,11 @@ impl VerifyActivity {
                 .map(|baseline| baseline.commands.clone())
                 .unwrap_or_default(),
         );
-        // The sandbox's read-only protected root: outside `<run>` (ATTEMPT), so
-        // the judge cannot lie in a child writable tree. Canonicalize it for the
-        // sandbox profile parameter.
+        // The protected root: outside `<run>`, so the judge cannot lie in a
+        // candidate-writable tree. Read-only protection is convention-only now
+        // (design §7.1): the run receives `AGALMA_PROTECTED_DIR` and the frozen
+        // commands judge behavior, but a candidate is no longer prevented from
+        // tampering with the judge root.
         let protected_judge =
             canonical_dir(&protected_root(&self.deps.state_dir, &ctx.execution_id))?;
 
@@ -1747,40 +1677,22 @@ impl VerifyActivity {
             verify_dir.to_string_lossy().into_owned(),
         );
         let started = Instant::now();
-        let mut sandbox = SeatbeltSandbox::new();
+        let mut launcher = LocalLauncher::new();
         let mut command_results: Vec<serde_json::Value> = Vec::new();
         let mut failures: Vec<serde_json::Value> = Vec::new();
         for (index, command) in acceptance.iter().enumerate() {
             let log_path = artifacts.join(format!("accept@{}-{index}.txt", ctx.attempt));
             let cmd_started = Instant::now();
-            let output = if self.sandboxed {
-                let spec = LaunchSpec {
-                    program: "sh".to_string(),
-                    args: vec!["-c".to_string(), command.clone()],
-                    cwd: verify_dir.to_string_lossy().into_owned(),
-                    env: env.clone(),
-                    profile: self.deps.profile_path.to_string_lossy().into_owned(),
-                    attempt: AttemptId::derive(ctx.attempt),
-                    attempt_dir: attempt_dir.to_string_lossy().into_owned(),
-                    protected_dir: protected_judge.to_string_lossy().into_owned(),
-                    sock_dir: sock.to_string_lossy().into_owned(),
-                    extra_ro_roots: self
-                        .deps
-                        .extra_ro_roots
-                        .iter()
-                        .map(|root| root.to_string_lossy().into_owned())
-                        .collect(),
-                    // The only extra writable root is the pristine candidate
-                    // checkout (cargo may need a Cargo.lock). Parent receipt
-                    // state is NOT granted.
-                    extra_rw_roots: vec![verify_dir.to_string_lossy().into_owned()],
-                };
-                sandbox
-                    .run(&spec, self.deps.verify_timeout)
-                    .map_err(contract_err)?
-            } else {
-                run_in_process(command, &verify_dir.to_string_lossy(), &env)?
+            let spec = ProcessSpec {
+                program: "sh".to_string(),
+                args: vec!["-c".to_string(), command.clone()],
+                cwd: verify_dir.to_string_lossy().into_owned(),
+                env: env.clone(),
+                attempt: AttemptId::derive(ctx.attempt),
             };
+            let output = launcher
+                .run(&spec, self.deps.verify_timeout)
+                .map_err(contract_err)?;
             let duration_ms = cmd_started.elapsed().as_millis() as u64;
             let log = format!(
                 "$ {command}\nexit: {}\nduration_ms: {duration_ms}\n--- stdout ---\n{}\n--- stderr ---\n{}\n",
@@ -2078,7 +1990,6 @@ impl VerifyActivity {
             &ctx.execution_id,
         )?);
 
-        let sandbox_socket = self.sandbox.ensure().map_err(contract_err)?;
         let transport = HarnessTransport::from_env();
         let harness_socket = harness_socket_path(
             &self.deps.state_dir,
@@ -2091,7 +2002,6 @@ impl VerifyActivity {
             root: root.to_path_buf(),
             model: self.deps.verifier_model.clone(),
             generation: 1,
-            sandbox_socket,
             harness_socket,
         })
         .map_err(ActivityError::KnownFailure)?;
@@ -2254,12 +2164,9 @@ impl Activity for VerifyActivity {
             .ensure_checkout(&self.deps.state_dir, &ctx.execution_id)?;
         let root = run_root(&self.deps.state_dir, &ctx.execution_id);
         let artifacts = canonical_dir(&root.join("artifacts"))?;
-        // SF.6: narrow the verifier ATTEMPT to a runtime root so parent receipt
-        // markers (`<run>/verify/<attempt>.done`) are not inside it.
+        // SF.6: narrow the verifier runtime to a root so parent receipt markers
+        // (`<run>/verify/<attempt>.done`) are not inside it.
         let runtime = canonical_dir(&verify_runtime_dir(&self.deps.state_dir, &ctx.execution_id))?;
-        let attempt_dir = runtime.clone();
-        let protected = canonical_dir(&root.join("protected"))?;
-        let sock = canonical_dir(&runtime.join("sock"))?;
         let tmp = canonical_dir(&runtime.join("tmp"))?;
         let home = canonical_dir(&runtime.join("home"))?;
         let log_path = artifacts.join(format!("verify@{}.log", ctx.attempt));
@@ -2278,28 +2185,16 @@ impl Activity for VerifyActivity {
             runtime.join("verify-target").to_string_lossy().into_owned(),
         );
 
-        let spec = LaunchSpec {
+        let spec = ProcessSpec {
             program: cargo.to_string_lossy().into_owned(),
             args: vec!["test".to_string()],
             cwd: checkout.path.clone(),
             env,
-            profile: self.deps.profile_path.to_string_lossy().into_owned(),
             attempt: AttemptId::derive(ctx.attempt),
-            attempt_dir: attempt_dir.to_string_lossy().into_owned(),
-            protected_dir: protected.to_string_lossy().into_owned(),
-            sock_dir: sock.to_string_lossy().into_owned(),
-            extra_ro_roots: self
-                .deps
-                .extra_ro_roots
-                .iter()
-                .map(|root| root.to_string_lossy().into_owned())
-                .collect(),
-            // The candidate checkout is the only extra writable root.
-            extra_rw_roots: vec![checkout.path.clone()],
         };
 
-        let mut sandbox = SeatbeltSandbox::new();
-        let output = sandbox
+        let mut launcher = LocalLauncher::new();
+        let output = launcher
             .run(&spec, self.deps.verify_timeout)
             .map_err(contract_err)?;
         let log = format!(
@@ -3756,15 +3651,15 @@ pub fn poll_terminal<H: HarnessApi + ?Sized>(
 }
 
 /// Ensure the run-local `CARGO_HOME` (`<run>/cargo-home`) exposes the real cargo
-/// registry read-only so `cargo --offline` resolution works inside the sandbox.
+/// registry read-only so `cargo --offline` resolution works with an isolated
+/// `HOME`.
 ///
-/// Confined phases run with `HOME` pointed at an empty run-local directory, so
+/// Launched phases run with `HOME` pointed at an empty run-local directory, so
 /// cargo defaults to an empty `CARGO_HOME` and offline resolution fails with
 /// `no matching package named ... found ... offline mode`. The populated
-/// registry lives at `$CARGO_HOME/registry` (or `$HOME/.cargo/registry`) and is
-/// already exposed read-only via `extra_ro_roots`; this seeds a
-/// `<run>/cargo-home/registry` symlink at it, keeping writes (the package
-/// cache/lock) inside the run dir.
+/// registry lives at `$CARGO_HOME/registry` (or `$HOME/.cargo/registry`); this
+/// seeds a `<run>/cargo-home/registry` symlink at it, keeping writes (the
+/// package cache/lock) inside the run dir.
 ///
 /// Idempotent: a correct link is left alone; a wrong or self-referential link is
 /// replaced. When no real registry exists the helper skips without failing (cargo
@@ -3885,12 +3780,10 @@ mod tests {
             route: "builder:fix".to_string(),
             verifier_route: "verifier:fix".to_string(),
             role: "builder".to_string(),
-            profile_path: PathBuf::from("worker.sb"),
             builder_prompt: PathBuf::from("builder.md"),
             proxy_url: None,
             verifier_proxy_url: None,
             paid_proxy: false,
-            extra_ro_roots: Vec::new(),
             toolchain_env: BTreeMap::new(),
             turn_timeout: Duration::from_secs(1),
             verify_timeout: Duration::from_secs(1),

@@ -5,7 +5,7 @@
 //! The suite drives the **production seams** — the real `VerifyActivity` and
 //! `IntegrateActivity` from `activities_with_mode`, over a real git origin and a
 //! real immutable package store — plus the operator `ProtectedInputs/v1`
-//! manifest and the sandbox protected-root placement:
+//! manifest and the protected-root placement:
 //!
 //! - an always-pass candidate test loses to the independently executed frozen
 //!   protected command;
@@ -13,7 +13,9 @@
 //! - committed and dirty candidate changes after verify are refused at the real
 //!   merge boundary;
 //! - missing / invalid scope, manifest, and baseline **fail closed**;
-//! - the protected runner cannot write the protected root or the parent pin;
+//! - the protected runner executes and the frozen judge judges behavior
+//!   (read-only protection of the protected root is convention-only after
+//!   sandbox removal, design §7.1);
 //! - deterministic generated-input invariants cover the policy.
 //!
 //! Scratch lives under `target/test-runs/`; no `/tmp`, no network, no paid
@@ -44,7 +46,7 @@ use agalma_conductor::task_package::{
 use agalma_conductor::workspace_process::WorkspaceHandle;
 use agalma_contracts::digest::{failure_code, sha256_digest, FailureCode};
 use agalma_contracts::ids::{ArtifactRef, AttemptId};
-use agalma_contracts::sandbox::LaunchSpec;
+use agalma_contracts::process::ProcessSpec;
 use agalma_contracts::{
     AuthorizationOrigin, BindingPin, ChangeKind, Checkout, ContextKind, DirectiveRef, ExecutionApi,
     ExecutionId, ExecutionPhase, ExecutionState, FileChange, Role, Scope, StepOutcome, TaskId,
@@ -56,7 +58,7 @@ use agalma_execution::{
 };
 use agalma_ipc::WorkspaceOps;
 use agalma_ledger::SqliteLedger;
-use agalma_sandbox::{SeatbeltSandbox, PRODUCT_PROFILE};
+use agalma_process::LocalLauncher;
 use agalma_taskqueue::TaskDefinition;
 use agalma_testkit::ScratchDir;
 use serde_json::json;
@@ -320,9 +322,8 @@ fn build_frozen_package_with(
     built.package
 }
 
-/// Host toolchain roots + env so the behavioral protected runner's `rustc`
-/// resolves in the confined/in-process acceptance.
-fn host_toolchain() -> (Vec<PathBuf>, BTreeMap<String, String>) {
+/// Host toolchain env so the behavioral protected runner's `rustc` resolves.
+fn host_toolchain() -> BTreeMap<String, String> {
     let home = std::env::var("HOME").unwrap_or_default();
     let pick = |var: &str, suffix: &str| {
         std::env::var(var)
@@ -331,14 +332,7 @@ fn host_toolchain() -> (Vec<PathBuf>, BTreeMap<String, String>) {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(&home).join(suffix))
     };
-    let cargo = pick("CARGO_HOME", ".cargo");
     let rustup = pick("RUSTUP_HOME", ".rustup");
-    let mut roots = Vec::new();
-    for r in [&cargo, &rustup] {
-        if r.is_dir() {
-            roots.push(fs::canonicalize(r).unwrap_or_else(|_| r.clone()));
-        }
-    }
     let mut env = BTreeMap::new();
     env.insert(
         "PATH".to_string(),
@@ -348,7 +342,7 @@ fn host_toolchain() -> (Vec<PathBuf>, BTreeMap<String, String>) {
         "RUSTUP_HOME".to_string(),
         rustup.to_string_lossy().into_owned(),
     );
-    (roots, env)
+    env
 }
 
 struct Harness {
@@ -372,13 +366,11 @@ fn build_harness(
         route: "builder:fix".to_string(),
         verifier_route: "verifier:fix".to_string(),
         role: "builder".to_string(),
-        profile_path: state_dir.join("worker.sb"),
         builder_prompt: state_dir.join("unused-builder.md"),
         proxy_url: None,
         verifier_proxy_url: None,
         paid_proxy: false,
-        extra_ro_roots: host_toolchain().0,
-        toolchain_env: host_toolchain().1,
+        toolchain_env: host_toolchain(),
         turn_timeout: Duration::from_secs(2),
         verify_timeout: Duration::from_secs(30),
         idle_timeout: Duration::from_secs(1),
@@ -425,12 +417,12 @@ fn build_harness(
     }
 }
 
-/// A Live-mode harness: the real `VerifyActivity` runs confined under Seatbelt
-/// so the malicious-command isolation is exercised at the production seam.
+/// A Live-mode harness: the real `VerifyActivity` runs the acceptance through
+/// the production launcher so the malicious-command path is exercised at the
+/// production seam. Read-only protection of the protected root is no longer
+/// OS-enforced (design §7.1); the behavioral judge still runs.
 fn build_harness_live(state_dir: &Path, origin: &Path, source: &str) -> Harness {
     fs::create_dir_all(state_dir).expect("state dir");
-    let profile_path = state_dir.join("worker.sb");
-    fs::write(&profile_path, PRODUCT_PROFILE).expect("write sandbox profile");
     let deps = PhaseDeps {
         state_dir: state_dir.to_path_buf(),
         fixture: origin.to_path_buf(),
@@ -439,13 +431,11 @@ fn build_harness_live(state_dir: &Path, origin: &Path, source: &str) -> Harness 
         route: "builder:fix".to_string(),
         verifier_route: "verifier:fix".to_string(),
         role: "builder".to_string(),
-        profile_path,
         builder_prompt: state_dir.join("unused-builder.md"),
         proxy_url: None,
         verifier_proxy_url: None,
         paid_proxy: false,
-        extra_ro_roots: host_toolchain().0,
-        toolchain_env: host_toolchain().1,
+        toolchain_env: host_toolchain(),
         turn_timeout: Duration::from_secs(2),
         verify_timeout: Duration::from_secs(30),
         idle_timeout: Duration::from_secs(1),
@@ -828,59 +818,40 @@ fn stale_or_missing_pin_is_refused_at_integrate() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn protected_runner_cannot_write_protected_root_or_parent_pin() {
+fn protected_runner_runs_in_attempt_root() {
+    // Sandbox removal (design §7.1): the protected root is no longer
+    // OS-enforced read-only. The runner still executes and the frozen judge
+    // still judges behavior; the read-only property is convention-only now.
     let dir = ScratchDir::new("sf-scope-isolation");
-    // Canonicalize the LaunchSpec roots: Seatbelt `subpath` matches the resolved
-    // path, so a symlinked AGALMA_TEST_RUN_ROOT alias must resolve to the real
-    // retained root (production `canonical_dir` does the same).
+    // Canonicalize the runtime root: production `canonical_dir` does the same.
     let attempt = fs::canonicalize(dir.child("attempt")).expect("attempt dir");
     let protected = fs::canonicalize(dir.child("protected")).expect("protected dir");
-    let pin_dir = fs::canonicalize(dir.child("scope-pins")).expect("pin dir");
     fs::write(protected.join("judge.sh"), PROTECTED_SCRIPT).expect("judge");
-    fs::write(pin_dir.join("pin.json"), "{}").expect("pin");
-    let profile = dir.join("worker.sb");
-    fs::write(&profile, PRODUCT_PROFILE).expect("profile");
-    let profile = fs::canonicalize(&profile).expect("profile path");
 
     let script = format!(
-        "echo inside > {attempt}/inside.txt; \
-         echo evil > {protected}/evil.txt 2>/dev/null; \
-         echo stolen > {pin}/pin.json 2>/dev/null; \
-         echo done > {attempt}/marker",
+        "echo inside > {attempt}/inside.txt; echo done > {attempt}/marker",
         attempt = attempt.display(),
-        protected = protected.display(),
-        pin = pin_dir.display(),
     );
-    let spec = LaunchSpec {
+    let spec = ProcessSpec {
         program: "sh".to_string(),
         args: vec!["-c".to_string(), script],
         cwd: attempt.to_string_lossy().into_owned(),
         env: BTreeMap::new(),
-        profile: profile.to_string_lossy().into_owned(),
         attempt: AttemptId::derive(1),
-        attempt_dir: attempt.to_string_lossy().into_owned(),
-        protected_dir: protected.to_string_lossy().into_owned(),
-        sock_dir: attempt.to_string_lossy().into_owned(),
-        extra_ro_roots: Vec::new(),
-        extra_rw_roots: Vec::new(),
     };
-    let mut sandbox = SeatbeltSandbox::new();
-    let _ = sandbox
+    let mut launcher = LocalLauncher::new();
+    let output = launcher
         .run(&spec, Duration::from_secs(20))
-        .expect("confined run");
+        .expect("run");
+    assert_eq!(output.exit_code, 0, "runner exit: {}", output.stderr);
 
     assert!(
         attempt.join("inside.txt").exists(),
         "the candidate/attempt root is writable"
     );
     assert!(
-        !protected.join("evil.txt").exists(),
-        "the protected root must NOT be writable by the runner"
-    );
-    assert_eq!(
-        fs::read_to_string(pin_dir.join("pin.json")).expect("pin intact"),
-        "{}",
-        "parent pin state must NOT be writable by the runner"
+        attempt.join("marker").exists(),
+        "the run completed inside its runtime root"
     );
 }
 
@@ -1142,37 +1113,27 @@ fn invalid_baseline_refuses() {
 }
 
 #[test]
-fn production_verifier_cannot_overwrite_parent_receipt_marker() {
+fn production_verifier_command_runs_with_writable_candidate_root() {
     let (_dir, origin, state) = seed_origin("sf-scope-malicious");
     let mut harness = build_harness_live(&state, &origin, FIXED_SOURCE);
     let exec = harness.executor.start(&TaskId::new(TASK)).expect("start");
-    // Plant a parent-owned completion marker OUTSIDE the verifier ATTEMPT
-    // (build's marker is not touched by the parent during verify).
-    let marker = agalma_conductor::workers::done_path(&state, &exec, "build", 1);
-    fs::create_dir_all(marker.parent().expect("marker dir")).expect("mkdir");
-    fs::write(&marker, "original").expect("plant marker");
-    // The confined command attempts the write but exits 0, so verify stays green
-    // and no live verifier session is needed; only the parent-marker content is
-    // asserted.
-    let acceptance = format!(
-        "sh -c 'echo ok > $AGALMA_CANDIDATE_DIR/witness.txt; echo evil > {} 2>/dev/null; exit 0'",
-        marker.display()
-    );
+    // The frozen command writes a witness into the candidate-root and exits 0,
+    // so verify stays green and no live verifier session is needed.
+    //
+    // Sandbox removal (design §7.1): the verifier's ability to overwrite parent
+    // receipt markers is no longer OS-enforced, so this test no longer asserts
+    // marker immutability — an accepted guarantee reduction. It still asserts
+    // the behavioral judge runs with a writable candidate root.
+    let acceptance =
+        "sh -c 'echo ok > $AGALMA_CANDIDATE_DIR/witness.txt; exit 0'".to_string();
     build_frozen_package_with(&state, &exec, &entry(), &acceptance);
     drain(&mut harness.executor, &exec);
-    // The command ran (proved by the candidate-root witness: the candidate root
-    // IS writable) but could not write the parent completion marker.
     let witness = agalma_conductor::phases::run_root(&state, &exec)
         .join("verify-checkout")
         .join("witness.txt");
     assert!(
         witness.exists(),
-        "the confined verifier command must have run with a writable candidate root"
-    );
-    assert_eq!(
-        fs::read_to_string(&marker).expect("marker readable"),
-        "original",
-        "the confined verifier must NOT overwrite a parent completion marker"
+        "the verifier command must have run with a writable candidate root"
     );
 }
 
@@ -1531,7 +1492,7 @@ fn child_runtime_roots_exclude_parent_markers() {
 }
 
 /// A minimal `PhaseDeps` for config-construction tests (no repo/live session).
-fn test_deps(state_dir: &Path, origin: &Path, extra_ro: Vec<PathBuf>) -> PhaseDeps {
+fn test_deps(state_dir: &Path, origin: &Path) -> PhaseDeps {
     PhaseDeps {
         state_dir: state_dir.to_path_buf(),
         fixture: origin.to_path_buf(),
@@ -1540,12 +1501,10 @@ fn test_deps(state_dir: &Path, origin: &Path, extra_ro: Vec<PathBuf>) -> PhaseDe
         route: "builder:fix".to_string(),
         verifier_route: "verifier:fix".to_string(),
         role: "builder".to_string(),
-        profile_path: state_dir.join("worker.sb"),
         builder_prompt: state_dir.join("unused-builder.md"),
         proxy_url: None,
         verifier_proxy_url: None,
         paid_proxy: false,
-        extra_ro_roots: extra_ro,
         toolchain_env: BTreeMap::new(),
         turn_timeout: Duration::from_secs(1),
         verify_timeout: Duration::from_secs(1),
@@ -1568,51 +1527,30 @@ fn config_checkout(state: &Path, exec: &ExecutionId) -> Checkout {
     }
 }
 
-/// SF.6: the ACTUAL production builder and diagnosis configs are narrow (ATTEMPT
-/// runtime + run-root read-only), preserve all supplied RO roots, and grant no
-/// parent marker a writable root.
+/// SF.6: the ACTUAL production builder and diagnosis configs are narrow (each
+/// gets its own runtime root), and no parent marker lives inside a child
+/// runtime.
 #[test]
-fn production_child_configs_are_narrow_and_preserve_roots() {
+fn production_child_configs_are_narrow() {
     let dir = ScratchDir::new("sf-scope-cfg");
     let state = dir.child("state");
     let origin = dir.child("origin");
     fs::create_dir_all(&origin).expect("origin");
-    let extra_ro = vec![PathBuf::from("/usr")];
-    let deps = test_deps(&state, &origin, extra_ro.clone());
+    let deps = test_deps(&state, &origin);
     let exec = ExecutionId::new("exec:cfg:1");
     let checkout = config_checkout(&state, &exec);
 
     let b = builder_config_init(&deps, &checkout, &exec).expect("builder config");
     let v = verifier_config_init(&deps, &checkout, &exec).expect("verifier config");
-    let run =
-        fs::canonicalize(agalma_conductor::phases::run_root(&state, &exec)).expect("run root");
     let brt = fs::canonicalize(builder_runtime_dir(&state, &exec)).expect("build rt");
     let vrt = fs::canonicalize(verify_runtime_dir(&state, &exec)).expect("verify rt");
 
-    assert_eq!(b.attempt_dir, brt, "builder ATTEMPT is the narrow runtime");
+    assert_eq!(b.attempt_dir, brt, "builder runtime is the narrow runtime");
     assert_eq!(
         v.attempt_dir, vrt,
-        "diagnosis ATTEMPT is the narrow runtime"
+        "diagnosis runtime is the narrow runtime"
     );
-    assert_eq!(b.protected_dir, run, "builder reads the run root read-only");
-    assert_eq!(
-        v.protected_dir, run,
-        "diagnosis reads the run root read-only"
-    );
-    assert_eq!(
-        b.extra_rw_roots,
-        vec![PathBuf::from(&checkout.path)],
-        "builder's only extra writable root is the checkout"
-    );
-    assert!(
-        v.extra_rw_roots.is_empty(),
-        "diagnosis has no writable extra root"
-    );
-    assert_eq!(b.extra_ro_roots, extra_ro, "builder RO roots preserved");
-    assert_eq!(
-        v.extra_ro_roots, extra_ro,
-        "diagnosis RO roots preserved (no truncation)"
-    );
+    assert_ne!(brt, vrt, "build and verify runtimes are distinct");
 
     for phase in ["build", "verify"] {
         let marker = agalma_conductor::workers::done_path(&state, &exec, phase, 1);
@@ -1620,16 +1558,17 @@ fn production_child_configs_are_narrow_and_preserve_roots() {
     }
 }
 
-/// SF.6: a real sandbox run of the production diagnosis config proves the
-/// diagnostic inputs are readable and a parent marker is not writable.
+/// SF.6: the production diagnosis config's runtime root is writable and the
+/// frozen diagnosis inputs (under the run root) are readable. Read-only
+/// protection of the protected root is convention-only after sandbox removal
+/// (design §7.1).
 #[test]
-fn production_verifier_config_sandbox_probe() {
+fn production_verifier_runtime_reads_diagnosis_inputs() {
     let dir = ScratchDir::new("sf-scope-cfgprobe");
     let state = dir.child("state");
     let origin = dir.child("origin");
     fs::create_dir_all(&origin).expect("origin");
-    let deps = test_deps(&state, &origin, vec![PathBuf::from("/usr")]);
-    fs::write(&deps.profile_path, PRODUCT_PROFILE).expect("profile");
+    let deps = test_deps(&state, &origin);
     let exec = ExecutionId::new("exec:cfgprobe:1");
     let checkout = config_checkout(&state, &exec);
     let v = verifier_config_init(&deps, &checkout, &exec).expect("verifier config");
@@ -1637,54 +1576,36 @@ fn production_verifier_config_sandbox_probe() {
     let run = agalma_conductor::phases::run_root(&state, &exec);
     fs::create_dir_all(run.join("artifacts")).expect("artifacts");
     fs::write(run.join("artifacts").join("diff@1.patch"), b"DIFFCONTENT").expect("diff");
-    fs::create_dir_all(run.join("build")).expect("build dir");
-    fs::write(run.join("build").join("1.done"), b"original").expect("marker");
 
     let attempt = &v.attempt_dir;
-    let protected = &v.protected_dir;
     let script = format!(
         "cat {p}/artifacts/diff@1.patch > {a}/read_proof; \
-         echo evil > {p}/build/1.done 2>/dev/null; \
          echo ok > {a}/write_proof; exit 0",
-        p = protected.display(),
+        p = run.display(),
         a = attempt.display(),
     );
-    let spec = LaunchSpec {
+    let spec = ProcessSpec {
         program: "sh".to_string(),
         args: vec!["-c".to_string(), script],
         cwd: attempt.to_string_lossy().into_owned(),
         env: BTreeMap::new(),
-        profile: deps.profile_path.to_string_lossy().into_owned(),
         attempt: AttemptId::derive(1),
-        attempt_dir: attempt.to_string_lossy().into_owned(),
-        protected_dir: protected.to_string_lossy().into_owned(),
-        sock_dir: v.sock_dir.to_string_lossy().into_owned(),
-        extra_ro_roots: v
-            .extra_ro_roots
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect(),
-        extra_rw_roots: Vec::new(),
     };
-    let mut sandbox = SeatbeltSandbox::new();
-    let _ = sandbox
+    let mut launcher = LocalLauncher::new();
+    let output = launcher
         .run(&spec, Duration::from_secs(20))
-        .expect("confined run");
+        .expect("run");
+    assert_eq!(output.exit_code, 0, "runner exit: {}", output.stderr);
 
     assert!(
         attempt.join("read_proof").exists(),
-        "the diagnosis input must be readable through the run-root PROTECTED grant"
+        "the diagnosis input must be readable"
     );
     assert_eq!(
         fs::read_to_string(attempt.join("read_proof")).expect("read proof"),
         "DIFFCONTENT"
     );
-    assert!(attempt.join("write_proof").exists(), "ATTEMPT is writable");
-    assert_eq!(
-        fs::read_to_string(run.join("build").join("1.done")).expect("marker"),
-        "original",
-        "the parent completion marker must NOT be writable"
-    );
+    assert!(attempt.join("write_proof").exists(), "runtime root is writable");
 }
 
 // Generated-input invariants (>= 128 cases).

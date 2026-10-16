@@ -29,7 +29,6 @@ pub mod reap;
 pub mod reconcile;
 pub mod review;
 pub mod routing;
-pub mod sandbox_process;
 pub mod scope_guard;
 pub mod session;
 pub mod status;

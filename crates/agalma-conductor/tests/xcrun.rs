@@ -1,16 +1,12 @@
 //! H2 (`agalma-zxi.3`) regression: a git-based scope-guard command runs
-//! through the real sandboxed acceptance launch with no `xcrun_db` EPERM noise.
+//! through the real repo-mode acceptance launch and exits clean.
 //!
-//! Background: on macOS `/usr/bin/git` is a shim over `libxcselect`. It resolves
-//! the active developer dir via `xcselect`, whose cache lives at
-//! `confstr(_CS_DARWIN_USER_TEMP_DIR)` -> `/var/folders/.../T/xcrun_db` — the
-//! *system* per-user temp dir, which ignores `$TMPDIR`. Under the deny-default
-//! Seatbelt profile that cache write was denied, so every sandboxed `git`
-//! launch printed `couldn't create cache file ... (errno=Operation not
-//! permitted)` (M1.8 finding 7). The product profile now grants a narrow
-//! `xcrun_db*`-only allowance; this test drives the conductor's real `verify`
-//! activity in `Live` mode (Seatbelt acceptance) and asserts the captured
-//! output is clean.
+//! Sandbox removal (P2) retired the Seatbelt profile, so the `xcrun_db`
+//! allowance the H2 finding motivated no longer exists — the launch is
+//! unconfined and `/usr/bin/git` writes its `xcrun` cache normally. This test
+//! now pins the broader behavior that survived: the conductor's real `verify`
+//! activity in `Live` mode clones the candidate, runs the frozen acceptance
+//! command, and captures a clean green log.
 //!
 //! Scratch state lives under `target/test-runs/xcrun-*` (never `/tmp`); the run
 //! is offline and makes no model turn (the guard is green, so no diagnosis
@@ -91,7 +87,7 @@ fn seed_origin(dir: &Path) -> PathBuf {
 }
 
 #[test]
-fn sandboxed_git_guard_runs_without_xcrun_noise() {
+fn repo_acceptance_git_guard_runs_clean() {
     let dir = fresh("guard");
     let origin = seed_origin(&dir);
     let state_dir = dir.join("state");
@@ -108,10 +104,6 @@ fn sandboxed_git_guard_runs_without_xcrun_noise() {
         &["docs".to_string()],
     );
 
-    // Render the real product profile (the one the conductor ships) to a file.
-    let profile = state_dir.join("worker.sb");
-    fs::write(&profile, agalma_sandbox::PRODUCT_PROFILE).expect("write profile");
-
     let deps = PhaseDeps {
         state_dir: state_dir.clone(),
         fixture: origin.clone(),
@@ -120,12 +112,10 @@ fn sandboxed_git_guard_runs_without_xcrun_noise() {
         route: "builder:fix".to_string(),
         verifier_route: "verifier:fix".to_string(),
         role: "builder".to_string(),
-        profile_path: profile,
         builder_prompt: state_dir.join("unused-builder.md"),
         proxy_url: None,
         verifier_proxy_url: None,
         paid_proxy: false,
-        extra_ro_roots: Vec::new(),
         toolchain_env: BTreeMap::new(),
         turn_timeout: Duration::from_secs(5),
         verify_timeout: Duration::from_secs(60),
@@ -133,7 +123,7 @@ fn sandboxed_git_guard_runs_without_xcrun_noise() {
         repo: Some(RepoMode {
             origin,
             base_ref: "main".to_string(),
-            task_title: "Sandboxed guard".to_string(),
+            task_title: "Repo acceptance guard".to_string(),
             acceptance: vec![GUARD.to_string()],
         }),
         harness: harness_handle(HarnessChoice::OpenCode),
@@ -161,7 +151,7 @@ fn sandboxed_git_guard_runs_without_xcrun_noise() {
         inputs: serde_json::json!({}),
     };
 
-    // Real repo-mode checkout, then the real Seatbelt acceptance launch.
+    // Real repo-mode checkout, then the real acceptance launch.
     acts.checkout.execute(&ctx).expect("checkout");
     let outcome = acts.verify.execute(&ctx).expect("verify execute");
     assert_eq!(
@@ -176,16 +166,5 @@ fn sandboxed_git_guard_runs_without_xcrun_noise() {
         .join("accept@1-0.txt");
     let log = fs::read_to_string(&artifact)
         .unwrap_or_else(|e| panic!("read acceptance log {}: {e}", artifact.display()));
-    assert!(
-        log.contains("exit: 0"),
-        "guard must exit 0 in the sandbox:\n{log}"
-    );
-    assert!(
-        !log.contains("xcrun_db"),
-        "xcrun cache noise leaked into sandboxed acceptance output:\n{log}"
-    );
-    assert!(
-        !log.contains("Operation not permitted"),
-        "sandboxed acceptance saw an EPERM:\n{log}"
-    );
+    assert!(log.contains("exit: 0"), "guard must exit 0:\n{log}");
 }

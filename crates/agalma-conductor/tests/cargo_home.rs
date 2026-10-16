@@ -1,5 +1,5 @@
-//! B1-F6 (`agalma-dbv`) regression: sandboxed offline cargo resolution needs a
-//! seeded `CARGO_HOME` that exposes the real cargo registry read-only.
+//! B1-F6 (`agalma-dbv`) regression: offline cargo resolution needs a
+//! seeded `CARGO_HOME` that exposes the real cargo registry.
 //!
 //! Live factory run 2 acceptance (`cargo build --offline -p agalma-conductor`)
 //! failed exit 101 `no matching package named serde found ... offline mode`.
@@ -10,9 +10,8 @@
 //! was empty too.
 //!
 //! Fix: `phases::ensure_cargo_home` seeds `<run>/cargo-home/registry` as a link
-//! to the resolved real registry (`$CARGO_HOME` or `$HOME/.cargo`; already
-//! exposed read-only via `extra_ro_roots`). This test drives the conductor's
-//! real `verify` activity in `Live` mode (Seatbelt acceptance) over a fresh
+//! to the resolved real registry (`$CARGO_HOME` or `$HOME/.cargo`). This test
+//! drives the conductor's real `verify` activity in `Live` mode over a fresh
 //! checkout whose acceptance is a resolution-only `cargo metadata --offline`,
 //! asserting exit 0 and emitted metadata. A focused unit covers the helper's
 //! idempotency and link target directly.
@@ -251,7 +250,7 @@ fn seed_package_with(
 ) {
     let definition = TaskDefinition {
         task_id: TaskId::new(task_id),
-        title: "Sandboxed offline resolution".to_string(),
+        title: "Offline resolution".to_string(),
         description: "Offline cargo resolution acceptance.\n".to_string(),
         design: Some(String::new()),
         notes: None,
@@ -350,10 +349,10 @@ fn ensure_cargo_home_seeds_idempotent_registry_link() {
     assert_eq!(fs::canonicalize(&link).expect("canonical link"), expected);
 }
 
-/// End-to-end: the real Seatbelt acceptance launch resolves offline against the
-/// seeded CARGO_HOME in a fresh checkout.
+/// End-to-end: the real acceptance launch resolves offline against the seeded
+/// CARGO_HOME in a fresh checkout.
 #[test]
-fn sandboxed_acceptance_resolves_cargo_offline() {
+fn acceptance_resolves_cargo_offline() {
     let cargo_home = real_cargo_home();
     if !cargo_home.join("registry").is_dir() {
         eprintln!(
@@ -383,12 +382,8 @@ fn sandboxed_acceptance_resolves_cargo_offline() {
         .clone();
     seed_protected_package(&state_dir, TASK, exec.as_str(), &selected);
 
-    // Render the real product profile (the one the conductor ships) to a file.
-    let profile = state_dir.join("worker.sb");
-    fs::write(&profile, agalma_sandbox::PRODUCT_PROFILE).expect("write profile");
-
-    // Toolchain env/roots mirroring `composition::toolchain` so the confined
-    // cargo finds the rustup shim and the real (read-only) homes.
+    // Toolchain env mirroring `composition::toolchain` so the launched cargo
+    // finds the rustup shim and the real homes via PATH.
     let rustup_home = real_rustup_home();
     let cargo_bin_dir = cargo_home.join("bin");
     let mut toolchain_env = BTreeMap::new();
@@ -404,10 +399,6 @@ fn sandboxed_acceptance_resolves_cargo_offline() {
         "PATH".to_string(),
         format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", cargo_bin_dir.display()),
     );
-    let extra_ro_roots = vec![
-        fs::canonicalize(&cargo_home).unwrap_or(cargo_home.clone()),
-        fs::canonicalize(&rustup_home).unwrap_or(rustup_home.clone()),
-    ];
 
     let deps = PhaseDeps {
         state_dir: state_dir.clone(),
@@ -417,12 +408,10 @@ fn sandboxed_acceptance_resolves_cargo_offline() {
         route: "builder:fix".to_string(),
         verifier_route: "verifier:fix".to_string(),
         role: "builder".to_string(),
-        profile_path: profile,
         builder_prompt: state_dir.join("unused-builder.md"),
         proxy_url: None,
         verifier_proxy_url: None,
         paid_proxy: false,
-        extra_ro_roots,
         toolchain_env,
         turn_timeout: Duration::from_secs(5),
         verify_timeout: Duration::from_secs(120),
@@ -430,7 +419,7 @@ fn sandboxed_acceptance_resolves_cargo_offline() {
         repo: Some(RepoMode {
             origin,
             base_ref: "main".to_string(),
-            task_title: "Sandboxed offline resolution".to_string(),
+            task_title: "Offline resolution".to_string(),
             acceptance: vec![ACCEPT.to_string()],
         }),
         harness: harness_handle(HarnessChoice::OpenCode),
@@ -473,7 +462,7 @@ fn sandboxed_acceptance_resolves_cargo_offline() {
         .unwrap_or_else(|e| panic!("read acceptance log {}: {e}", artifact.display()));
     assert!(
         log.contains("exit: 0"),
-        "cargo metadata must exit 0 in the sandbox:\n{log}"
+        "cargo metadata must exit 0:\n{log}"
     );
     assert!(
         log.contains("\"packages\""),

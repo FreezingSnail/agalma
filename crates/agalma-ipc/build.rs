@@ -21,8 +21,18 @@ use buffa_codegen::generated::descriptor::{
 };
 
 fn main() {
+    // The complete rerun set for this script: `ipc.proto` is the source of
+    // truth and `build.rs` changes the codegen. The generated descriptor set
+    // below is an OUTPUT, not an input, so it is deliberately not listed here.
     println!("cargo:rerun-if-changed=proto/ipc.proto");
     println!("cargo:rerun-if-changed=build.rs");
+    // `connectrpc-build` normally emits this because codegen reads the variable
+    // (see the `emit_rerun_directives(false)` call below, which suppresses its
+    // directives). Re-emit it so a change to the memory limit still reruns us.
+    println!(
+        "cargo:rerun-if-env-changed={}",
+        buffa_codegen::ELEMENT_MEMORY_LIMIT_ENV
+    );
 
     let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let proto_path = manifest_dir.join("proto/ipc.proto");
@@ -40,6 +50,15 @@ fn main() {
         .files(&["ipc.proto"])
         .descriptor_set(&fds_path)
         .include_file("_connectrpc.rs")
+        // In Precompiled mode `connectrpc-build` registers
+        // `cargo:rerun-if-changed` for the descriptor set path we hand it
+        // (`OUT_DIR/ipc.fds`). That file is a build OUTPUT that this script
+        // rewrites every run, so the watched input always looks changed and
+        // cargo reruns this script — plus every dependent crate — on every
+        // invocation. Suppress the generated directives; the explicit
+        // `rerun-if-changed`/`rerun-if-env-changed` lines above are the
+        // complete, correct rerun set.
+        .emit_rerun_directives(false)
         // Proto-only build: Agalma's JSON rides in `bytes`, so the proto3-JSON
         // codec (serde derives + `buffa::json_helpers`) is off, matching
         // `connectrpc`'s `json` feature being disabled (design D2).

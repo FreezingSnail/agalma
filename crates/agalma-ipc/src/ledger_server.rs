@@ -5,7 +5,6 @@
 //! `SqliteLedger` in `agalma-ledger`). The registration helper keeps the method
 //! handlers and their params-decoding boilerplate in one place, mirroring
 //! [`crate::harness_server::register_harness`],
-//! [`crate::sandbox_server::register_sandbox`],
 //! [`crate::workspace_server::register_workspace`], and
 //! [`crate::taskqueue_server::register_taskqueue`].
 //!

@@ -8,7 +8,7 @@
 //! from conductor code and cannot cross a process boundary without
 //! re-architecting phases. The process-ready candidate is the B0 durable kernel
 //! (`KernelEngine<L>`), pure data-in/data-out over `LedgerApi` with a
-//! `Box<dyn SandboxApi + Send>` seam. This client is the `ExecutionApi` half of
+//! `Box<dyn ProcessApi + Send>` seam. This client is the `ExecutionApi` half of
 //! that candidate boundary; the engine-op half is [`ExecutionOps`].
 //!
 //! ## Faithfulness and gaps

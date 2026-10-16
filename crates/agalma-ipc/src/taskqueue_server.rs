@@ -3,8 +3,7 @@
 //! A task-queue server hosts one [`TaskQueueOps`] implementation (the `bd`-backed
 //! `BdTaskQueue` in `agalma-taskqueue`). The registration helper keeps the method
 //! handlers and their params-decoding boilerplate in one place, mirroring
-//! [`crate::harness_server::register_harness`],
-//! [`crate::sandbox_server::register_sandbox`], and
+//! [`crate::harness_server::register_harness`], and
 //! [`crate::workspace_server::register_workspace`]. [`serve_taskqueue`] serves a
 //! built server over the selected wire transport (IPCX.5).
 

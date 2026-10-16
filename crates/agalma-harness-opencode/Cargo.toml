@@ -8,8 +8,8 @@ publish = false
 
 # The harness launches `opencode serve` through the extracted
 # `agalma_contracts::ProcessApi` boundary. The server builds its own
-# `agalma_process::LocalLauncher` (no confinement profile), so `agalma-sandbox`
-# is gone entirely.
+# `agalma_process::LocalLauncher` (no confinement profile), so no confinement
+# backend crate is involved.
 [dependencies]
 agalma-contracts = { path = "../agalma-contracts" }
 agalma-ipc = { path = "../agalma-ipc" }

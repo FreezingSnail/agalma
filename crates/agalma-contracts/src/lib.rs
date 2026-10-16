@@ -4,7 +4,7 @@
 //! identifiers, normalized events, the error taxonomy, binding records, the
 //! canonical hashing helper (`canonical-json/v1` + SHA-256, revision 1), the
 //! `TaskPackage/v1` record, and the
-//! `LedgerApi`/`ExecutionApi`/`SandboxApi`/`WorkspaceApi`/`HarnessApi` trait
+//! `LedgerApi`/`ExecutionApi`/`ProcessApi`/`WorkspaceApi`/`HarnessApi` trait
 //! signatures. It has no I/O and no vendor types: `serde`, `serde_json`,
 //! `thiserror` (for the error taxonomy), and the locked `ring = 0.17.14` for
 //! SHA-256.
@@ -23,7 +23,6 @@ pub mod harness;
 pub mod ids;
 pub mod ledger;
 pub mod process;
-pub mod sandbox;
 pub mod snapshot;
 pub mod task_package;
 pub mod taskqueue;
@@ -61,7 +60,6 @@ pub use ledger::{
     TimerState,
 };
 pub use process::{ProcessApi, ProcessChild, ProcessSpec};
-pub use sandbox::{LaunchSpec, SandboxApi, SandboxChild};
 pub use snapshot::{StateSnapshot, SNAPSHOT_FORMAT};
 pub use task_package::{
     Authorization, AuthorizationOrigin, BindingPin, Budget, ContextItem, ContextKind, Definition,

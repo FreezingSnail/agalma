@@ -8,8 +8,8 @@
 //! `prepare_verify_checkout`/`origin_receipt`/`revert_origin`/
 //! `integrated_receipt`). Each call carries one JSON params object and decodes a
 //! typed result. Transport failures map onto the frozen [`ContractError`]
-//! surface exactly as for the harness/sandbox clients: a mid-call connection
-//! loss is already classified by the transport as `UnknownOutcome`; a pre-send
+//! surface exactly as for the harness/workspace/task-queue clients: a mid-call
+//! connection loss is already classified by the transport as `UnknownOutcome`; a
 //! loss becomes `KnownFailure`.
 //!
 //! Since IPCX.4 the client can speak either [`Wire::Framed`] (B1 length-prefixed

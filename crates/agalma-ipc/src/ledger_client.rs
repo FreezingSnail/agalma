@@ -4,7 +4,7 @@
 //!
 //! Method names are the existing method snake-case. Each call carries one JSON
 //! params object and decodes a typed result. Transport failures map onto the
-//! frozen [`ContractError`] surface exactly as for the harness/sandbox/
+//! frozen [`ContractError`] surface exactly as for the harness/
 //! workspace/task-queue clients: a mid-call connection loss is already classified
 //! by [`Client`] as `UnknownOutcome`; a pre-send loss becomes `KnownFailure`.
 //!

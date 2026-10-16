@@ -1034,7 +1034,7 @@ freeze_build_inputs() {
 peers_commands() {
     cat <<'EOF'
 cargo build --offline --workspace --bins
-cargo test --offline -p agalma-conductor --test ledger_process --test workspace_process --test taskqueue_process --test execution_process --test sandbox_process live_process_smoke -- --nocapture --test-threads=1
+cargo test --offline -p agalma-conductor --test ledger_process --test workspace_process --test taskqueue_process --test execution_process live_process_smoke -- --nocapture --test-threads=1
 cargo test --offline -p agalma-conductor -- --test-threads=1
 EOF
 }
@@ -1060,7 +1060,7 @@ run_peers() {
     if [ -n "${CARGO_BUILD_TARGET:-}" ]; then target_dir="$target_dir/$CARGO_BUILD_TARGET"; fi
 
     local component binary output
-    for component in ledger workspace taskqueue kernel sandbox; do
+    for component in ledger workspace taskqueue kernel; do
         binary="$target_dir/debug/agalma-$component-server"
         if [ ! -x "$binary" ]; then echo "test.sh: missing binary $binary" >&2; return 1; fi
         shasum -a 256 "$binary"
@@ -1075,14 +1075,14 @@ run_peers() {
 
     if ! run_logged peers-smoke "$CARGO" test --offline -p agalma-conductor \
         --test ledger_process --test workspace_process --test taskqueue_process \
-        --test execution_process --test sandbox_process \
+        --test execution_process \
         live_process_smoke -- --nocapture --test-threads=1; then
         echo "test.sh: peer smoke failed" >&2; return 1
     fi
     local smoke_output
     smoke_output="$(cat "$RUN_DIR/peers-smoke.log")"
-    if [ "$(printf '%s\n' "$smoke_output" | rg -c 'test result: ok\. 1 passed; 0 failed; 0 ignored;')" != 5 ]; then
-        echo "test.sh: required smoke evidence must include five executed, passing cases" >&2; return 1
+    if [ "$(printf '%s\n' "$smoke_output" | rg -c 'test result: ok\. 1 passed; 0 failed; 0 ignored;')" != 4 ]; then
+        echo "test.sh: required smoke evidence must include four executed, passing cases" >&2; return 1
     fi
     if [[ "$smoke_output" == *'skip:'* ]]; then
         echo "test.sh: required smoke evidence must not contain skipped cases" >&2; return 1
@@ -1144,7 +1144,7 @@ Scopes:
              (no marker)       unknown isolation; serializes with every unit
            Prerequisites: --prereq <crate> (its bins) or --prereq-bins.
            Does not establish workspace acceptance or unselected boundaries.
-  peers    Five local process smokes on the default Connect wire, plus the
+  peers    Four local process smokes on the default Connect wire, plus the
            retained conductor suite. Excludes paid-provider checks.
   full     Workspace tests with binary prerequisites. Excludes ignored
            live-provider checks. Run once, not per implementation.

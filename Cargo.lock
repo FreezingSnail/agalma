@@ -139,16 +139,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agalma-sandbox"
-version = "0.1.0"
-dependencies = [
- "agalma-contracts",
- "agalma-ipc",
- "agalma-testkit",
- "tokio",
-]
-
-[[package]]
 name = "agalma-taskqueue"
 version = "0.1.0"
 dependencies = [

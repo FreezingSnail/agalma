@@ -184,10 +184,11 @@ fn replay_survives_reconnect() {
 
 #[test]
 fn fresh_connection_auto_ids_do_not_replay_prior_connection() {
-    // Regression for agalma-sxw: `SandboxSource` opens a fresh client per use.
-    // `launch` returns a map; `alive` returns a bool. If auto ids collided across
-    // connections, connection B's `alive` would replay connection A's `launch`
-    // map and fail the bool decode — the live factory-run failure.
+    // Regression for agalma-sxw: a per-use component source opens a fresh client
+    // per use. `launch` returns a map; `alive` returns a bool. If auto ids
+    // collided across connections, connection B's `alive` would replay
+    // connection A's `launch` map and fail the bool decode — the live
+    // factory-run failure.
     let mut server = Server::new(info());
     server.on("launch", |_params: Value| -> Result<Value, ContractError> {
         Ok(json!({ "pid": 4242, "running": true }))
@@ -200,7 +201,8 @@ fn fresh_connection_auto_ids_do_not_replay_prior_connection() {
     let _server = spawn_server(server, socket.clone());
 
     // The server serves one connection at a time, so record on A, close it, then
-    // reconnect as B — exactly how `SandboxSource` opens a fresh client per use.
+    // reconnect as B — exactly how a per-use component source opens a fresh
+    // client per use.
     let id_a = {
         let mut first = Client::connect(&socket).expect("connect A");
         let id = first.next_id();

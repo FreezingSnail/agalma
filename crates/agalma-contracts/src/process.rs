@@ -2,7 +2,8 @@
 //!
 //! This is the in-process replacement for the confined-sandbox contract
 //! (`docs/sandbox-removal-design.md` §4.1): the same launch/liveness/terminate
-//! shape as `SandboxApi`, with the confinement-specific fields removed. A
+//! shape as the deleted confined-sandbox contract, with the confinement-specific
+//! fields removed. A
 //! process is launched as its own process-group leader so descendants can be
 //! signalled and verified as a tree; termination returns [`StopEvidence`] so
 //! cleanup is proven, not inferred.

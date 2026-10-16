@@ -12,8 +12,6 @@
 //!   receipt replay, version refusal).
 //! - [`client`]: the client core (connect, serial `call`, typed conversion,
 //!   connection-loss semantics).
-//! - [`sandbox_client`]/[`sandbox_server`]: the typed `SandboxApi` client and
-//!   its method-registration helper (the second extracted boundary, B1.3).
 //! - [`workspace_client`]/[`workspace_server`]: the typed `WorkspaceApi` +
 //!   repo-mode client and its method-registration helper (B1.4).
 //! - [`taskqueue_client`]/[`taskqueue_server`]: the typed `TaskQueueApi` +
@@ -42,8 +40,6 @@ pub mod harness_client;
 pub mod harness_server;
 pub mod ledger_client;
 pub mod ledger_server;
-pub mod sandbox_client;
-pub mod sandbox_server;
 pub mod server;
 pub mod taskqueue_client;
 pub mod taskqueue_server;
@@ -107,8 +103,6 @@ pub use ledger_client::{
     SNAPSHOT_EXPORT_FILE, SNAPSHOT_IMPORT_FILE,
 };
 pub use ledger_server::{register_ledger, serve_ledger, LEDGER_METHODS};
-pub use sandbox_client::SandboxClient;
-pub use sandbox_server::{register_sandbox, SANDBOX_METHODS};
 pub use server::{socket_from_args, Handler, Server, ServerInfo};
 pub use taskqueue_client::{
     CloseParams, CommentParams, IssueProjection, LabelParams, StatusParams, TaskCall,

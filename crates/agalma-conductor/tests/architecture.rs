@@ -1,7 +1,7 @@
 //! Architecture lint: implementation crates must not reference each other.
 //!
 //! Every crate under `crates/` that is an implementation (`agalma-ledger`,
-//! `agalma-execution`, `agalma-sandbox`, `agalma-workspace`,
+//! `agalma-execution`, `agalma-workspace`,
 //! `agalma-harness-opencode`, `agalma-kernel`) may depend on `agalma-contracts`
 //! but never on another implementation crate. Dependency direction is
 //! `conductor -> implementations -> contracts`.
@@ -14,15 +14,14 @@
 //! Per `docs/b1-extraction.md` D6, the check is extended to the Cargo.toml edge:
 //! no implementation crate may declare another implementation crate as a normal
 //! dependency. Dev-/build-dependencies are out of scope (tests legitimately wire
-//! implementations together). `agalma-ipc` is infrastructure, not an
-//! implementation crate, so it is deliberately absent from `IMPL_CRATES` and may
-//! be depended on by implementations.
+//! implementations together). `agalma-ipc` and `agalma-process` are
+//! infrastructure, not implementation crates, so they are deliberately absent
+//! from `IMPL_CRATES` and may be depended on by implementations. `agalma-process`
+//! is the local process launcher (`docs/sandbox-removal-design.md` §10).
 //!
-//! B1.2 added one sanctioned carve-out (`agalma-harness-opencode ->
-//! agalma-sandbox`) while the harness server embedded the not-yet-extracted
-//! sandbox in-process. B1.3 extracted `SandboxApi` and switched the harness
-//! server to the sandbox client, so the carve-out is removed and both checks are
-//! strict again.
+//! A B1.2 temporary carve-out for the harness→confinement edge was removed at
+//! B1.3, when that boundary moved behind a typed client; both checks are strict
+//! again, and the confinement layer was deleted in P4.
 //!
 //! IPCX.1 (`agalma-ebg.2`) adds two more checks: the ConnectRPC stack
 //! (`connectrpc`/`buffa`) may be a normal dependency only of `agalma-ipc`, and
@@ -41,7 +40,6 @@ use std::path::{Path, PathBuf};
 const IMPL_CRATES: &[&str] = &[
     "agalma-ledger",
     "agalma-execution",
-    "agalma-sandbox",
     "agalma-workspace",
     "agalma-harness-opencode",
     "agalma-harness-reference",
@@ -459,9 +457,9 @@ serde = { workspace = true }
 
 #[test]
 fn comment_stripper_ignores_comments_but_keeps_code() {
-    let source = "// agalma_ledger\n/* agalma_execution */ use agalma_sandbox;\n";
+    let source = "// agalma_ledger\n/* agalma_execution */ use agalma_kernel;\n";
     let stripped = strip_comments(source);
     assert!(!contains_ident(&stripped, "agalma_ledger"));
     assert!(!contains_ident(&stripped, "agalma_execution"));
-    assert!(contains_ident(&stripped, "agalma_sandbox"));
+    assert!(contains_ident(&stripped, "agalma_kernel"));
 }

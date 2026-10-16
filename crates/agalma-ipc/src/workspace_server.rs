@@ -3,8 +3,7 @@
 //! A workspace server hosts one [`WorkspaceOps`] implementation (the git-backed
 //! `Workspace` in `agalma-workspace`). The registration helper keeps the method
 //! handlers and their params-decoding boilerplate in one place, mirroring
-//! [`crate::harness_server::register_harness`] and
-//! [`crate::sandbox_server::register_sandbox`].
+//! [`crate::harness_server::register_harness`].
 
 use std::sync::{Arc, Mutex, PoisonError};
 

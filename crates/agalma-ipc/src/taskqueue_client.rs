@@ -7,7 +7,7 @@
 //! reconcile-mode `projection`/`set_status`/`remove_label`). Each call carries
 //! one JSON params object and decodes a typed result. Transport failures map
 //! onto the frozen [`ContractError`] surface exactly as for the
-//! harness/sandbox/workspace clients: a mid-call connection loss is already
+//! harness/workspace clients: a mid-call connection loss is already
 //! classified by the transport as `UnknownOutcome`; a pre-send loss becomes
 //! `KnownFailure`.
 //!

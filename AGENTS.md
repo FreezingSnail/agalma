@@ -78,6 +78,11 @@ factory's runtime routing table, task-release authority, or promotion policy.
 - Coordinate builds with sessions using shared server binaries. Reuse caches;
   isolate outputs only when concurrent work would overwrite required binaries.
   Build success establishes compilation; choose test scope separately below.
+- A build script must not register its own `OUT_DIR` output as a `rerun-if-changed`
+  input: a self-watched output makes Cargo rerun the script and rebuild every
+  dependent crate on every invocation, so warm builds never become no-ops.
+  `scripts/check-noop-rebuild.sh` guards the `agalma-ipc` no-op property (a second
+  identical build must not recompile); run it when changing a build script.
 - Build inside an implementation worktree only with a redirected cache:
   `CARGO_TARGET_DIR=target/worktree-caches/<bead>/target`. Do not compile into
   `<worktree>/target/`; that duplicates a multi-gigabyte cache per worktree.
@@ -96,11 +101,15 @@ factory's runtime routing table, task-release authority, or promotion policy.
 - State the intended outcome, role, and test scope before starting work. Explain
   what behavior a check establishes and what remains untested.
 - Use one repository test entry point with explicit `focused`, `peers`, or `full`
-  scope, as specified in `docs/development-workflow.md`: `make test-focused
-  SELECTION=...`, `make test-peers`, or `make test-full`. The Makefile forwards to
-  `scripts/test.sh` once that unified runner exists and otherwise runs the
-  documented transitional command; either way it writes raw logs and exit status
-  under `target/test-runs/<bead>/<run-id>/`. Do not create another temporary wrapper.
+  scope: `make test-focused SELECTION=...`, `make test-peers`, `make test-full`,
+  or the runner directly as `bash scripts/test.sh <scope> [selection]`. The unified
+  runner (`scripts/test.sh`, agalma-i15) is implemented and is the single entry
+  point; scope and selection rules are in `docs/development-workflow.md` and
+  `docs/testing-strategy.md`. It validates an explicit selection, compiles the
+  selected targets once, runs them through a bounded concurrent pool honoring
+  per-unit isolation groups, and writes raw logs and exit status under
+  `target/test-runs/<bead>/<run-id>/`. It requires `jq` (selection validation and
+  executable discovery) and `rg` (peer scope). Do not create another temporary wrapper.
 - Select checks from changed behavior and affected consumers. Name explicit
   test targets or unit-test modules; a whole crate is not the default focused
   selection. Follow docs/testing-strategy.md for selection and safe concurrency.
@@ -119,7 +128,9 @@ factory's runtime routing table, task-release authority, or promotion policy.
   builds against one cache are not the concurrency strategy. Serialize unknown
   or conflicting ports, fixture paths, services, and executable ownership.
   Case-level serialization does not prevent conflicts between test binaries.
-  Use existing supported commands until the unified runner is implemented.
+  Use the implemented runner: per-unit `--isolated`/`--group` markers and its
+  conservative default (an unmarked unit serializes with every other unit) encode
+  the isolation decision explicitly.
 - After repair, rerun failed checks and checks affected by the repair. Repeat
   passing checks only when their inputs or prerequisites changed or a named
   unresolved finding requires it. Paid live-provider checks are separate and

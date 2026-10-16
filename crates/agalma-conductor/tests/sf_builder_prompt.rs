@@ -14,6 +14,9 @@ use std::path::Path;
 
 use agalma_conductor::composition::{BUILDER_FIXTURE_PROMPT, BUILDER_PROMPT};
 use agalma_conductor::phases::{render_builder_prompt, resolve_recorded_package, RepoMode};
+use agalma_conductor::scope_guard::{
+    BaselineFile, ProtectedBaseline, ProtectedEntry, PROTECTED_BASELINE_FORMAT,
+};
 use agalma_conductor::task_package::{object_path, object_relative_path, package_path};
 use agalma_contracts::{
     sha256_digest, Authorization, AuthorizationOrigin, Budget, ContextItem, ContextKind, Definition,
@@ -90,7 +93,7 @@ acceptance:\n  - cargo test --offline -p example\npriority: high\nfamily: featur
                 "crates/example/src/beta.rs".to_string(),
                 "crates/example/tests/feature.rs".to_string(),
             ],
-            protected: vec!["fixtures/protected/".to_string()],
+            protected: vec!["fixtures/protected/keep".to_string()],
         }
     }
 }
@@ -107,6 +110,27 @@ fn write_object(state_dir: &Path, bytes: &[u8]) -> PackageArtifactRef {
         digest,
         bytes: bytes.len() as u64,
         media_type: "text/plain".to_string(),
+    }
+}
+
+/// The frozen protected judge a valid baseline must carry (nonempty files +
+/// nonempty commands): a trivially-passing script run through
+/// `$AGALMA_PROTECTED_DIR`. This fixture asserts prompt rendering and frozen
+/// resolution, not protected behavior, so the judge is a no-op pass.
+const PROTECTED_JUDGE_TEXT: &str = "#!/bin/sh\nexit 0\n";
+const PROTECTED_JUDGE_COMMAND: &str = "sh \"$AGALMA_PROTECTED_DIR/judge.sh\"";
+
+fn protected_baseline() -> ProtectedBaseline {
+    ProtectedBaseline {
+        format: PROTECTED_BASELINE_FORMAT.to_string(),
+        files: vec![BaselineFile {
+            path: "judge.sh".to_string(),
+            mode: "100755".to_string(),
+            digest: sha256_digest(PROTECTED_JUDGE_TEXT.as_bytes()),
+            bytes: PROTECTED_JUDGE_TEXT.len() as u64,
+            text: PROTECTED_JUDGE_TEXT.to_string(),
+        }],
+        commands: vec![PROTECTED_JUDGE_COMMAND.to_string()],
     }
 }
 
@@ -159,7 +183,18 @@ fn build_package(state_dir: &Path, spec: &Spec) -> TaskPackage {
         ));
     }
     let receipt = write_object(state_dir, b"{}");
-    let oracle = write_object(state_dir, b"oracle-answer");
+    // SF.6: the frozen `scope.oracle` is parsed as a `ProtectedEntry/v1`, so
+    // freeze a valid entry whose allowed/protected paths match the recorded
+    // scope (agreement holds on load).
+    let entry = ProtectedEntry {
+        task_id: spec.task_id.clone(),
+        repository_root: "agalma".to_string(),
+        base_sha: "a".repeat(40),
+        allowed_paths: spec.allowed.clone(),
+        protected_paths: spec.protected.clone(),
+        baseline: protected_baseline(),
+    };
+    let oracle = write_object(state_dir, &entry.freeze().expect("freeze protected oracle entry"));
 
     TaskPackage {
         format: TASK_PACKAGE_FORMAT.to_string(),

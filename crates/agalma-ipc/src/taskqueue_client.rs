@@ -22,9 +22,13 @@
 //! `TaskQueueClient` without changing any work/reconcile logic.
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::path::Path;
 
-use agalma_contracts::{ClaimEvidence, ContractError, ReadyTasks, Task, TaskId, TaskQueueApi};
+use agalma_contracts::{
+    ClaimEvidence, ContractError, EpicReviewAdmission, ReadyTasks, ReviewAdmissionContext, Task,
+    TaskId, TaskQueueApi, REVIEW_ADMISSION_CAPABILITY,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -91,6 +95,14 @@ pub struct StatusParams {
     pub status: String,
 }
 
+/// Params for `review_admission` (SF.11): `{id, context}` where `context` is the
+/// admitted immutable design/base/candidate context.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReviewAdmissionParams {
+    pub id: String,
+    pub context: ReviewAdmissionContext,
+}
+
 /// The full task-queue operation surface: the frozen [`TaskQueueApi`] plus the
 /// projection operations introduced by the ledger-vs-bd reconcile (M1.6).
 ///
@@ -140,6 +152,12 @@ impl Drop for ConnectBackend {
 /// component server.
 pub struct TaskQueueClient {
     backend: RefCell<Backend>,
+    /// Capabilities the connected server advertised in its `READY` handshake.
+    ///
+    /// Empty means "unknown/none advertised"; `review_admission` fails closed
+    /// rather than calling a server that did not negotiate
+    /// [`REVIEW_ADMISSION_CAPABILITY`].
+    capabilities: BTreeSet<String>,
 }
 
 impl TaskQueueClient {
@@ -150,11 +168,24 @@ impl TaskQueueClient {
     }
 
     /// Connect to the task-queue server listening on `socket` over `wire`. Both
-    /// wires preserve the envelope semantics.
+    /// wires preserve the envelope semantics. No server capabilities are
+    /// supplied; use [`TaskQueueClient::connect_wire_with_capabilities`] to pass
+    /// the `READY` handshake capabilities for capability-gated methods.
     pub fn connect_wire(socket: &Path, wire: Wire) -> Result<TaskQueueClient, IpcError> {
+        TaskQueueClient::connect_wire_with_capabilities(socket, wire, BTreeSet::new())
+    }
+
+    /// Connect to the task-queue server listening on `socket` over `wire`,
+    /// recording the server's advertised `capabilities`.
+    pub fn connect_wire_with_capabilities(
+        socket: &Path,
+        wire: Wire,
+        capabilities: BTreeSet<String>,
+    ) -> Result<TaskQueueClient, IpcError> {
         match wire {
             Wire::Framed => Ok(TaskQueueClient {
                 backend: RefCell::new(Backend::Framed(Client::connect(socket)?)),
+                capabilities,
             }),
             Wire::Connect => {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -167,17 +198,24 @@ impl TaskQueueClient {
                         runtime: Some(runtime),
                         client,
                     })),
+                    capabilities,
                 })
             }
         }
     }
 
     /// Build a client from an already-connected transport (used by the process
-    /// supervisor after the `READY` handshake).
+    /// supervisor after the `READY` handshake). No capabilities are recorded.
     pub fn from_client(client: Client) -> TaskQueueClient {
         TaskQueueClient {
             backend: RefCell::new(Backend::Framed(client)),
+            capabilities: BTreeSet::new(),
         }
+    }
+
+    /// Whether the connected server advertised `capability`.
+    pub fn supports(&self, capability: &str) -> bool {
+        self.capabilities.contains(capability)
     }
 
     fn call<R: DeserializeOwned>(
@@ -188,7 +226,10 @@ impl TaskQueueClient {
         match &mut *self.backend.borrow_mut() {
             Backend::Framed(client) => client.call_typed(method, params).map_err(map_ipc_error),
             Backend::Connect(backend) => crate::block_on_nested(
-                backend.runtime.as_ref().expect("runtime present until drop"),
+                backend
+                    .runtime
+                    .as_ref()
+                    .expect("runtime present until drop"),
                 backend.client.call_typed(method, params),
             )
             .map_err(map_ipc_error),
@@ -252,6 +293,26 @@ impl TaskQueueApi for TaskQueueClient {
             &LabelParams {
                 id: id.clone(),
                 label: label.to_string(),
+            },
+        )
+    }
+
+    fn review_admission(
+        &self,
+        epic_id: &str,
+        context: &ReviewAdmissionContext,
+    ) -> Result<EpicReviewAdmission, ContractError> {
+        if !self.supports(REVIEW_ADMISSION_CAPABILITY) {
+            return Err(ContractError::UnsupportedCapability(format!(
+                "task-queue server does not advertise {REVIEW_ADMISSION_CAPABILITY}; \
+                 automated review admission is denied"
+            )));
+        }
+        self.call(
+            "review_admission",
+            &ReviewAdmissionParams {
+                id: epic_id.to_string(),
+                context: context.clone(),
             },
         )
     }
@@ -324,5 +385,28 @@ mod tests {
     fn taskqueue_client_is_a_send_taskqueue_ops() {
         fn assert_seam<T: TaskQueueOps + Send + 'static>() {}
         assert_seam::<TaskQueueClient>();
+    }
+
+    /// `review_admission` params match the frozen
+    /// `{id, context: {design, base_sha, candidate_sha}}` wire shape.
+    #[test]
+    fn review_admission_params_match_the_frozen_wire_shape() {
+        use agalma_contracts::PackageArtifactRef;
+
+        let params = ReviewAdmissionParams {
+            id: "rev-e".to_string(),
+            context: ReviewAdmissionContext {
+                design: PackageArtifactRef::new("bd:rev-e:design", b"design", "text/plain"),
+                base_sha: "a".repeat(40),
+                candidate_sha: "b".repeat(40),
+            },
+        };
+        let value = serde_json::to_value(&params).expect("encode");
+        assert_eq!(value["id"], "rev-e");
+        let context = &value["context"];
+        assert_eq!(context["design"]["path"], "bd:rev-e:design");
+        assert_eq!(context["design"]["media_type"], "text/plain");
+        assert_eq!(context["base_sha"], "a".repeat(40));
+        assert_eq!(context["candidate_sha"], "b".repeat(40));
     }
 }

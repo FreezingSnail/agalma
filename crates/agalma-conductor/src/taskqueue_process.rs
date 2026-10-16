@@ -27,8 +27,13 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use agalma_contracts::harness::StopEvidence;
-use agalma_contracts::{ClaimEvidence, ContractError, ReadyTasks, Task, TaskId, TaskQueueApi};
-use agalma_ipc::{CommandSpec, IssueProjection, TaskQueueClient, TaskQueueOps, Wire, WIRE_ENV};
+use agalma_contracts::{
+    ClaimEvidence, ContractError, EpicReviewAdmission, ReadyTasks, ReviewAdmissionContext, Task,
+    TaskId, TaskQueueApi,
+};
+use agalma_ipc::{
+    CommandSpec, IssueProjection, ServerInfo, TaskQueueClient, TaskQueueOps, Wire, WIRE_ENV,
+};
 use agalma_taskqueue::server::server_command;
 use agalma_taskqueue::BdTaskQueue;
 
@@ -101,6 +106,7 @@ pub struct TaskQueueProcess {
     socket: PathBuf,
     child: Child,
     wire: Wire,
+    info: ServerInfo,
     stopped: bool,
 }
 
@@ -145,11 +151,12 @@ impl TaskQueueProcess {
         timeout: Duration,
     ) -> Result<TaskQueueProcess, String> {
         let spec = spec.env(WIRE_ENV, wire.as_str());
-        let (guard, _info) = spawn_supervised(&spec, &program, &socket, timeout)?;
+        let (guard, info) = spawn_supervised(&spec, &program, &socket, timeout)?;
         Ok(TaskQueueProcess {
             socket,
             child: guard.into_child(),
             wire,
+            info,
             stopped: false,
         })
     }
@@ -169,9 +176,21 @@ impl TaskQueueProcess {
         self.wire
     }
 
-    /// Connect a fresh client to the running server over its wire.
+    /// The server identity (`READY` handshake), including advertised
+    /// capabilities.
+    pub fn info(&self) -> &ServerInfo {
+        &self.info
+    }
+
+    /// Connect a fresh client to the running server over its wire, recording the
+    /// server's advertised capabilities so capability-gated methods enforce them.
     pub fn client(&self) -> Result<TaskQueueClient, String> {
-        TaskQueueClient::connect_wire(&self.socket, self.wire).map_err(|e| e.to_string())
+        TaskQueueClient::connect_wire_with_capabilities(
+            &self.socket,
+            self.wire,
+            self.info.capabilities.clone(),
+        )
+        .map_err(|e| e.to_string())
     }
 
     /// Stop the server with `SIGTERM`/`SIGKILL` evidence. Idempotent.
@@ -286,6 +305,14 @@ impl TaskQueueApi for TaskQueueHandle {
     fn add_label(&mut self, id: &TaskId, label: &str) -> Result<(), ContractError> {
         self.backend_mut().add_label(id, label)
     }
+
+    fn review_admission(
+        &self,
+        epic_id: &str,
+        context: &ReviewAdmissionContext,
+    ) -> Result<EpicReviewAdmission, ContractError> {
+        self.backend().review_admission(epic_id, context)
+    }
 }
 
 impl TaskQueueOps for TaskQueueHandle {
@@ -311,20 +338,14 @@ mod tests {
         // Absent -> Process (post-B1-F3 default); explicit `in-process` overrides;
         // an unknown value keeps the default.
         std::env::remove_var(TRANSPORT_ENV);
-        assert_eq!(
-            TaskQueueTransport::from_env(),
-            TaskQueueTransport::Process
-        );
+        assert_eq!(TaskQueueTransport::from_env(), TaskQueueTransport::Process);
         std::env::set_var(TRANSPORT_ENV, "in-process");
         assert_eq!(
             TaskQueueTransport::from_env(),
             TaskQueueTransport::InProcess
         );
         std::env::set_var(TRANSPORT_ENV, "bogus");
-        assert_eq!(
-            TaskQueueTransport::from_env(),
-            TaskQueueTransport::Process
-        );
+        assert_eq!(TaskQueueTransport::from_env(), TaskQueueTransport::Process);
         std::env::remove_var(TRANSPORT_ENV);
     }
 

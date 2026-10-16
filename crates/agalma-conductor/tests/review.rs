@@ -428,9 +428,14 @@ fn repeated_drift_exhausts_the_budget_and_escalates_to_a_human() {
     let (epic, _base) = landed_epic(&scratch, "Stubborn epic");
 
     // Two prior drift attempts already recorded (two drift-fix tasks + counter):
-    // this pass is the third and exhausts the budget.
-    scratch.create_drift_fix(&epic);
-    scratch.create_drift_fix(&epic);
+    // this pass is the third and exhausts the budget. Model the historical
+    // rework as completed — SF.11 admits an epic only when every projected child
+    // is closed, so the two prior rework children are closed before this final
+    // review (their count and the escalation budget are unchanged).
+    let prior_fix_0 = scratch.create_drift_fix(&epic);
+    let prior_fix_1 = scratch.create_drift_fix(&epic);
+    scratch.bd_ok(&["close", &prior_fix_0, "--reason", "historical drift fixed"]);
+    scratch.bd_ok(&["close", &prior_fix_1, "--reason", "historical drift fixed"]);
     scratch.bd_ok(&["update", &epic, "--add-label", "review-attempts:2"]);
 
     let reviewer = ScriptedReviewer::new("REVIEW: DRIFT still wrong");

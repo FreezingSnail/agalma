@@ -1,10 +1,14 @@
 # Self-mutation standup bead index
 
-Updated 2026-10-12. Exact contracts: [revision 1](self-mutation-contracts.md).
+Updated 2026-10-16. Exact contracts: [revision 1](self-mutation-contracts.md).
 Shared architecture/context: [standup](self-mutation-standup.md).
 Design gate: `agalma-fjq`; [design receipt](self-mutation-design-receipt.json).
-The 28 first-tranche implementation children are staged, decomposition-approved
-and deferred to 2099. Design validation is separate from execution release.
+The 28 first-tranche implementation children were staged and decomposition-approved
+at the design audit. Current delivery: SF.1–SF.9 and SF.11 are delivered after
+implementation review; SF.10 remains open. HP and SM children remain
+open behind prerequisites and individual human execution-approval gates.
+The 2026-10-15 amendment (`agalma-aig`) replaced sentinel approval deferrals with
+those gates. Design validation and open status are separate from execution release.
 
 Sequence: SF -> HP -> first SM tranche. M2 additionally blocks its MX extensions
 epic; SF.11 prevents premature epic review while prerequisites remain open.
@@ -70,7 +74,8 @@ epic; SF.11 prevents premature epic review while prerequisites remain open.
 All seven real plan-checks passed (61 children total); the dependency graph has
 no cycles. Each child has explicit ownership, behavioral acceptance, versioned
 context, a valid factory intake fence, rich Flash handoff and a direct design-gate
-blocker. All remain deferred. The offline contract audit checks 19 positive
+blocker. All were deferred at that audit; current delivery and release status
+are summarized above. The offline contract audit checks 19 positive
 records, seven rejected records, four canonical vectors, artifact digests,
 complete snapshot field coverage and the exact fake request reservation.
 No production implementation, task release or paid run is claimed by this plan.

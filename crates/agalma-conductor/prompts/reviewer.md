@@ -12,12 +12,15 @@ from the epic design/acceptance and the merged diff handed to you.
 The conductor hands you the inputs as **files** (never inline in this prompt).
 The per-epic prompt that references them lists the exact paths:
 
-- the **epic design/acceptance** — read it with `bd show <epic> --json
-  --include-comments` (the exact epic id is in the per-epic prompt);
+- the **admitted review snapshot** (`admission.json`) — the pinned epic graph,
+  its decision, and the blocking prerequisites;
+- the **source definition** (`definition.json`) and the **epic design/acceptance**
+  (`design.txt`) — the immutable inputs the admitted snapshot hashes;
 - the **merged diff** (`diff.patch`) — the change from the epic's start commit
   to the integrated head.
 
-Read both before answering.
+Read them before answering. The admitted snapshot is authoritative: review
+against the supplied definition/design, and do not substitute live backlog state.
 
 ## Rules
 

@@ -67,7 +67,11 @@ pub use task_package::{
     UnknownUsage, TASK_PACKAGE_FAMILY, TASK_PACKAGE_FORMAT,
 };
 pub use taskqueue::{
-    ClaimEvidence, ReadyTasks, SkipReason, SkippedIssue, Task, TaskFamily, TaskPriority,
-    TaskQueueApi,
+    admission_definition_canonical, admission_definition_digest, blocking_prerequisite_ids,
+    decide_review_admission, normalize_children, normalize_edges, AdmissionChild, AdmissionEdge,
+    AdmissionEdgeType, ClaimEvidence, EpicReviewAdmission, ReadyTasks, ReviewAdmissionContext,
+    ReviewAdmissionDecision, SkipReason, SkippedIssue, Task, TaskFamily, TaskPriority,
+    TaskQueueApi, ADMISSION_STAGED_LABEL, EPIC_REVIEW_ADMISSION_FORMAT,
+    REVIEW_ADMISSION_CAPABILITY,
 };
 pub use workspace::{ChangeKind, Checkout, FileChange, MergeReceipt, WorkspaceApi};

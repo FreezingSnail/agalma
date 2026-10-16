@@ -1,6 +1,7 @@
 # Self-hosting roadmap
 
-Planning snapshot 2026-10-12. The path is reliable self-build -> hub plugins -> measured
+Planning snapshot 2026-10-12; delivery status refreshed 2026-10-16.
+The path is reliable self-build -> hub plugins -> measured
 prompt/skill improvement -> remaining M2 services -> M3 operation -> P1 core
 autonomy. Exact first-tranche contracts are in
 [self-mutation-contracts.md](self-mutation-contracts.md); later implementation
@@ -12,10 +13,10 @@ The original architecture milestone requirements remain in force.
 | Area | Observed state | Required successor |
 |---|---|---|
 | M0/B0/M1, replaceable B1 seams and Connect transport | Existing delivery/evidence; isolated boundary parity does not establish every production binding | CV production service convergence |
-| Harness readiness/socket path/process default | `agalma-qww`, `agalma-acs`, `agalma-3ej`, `agalma-ud1` closed | Reuse receipts; SF.9 uses the real current path |
-| Planning pipeline | CP implementation landed; `agalma-i5h.7` closed for authored/validated/staged decomposition | SF.10 fresh goal through execution/review/closure; SF.11 prerequisite-aware review |
-| TUI | `agalma-3kr` closed; duplicate pilot reconciled with 38 passing focused tests | HP.6 dynamic plugin content; SF.4 durable cancellation |
-| Reliable self-build | Missing immutable inputs, protected oracle, settled cancellation, fail-closed stop and pre-request spending admission | SF, `agalma-5fy`, 11 staged tasks |
+| Harness readiness/socket path/process default | `agalma-qww`, `agalma-acs`, `agalma-3ej`, `agalma-ud1` closed; reused by SF.9 | Retain receipts for the SF.10 pipeline proof |
+| Planning pipeline | CP implementation landed; `agalma-i5h.7` closed for authored/validated/staged decomposition; SF.11 prerequisite-aware review/closure delivered | SF.10 fresh goal through execution/review/closure |
+| TUI | `agalma-3kr` closed; duplicate pilot reconciled with 38 passing focused tests; SF.4 durable cancellation delivered | HP.6 dynamic plugin content |
+| Reliable self-build | SF.1–SF.9 and SF.11 delivered, including protected scripted self-build/recovery evidence and prerequisite-aware review/closure; paid/live Flash evidence remains unproven | SF.10 fresh pipeline proof under `agalma-5fy`, after its remaining prerequisites and execution approval |
 | Independently installed plugins | Common platform is planned, not implemented | HP, `agalma-jmr`, 8 staged tasks |
 | Measured first mutation | User selected builder prompts/context skills first, task success with regression/spending limits | SM, `agalma-cg9`, 9 staged tasks |
 | Remaining M2 | Nerve/context/repair, memory, model onboarding and evaluated deciders remain required | MX, `agalma-xlw`, 8 staged tasks |
@@ -33,6 +34,12 @@ explicit operator releases and implementation reviews are recorded in bd and
 [the batch handoff](opencode-parallel-batch-1.md); this planning snapshot does not
 override their current status. Later MX/CV/M3/P1 work also blocks
 on `agalma-16k`, which freezes those seams against actual HP/SM runtime evidence.
+The 2026-10-15 approval amendment (`agalma-aig`) replaced sentinel approval
+deferrals with open tasks and direct native human execution-approval gates.
+Explicit human release resolves the task-specific gate; open status, cleared
+dates, and decomposition approval do not authorize execution. SF.11 was
+implemented by DeepSeek Flash and accepted after Sol review. SF.10 remains open;
+SF.11 delivery does not release it or close the SF epic.
 See [standup beads](self-mutation-standup-beads.md) and
 [later roadmap beads](self-mutation-roadmap-beads.md) for exact IDs/dependencies.
 

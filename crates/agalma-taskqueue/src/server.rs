@@ -13,10 +13,10 @@
 //! serve loop needs no async runtime (mirroring the reference harness and
 //! workspace servers, not the Tokio-based sandbox/OpenCode servers).
 
-use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use agalma_contracts::REVIEW_ADMISSION_CAPABILITY;
 use agalma_ipc::{register_taskqueue, CommandSpec, Server, ServerInfo, Wire};
 
 use crate::BdTaskQueue;
@@ -35,13 +35,19 @@ pub const IMPL_VERSION: &str = "bd/v1";
 pub const BD_ENV: &str = "AGALMA_TASKQUEUE_BD";
 
 /// Identity announced in the `READY` handshake line.
+///
+/// Advertises [`REVIEW_ADMISSION_CAPABILITY`]: this `bd`-backed server computes
+/// the prerequisite-aware review admission projection, so a client may call
+/// `review_admission` against it.
 pub fn server_info() -> ServerInfo {
     ServerInfo {
         api: API_NAME.to_string(),
         api_version: API_VERSION,
         impl_name: IMPL_NAME.to_string(),
         impl_version: IMPL_VERSION.to_string(),
-        capabilities: BTreeSet::new(),
+        capabilities: [REVIEW_ADMISSION_CAPABILITY.to_string()]
+            .into_iter()
+            .collect(),
     }
 }
 

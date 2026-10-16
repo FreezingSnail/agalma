@@ -11,17 +11,20 @@
 //! Servers bind under `target/test-runs/` — never `/tmp`.
 
 use std::collections::BTreeSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use agalma_contracts::{
-    ClaimEvidence, ContractError, ReadyTasks, SkipReason, SkippedIssue, Task, TaskFamily, TaskId,
-    TaskPriority, TaskQueueApi,
+    AdmissionChild, ClaimEvidence, ContractError, EpicReviewAdmission, PackageArtifactRef,
+    ReadyTasks, ReviewAdmissionContext, ReviewAdmissionDecision, SkipReason, SkippedIssue, Task,
+    TaskFamily, TaskId, TaskPriority, TaskQueueApi, EPIC_REVIEW_ADMISSION_FORMAT,
+    REVIEW_ADMISSION_CAPABILITY,
 };
 use agalma_ipc::server::{Server, ServerInfo};
 use agalma_ipc::taskqueue_server::{register_taskqueue, serve_taskqueue};
 use agalma_ipc::{IssueProjection, TaskQueueClient, TaskQueueOps, Wire};
-use agalma_testkit::{retry_connect, ScratchDir};
+use agalma_testkit::{retry_connect, ScratchConfig, ScratchDir};
 
 /// A deterministic stub task queue: no bd, no clock; operations mutate in-memory
 /// state so the projection reflects them.
@@ -115,6 +118,34 @@ impl TaskQueueApi for StubQueue {
         self.labels.push(label.to_string());
         Ok(())
     }
+
+    fn review_admission(
+        &self,
+        epic_id: &str,
+        context: &ReviewAdmissionContext,
+    ) -> Result<EpicReviewAdmission, ContractError> {
+        let mut record = EpicReviewAdmission {
+            format: EPIC_REVIEW_ADMISSION_FORMAT.to_string(),
+            epic_id: epic_id.to_string(),
+            definition_digest: format!("sha256:{}", "0".repeat(64)),
+            design: context.design.clone(),
+            base_sha: context.base_sha.clone(),
+            candidate_sha: context.candidate_sha.clone(),
+            children: vec![AdmissionChild {
+                id: "tq-1".to_string(),
+                definition_digest: format!("sha256:{}", "1".repeat(64)),
+                status: "closed".to_string(),
+                labels: vec!["staged".to_string()],
+            }],
+            edges: Vec::new(),
+            decision: ReviewAdmissionDecision::Eligible,
+            blocking_ids: Vec::new(),
+            observed_at_unix_ms: 1,
+            input_digest: String::new(),
+        };
+        record.input_digest = record.compute_input_digest()?;
+        Ok(record)
+    }
 }
 
 impl TaskQueueOps for StubQueue {
@@ -157,8 +188,20 @@ fn taskqueue_info() -> ServerInfo {
     }
 }
 
+/// A capable server identity advertising `review-admission/v1`.
+fn capable_taskqueue_info() -> ServerInfo {
+    let mut info = taskqueue_info();
+    info.capabilities
+        .insert(REVIEW_ADMISSION_CAPABILITY.to_string());
+    info
+}
+
 fn spawn_taskqueue_server(socket: PathBuf, wire: Wire) {
-    let mut server = Server::new(taskqueue_info());
+    spawn_taskqueue_server_info(socket, wire, taskqueue_info());
+}
+
+fn spawn_taskqueue_server_info(socket: PathBuf, wire: Wire, info: ServerInfo) {
+    let mut server = Server::new(info);
     register_taskqueue(&mut server, StubQueue::new());
     std::thread::spawn(move || {
         let _ = serve_taskqueue(server, &socket, wire);
@@ -175,6 +218,66 @@ fn wait_for_socket(socket: &Path) {
         std::thread::sleep(Duration::from_millis(10));
     }
     panic!("server never bound {}", socket.display());
+}
+
+fn now_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
+
+/// A short repository-local socket root whose physical bytes are retained under
+/// the configured (persistent) run root.
+///
+/// macOS `SUN_LEN` (~104 bytes) overflows for the long worktree/bead paths, so —
+/// mirroring the established testkit short-alias pattern — a short symlink under
+/// the shared `target/test-runs` points at the long retained root, and sockets
+/// bind through the short alias. Evidence still lands physically under the
+/// persistent root.
+fn short_socket_root(tag: &str) -> PathBuf {
+    use std::os::unix::fs::symlink;
+    let physical_root = ScratchConfig::from_env()
+        .expect("scratch config")
+        .root()
+        .to_path_buf();
+    let physical = physical_root.join(format!("{tag}-{}-{}", std::process::id(), now_nanos()));
+    fs::create_dir_all(&physical).expect("create physical socket root");
+
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let worktree = manifest
+        .parent()
+        .and_then(Path::parent)
+        .expect("crate lives under <root>/crates/");
+    let is_worktree = worktree
+        .parent()
+        .and_then(Path::file_name)
+        .map(|n| n == "worktrees")
+        .unwrap_or(false);
+    let alias_base = if is_worktree {
+        worktree
+            .parent()
+            .and_then(Path::parent)
+            .expect("shared cargo target")
+            .join("test-runs")
+    } else {
+        physical_root
+    };
+    fs::create_dir_all(&alias_base).expect("create alias base");
+
+    let pid = std::process::id();
+    for attempt in 0..64u32 {
+        let candidate = alias_base.join(format!("tq{pid}-{attempt}"));
+        match symlink(&physical, &candidate) {
+            Ok(()) => return candidate,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => panic!("create socket alias {}: {e}", candidate.display()),
+        }
+    }
+    panic!(
+        "socket alias allocation exhausted under {}",
+        alias_base.display()
+    );
 }
 
 /// Drive the stub through every operation and render a timing/ID-free
@@ -202,9 +305,9 @@ fn run_stub_scenario(mut client: TaskQueueClient) -> Vec<String> {
 
 #[test]
 fn taskqueue_api_over_connect_matches_framed() {
-    let dir = ScratchDir::new("ipcx-taskqueue");
-    let framed_socket = dir.join("framed.sock");
-    let connect_socket = dir.join("connect.sock");
+    let root = short_socket_root("ipcx-taskqueue");
+    let framed_socket = root.join("framed.sock");
+    let connect_socket = root.join("connect.sock");
 
     spawn_taskqueue_server(framed_socket.clone(), Wire::Framed);
     spawn_taskqueue_server(connect_socket.clone(), Wire::Connect);
@@ -227,4 +330,83 @@ fn taskqueue_connect_missing_socket_is_unavailable() {
         .err()
         .expect("connect to a missing socket must fail");
     assert!(err.is_unavailable(), "expected Unavailable, got {err:?}");
+}
+
+fn review_admission_context() -> ReviewAdmissionContext {
+    ReviewAdmissionContext {
+        design: PackageArtifactRef::new("bd:tq-e:design", b"stub design", "text/plain"),
+        base_sha: "a".repeat(40),
+        candidate_sha: "b".repeat(40),
+    }
+}
+
+#[test]
+fn review_admission_roundtrips_over_both_wires_with_semantic_parity() {
+    let root = short_socket_root("ipcx-taskqueue-admission");
+    let framed_socket = root.join("framed.sock");
+    let connect_socket = root.join("connect.sock");
+
+    let caps = capable_taskqueue_info().capabilities;
+    spawn_taskqueue_server_info(
+        framed_socket.clone(),
+        Wire::Framed,
+        capable_taskqueue_info(),
+    );
+    spawn_taskqueue_server_info(
+        connect_socket.clone(),
+        Wire::Connect,
+        capable_taskqueue_info(),
+    );
+    wait_for_socket(&framed_socket);
+    wait_for_socket(&connect_socket);
+
+    let framed = retry_connect(|| {
+        TaskQueueClient::connect_wire_with_capabilities(&framed_socket, Wire::Framed, caps.clone())
+    })
+    .expect("framed connect");
+    let connect = retry_connect(|| {
+        TaskQueueClient::connect_wire_with_capabilities(
+            &connect_socket,
+            Wire::Connect,
+            caps.clone(),
+        )
+    })
+    .expect("connect connect");
+
+    let context = review_admission_context();
+    let framed_record = framed.review_admission("tq-e", &context).expect("framed");
+    let connect_record = connect.review_admission("tq-e", &context).expect("connect");
+    // In-process reference: the same stub called directly.
+    let local_record = StubQueue::new()
+        .review_admission("tq-e", &context)
+        .expect("in-process");
+
+    assert_eq!(framed_record, connect_record, "wire parity");
+    assert_eq!(
+        framed_record, local_record,
+        "semantic parity with in-process"
+    );
+    framed_record.verify_integrity().expect("integrity");
+}
+
+#[test]
+fn review_admission_denied_on_an_unsupported_peer() {
+    let root = short_socket_root("ipcx-taskqueue-admission-old");
+    let socket = root.join("old.sock");
+    // An old/incapable server: no `review-admission/v1` advertised.
+    spawn_taskqueue_server_info(socket.clone(), Wire::Framed, taskqueue_info());
+    wait_for_socket(&socket);
+
+    let client = retry_connect(|| {
+        TaskQueueClient::connect_wire_with_capabilities(&socket, Wire::Framed, BTreeSet::new())
+    })
+    .expect("connect");
+
+    let err = client
+        .review_admission("tq-e", &review_admission_context())
+        .expect_err("an unsupported peer must deny review admission");
+    assert!(
+        matches!(err, ContractError::UnsupportedCapability(_)),
+        "expected UnsupportedCapability, got {err:?}"
+    );
 }

@@ -8,11 +8,17 @@
 //! and runs with `current_dir(workspace)`, so a test or conductor can never
 //! accidentally read or write a different repository's real backlog.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::Command;
 
+use agalma_contracts::PackageArtifactRef;
 use agalma_contracts::{
-    ClaimEvidence, ContractError, ReadyTasks, SkipReason, SkippedIssue, Task, TaskId, TaskQueueApi,
+    admission_definition_canonical, admission_definition_digest, blocking_prerequisite_ids,
+    decide_review_admission, normalize_children, normalize_edges, AdmissionChild, AdmissionEdge,
+    AdmissionEdgeType, ClaimEvidence, ContractError, EpicReviewAdmission, ReadyTasks,
+    ReviewAdmissionContext, ReviewAdmissionDecision, SkipReason, SkippedIssue, Task, TaskId,
+    TaskQueueApi, EPIC_REVIEW_ADMISSION_FORMAT,
 };
 use agalma_ipc::IssueProjection;
 use serde::Deserialize;
@@ -77,6 +83,25 @@ pub struct EpicRecord {
     pub id: String,
     pub title: String,
     pub labels: Vec<String>,
+}
+
+/// The immutable review source of an epic (SF.11): its canonical
+/// source-definition digest and its design artifact reference.
+///
+/// The conductor uses [`BdTaskQueue::review_source`] to build the admitted
+/// [`ReviewAdmissionContext`] and to verify the supplied design reference still
+/// matches the live source definition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewSource {
+    /// The epic's immutable source-definition digest.
+    pub definition_digest: String,
+    /// The exact canonical-json/v1 definition bytes whose SHA-256 is
+    /// `definition_digest`.
+    pub definition_canonical: String,
+    /// The epic's design artifact reference (path `bd:<id>:design`).
+    pub design: PackageArtifactRef,
+    /// The exact design bytes whose SHA-256 is `design.digest`.
+    pub design_text: String,
 }
 
 /// A dependency edge on an issue, as `bd show --json` reports it.
@@ -224,7 +249,11 @@ impl ApprovalState {
 /// [`ApprovalState::Missing`], more than one is [`ApprovalState::Conflicting`],
 /// and a single non-matching approval association is [`ApprovalState::Malformed`]
 /// — all fail closed.
-pub fn approval_state(child_id: &str, blockers: &[String], gates: &[ApprovalGate]) -> ApprovalState {
+pub fn approval_state(
+    child_id: &str,
+    blockers: &[String],
+    gates: &[ApprovalGate],
+) -> ApprovalState {
     let associated: Vec<&ApprovalGate> = gates
         .iter()
         .filter(|gate| blockers.iter().any(|blocker| blocker == &gate.id))
@@ -341,6 +370,253 @@ impl BdTaskQueue {
         Ok(issue.into_definition())
     }
 
+    /// The epic's immutable review source (SF.11): canonical source-definition
+    /// digest plus design artifact reference. Used by the conductor to build the
+    /// admitted context and to verify a supplied design reference still matches
+    /// the live source.
+    pub fn review_source(&self, epic_id: &str) -> Result<ReviewSource, ContractError> {
+        let (issue, _value) = self.show_issue_parts(epic_id)?;
+        source_from_issue(&issue)
+    }
+
+    /// Compute the prerequisite-aware epic review admission projection (SF.11).
+    ///
+    /// Reads the complete current source/children/edge projection, echoes the
+    /// caller's admitted immutable context, and computes the deterministic
+    /// decision. Missing/unknown/ambiguous graph data, duplicate edge identities,
+    /// a mismatched design context, and a reachable `blocks` cycle all fail
+    /// closed.
+    pub fn review_admission(
+        &self,
+        epic_id: &str,
+        context: &ReviewAdmissionContext,
+    ) -> Result<EpicReviewAdmission, ContractError> {
+        let mut malformed = false;
+        let (issue, value) = self.show_issue_parts(epic_id)?;
+        let source = source_from_issue(&issue)?;
+
+        // Required projection data: the dependency projection must be complete
+        // (`dependency_count` present, and the `dependencies` array length must
+        // match it). Native bd reports `dependency_count=0` and omits the array
+        // for a known-empty graph, which is accepted.
+        if !dependency_projection_complete(&value) {
+            malformed = true;
+        }
+
+        // Complete child set, normalized by id. Native bd omits `labels` for a
+        // genuinely unlabeled issue, which is the documented known-empty set;
+        // malformed explicit labels and non-issue rows are rejected by the typed
+        // parse. Duplicate identities are rejected rather than silently dropped.
+        let child_values = parse_value_array(&self.bd_ok(&[
+            "list", "--parent", epic_id, "--all", "--json", "--limit", "0",
+        ])?)?;
+        let mut child_rows: Vec<BdIssue> = Vec::with_capacity(child_values.len());
+        for child_value in &child_values {
+            let child: BdIssue = serde_json::from_value(child_value.clone()).map_err(|e| {
+                ContractError::KnownFailure(format!(
+                    "child projection for {epic_id}: invalid JSON: {e}"
+                ))
+            })?;
+            child_rows.push(child);
+        }
+        child_rows.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut children: Vec<AdmissionChild> = Vec::with_capacity(child_rows.len());
+        let mut last_id: Option<&str> = None;
+        for child in &child_rows {
+            if last_id == Some(child.id.as_str()) {
+                malformed = true; // duplicate child identity
+            }
+            last_id = Some(child.id.as_str());
+            let definition_digest = admission_definition_digest(
+                &child.id,
+                &child.title,
+                &child.description,
+                child.design.as_deref(),
+                child.acceptance_criteria.as_deref(),
+            )?;
+            let mut labels = child.labels.clone().unwrap_or_default();
+            labels.sort();
+            children.push(AdmissionChild {
+                id: child.id.clone(),
+                definition_digest,
+                status: child.status.clone(),
+                labels,
+            });
+        }
+
+        // Direct edges from the epic. Only `blocks` gates review; `tracks` and
+        // parent-child edges are carried but ignored. An unknown edge kind, an
+        // empty target, a self-block, a duplicate edge identity (even an
+        // identical row), and a `blocks` edge with an unknown observed status
+        // all deny.
+        let mut edges: Vec<AdmissionEdge> = Vec::new();
+        let mut block_targets: Vec<String> = Vec::new();
+        let mut seen_edges: BTreeSet<(String, String)> = BTreeSet::new();
+        for edge in issue.dependencies.as_deref().unwrap_or_default() {
+            if edge.aliases_conflict() {
+                malformed = true; // ambiguous target/type identity
+                continue;
+            }
+            let Some(target) = edge.target().map(str::to_string) else {
+                malformed = true;
+                continue;
+            };
+            if target.is_empty() {
+                malformed = true;
+                continue;
+            }
+            let Some(edge_type) = edge.edge_kind().and_then(AdmissionEdgeType::parse) else {
+                malformed = true;
+                continue;
+            };
+            if edge_type == AdmissionEdgeType::Blocks && target == epic_id {
+                malformed = true; // cycle: the epic blocks itself
+                continue;
+            }
+            let observed_status = edge.status.clone();
+            if edge_type == AdmissionEdgeType::Blocks && observed_status.is_none() {
+                malformed = true; // unknown/missing prerequisite target
+            }
+            if !seen_edges.insert((edge_type.as_str().to_string(), target.clone())) {
+                malformed = true; // duplicate edge identity
+                continue;
+            }
+            if edge_type == AdmissionEdgeType::Blocks {
+                block_targets.push(target.clone());
+            }
+            edges.push(AdmissionEdge {
+                target_id: target,
+                edge_type,
+                observed_status,
+            });
+        }
+
+        // Bounded reachable-cycle detection over the `blocks` graph. A read
+        // failure on a reachable node is unknown graph data and denies.
+        if !malformed && self.has_blocks_cycle(epic_id, &block_targets) {
+            malformed = true;
+        }
+
+        let children = normalize_children(&children);
+        let edges = normalize_edges(&edges);
+        let blocking_ids = blocking_prerequisite_ids(&edges);
+        // The design reference must name this epic and match the live source.
+        let expected_path = format!("bd:{epic_id}:design");
+        if context.design.path != expected_path {
+            malformed = true; // wrong source identity
+        }
+        let context_matches = source.design == context.design;
+
+        let mut decision = decide_review_admission(&children, &edges, malformed);
+        if !malformed && !context_matches {
+            decision = ReviewAdmissionDecision::Stale;
+        }
+
+        let mut record = EpicReviewAdmission {
+            format: EPIC_REVIEW_ADMISSION_FORMAT.to_string(),
+            epic_id: epic_id.to_string(),
+            definition_digest: source.definition_digest,
+            design: context.design.clone(),
+            base_sha: context.base_sha.clone(),
+            candidate_sha: context.candidate_sha.clone(),
+            children,
+            edges,
+            decision,
+            blocking_ids,
+            observed_at_unix_ms: now_unix_ms(),
+            input_digest: String::new(),
+        };
+        record.input_digest = record.compute_input_digest()?;
+        Ok(record)
+    }
+
+    /// Read one issue via `bd show <id> --json` together with its raw JSON value
+    /// (used to distinguish an absent projection field from a known-empty one).
+    fn show_issue_parts(&self, id: &str) -> Result<(BdIssue, Value), ContractError> {
+        let stdout = self.bd_ok(&["show", id, "--json"])?;
+        let value = parse_first_value(&stdout)?;
+        let issue: BdIssue = serde_json::from_value(value.clone()).map_err(|e| {
+            ContractError::KnownFailure(format!("issue {id}: invalid projection: {e}"))
+        })?;
+        if issue.id != id {
+            return Err(ContractError::KnownFailure(format!(
+                "issue alias conflict: requested {id}, read {}",
+                issue.id
+            )));
+        }
+        Ok((issue, value))
+    }
+
+    /// The `blocks` edge targets of `id`, requiring the dependency projection to
+    /// be complete (so a missing/short graph read is denied, not treated as an
+    /// empty leaf).
+    fn blocks_targets_of(&self, id: &str) -> Result<Vec<String>, ContractError> {
+        let (issue, value) = self.show_issue_parts(id)?;
+        if !dependency_projection_complete(&value) {
+            return Err(ContractError::KnownFailure(format!(
+                "issue {id}: incomplete dependency projection"
+            )));
+        }
+        let mut targets = Vec::new();
+        for edge in issue.dependencies.as_deref().unwrap_or_default() {
+            if edge.aliases_conflict() {
+                return Err(ContractError::KnownFailure(format!(
+                    "issue {id}: ambiguous dependency target/type identity"
+                )));
+            }
+            let target = edge.target().ok_or_else(|| {
+                ContractError::KnownFailure(format!("issue {id}: dependency without a target"))
+            })?;
+            match edge.edge_kind().and_then(AdmissionEdgeType::parse) {
+                Some(AdmissionEdgeType::Blocks) => targets.push(target.to_string()),
+                Some(_) => {}
+                None => {
+                    return Err(ContractError::KnownFailure(format!(
+                        "issue {id}: unknown dependency kind"
+                    )))
+                }
+            }
+        }
+        Ok(targets)
+    }
+
+    /// Whether the `blocks` graph reachable from `epic_id` (starting at
+    /// `first_targets`) contains a cycle. Bounded; an unreadable reachable node
+    /// is treated as a cycle (fail closed).
+    fn has_blocks_cycle(&self, epic_id: &str, first_targets: &[String]) -> bool {
+        const MAX_NODES: usize = 4096;
+        // 1 = on the current stack (gray), 2 = fully explored (black).
+        let mut color: BTreeMap<String, u8> = BTreeMap::new();
+        color.insert(epic_id.to_string(), 1);
+        let mut count = 1usize;
+        let mut stack: Vec<(String, Vec<String>, usize)> =
+            vec![(epic_id.to_string(), first_targets.to_vec(), 0)];
+        while let Some((node, targets, index)) = stack.pop() {
+            if index < targets.len() {
+                let target = targets[index].clone();
+                stack.push((node, targets, index + 1));
+                match color.get(&target).copied() {
+                    Some(1) => return true, // back edge into the current stack
+                    Some(_) => {}           // already explored (a DAG join)
+                    None => {
+                        count += 1;
+                        if count > MAX_NODES {
+                            return true; // unbounded graph: deny
+                        }
+                        color.insert(target.clone(), 1);
+                        match self.blocks_targets_of(&target) {
+                            Ok(next) => stack.push((target, next, 0)),
+                            Err(_) => return true, // unreadable node: deny
+                        }
+                    }
+                }
+            } else {
+                color.insert(node, 2);
+            }
+        }
+        false
+    }
+
     /// Set an issue's status. `closed` goes through `bd close` (which records a
     /// reason); every other status is a direct `bd update --status`.
     pub fn set_status(&mut self, id: &TaskId, status: &str) -> Result<(), ContractError> {
@@ -364,7 +640,9 @@ impl BdTaskQueue {
         &self,
         parent: &str,
     ) -> Result<Vec<crate::decomp::ChildTask>, ContractError> {
-        let stdout = self.bd_ok(&["list", "--parent", parent, "--all", "--json", "--limit", "0"])?;
+        let stdout = self.bd_ok(&[
+            "list", "--parent", parent, "--all", "--json", "--limit", "0",
+        ])?;
         Ok(parse_issues(&stdout)?
             .into_iter()
             .map(BdIssue::into_child_task)
@@ -445,7 +723,10 @@ impl BdTaskQueue {
                 // the other) are both kept, so the exact-one rule sees a conflict
                 // and fails closed rather than letting a stale record silently
                 // win.
-                if gates.iter().any(|existing| existing.same_observation(&gate)) {
+                if gates
+                    .iter()
+                    .any(|existing| existing.same_observation(&gate))
+                {
                     continue;
                 }
                 gates.push(gate);
@@ -598,6 +879,14 @@ impl TaskQueueApi for BdTaskQueue {
         self.bd_ok(&["update", id.as_str(), "--add-label", label])?;
         Ok(())
     }
+
+    fn review_admission(
+        &self,
+        epic_id: &str,
+        context: &ReviewAdmissionContext,
+    ) -> Result<EpicReviewAdmission, ContractError> {
+        BdTaskQueue::review_admission(self, epic_id, context)
+    }
 }
 
 struct BdOutput {
@@ -633,6 +922,10 @@ struct BdDependency {
     /// Edge kind from the nested show shape (`dependency_type`).
     #[serde(default)]
     dependency_type: Option<String>,
+    /// Observed target status from the nested show shape (`status`). Absent in
+    /// the list shape and when the target is unknown.
+    #[serde(default)]
+    status: Option<String>,
 }
 
 impl BdDependency {
@@ -644,6 +937,26 @@ impl BdDependency {
     /// The edge kind, whichever shape supplied it.
     fn edge_kind(&self) -> Option<&str> {
         self.kind.as_deref().or(self.dependency_type.as_deref())
+    }
+
+    /// Whether the two alias fields disagree, so the edge identity is ambiguous.
+    ///
+    /// A raw row carrying both alias fields with different values (e.g. a
+    /// `tracks`/`blocks` kind conflict, or two different target ids) must be
+    /// rejected rather than resolved by the legacy preference order — otherwise
+    /// a blocking edge could be silently reclassified as non-blocking.
+    fn aliases_conflict(&self) -> bool {
+        if let (Some(a), Some(b)) = (self.depends_on_id.as_deref(), self.id.as_deref()) {
+            if a != b {
+                return true;
+            }
+        }
+        if let (Some(a), Some(b)) = (self.kind.as_deref(), self.dependency_type.as_deref()) {
+            if a != b {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -882,6 +1195,47 @@ impl BdIssue {
     }
 }
 
+/// The epic's immutable review source derived from its live issue record.
+fn source_from_issue(issue: &BdIssue) -> Result<ReviewSource, ContractError> {
+    let design_text = issue
+        .design
+        .clone()
+        .unwrap_or_else(|| issue.description.clone());
+    let design = PackageArtifactRef::new(
+        format!("bd:{}:design", issue.id),
+        design_text.as_bytes(),
+        "text/plain",
+    );
+    let definition_canonical = admission_definition_canonical(
+        &issue.id,
+        &issue.title,
+        &issue.description,
+        issue.design.as_deref(),
+        issue.acceptance_criteria.as_deref(),
+    )?;
+    let definition_digest = admission_definition_digest(
+        &issue.id,
+        &issue.title,
+        &issue.description,
+        issue.design.as_deref(),
+        issue.acceptance_criteria.as_deref(),
+    )?;
+    Ok(ReviewSource {
+        definition_digest,
+        definition_canonical,
+        design,
+        design_text,
+    })
+}
+
+/// Current Unix time in milliseconds (0 on a pre-epoch clock; never panics).
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Parse a bd JSON payload that is either an array of issues or a single issue.
 fn parse_issues(stdout: &str) -> Result<Vec<BdIssue>, ContractError> {
     let trimmed = stdout.trim();
@@ -894,6 +1248,47 @@ fn parse_issues(stdout: &str) -> Result<Vec<BdIssue>, ContractError> {
     let one: BdIssue = serde_json::from_str(trimmed)
         .map_err(|e| ContractError::KnownFailure(format!("cannot parse bd JSON: {e}")))?;
     Ok(vec![one])
+}
+
+/// Parse a bd payload that is either an array of objects or a single object,
+/// returned as raw JSON values (preserving absent-vs-null field distinctions).
+fn parse_value_array(stdout: &str) -> Result<Vec<Value>, ContractError> {
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    if let Ok(values) = serde_json::from_str::<Vec<Value>>(trimmed) {
+        return Ok(values);
+    }
+    let one: Value = serde_json::from_str(trimmed)
+        .map_err(|e| ContractError::KnownFailure(format!("cannot parse bd JSON: {e}")))?;
+    Ok(vec![one])
+}
+
+/// Parse the first object of a bd payload (array or single), preserving raw
+/// field presence.
+fn parse_first_value(stdout: &str) -> Result<Value, ContractError> {
+    parse_value_array(stdout)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| ContractError::KnownFailure("bd returned no issue".to_string()))
+}
+
+/// Whether a `bd show` payload carries a complete dependency projection.
+///
+/// Native bd reports `dependency_count=0` and omits the `dependencies` array for
+/// a known-empty graph (accepted). A missing count, a non-numeric count, a
+/// count>0 with an omitted/null array, a non-array value, or an array whose
+/// length does not match the count is an incomplete/unknown graph and denies.
+fn dependency_projection_complete(value: &Value) -> bool {
+    let Some(count) = value.get("dependency_count").and_then(Value::as_u64) else {
+        return false;
+    };
+    match value.get("dependencies") {
+        None | Some(Value::Null) => count == 0,
+        Some(Value::Array(items)) => items.len() as u64 == count,
+        Some(_) => false,
+    }
 }
 
 #[cfg(test)]
@@ -940,6 +1335,7 @@ mod tests {
                 id: None,
                 kind: Some("blocks".to_string()),
                 dependency_type: None,
+                status: None,
             })
             .collect();
         BdIssue {
@@ -954,7 +1350,10 @@ mod tests {
         ApprovalGate {
             id: id.to_string(),
             approval_for: Some(for_.to_string()),
-            labels: vec![HUMAN_LABEL.to_string(), EXECUTION_APPROVAL_LABEL.to_string()],
+            labels: vec![
+                HUMAN_LABEL.to_string(),
+                EXECUTION_APPROVAL_LABEL.to_string(),
+            ],
             issue_type: Some("gate".to_string()),
             await_type: Some("human".to_string()),
             resolved,
@@ -998,21 +1397,17 @@ mod tests {
     #[test]
     fn staged_child_needs_validator_approval_and_a_resolved_native_gate() {
         // Never validated: hidden even with a resolved gate.
-        assert!(!blocked(&[STAGED_LABEL], &["g"]).is_ready_candidate(&[native_gate("g", "x", true)]));
+        assert!(
+            !blocked(&[STAGED_LABEL], &["g"]).is_ready_candidate(&[native_gate("g", "x", true)])
+        );
         // Approved but gate-orphaned (no association): hidden.
         assert!(!with_labels(&[STAGED_LABEL, DECOMP_APPROVED_LABEL]).is_ready_candidate(&[]));
         // Approved, gate present but unresolved: hidden.
-        assert!(!blocked(
-            &[STAGED_LABEL, DECOMP_APPROVED_LABEL],
-            &["g"]
-        )
-        .is_ready_candidate(&[native_gate("g", "x", false)]));
+        assert!(!blocked(&[STAGED_LABEL, DECOMP_APPROVED_LABEL], &["g"])
+            .is_ready_candidate(&[native_gate("g", "x", false)]));
         // Approved + exactly one resolved native gate: ready.
-        assert!(blocked(
-            &[STAGED_LABEL, DECOMP_APPROVED_LABEL],
-            &["g"]
-        )
-        .is_ready_candidate(&[native_gate("g", "x", true)]));
+        assert!(blocked(&[STAGED_LABEL, DECOMP_APPROVED_LABEL], &["g"])
+            .is_ready_candidate(&[native_gate("g", "x", true)]));
         // Rejected alongside approval: still hidden.
         assert!(!blocked(
             &[STAGED_LABEL, DECOMP_APPROVED_LABEL, DECOMP_REJECTED_LABEL],
@@ -1026,10 +1421,8 @@ mod tests {
         let approved = || blocked(&[STAGED_LABEL, DECOMP_APPROVED_LABEL], &["g1", "g2"]);
 
         // Two associated gates: ambiguous ⇒ hidden.
-        assert!(!approved().is_ready_candidate(&[
-            native_gate("g1", "x", true),
-            native_gate("g2", "x", true),
-        ]));
+        assert!(!approved()
+            .is_ready_candidate(&[native_gate("g1", "x", true), native_gate("g2", "x", true),]));
 
         // approval_for names a different task: malformed ⇒ hidden.
         let mut wrong_target = blocked(&[STAGED_LABEL, DECOMP_APPROVED_LABEL], &["g"]);
@@ -1100,12 +1493,13 @@ mod tests {
         let mut unrelated = native_gate("dep", "x", false);
         unrelated.labels = Vec::new();
         unrelated.approval_for = None;
-        let child = blocked(
-            &[STAGED_LABEL, DECOMP_APPROVED_LABEL],
-            &["g", "dep"],
-        );
+        let child = blocked(&[STAGED_LABEL, DECOMP_APPROVED_LABEL], &["g", "dep"]);
         assert_eq!(
-            approval_state("x", &child.blocks_targets(), &[native_gate("g", "x", true), unrelated]),
+            approval_state(
+                "x",
+                &child.blocks_targets(),
+                &[native_gate("g", "x", true), unrelated]
+            ),
             ApprovalState::Resolved,
             "an unrelated native prerequisite gate is not an approval association"
         );
@@ -1360,7 +1754,11 @@ mod tests {
                 "seed={SEED:#x} case={case} spec={spec:?} (replay: rerun with the same seed)"
             );
             // Determinism: a pure predicate must return the same result twice.
-            assert_eq!(ready, issue.is_ready_candidate(&gates), "idempotent case={case}");
+            assert_eq!(
+                ready,
+                issue.is_ready_candidate(&gates),
+                "idempotent case={case}"
+            );
         }
     }
 
@@ -1404,7 +1802,10 @@ mod tests {
             definition.comments,
             vec!["handoff one".to_string(), "handoff two".to_string()]
         );
-        assert_eq!(definition.acceptance_criteria.as_deref(), Some("Acceptance text."));
+        assert_eq!(
+            definition.acceptance_criteria.as_deref(),
+            Some("Acceptance text.")
+        );
         assert_eq!(definition.design.as_deref(), Some("Design text."));
         assert_eq!(definition.notes.as_deref(), Some("Notes text."));
         assert_eq!(definition.title, "T");
@@ -1434,4 +1835,3 @@ mod tests {
         assert_eq!(child.depends_on, vec!["dep.1".to_string()]);
     }
 }
-

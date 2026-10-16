@@ -45,14 +45,18 @@
 //! [`review_epics`] takes a `&dyn ReviewerSession`, so tests script the
 //! reviewer (approve, drift, or emit no marker) without touching the harness.
 
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 
 use agalma_contracts::ids::ArtifactRef;
-use agalma_contracts::{ContractError, OperationId, TaskFamily, TaskId, TaskQueueApi};
-use agalma_taskqueue::{BdTaskQueue, EpicRecord, HUMAN_LABEL, STAGED_LABEL};
-use serde::Deserialize;
+use agalma_contracts::{
+    canonical_json, sha256_digest, ContractError, EpicReviewAdmission, OperationId,
+    ReviewAdmissionContext, ReviewAdmissionDecision, TaskFamily, TaskId, TaskQueueApi,
+};
+use agalma_taskqueue::{BdTaskQueue, ReviewSource, HUMAN_LABEL};
 use serde_json::Value;
 
 use crate::routing;
@@ -186,6 +190,12 @@ pub struct ReviewReport {
     pub errored: Vec<String>,
     /// Epics left under an active review hold (drift or error).
     pub held: Vec<String>,
+    /// Epics waiting on an open blocking prerequisite (no reviewer dispatched,
+    /// no drift mutation, no retry charge).
+    pub review_waiting: Vec<String>,
+    /// Epics whose admitted inputs changed between dispatch and approval: the
+    /// stale admission was recorded without closing the epic.
+    pub stale: Vec<String>,
 }
 
 /// The epic label recording attempt `n`.
@@ -306,9 +316,85 @@ pub fn review_epics_with_stop(
             report.stopped = true;
             break;
         }
-        let children = read_children(repo, &epic.id)?;
-        if !is_review_candidate(&epic, &children) {
+        // A human-escalated epic is owned by a human.
+        if epic.labels.iter().any(|l| l == HUMAN_LABEL) {
             continue;
+        }
+        // Reconcile a partially-applied approval (the label landed but closure
+        // did not): never strand an open epic that already passed review, and
+        // close only from its exact durable approved admission identity.
+        if epic.labels.iter().any(|l| l == REVIEW_APPROVED_LABEL) {
+            match reconcile_approved_close(state_dir, repo, &mut queue, &epic.id) {
+                Ok(true) => {}
+                Ok(false) => eprintln!(
+                    "agalma: review gate: approved epic {} could not be reconciled to closure \
+                     (missing/changed approval identity); leaving open",
+                    epic.id
+                ),
+                Err(err) => eprintln!(
+                    "agalma: review gate: approval reconciliation for {}: {err}",
+                    epic.id
+                ),
+            }
+            continue;
+        }
+
+        let Some(head) = head_sha(repo)? else {
+            eprintln!(
+                "agalma: review gate: epic {} has no HEAD commit to review",
+                epic.id
+            );
+            continue;
+        };
+        let start_label = review_start_sha(&epic.labels);
+
+        // Prerequisite-aware admission (SF.11): build the admitted immutable
+        // context from the live source and the recorded diff baseline, then let
+        // the queue adapter compute the deterministic decision.
+        let admitted = match admit(
+            &queue,
+            &epic.id,
+            start_label.clone().unwrap_or_default(),
+            head.clone(),
+        ) {
+            Ok(admitted) => admitted,
+            Err(err) => {
+                eprintln!(
+                    "agalma: review gate: admission denied for {}: {err}",
+                    epic.id
+                );
+                continue;
+            }
+        };
+        if let Err(err) = admitted.admission.verify_integrity() {
+            eprintln!(
+                "agalma: review gate: admission integrity failed for {}: {err}",
+                epic.id
+            );
+            report.stale.push(epic.id.clone());
+            continue;
+        }
+        match admitted.admission.decision {
+            ReviewAdmissionDecision::Eligible => {}
+            ReviewAdmissionDecision::WaitingPrerequisite => {
+                // An open blocking prerequisite: wait. No reviewer is dispatched,
+                // no drift verdict/task/hold is created, and no attempt is charged.
+                // Any previously recorded genuine drift is left untouched.
+                eprintln!(
+                    "agalma: review gate: epic {} waiting on prerequisite(s) {:?}; no review",
+                    epic.id, admitted.admission.blocking_ids
+                );
+                report.review_waiting.push(epic.id.clone());
+                continue;
+            }
+            other => {
+                // Incomplete/empty/unavailable/stale: not a paid-review candidate.
+                eprintln!(
+                    "agalma: review gate: epic {} not admitted ({other:?}); no review",
+                    epic.id
+                );
+                continue;
+            }
         }
         report.epics_seen.push(epic.id.clone());
 
@@ -326,7 +412,7 @@ pub fn review_epics_with_stop(
 
         // A review without a recorded baseline cannot diff against the design;
         // fail safe (hold) rather than approve on an empty diff.
-        let Some(start) = review_start_sha(&epic.labels) else {
+        let Some(start) = start_label else {
             eprintln!(
                 "agalma: review gate: epic {} has no review-start baseline; holding",
                 epic.id
@@ -364,17 +450,60 @@ pub fn review_epics_with_stop(
             }
         };
 
-        let Some(head) = head_sha(repo)? else {
+        let attempt = next_attempt(&queue, &epic.id)?;
+
+        // Re-admit immediately before charging the attempt and dispatching: any
+        // intervening operation that changed the graph, children, or source
+        // denies without a paid call or a new attempt.
+        let dispatch_admission = match admit(&queue, &epic.id, start.clone(), head.clone()) {
+            Ok(next) => next,
+            Err(err) => {
+                eprintln!(
+                    "agalma: review gate: re-admission denied for {}: {err}",
+                    epic.id
+                );
+                report.stale.push(epic.id.clone());
+                continue;
+            }
+        };
+        if let Err(err) = dispatch_admission.admission.verify_integrity() {
             eprintln!(
-                "agalma: review gate: epic {} has no HEAD commit to review",
+                "agalma: review gate: dispatch admission integrity failed for {}: {err}",
                 epic.id
             );
+            report.stale.push(epic.id.clone());
             continue;
-        };
+        }
+        if !dispatch_admission.admission.decision.is_eligible()
+            || !dispatch_admission.admission.blocking_ids.is_empty()
+            || !admitted
+                .admission
+                .semantic_inputs_equal(&dispatch_admission.admission)
+        {
+            eprintln!(
+                "agalma: review gate: admitted inputs changed before dispatch for {}; not dispatching",
+                epic.id
+            );
+            report.stale.push(epic.id.clone());
+            continue;
+        }
+
+        // Persist the exact admitted record and the exact source/design bytes it
+        // pins, under an immutable per-attempt path, then reference them in the
+        // reviewer input. The reviewer is assigned the pinned snapshot, not live
+        // backlog state.
+        let artifacts =
+            write_admission_snapshot(state_dir, &epic.id, attempt, &dispatch_admission)?;
         let diff = git_diff(repo, &start, &head)?;
-        let prompt_path = write_review_prompt(state_dir, repo, &epic.id, &start, &head, &diff)?;
-        let key = sanitize(&epic.id);
-        let diff_path = state_dir.join("review").join(&key).join("diff.patch");
+        let prompt_path = write_review_prompt(
+            repo,
+            &epic.id,
+            &start,
+            &head,
+            &diff,
+            &artifacts,
+            &dispatch_admission.admission,
+        )?;
         let request = ReviewRequest {
             epic: epic.id.clone(),
             repo: repo.to_path_buf(),
@@ -383,7 +512,7 @@ pub fn review_epics_with_stop(
             prompt_path,
             start_sha: start,
             head_sha: head,
-            diff_path,
+            diff_path: artifacts.diff_path.clone(),
         };
 
         // Stop gate immediately before the paid dispatch and the attempt-label
@@ -401,7 +530,6 @@ pub fn review_epics_with_stop(
             "agalma: review gate: reviewing {} (model {})",
             epic.id, route.model
         );
-        let attempt = next_attempt(&queue, &epic.id)?;
         queue.add_label(&TaskId::new(&epic.id), &attempts_label(attempt))?;
         match reviewer.run(&request) {
             Ok(output) => {
@@ -420,6 +548,56 @@ pub fn review_epics_with_stop(
                     break;
                 }
                 match parse_verdict(&output) {
+                    // Approval is rechecked against the live graph before the
+                    // epic is closed: a design/child/edge edit between dispatch
+                    // and approval invalidates the admitted input identity and
+                    // records a stale admission without closing.
+                    Ok(ReviewVerdict::Approved) => match recheck_admission(
+                        repo,
+                        &queue,
+                        &epic.id,
+                        &dispatch_admission.admission,
+                    ) {
+                        Ok(()) => {
+                            // Persist the durable approved admission identity
+                            // before the terminal label/closure, so a crash
+                            // before closure is reconciled from the exact
+                            // reviewed inputs rather than a live re-read.
+                            if let Err(err) = persist_approved_snapshot(
+                                state_dir,
+                                &epic.id,
+                                &dispatch_admission.admission,
+                            ) {
+                                eprintln!(
+                                    "agalma: review gate: cannot persist approved identity for \
+                                     {}: {err}; not closing",
+                                    epic.id
+                                );
+                                report.stale.push(epic.id.clone());
+                            } else {
+                                apply_verdict(
+                                    &mut queue,
+                                    &epic.id,
+                                    attempt,
+                                    &request.start_sha,
+                                    ReviewVerdict::Approved,
+                                    &mut report,
+                                )?;
+                            }
+                        }
+                        Err(reason) => {
+                            eprintln!(
+                                "agalma: review gate: stale admission for {} (approved verdict \
+                                 not applied): {reason}",
+                                epic.id
+                            );
+                            queue.comment(
+                                &TaskId::new(&epic.id),
+                                &format!("review-stale: {reason} (not closed)"),
+                            )?;
+                            report.stale.push(epic.id.clone());
+                        }
+                    },
                     Ok(verdict) => apply_verdict(
                         &mut queue,
                         &epic.id,
@@ -449,29 +627,290 @@ pub fn review_epics_with_stop(
     Ok(report)
 }
 
-/// Whether the epic is a review candidate: at least one `staged` child, every
-/// staged child closed (the decomposition fully landed), not yet approved, and
-/// not escalated to a human. Rework (`drift-fix`) children are bookkeeping and
-/// never gate completion.
-fn is_review_candidate(epic: &EpicRecord, children: &[ChildStatus]) -> bool {
-    let staged: Vec<&ChildStatus> = children
-        .iter()
-        .filter(|child| child.labels.iter().any(|l| l == STAGED_LABEL))
-        .collect();
-    if staged.is_empty() {
-        return false;
+/// A live [`ReviewSource`] paired with the admission record computed from it.
+struct AdmittedReview {
+    source: ReviewSource,
+    admission: EpicReviewAdmission,
+}
+
+/// Read the live source and compute a fresh admission record for `epic`.
+fn admit(
+    queue: &BdTaskQueue,
+    epic: &str,
+    base_sha: String,
+    candidate_sha: String,
+) -> Result<AdmittedReview, ContractError> {
+    let source = queue.review_source(epic)?;
+    let context = ReviewAdmissionContext {
+        design: source.design.clone(),
+        base_sha,
+        candidate_sha,
+    };
+    let admission = queue.review_admission(epic, &context)?;
+    Ok(AdmittedReview { source, admission })
+}
+
+/// The persisted, immutable per-attempt admission snapshot paths.
+struct AdmissionSnapshot {
+    admission_path: PathBuf,
+    definition_path: PathBuf,
+    design_path: PathBuf,
+    diff_path: PathBuf,
+}
+
+/// Persist the admitted record plus the exact source/definition and design bytes
+/// whose digests it pins, under `review/<epic>/attempts/<attempt>/`.
+///
+/// Every artifact is written create-new (an existing byte-identical file is
+/// reused, a differing file is refused rather than overwritten), verified
+/// against the record digest, and the record must round-trip with a valid
+/// `input_digest`.
+fn write_admission_snapshot(
+    state_dir: &Path,
+    epic: &str,
+    attempt: usize,
+    admitted: &AdmittedReview,
+) -> Result<AdmissionSnapshot, ContractError> {
+    let dir = state_dir
+        .join("review")
+        .join(sanitize(epic))
+        .join("attempts")
+        .join(attempt.to_string());
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        ContractError::KnownFailure(format!("cannot create review dir {}: {e}", dir.display()))
+    })?;
+    let admission_path = dir.join("admission.json");
+    let definition_path = dir.join("definition.json");
+    let design_path = dir.join("design.txt");
+    let diff_path = dir.join("diff.patch");
+
+    let record = admitted.admission.clone();
+    let admission_bytes = admission_record_bytes(&record)?;
+
+    // The persisted definition/design bytes must hash to the record's digests.
+    let definition = admitted.source.definition_canonical.as_bytes();
+    if sha256_digest(definition) != record.definition_digest {
+        return Err(ContractError::KnownFailure(format!(
+            "admission {epic}: definition bytes do not match definition_digest"
+        )));
     }
-    if !staged.iter().all(|child| child.status == "closed") {
-        return false;
+    let design = admitted.source.design_text.as_bytes();
+    if sha256_digest(design) != record.design.digest || design.len() as u64 != record.design.bytes {
+        return Err(ContractError::KnownFailure(format!(
+            "admission {epic}: design bytes do not match the design artifact reference"
+        )));
     }
-    if epic
-        .labels
-        .iter()
-        .any(|l| l == REVIEW_APPROVED_LABEL || l == HUMAN_LABEL)
-    {
-        return false;
+
+    write_new_or_match(&definition_path, definition)?;
+    write_new_or_match(&design_path, design)?;
+    write_new_or_match(&admission_path, &admission_bytes)?;
+
+    // The persisted record must re-verify and round-trip.
+    let written = std::fs::read(&admission_path).map_err(|e| {
+        ContractError::KnownFailure(format!("read {}: {e}", admission_path.display()))
+    })?;
+    let parsed: EpicReviewAdmission = serde_json::from_slice(&written).map_err(|e| {
+        ContractError::KnownFailure(format!("parse persisted admission {epic}: {e}"))
+    })?;
+    parsed.verify_integrity()?;
+    if parsed != record {
+        return Err(ContractError::KnownFailure(format!(
+            "persisted admission {epic} does not round-trip"
+        )));
     }
-    true
+
+    Ok(AdmissionSnapshot {
+        admission_path,
+        definition_path,
+        design_path,
+        diff_path,
+    })
+}
+
+/// Create `path` with `bytes`, or accept an existing byte-identical file.
+///
+/// Refuses to overwrite different content so an interrupted retry that reuses an
+/// attempt directory preserves the previous immutable artifacts.
+fn write_new_or_match(path: &Path, bytes: &[u8]) -> Result<(), ContractError> {
+    match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(mut file) => {
+            file.write_all(bytes).map_err(|e| {
+                ContractError::KnownFailure(format!("write {}: {e}", path.display()))
+            })?;
+            let _ = file.sync_all();
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = std::fs::read(path).map_err(|e| {
+                ContractError::KnownFailure(format!("read {}: {e}", path.display()))
+            })?;
+            if existing == bytes {
+                Ok(())
+            } else {
+                Err(ContractError::KnownFailure(format!(
+                    "refusing to overwrite immutable review artifact {}",
+                    path.display()
+                )))
+            }
+        }
+        Err(e) => Err(ContractError::KnownFailure(format!(
+            "create {}: {e}",
+            path.display()
+        ))),
+    }
+}
+
+/// Canonical JSON bytes of an admission record with a recomputed input digest.
+fn admission_record_bytes(record: &EpicReviewAdmission) -> Result<Vec<u8>, ContractError> {
+    let mut record = record.clone();
+    record.input_digest = record.compute_input_digest()?;
+    record.verify_integrity()?;
+    let value = serde_json::to_value(&record).map_err(|e| {
+        ContractError::KnownFailure(format!("encode admission {}: {e}", record.epic_id))
+    })?;
+    Ok(canonical_json(&value)?.into_bytes())
+}
+
+/// The durable path of an epic's approved admission identity.
+pub fn approved_snapshot_path(state_dir: &Path, epic: &str) -> PathBuf {
+    state_dir
+        .join("review")
+        .join(sanitize(epic))
+        .join("approved.json")
+}
+
+/// Persist an epic's approved admission identity.
+///
+/// Create-new: a byte-identical existing record is accepted (idempotent retry);
+/// a differing record is refused so an approved identity is never replaced.
+pub fn persist_approved_snapshot(
+    state_dir: &Path,
+    epic: &str,
+    record: &EpicReviewAdmission,
+) -> Result<(), ContractError> {
+    let path = approved_snapshot_path(state_dir, epic);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            ContractError::KnownFailure(format!(
+                "cannot create approved snapshot dir {}: {e}",
+                parent.display()
+            ))
+        })?;
+    }
+    let bytes = admission_record_bytes(record)?;
+    write_new_or_match(&path, &bytes)
+}
+
+/// Read an epic's durable approved admission identity; `None` when absent.
+///
+/// A present but unparsable or integrity-failing record is an error, so closure
+/// can never be inferred from a label without a verifiable approval identity.
+pub fn read_approved_snapshot(
+    state_dir: &Path,
+    epic: &str,
+) -> Result<Option<EpicReviewAdmission>, ContractError> {
+    let path = approved_snapshot_path(state_dir, epic);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| ContractError::KnownFailure(format!("read {}: {e}", path.display())))?;
+    let record: EpicReviewAdmission = serde_json::from_str(&text).map_err(|e| {
+        ContractError::KnownFailure(format!("parse approved admission {epic}: {e}"))
+    })?;
+    record.verify_integrity()?;
+    Ok(Some(record))
+}
+
+/// Reconcile an approved-but-open epic (a crash landed between the approval
+/// label and closure).
+///
+/// Closes only when the epic's *durable approved admission identity* verifies
+/// and is semantically equivalent to fresh live inputs; a missing, corrupt, or
+/// changed identity denies and leaves the epic open.
+fn reconcile_approved_close(
+    state_dir: &Path,
+    repo: &Path,
+    queue: &mut BdTaskQueue,
+    epic: &str,
+) -> Result<bool, ContractError> {
+    let Some(approved) = read_approved_snapshot(state_dir, epic)? else {
+        return Ok(false);
+    };
+    let Some(head) = head_sha(repo)? else {
+        return Ok(false);
+    };
+    let labels = queue.projection(&TaskId::new(epic))?.labels;
+    let Some(start) = review_start_sha(&labels) else {
+        return Ok(false);
+    };
+    let fresh = admit(queue, epic, start, head)?;
+    if !fresh.admission.decision.is_eligible() || !fresh.admission.blocking_ids.is_empty() {
+        return Ok(false);
+    }
+    if !approved.semantic_inputs_equal(&fresh.admission) {
+        return Ok(false);
+    }
+    queue.remove_label(&TaskId::new(epic), REVIEW_DRIFT_LABEL)?;
+    queue.close_task(
+        &TaskId::new(epic),
+        "review-approved: reconciling an approval whose closure did not land",
+    )?;
+    queue.comment(
+        &TaskId::new(epic),
+        "review-closure-reconciled: approved epic closed",
+    )?;
+    Ok(true)
+}
+
+/// Re-run prerequisite-aware admission just before approval/closure and require
+/// it to still admit the epic on the same semantic inputs.
+///
+/// A fresh observation timestamp and equivalent row order are equal inputs; a
+/// changed design, base/candidate commit, child set, or blocking edge is not.
+/// Returns the stale reason when closure must be withheld.
+fn recheck_admission(
+    repo: &Path,
+    queue: &BdTaskQueue,
+    epic: &str,
+    admitted: &EpicReviewAdmission,
+) -> Result<(), String> {
+    let source = queue
+        .review_source(epic)
+        .map_err(|e| format!("source unavailable: {e}"))?;
+    let labels = queue
+        .projection(&TaskId::new(epic))
+        .map_err(|e| format!("projection unavailable: {e}"))?
+        .labels;
+    let start = review_start_sha(&labels).ok_or_else(|| "review baseline missing".to_string())?;
+    let head = head_sha(repo)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no HEAD commit".to_string())?;
+    let context = ReviewAdmissionContext {
+        design: source.design,
+        base_sha: start,
+        candidate_sha: head,
+    };
+    let fresh = queue
+        .review_admission(epic, &context)
+        .map_err(|e| format!("re-admission denied: {e}"))?;
+    fresh.verify_integrity().map_err(|e| format!("{e}"))?;
+    if !fresh.decision.is_eligible() {
+        return Err(format!(
+            "decision no longer eligible ({:?})",
+            fresh.decision
+        ));
+    }
+    if !fresh.blocking_ids.is_empty() {
+        return Err(format!(
+            "blocking prerequisites reopened: {:?}",
+            fresh.blocking_ids
+        ));
+    }
+    if !admitted.semantic_inputs_equal(&fresh) {
+        return Err("review inputs changed between dispatch and approval".to_string());
+    }
+    Ok(())
 }
 
 /// The next attempt number for `epic` (prior `drift-fix` tasks reconciled with
@@ -502,9 +941,17 @@ fn apply_verdict(
 ) -> Result<(), ContractError> {
     match verdict {
         ReviewVerdict::Approved => {
+            // Closure is the substantive terminal state. The approval label is
+            // written first so a crash before `close_task` leaves a visibly
+            // approved-but-open epic that the next pass reconciles
+            // ([`reconcile_approved_close`]); `close_task` is the terminal step.
             queue.remove_label(&TaskId::new(epic), REVIEW_DRIFT_LABEL)?;
             queue.add_label(&TaskId::new(epic), REVIEW_APPROVED_LABEL)?;
             queue.comment(
+                &TaskId::new(epic),
+                &format!("review-approved: diff since {start} matches the epic design/acceptance"),
+            )?;
+            queue.close_task(
                 &TaskId::new(epic),
                 &format!("review-approved: diff since {start} matches the epic design/acceptance"),
             )?;
@@ -644,44 +1091,97 @@ pub fn compose_reviewer_prompt(
         diff = diff_path.display()
     ));
     out.push_str(&format!(
-        "Read this epic's design/acceptance before deciding:\n\n\
-         ```\nbd show {epic} --json --include-comments\n```\n\n\
+        "Read this epic's design/acceptance from the inputs supplied with this \
+         prompt before deciding.\n\n\
          Review only `{epic}`. Emit exactly one `REVIEW:` marker line.\n"
     ));
     out
 }
 
-/// Write the composed per-epic reviewer prompt plus the merged diff under the
-/// state dir and return the prompt path. Canonicalizing keeps them readable by
-/// the harness whether it runs in-process or behind the process boundary.
+/// Compose a reviewer prompt whose input pins the admitted review snapshot.
+///
+/// The reviewer is assigned the persisted admitted record and the exact
+/// source/definition and design bytes it hashes (not live backlog state), plus
+/// the merged diff over the pinned base/candidate commits.
+fn reviewer_prompt_with_admission(
+    epic: &str,
+    repo: &Path,
+    start_sha: &str,
+    head_sha: &str,
+    diff_path: &Path,
+    artifacts: &AdmissionSnapshot,
+    admission: &EpicReviewAdmission,
+) -> String {
+    let mut out = String::from(crate::REVIEWER_PROMPT.trim_end());
+    out.push_str("\n\n## Input (this epic)\n\n");
+    out.push_str(&format!("epic: {epic}\n"));
+    out.push_str(&format!("repository: {repo}\n", repo = repo.display()));
+    out.push_str(&format!("diff baseline: {start_sha}\n"));
+    out.push_str(&format!("reviewed head: {head_sha}\n"));
+    out.push_str(&format!("merged diff: {}\n", diff_path.display()));
+    out.push_str(&format!(
+        "admitted review snapshot: {}\n",
+        artifacts.admission_path.display()
+    ));
+    out.push_str(&format!(
+        "admitted source definition: {} (digest {})\n",
+        artifacts.definition_path.display(),
+        admission.definition_digest
+    ));
+    out.push_str(&format!(
+        "admitted design/acceptance: {} (digest {}, {} bytes)\n",
+        artifacts.design_path.display(),
+        admission.design.digest,
+        admission.design.bytes
+    ));
+    out.push_str(&format!(
+        "admitted decision: {:?}; blocking prerequisites: {:?}\n",
+        admission.decision, admission.blocking_ids
+    ));
+    out.push_str(
+        "\n## Admitted snapshot (authoritative)\n\n\
+         The admitted review snapshot above pins this epic's graph, its immutable \
+         design, and the base/candidate commits reviewed. Review the merged diff \
+         against the admitted source definition and design; the pinned snapshot is \
+         authoritative — do not substitute live backlog state.\n\n",
+    );
+    out.push_str(&format!(
+        "Review only `{epic}`. Emit exactly one `REVIEW:` marker line.\n"
+    ));
+    out
+}
+
+/// Write the composed per-epic reviewer prompt plus the merged diff into the
+/// immutable per-attempt directory and return the prompt path.
+///
+/// Canonicalizing keeps them readable by the harness whether it runs in-process
+/// or behind the process boundary.
 fn write_review_prompt(
-    state_dir: &Path,
     repo: &Path,
     epic: &str,
     start_sha: &str,
     head_sha: &str,
     diff: &str,
+    artifacts: &AdmissionSnapshot,
+    admission: &EpicReviewAdmission,
 ) -> Result<PathBuf, ContractError> {
-    let key = sanitize(epic);
-    let dir = state_dir.join("review").join(&key);
-    std::fs::create_dir_all(&dir).map_err(|e| {
-        ContractError::KnownFailure(format!("cannot create review dir {}: {e}", dir.display()))
-    })?;
-    let diff_path = dir.join("diff.patch");
-    std::fs::write(&diff_path, diff).map_err(|e| {
-        ContractError::KnownFailure(format!(
-            "cannot write review diff {}: {e}",
-            diff_path.display()
-        ))
-    })?;
+    let dir = artifacts
+        .admission_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
     let prompt_path = dir.join("prompt.md");
-    let text = reviewer_prompt(epic, repo, start_sha, head_sha, &diff_path);
-    std::fs::write(&prompt_path, text).map_err(|e| {
-        ContractError::KnownFailure(format!(
-            "cannot write review prompt {}: {e}",
-            prompt_path.display()
-        ))
-    })?;
+    let text = reviewer_prompt_with_admission(
+        epic,
+        repo,
+        start_sha,
+        head_sha,
+        &artifacts.diff_path,
+        artifacts,
+        admission,
+    );
+    write_new_or_match(&artifacts.diff_path, diff.as_bytes())?;
+    write_new_or_match(&prompt_path, text.as_bytes())?;
     Ok(std::fs::canonicalize(&prompt_path).unwrap_or(prompt_path))
 }
 
@@ -750,43 +1250,6 @@ fn bd_parent(repo: &Path, task_id: &str) -> Result<Option<String>, ContractError
         .get("parent")
         .and_then(Value::as_str)
         .map(str::to_string))
-}
-
-/// One child as the review gate sees it (status + labels).
-#[derive(Clone, Debug, Deserialize)]
-struct ChildStatus {
-    status: String,
-    #[serde(default)]
-    labels: Vec<String>,
-}
-
-/// Read an epic's children (including deferred/staged ones) with their status
-/// via the `bd` CLI: `plan_children` drops status, which the gate needs.
-fn read_children(repo: &Path, epic: &str) -> Result<Vec<ChildStatus>, ContractError> {
-    let out = Command::new("bd")
-        .arg("--db")
-        .arg(repo.join(".beads"))
-        .args(["list", "--parent", epic, "--all", "--json", "--limit", "0"])
-        .current_dir(repo)
-        .env("BD_NON_INTERACTIVE", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .map_err(|e| ContractError::KnownFailure(format!("bd list --parent {epic}: {e}")))?;
-    if !out.status.success() {
-        return Err(ContractError::KnownFailure(format!(
-            "bd list --parent {epic} failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Ok(Vec::new());
-    }
-    let children: Vec<ChildStatus> = serde_json::from_str(trimmed).map_err(|e| {
-        ContractError::KnownFailure(format!("bd list --parent {epic}: invalid JSON: {e}"))
-    })?;
-    Ok(children)
 }
 
 // ---------------------------------------------------------------------------

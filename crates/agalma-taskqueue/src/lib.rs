@@ -22,10 +22,11 @@ use agalma_contracts::{ContractError, TaskId};
 
 pub use agalma_ipc::{IssueProjection, TaskQueueOps};
 pub use bd::{
-    approval_state, ApprovalGate, ApprovalState, BdTaskQueue, EpicRecord, TaskDefinition,
-    TaskDependency, APPROVAL_FOR_KEY, DECOMP_APPROVED_LABEL, DECOMP_ATTEMPTS_PREFIX,
-    DECOMP_ATTEMPT_PREFIX, DECOMP_FIX_LABEL, DECOMP_INFLIGHT_LABEL, DECOMP_REJECTED_LABEL,
-    DRIFT_FIX_LABEL, EXECUTION_APPROVAL_LABEL, HUMAN_LABEL, PARKED_LABEL, STAGED_LABEL,
+    approval_state, ApprovalGate, ApprovalState, BdTaskQueue, EpicRecord, ReviewSource,
+    TaskDefinition, TaskDependency, APPROVAL_FOR_KEY, DECOMP_APPROVED_LABEL,
+    DECOMP_ATTEMPTS_PREFIX, DECOMP_ATTEMPT_PREFIX, DECOMP_FIX_LABEL, DECOMP_INFLIGHT_LABEL,
+    DECOMP_REJECTED_LABEL, DRIFT_FIX_LABEL, EXECUTION_APPROVAL_LABEL, HUMAN_LABEL, PARKED_LABEL,
+    STAGED_LABEL,
 };
 pub use block::{parse_task_block, BlockError, TaskBlock};
 

@@ -16,7 +16,8 @@ use crate::connect::{serve_wire, Wire};
 use crate::harness_client::{decode_params, encode_result};
 use crate::server::Server;
 use crate::taskqueue_client::{
-    CloseParams, CommentParams, LabelParams, StatusParams, TaskCall, TaskQueueOps,
+    CloseParams, CommentParams, LabelParams, ReviewAdmissionParams, StatusParams, TaskCall,
+    TaskQueueOps,
 };
 
 /// Serve a task-queue [`Server`] over the selected wire transport (IPCX.5).
@@ -114,6 +115,14 @@ where
             encode_result(())
         });
     }
+    {
+        let shared = Arc::clone(&shared);
+        server.on("review_admission", move |params: Value| {
+            let call: ReviewAdmissionParams = decode_params(params)?;
+            let result = lock(&shared).review_admission(&call.id, &call.context)?;
+            encode_result(result)
+        });
+    }
 }
 
 /// Lock the shared queue, recovering a poisoned mutex into its inner value.
@@ -122,7 +131,7 @@ fn lock<S>(shared: &Arc<Mutex<S>>) -> std::sync::MutexGuard<'_, S> {
 }
 
 /// The task-queue operation names, in the order the server shares them.
-pub const TASKQUEUE_METHODS: [&str; 9] = [
+pub const TASKQUEUE_METHODS: [&str; 10] = [
     "ready_tasks",
     "get",
     "claim",
@@ -132,6 +141,7 @@ pub const TASKQUEUE_METHODS: [&str; 9] = [
     "projection",
     "set_status",
     "remove_label",
+    "review_admission",
 ];
 
 /// Assert the server has a handler for every task-queue operation.

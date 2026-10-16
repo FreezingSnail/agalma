@@ -130,6 +130,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "agalma-process"
+version = "0.1.0"
+dependencies = [
+ "agalma-contracts",
+ "tokio",
+]
+
+[[package]]
 name = "agalma-sandbox"
 version = "0.1.0"
 dependencies = [

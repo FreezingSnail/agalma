@@ -6,6 +6,7 @@ members = [
     "crates/agalma-ledger",
     "crates/agalma-execution",
     "crates/agalma-sandbox",
+    "crates/agalma-process",
     "crates/agalma-workspace",
     "crates/agalma-taskqueue",
     "crates/agalma-decision",

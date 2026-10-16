@@ -22,6 +22,7 @@ pub mod execution;
 pub mod harness;
 pub mod ids;
 pub mod ledger;
+pub mod process;
 pub mod sandbox;
 pub mod snapshot;
 pub mod task_package;
@@ -59,6 +60,7 @@ pub use ledger::{
     DispatchIntent, ExecutionEvent, ExecutionRecord, LedgerApi, OperationReceipt, TimerRecord,
     TimerState,
 };
+pub use process::{ProcessApi, ProcessChild, ProcessSpec};
 pub use sandbox::{LaunchSpec, SandboxApi, SandboxChild};
 pub use snapshot::{StateSnapshot, SNAPSHOT_FORMAT};
 pub use task_package::{

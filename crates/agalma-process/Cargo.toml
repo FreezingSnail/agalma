@@ -1,0 +1,14 @@
+[package]
+name = "agalma-process"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Agalma local process launcher (sandbox-removal P1): process-group launch, liveness, and evidence-backed termination without a confinement profile. Infrastructure crate — not an implementation crate."
+publish = false
+
+[dependencies]
+agalma-contracts = { path = "../agalma-contracts" }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

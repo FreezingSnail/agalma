@@ -44,6 +44,10 @@ Evidence must survive worktree removal and is never deleted without explicit use
 direction. After reviewed task changes are committed and merged into `main`,
 remove the clean task worktree as part of delivery, following the evidence checks
 in development-workflow.md. Preserve dirty or unmerged worktrees; no forced removal.
+Build that worktree with `CARGO_TARGET_DIR=target/worktree-caches/<bead>/target`
+so its cache stays outside the worktree, and reclaim the cache with
+`make sweep-apply` (or `make worktree-remove BEAD=<id>`) once the worktree is
+gone. `target/test-runs` is retained evidence and is never swept.
 
 Do not routinely run whole-crate or workspace suites before editing. A baseline
 is useful only to reproduce a concrete failure or satisfy required paired evidence;
@@ -59,11 +63,15 @@ the existing amendment authority; do not silently replace them.
 
 ## Current commands and an example
 
-Until the unified runner exists, use the documented focused Cargo entry point,
-selecting integration targets with `--test` and unit modules with `--lib` plus a
-filter. Multiple relevant integration targets in one crate can be selected in one
-invocation. This reduces scope but does not claim concurrent target execution.
-Keep Rust's existing case concurrency unless the selected cases require isolation.
+Until the unified runner exists, use the Makefile focused entry point,
+`make test-focused SELECTION='-p <crate> --test <target> [filter]'`
+(development-workflow.md), selecting integration targets with `--test` and unit
+modules with `--lib` plus a filter. The target runs the documented Cargo command
+and records the exact command line, raw log, and exit status under
+`target/test-runs/<bead>/<run-id>/` until `scripts/test.sh` exists. Multiple
+relevant integration targets in one crate can be selected in one invocation.
+This reduces scope but does not claim concurrent target execution. Keep Rust's
+existing case concurrency unless the selected cases require isolation.
 
 For SF.4 cancellation, retain the required conductor `sf_cancel` acceptance target.
 Candidate supporting kernel selections are `exec_api`, `transition`, and `recovery`

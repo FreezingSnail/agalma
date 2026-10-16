@@ -157,7 +157,7 @@ fn spawn_ledger_wire(state_dir: &Path, socket: &Path, wire: Wire) -> LedgerProce
 fn kernel_spec(socket: &Path, state_dir: &Path, ledger_socket: &Path) -> (CommandSpec, PathBuf) {
     match resolve_server_binary(agalma_kernel::server::SERVER_BIN) {
         Ok(bin) => (
-            execution_server_spec(socket, state_dir, ledger_socket, None),
+            execution_server_spec(socket, state_dir, ledger_socket),
             bin,
         ),
         Err(_) => {
@@ -227,7 +227,6 @@ fn kernel_server_child() {
         Path::new(&socket),
         Path::new(&state_dir),
         Path::new(&ledger_socket),
-        None,
     );
 }
 
@@ -256,7 +255,7 @@ fn live_process_smoke_execution_long_state_dir() {
     let ledger = ledger_socket(&state);
     let mut ledger_server = LedgerProcess::spawn(&state, READY_TIMEOUT)
         .unwrap_or_else(|e| panic!("production ledger spawn: {e}"));
-    let mut kernel = ExecutionProcess::spawn(&state, &ledger, None, READY_TIMEOUT)
+    let mut kernel = ExecutionProcess::spawn(&state, &ledger, READY_TIMEOUT)
         .unwrap_or_else(|e| panic!("production kernel spawn: {e}"));
     eprintln!(
         "execution smoke: binary={} state={} socket={} wire={} pid={}",

@@ -31,8 +31,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
 use agalma_contracts::{
-    CancellationSettlement, CancellationState, ContractError, ExecutionId, ExecutionPhase,
-    LaunchSpec, OperationId, SandboxApi, SandboxChild, StopEvidence, TaskId,
+    CancellationSettlement, CancellationState, ExecutionId, ExecutionPhase, OperationId, TaskId,
 };
 use agalma_kernel::{
     recover_pending, run_activity, ActivityDef, ActivityRegistry, Command, ExecState, Inputs,
@@ -44,6 +43,7 @@ use serde_json::json;
 
 use support::harness::{self, EffectJournal, RecordingActivity};
 use support::ops::JournalHandler;
+use support::process::{GoneLauncher, StubbornLauncher};
 
 /// Environment variable passing the parent's run directory to the crash child.
 const DIR_ENV: &str = "KERNEL_SF_CANCEL_DIR";
@@ -57,51 +57,6 @@ fn exec() -> ExecutionId {
 
 fn build_def() -> ActivityDef {
     ActivityDef::new("fake/build", "v1")
-}
-
-/// A sandbox whose processes are always already gone (confirms termination).
-struct GoneSandbox;
-
-impl SandboxApi for GoneSandbox {
-    fn launch(&mut self, _spec: LaunchSpec) -> Result<SandboxChild, ContractError> {
-        Err(ContractError::UnsupportedCapability(
-            "gone sandbox cannot launch".into(),
-        ))
-    }
-
-    fn alive(&self, _child: &SandboxChild) -> Result<bool, ContractError> {
-        Ok(false)
-    }
-
-    fn terminate(&mut self, _child: &SandboxChild) -> Result<StopEvidence, ContractError> {
-        Ok(StopEvidence {
-            process_group_gone: true,
-            detail: "already gone".to_string(),
-        })
-    }
-}
-
-/// A sandbox whose process stays alive and cannot be confirmed gone, so a
-/// cancellation with a recorded worker is `Settling` (unconfirmed termination).
-struct StubbornSandbox;
-
-impl SandboxApi for StubbornSandbox {
-    fn launch(&mut self, _spec: LaunchSpec) -> Result<SandboxChild, ContractError> {
-        Err(ContractError::UnsupportedCapability(
-            "stubborn sandbox cannot launch".into(),
-        ))
-    }
-
-    fn alive(&self, _child: &SandboxChild) -> Result<bool, ContractError> {
-        Ok(true)
-    }
-
-    fn terminate(&mut self, _child: &SandboxChild) -> Result<StopEvidence, ContractError> {
-        Ok(StopEvidence {
-            process_group_gone: false,
-            detail: "stubborn survivor".to_string(),
-        })
-    }
 }
 
 fn start(engine: &mut KernelEngine<SqliteLedger>, exec: &ExecutionId, task: &TaskId) {
@@ -217,7 +172,7 @@ fn crash_after_cancel_request_recovers_transition_and_intents() {
     let mut engine =
         KernelEngine::open(SqliteLedger::open(dir.join("ledger.sqlite")).expect("ledger"))
             .expect("kernel")
-            .with_sandbox(Box::new(GoneSandbox));
+            .with_launcher(Box::new(GoneLauncher));
     let exec = exec();
     let build = OperationId::derive(&exec, "build");
 
@@ -302,7 +257,7 @@ fn crash_after_cancel_commit_recovers_cleanup() {
     let mut engine =
         KernelEngine::open(SqliteLedger::open(dir.join("ledger.sqlite")).expect("ledger"))
             .expect("kernel")
-            .with_sandbox(Box::new(GoneSandbox));
+            .with_launcher(Box::new(GoneLauncher));
     let exec = exec();
     let build = OperationId::derive(&exec, "build");
 
@@ -410,7 +365,7 @@ impl Fixture {
         let engine =
             KernelEngine::open(SqliteLedger::open(&db).expect("ledger"))
                 .expect("kernel")
-                .with_sandbox(Box::new(StubbornSandbox));
+                .with_launcher(Box::new(StubbornLauncher));
         let registry = registry(&journal);
         let task = TaskId::new("prop-task");
         let exec = ExecutionId::derive(&task, 1);
@@ -456,7 +411,7 @@ impl Fixture {
         let journal = self.journal.clone();
         self.engine = KernelEngine::open(SqliteLedger::open(&db).expect("reopen ledger"))
             .expect("reopen kernel")
-            .with_sandbox(Box::new(StubbornSandbox));
+            .with_launcher(Box::new(StubbornLauncher));
         self.registry = registry(&journal);
     }
 

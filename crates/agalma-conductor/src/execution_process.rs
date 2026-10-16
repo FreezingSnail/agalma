@@ -31,7 +31,7 @@ use std::time::Duration;
 
 use agalma_contracts::harness::StopEvidence;
 use agalma_ipc::{CommandSpec, ExecutionClient, Wire, WIRE_ENV};
-use agalma_kernel::server::{LEDGER_SOCKET_ENV, SANDBOX_SOCKET_ENV};
+use agalma_kernel::server::LEDGER_SOCKET_ENV;
 
 use crate::harness_process::{
     resolve_server_binary, spawn_supervised, stop_supervised, READY_TIMEOUT,
@@ -97,15 +97,14 @@ pub fn execution_wire() -> Wire {
 }
 
 /// Launch spec for the kernel server bound to `socket`, hosted under `state_dir`,
-/// reaching the ledger server at `ledger_socket` and (optionally) the sandbox
-/// server at `sandbox_socket`.
+/// reaching the ledger server at `ledger_socket`. The process-lifecycle seam is
+/// the kernel server's in-process local launcher, so no sandbox socket is passed.
 pub fn execution_server_spec(
     socket: &Path,
     state_dir: &Path,
     ledger_socket: &Path,
-    sandbox_socket: Option<&Path>,
 ) -> CommandSpec {
-    let mut spec = agalma_kernel::server::server_command()
+    agalma_kernel::server::server_command()
         .arg("--socket")
         .arg(socket.to_string_lossy().into_owned())
         .arg("--state-dir")
@@ -113,14 +112,7 @@ pub fn execution_server_spec(
         .env(
             LEDGER_SOCKET_ENV,
             ledger_socket.to_string_lossy().into_owned(),
-        );
-    if let Some(sandbox_socket) = sandbox_socket {
-        spec = spec.env(
-            SANDBOX_SOCKET_ENV,
-            sandbox_socket.to_string_lossy().into_owned(),
-        );
-    }
-    spec
+        )
 }
 
 /// A supervised kernel component-server process.
@@ -138,11 +130,10 @@ impl ExecutionProcess {
     pub fn spawn(
         state_dir: &Path,
         ledger_socket: &Path,
-        sandbox_socket: Option<&Path>,
         timeout: Duration,
     ) -> Result<ExecutionProcess, String> {
         let socket = execution_socket(state_dir);
-        let spec = execution_server_spec(&socket, state_dir, ledger_socket, sandbox_socket);
+        let spec = execution_server_spec(&socket, state_dir, ledger_socket);
         let program = resolve_server_binary(&spec.program)?;
         ExecutionProcess::spawn_with_spec_wire(
             spec,
@@ -264,7 +255,6 @@ mod tests {
             Path::new("/run/e.sock"),
             Path::new("/run/state"),
             Path::new("/run/ledger.sock"),
-            None,
         );
         assert_eq!(spec.program, agalma_kernel::server::SERVER_BIN);
         assert_eq!(
@@ -274,21 +264,6 @@ mod tests {
         assert_eq!(
             spec.env.get(LEDGER_SOCKET_ENV).map(String::as_str),
             Some("/run/ledger.sock")
-        );
-        assert!(!spec.env.contains_key(SANDBOX_SOCKET_ENV));
-    }
-
-    #[test]
-    fn spec_includes_sandbox_env_when_provided() {
-        let spec = execution_server_spec(
-            Path::new("/run/e.sock"),
-            Path::new("/run/state"),
-            Path::new("/run/ledger.sock"),
-            Some(Path::new("/run/sandbox.sock")),
-        );
-        assert_eq!(
-            spec.env.get(SANDBOX_SOCKET_ENV).map(String::as_str),
-            Some("/run/sandbox.sock")
         );
     }
 

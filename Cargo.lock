@@ -113,6 +113,7 @@ dependencies = [
  "agalma-execution",
  "agalma-ipc",
  "agalma-ledger",
+ "agalma-process",
  "agalma-testkit",
  "serde",
  "serde_json",

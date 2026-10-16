@@ -35,7 +35,7 @@ use serde_json::json;
 
 use support::harness::{self, EffectJournal, RecordingActivity};
 use support::ops::JournalHandler;
-use support::sandbox::{self as fake, FakeSandbox};
+use support::process::{self as fake, FakeLauncher};
 
 /// Environment variable passing the parent's run directory to the crash child.
 const DIR_ENV: &str = "KERNEL_RECOVERY_DIR";
@@ -95,7 +95,7 @@ fn cancel_running_releases_intents_timers_and_workers() {
     let (dir, ledger) = harness::open_isolated_ledger("cancel-running");
     let mut engine = KernelEngine::open(ledger)
         .unwrap()
-        .with_sandbox(Box::new(FakeSandbox::new(&dir)));
+        .with_launcher(Box::new(FakeLauncher::new(&dir)));
     let exec = exec();
     let task = task();
     let lease = engine.begin_lease(&task).unwrap();
@@ -131,7 +131,7 @@ fn cancel_running_releases_intents_timers_and_workers() {
     engine.schedule_timer(&timer).unwrap();
 
     let child = engine
-        .sandbox_mut()
+        .launcher_mut()
         .unwrap()
         .launch(fake::spec(&dir))
         .unwrap();
@@ -147,7 +147,7 @@ fn cancel_running_releases_intents_timers_and_workers() {
             started_at_unix_ms: child.started_at_unix_ms,
         })
         .unwrap();
-    assert!(engine.sandbox_mut().unwrap().alive(&child).unwrap());
+    assert!(engine.launcher_mut().unwrap().alive(&child).unwrap());
 
     // Cancel: the execution settles — intent released, timer cancelled, worker
     // terminated with evidence.
@@ -167,7 +167,7 @@ fn cancel_running_releases_intents_timers_and_workers() {
         TimerState::Cancelled
     );
     assert!(
-        !engine.sandbox_mut().unwrap().alive(&child).unwrap(),
+        !engine.launcher_mut().unwrap().alive(&child).unwrap(),
         "the worker was terminated"
     );
     let evidence = engine.termination_evidence(&exec).unwrap();
@@ -302,7 +302,7 @@ fn reclaim_terminates_a_live_survivor_with_evidence() {
     let (dir, ledger) = harness::open_isolated_ledger("reclaim-evidence");
     let mut engine = KernelEngine::open(ledger)
         .unwrap()
-        .with_sandbox(Box::new(FakeSandbox::new(&dir)));
+        .with_launcher(Box::new(FakeLauncher::new(&dir)));
     let exec = exec();
     let task = task();
 
@@ -332,7 +332,7 @@ fn reclaim_terminates_a_live_survivor_with_evidence() {
         )
         .unwrap();
     let child = engine
-        .sandbox_mut()
+        .launcher_mut()
         .unwrap()
         .launch(fake::spec(&dir))
         .unwrap();
@@ -348,7 +348,7 @@ fn reclaim_terminates_a_live_survivor_with_evidence() {
             started_at_unix_ms: child.started_at_unix_ms,
         })
         .unwrap();
-    assert!(FakeSandbox::new(&dir).pid_live(child.pid));
+    assert!(FakeLauncher::new(&dir).pid_live(child.pid));
 
     let reclaim = engine.reclaim(&task, &exec, 5).unwrap();
     assert!(reclaim.is_reclaimed());
@@ -362,9 +362,9 @@ fn reclaim_terminates_a_live_survivor_with_evidence() {
     assert_eq!(evidence.len(), 1);
     assert!(evidence[0].evidence.process_group_gone);
     assert!(engine.workers(&exec).unwrap().is_empty());
-    assert!(!FakeSandbox::new(&dir).pid_live(child.pid));
+    assert!(!FakeLauncher::new(&dir).pid_live(child.pid));
     assert!(
-        FakeSandbox::new(&dir)
+        FakeLauncher::new(&dir)
             .stop_evidence(child.pid)
             .expect("recorded stop evidence")
             .process_group_gone
@@ -372,8 +372,8 @@ fn reclaim_terminates_a_live_survivor_with_evidence() {
 }
 
 #[test]
-fn reclaim_without_sandbox_parks_instead_of_guessing() {
-    let (_dir, ledger) = harness::open_isolated_ledger("reclaim-no-sandbox");
+fn reclaim_without_launcher_parks_instead_of_guessing() {
+    let (_dir, ledger) = harness::open_isolated_ledger("reclaim-no-launcher");
     let mut engine = KernelEngine::open(ledger).unwrap();
     let exec = exec();
     let task = task();
@@ -416,7 +416,7 @@ fn reclaim_without_sandbox_parks_instead_of_guessing() {
         })
         .unwrap();
 
-    // No sandbox: termination cannot be confirmed, so reclaim blocks and parks.
+    // No launcher: termination cannot be confirmed, so reclaim blocks and parks.
     let reclaim = engine.reclaim(&task, &exec, 9).unwrap();
     assert!(!reclaim.is_reclaimed());
     assert_eq!(reclaim.new_lease, lease1, "no fresh lease is issued");
@@ -517,7 +517,7 @@ fn stale_lease_worker_cannot_advance_after_conductor_failure() {
     let ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
     let mut engine = KernelEngine::open(ledger)
         .unwrap()
-        .with_sandbox(Box::new(FakeSandbox::new(&dir)));
+        .with_launcher(Box::new(FakeLauncher::new(&dir)));
 
     // The child's worker survived the crash: a live, stale-lease record.
     let workers = engine.workers(&exec).unwrap();
@@ -525,7 +525,7 @@ fn stale_lease_worker_cannot_advance_after_conductor_failure() {
     assert_eq!(workers[0].lease_generation, 1);
     let pid = workers[0].pid;
     assert!(
-        FakeSandbox::new(&dir).pid_live(pid),
+        FakeLauncher::new(&dir).pid_live(pid),
         "the survivor is still live before recovery"
     );
     assert_eq!(engine.pending_dispatch().unwrap().len(), 1);
@@ -536,9 +536,9 @@ fn stale_lease_worker_cannot_advance_after_conductor_failure() {
     assert_eq!((reclaim.previous_lease, reclaim.new_lease), (1, 2));
     assert_eq!(reclaim.terminations.len(), 1);
     assert!(reclaim.terminations[0].evidence.process_group_gone);
-    assert!(!FakeSandbox::new(&dir).pid_live(pid), "survivor terminated");
+    assert!(!FakeLauncher::new(&dir).pid_live(pid), "survivor terminated");
     assert!(
-        FakeSandbox::new(&dir)
+        FakeLauncher::new(&dir)
             .stop_evidence(pid)
             .expect("recorded termination evidence")
             .process_group_gone
@@ -606,7 +606,7 @@ fn run_stale_worker_child() {
     let ledger = SqliteLedger::open(Path::new(&dir).join("ledger.sqlite")).unwrap();
     let mut engine = KernelEngine::open(ledger)
         .unwrap()
-        .with_sandbox(Box::new(FakeSandbox::new(&dir)));
+        .with_launcher(Box::new(FakeLauncher::new(&dir)));
     let exec = exec();
     let task = task();
 
@@ -639,7 +639,7 @@ fn run_stale_worker_child() {
 
     // Adapter hand-off: the confined worker is launched under G1 and recorded.
     let child = engine
-        .sandbox_mut()
+        .launcher_mut()
         .unwrap()
         .launch(fake::spec(Path::new(&dir)))
         .unwrap();

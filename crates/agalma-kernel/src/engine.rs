@@ -11,7 +11,7 @@
 use agalma_contracts::{
     CancellationSettlement, CancellationState, ContractError, DirectiveRow, DirectiveState,
     DispatchIntent, ExecutionEvent, ExecutionId, LedgerApi, OperationId, OperationReceipt,
-    SandboxApi, StopEvidence, TaskId, TimerRecord,
+    ProcessApi, StopEvidence, TaskId, TimerRecord,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -90,7 +90,7 @@ pub struct KernelEngine<L: LedgerApi> {
     /// from the engine's ownership/cancellation paths. `+ Send` (B1.7) so a
     /// `KernelEngine` can be hosted behind the `ExecutionApi` process boundary
     /// (`register_execution` requires `Send`).
-    sandbox: Option<Box<dyn SandboxApi + Send>>,
+    launcher: Option<Box<dyn ProcessApi + Send>>,
 }
 
 impl<L: LedgerApi> KernelEngine<L> {
@@ -119,7 +119,7 @@ impl<L: LedgerApi> KernelEngine<L> {
             exec_def: ExecDef::v1(),
             unknown_version,
             schema_mismatch,
-            sandbox: None,
+            launcher: None,
         })
     }
 
@@ -188,24 +188,24 @@ impl<L: LedgerApi> KernelEngine<L> {
         self.refresh_incompat()
     }
 
-    /// Inject the [`SandboxApi`] seam (process-tree termination + evidence).
+    /// Inject the [`ProcessApi`] seam (process-tree termination + evidence).
     ///
-    /// Consuming builder: `KernelEngine::open(ledger)?.with_sandbox(Box::new(sb))`.
-    /// Without a sandbox the engine can still fence stale leases; it cannot
+    /// Consuming builder: `KernelEngine::open(ledger)?.with_launcher(Box::new(launcher))`.
+    /// Without a launcher the engine can still fence stale leases; it cannot
     /// confirm termination of a prior process and parks reclaim instead.
-    pub fn with_sandbox(mut self, sandbox: Box<dyn SandboxApi + Send>) -> Self {
-        self.sandbox = Some(sandbox);
+    pub fn with_launcher(mut self, launcher: Box<dyn ProcessApi + Send>) -> Self {
+        self.launcher = Some(launcher);
         self
     }
 
-    /// Whether a sandbox seam is bound.
-    pub fn has_sandbox(&self) -> bool {
-        self.sandbox.is_some()
+    /// Whether a process-launcher seam is bound.
+    pub fn has_launcher(&self) -> bool {
+        self.launcher.is_some()
     }
 
-    /// Mutable access to the bound sandbox, if any.
-    pub fn sandbox_mut(&mut self) -> Option<&mut (dyn SandboxApi + Send + 'static)> {
-        self.sandbox.as_mut().map(|sandbox| &mut **sandbox)
+    /// Mutable access to the bound launcher, if any.
+    pub fn launcher_mut(&mut self) -> Option<&mut (dyn ProcessApi + Send + 'static)> {
+        self.launcher.as_mut().map(|launcher| &mut **launcher)
     }
 
     /// The resolved execution definition.
@@ -566,22 +566,22 @@ impl<L: LedgerApi> KernelEngine<L> {
         self.read_json_array(&lease_fence_key(task))
     }
 
-    /// Terminate `record`'s process tree through the sandbox and record the
-    /// returned [`StopEvidence`]. Errors when no sandbox is bound.
+    /// Terminate `record`'s process tree through the launcher and record the
+    /// returned [`StopEvidence`]. Errors when no launcher is bound.
     pub fn terminate_worker(
         &mut self,
         record: &WorkerRecord,
         now_unix_ms: u64,
     ) -> Result<TerminationRecord, ContractError> {
-        let sandbox = self.sandbox.as_mut().ok_or_else(|| {
+        let launcher = self.launcher.as_mut().ok_or_else(|| {
             ContractError::KnownFailure(
-                "cannot terminate worker: no sandbox seam bound".to_string(),
+                "cannot terminate worker: no process launcher bound".to_string(),
             )
         })?;
         let child = record.child();
-        let alive = sandbox.alive(&child)?;
+        let alive = launcher.alive(&child)?;
         let evidence = if alive {
-            sandbox.terminate(&child)?
+            launcher.terminate(&child)?
         } else {
             StopEvidence {
                 process_group_gone: true,
@@ -602,7 +602,7 @@ impl<L: LedgerApi> KernelEngine<L> {
     ///
     /// Reconciliation runs **before** the new lease is usable: a live survivor
     /// is terminated with recorded evidence; a survivor that cannot be confirmed
-    /// gone (no sandbox, or termination failed) parks the execution and returns
+    /// gone (no launcher, or termination failed) parks the execution and returns
     /// `blocked_reason` — fresh work is never dispatched over an unconfirmed
     /// process.
     pub fn reclaim(
@@ -615,10 +615,10 @@ impl<L: LedgerApi> KernelEngine<L> {
         let workers = self.workers(execution_id)?;
 
         // An unconfirmed survivor parks: reclaim requires evidence.
-        if !workers.is_empty() && self.sandbox.is_none() {
+        if !workers.is_empty() && self.launcher.is_none() {
             let reason = format!(
                 "reclaim blocked: cannot confirm termination of {} prior worker(s); \
-                 no sandbox seam bound",
+                 no process launcher bound",
                 workers.len()
             );
             self.park_blocked(execution_id, &reason, now_unix_ms)?;
@@ -807,8 +807,8 @@ impl<L: LedgerApi> KernelEngine<L> {
             },
         )?;
 
-        // 2. Re-run the terminate pass over recorded workers (a sandbox that is
-        //    now bound can confirm termination a no-sandbox cancel could not).
+        // 2. Re-run the terminate pass over recorded workers (a launcher that is
+        //    now bound can confirm termination a launcher-less cancel could not).
         for worker in self.workers(execution_id)? {
             self.terminate_worker_for(execution_id, &worker.operation_id, now_unix_ms)?;
         }
@@ -928,7 +928,7 @@ impl<L: LedgerApi> KernelEngine<L> {
     }
 
     /// Terminate the recorded worker (if any) for `operation_id`, recording
-    /// evidence. Without a sandbox the termination is recorded as unconfirmed.
+    /// evidence. Without a launcher the termination is recorded as unconfirmed.
     fn terminate_worker_for(
         &mut self,
         execution_id: &ExecutionId,
@@ -942,11 +942,11 @@ impl<L: LedgerApi> KernelEngine<L> {
         else {
             return Ok(());
         };
-        if let Some(sandbox) = self.sandbox.as_mut() {
+        if let Some(launcher) = self.launcher.as_mut() {
             let child = worker.child();
-            let alive = sandbox.alive(&child)?;
+            let alive = launcher.alive(&child)?;
             let evidence = if alive {
-                sandbox.terminate(&child)?
+                launcher.terminate(&child)?
             } else {
                 StopEvidence {
                     process_group_gone: true,
@@ -963,7 +963,7 @@ impl<L: LedgerApi> KernelEngine<L> {
                 worker: worker.clone(),
                 evidence: StopEvidence {
                     process_group_gone: false,
-                    detail: "no sandbox seam bound; termination unconfirmed".to_string(),
+                    detail: "no process launcher bound; termination unconfirmed".to_string(),
                 },
                 recorded_at_unix_ms: now_unix_ms,
             })?;

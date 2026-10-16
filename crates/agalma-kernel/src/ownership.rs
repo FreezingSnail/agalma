@@ -2,7 +2,7 @@
 //!
 //! `docs/b0-kernel.md` §"Cancellation and ownership": lease generations fence
 //! stale workers; reclaiming a job requires reconciliation of prior processes
-//! (evidence recorded, [`agalma_contracts::SandboxApi`] termination). This module
+//! (evidence recorded, [`agalma_contracts::ProcessApi`] termination). This module
 //! holds the kernel-native ownership types; the engine
 //! ([`crate::engine::KernelEngine`]) owns the durable worker registry and the
 //! fencing gate.
@@ -13,7 +13,7 @@
 //! guessing whether a stale worker is still running.
 
 use agalma_contracts::{
-    AttemptId, ExecutionId, ExecutionPhase, OperationId, SandboxChild, StopEvidence, TaskId,
+    AttemptId, ExecutionId, ExecutionPhase, OperationId, ProcessChild, StopEvidence, TaskId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -49,9 +49,9 @@ pub struct WorkerRecord {
 }
 
 impl WorkerRecord {
-    /// Reconstruct the sandbox handle used to probe/terminate the process.
-    pub fn child(&self) -> SandboxChild {
-        SandboxChild {
+    /// Reconstruct the process handle used to probe/terminate the process.
+    pub fn child(&self) -> ProcessChild {
+        ProcessChild {
             pid: self.pid,
             pgid: self.pgid,
             attempt: AttemptId::derive(self.attempt),

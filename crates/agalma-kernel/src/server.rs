@@ -7,9 +7,10 @@
 //! [`LedgerClient`] to the ledger component server (D2 derived requirement —
 //! dependencies stay dependencies, extraction changes transport only).
 //!
-//! The optional process-lifecycle seam is the sandbox client: when
-//! `AGALMA_KERNEL_SANDBOX_SOCKET` names a sandbox server, the engine binds a
-//! [`SandboxClient`] so ownership reclaim/cancellation can confirm termination.
+//! The process-lifecycle seam is a local process launcher: the engine binds a
+//! [`LocalLauncher`] so ownership reclaim/cancellation can confirm termination.
+//! There is no sandbox socket and no component-server hop on this edge
+//! (`docs/sandbox-removal-design.md` §5.2).
 //!
 //! ## Boundary gap
 //!
@@ -24,9 +25,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use agalma_ipc::{
-    register_execution, serve_execution, CommandSpec, LedgerClient, SandboxClient, Server,
-    ServerInfo, Wire,
+    register_execution, serve_execution, CommandSpec, LedgerClient, Server, ServerInfo, Wire,
 };
+use agalma_process::LocalLauncher;
 
 use crate::engine::KernelEngine;
 
@@ -44,8 +45,6 @@ pub const IMPL_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const SOCKET_NAME: &str = "execution.sock";
 /// Environment variable naming the ledger component server socket.
 pub const LEDGER_SOCKET_ENV: &str = "AGALMA_KERNEL_LEDGER_SOCKET";
-/// Environment variable naming the optional sandbox component server socket.
-pub const SANDBOX_SOCKET_ENV: &str = "AGALMA_KERNEL_SANDBOX_SOCKET";
 
 /// Identity announced in the `READY` handshake line.
 pub fn server_info() -> ServerInfo {
@@ -59,7 +58,7 @@ pub fn server_info() -> ServerInfo {
 }
 
 /// Launch spec for the kernel server (caller appends `--socket <path>` and
-/// `--state-dir <path>` plus the ledger/sandbox socket env).
+/// `--state-dir <path>` plus the ledger socket env).
 pub fn server_command() -> CommandSpec {
     CommandSpec::new(SERVER_BIN)
 }
@@ -71,47 +70,36 @@ pub fn build_server(engine: KernelEngine<LedgerClient>) -> Server {
     server
 }
 
-/// Connect the ledger client, open the kernel (optionally binding the sandbox
-/// seam), and bind `socket`; serve over the wire selected by
-/// `AGALMA_IPC_WIRE` (`connect` default, `framed` optional; IPCX.7) until
+/// Connect the ledger client, open the kernel (binding a [`LocalLauncher`] as
+/// the process-lifecycle seam), and bind `socket`; serve over the wire selected
+/// by `AGALMA_IPC_WIRE` (`connect` default, `framed` optional; IPCX.7) until
 /// stopped.
 ///
 /// The same wire backs the kernel's own `LedgerClient` connection, so the nested
 /// kernel→ledger edge speaks the transport the supervisor selected for this
 /// boundary.
-pub fn serve(
-    socket: &Path,
-    state_dir: &Path,
-    ledger_socket: &Path,
-    sandbox_socket: Option<&Path>,
-) -> io::Result<()> {
+pub fn serve(socket: &Path, state_dir: &Path, ledger_socket: &Path) -> io::Result<()> {
     serve_wire(
         socket,
         state_dir,
         ledger_socket,
-        sandbox_socket,
         Wire::from_env(Wire::Connect),
     )
 }
 
-/// Connect the ledger client, open the kernel (optionally binding the sandbox
-/// seam), and bind `socket`; serve over `wire` until stopped (IPCX.7).
+/// Connect the ledger client, open the kernel (binding a [`LocalLauncher`]), and
+/// bind `socket`; serve over `wire` until stopped (IPCX.7).
 pub fn serve_wire(
     socket: &Path,
     state_dir: &Path,
     ledger_socket: &Path,
-    sandbox_socket: Option<&Path>,
     wire: Wire,
 ) -> io::Result<()> {
     let ledger = LedgerClient::connect_wire(ledger_socket, state_dir, wire)
         .map_err(|e| io::Error::other(format!("connect ledger server: {e}")))?;
-    let mut engine =
-        KernelEngine::open(ledger).map_err(|e| io::Error::other(format!("open kernel: {e}")))?;
-    if let Some(sandbox_socket) = sandbox_socket {
-        let sandbox = SandboxClient::connect_wire(sandbox_socket, wire)
-            .map_err(|e| io::Error::other(format!("connect sandbox server: {e}")))?;
-        engine = engine.with_sandbox(Box::new(sandbox));
-    }
+    let engine = KernelEngine::open(ledger)
+        .map_err(|e| io::Error::other(format!("open kernel: {e}")))?
+        .with_launcher(Box::new(LocalLauncher::new()));
     let server = build_server(engine);
     serve_execution(server, socket, wire)
 }
@@ -119,8 +107,7 @@ pub fn serve_wire(
 /// Full argv/env entry point used by the server binary.
 ///
 /// Required: `--socket <path>` and `--state-dir <path>`, plus the ledger socket
-/// in [`LEDGER_SOCKET_ENV`]. Optional: the sandbox socket in
-/// [`SANDBOX_SOCKET_ENV`].
+/// in [`LEDGER_SOCKET_ENV`].
 pub fn run_from_args<I>(args: I) -> Result<(), String>
 where
     I: IntoIterator<Item = String>,
@@ -131,18 +118,12 @@ where
     let ledger_socket = std::env::var(LEDGER_SOCKET_ENV)
         .map(PathBuf::from)
         .map_err(|_| format!("missing required {LEDGER_SOCKET_ENV}"))?;
-    let sandbox_socket = std::env::var(SANDBOX_SOCKET_ENV).ok().map(PathBuf::from);
     if let Some(parent) = socket.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("create socket dir {}: {e}", parent.display()))?;
     }
-    serve(
-        &socket,
-        &state_dir,
-        &ledger_socket,
-        sandbox_socket.as_deref(),
-    )
-    .map_err(|e| format!("serve {}: {e}", socket.display()))
+    serve(&socket, &state_dir, &ledger_socket)
+        .map_err(|e| format!("serve {}: {e}", socket.display()))
 }
 
 /// Parse `--state-dir <path>` / `--state-dir=<path>`.

@@ -69,7 +69,7 @@
 //!   superseded lease is fenced by [`KernelEngine::apply`] — recorded
 //!   ([`KernelEngine::lease_fence_log`]) and dropped; it cannot advance the task.
 //! - **Reclaim.** [`KernelEngine::reclaim`] reconciles prior processes through
-//!   the [`agalma_contracts::SandboxApi`] seam (`with_sandbox`), records
+//!   the [`agalma_contracts::ProcessApi`] seam (`with_launcher`), records
 //!   termination evidence (`ownership::TerminationRecord`), releases stale-lease
 //!   intents, and only then issues a fresh lease. An unconfirmed survivor parks.
 //! - **Kill latch.** Blocks recovered dispatch (`recover_pending`) as well as new

@@ -7,6 +7,7 @@
 #   make test-focused SELECTION=.. focused checks (required selection)
 #   make test-peers                local process smokes (ledger/workspace/...)
 #   make test-full                 workspace tests
+#   make check-noop-rebuild        agalma-ipc build-script no-op regression guard
 #   make report                    build-artifact sizes (no changes)
 #   make sweep / sweep-apply       classify / remove orphaned worktree caches
 #   make worktree-remove BEAD=<id> remove a merged bead's worktree and cache
@@ -84,7 +85,7 @@ TEST_RUNNER := $(shell if [ -x scripts/test.sh ]; then echo scripts/test.sh; fi)
 .DEFAULT_GOAL := all
 
 .PHONY: all build release help test test-focused test-peers test-full \
-        report sweep sweep-apply worktree-remove docs-html clean-build clean-caches
+        check-noop-rebuild report sweep sweep-apply worktree-remove docs-html clean-build clean-caches
 
 all: build
 
@@ -136,6 +137,13 @@ ifeq ($(TEST_RUNNER),)
 else
 	@$(call run_logged,$(TEST_RUNNER) full,full)
 endif
+
+# Regression guard for the agalma-ipc build-script no-op property: a second
+# identical invocation must not recompile agalma-ipc or its dependents, while
+# editing the real inputs (ipc.proto, build.rs) still triggers a rebuild. The
+# script writes its own evidence under target/test-runs/<bead>/<run-id>/.
+check-noop-rebuild:
+	@bash scripts/check-noop-rebuild.sh
 
 # ---------------------------------------------------------------------------
 # Documentation. Renders the markdown linked from docs/progress-roadmap.html
@@ -189,6 +197,9 @@ help:
 	@echo "  make test-focused SELECTION=..  Focused crate/target/module checks."
 	@echo "  make test-peers                 Five local process smokes on Connect."
 	@echo "  make test-full                  Workspace tests (excludes live/paid checks)."
+	@echo "  make check-noop-rebuild         Regression guard: a second identical"
+	@echo "                                  invocation of the agalma-ipc build must not"
+	@echo "                                  recompile; real input edits still rebuild."
 	@echo "  Raw logs and exit status land in target/test-runs/<BEAD>/<RUN_ID>/."
 	@echo "  Set BEAD=<id> to label evidence for a task; default BEAD=manual."
 	@echo ""

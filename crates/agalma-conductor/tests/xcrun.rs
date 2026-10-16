@@ -96,10 +96,17 @@ fn sandboxed_git_guard_runs_without_xcrun_noise() {
     let origin = seed_origin(&dir);
     let state_dir = dir.join("state");
     fs::create_dir_all(&state_dir).expect("state dir");
-    // SF.1: repository mode requires the recorded package. This test executes
-    // only checkout+verify, but seed the valid fixture so the repo-mode harness
-    // invariant holds if it ever dispatches build.
-    common::seed_recorded_package(&state_dir, "xcrun-guard", 1);
+    // SF.1/SF.6: repository mode requires the recorded package with a valid
+    // frozen protected oracle. Record the guard as the package's frozen
+    // acceptance (SF.6 prefers it over the repo acceptance) and a non-empty
+    // allowed scope; the candidate is unmodified, so the guard stays green.
+    common::seed_recorded_package(
+        &state_dir,
+        "xcrun-guard",
+        1,
+        &[GUARD.to_string()],
+        &["docs".to_string()],
+    );
 
     // Render the real product profile (the one the conductor ships) to a file.
     let profile = state_dir.join("worker.sb");

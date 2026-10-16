@@ -12,6 +12,9 @@
 
 use std::path::Path;
 
+use agalma_conductor::scope_guard::{
+    BaselineFile, ProtectedBaseline, ProtectedEntry, PROTECTED_BASELINE_FORMAT,
+};
 use agalma_conductor::task_package::{object_path, object_relative_path, package_path};
 use agalma_contracts::{
     sha256_digest, Authorization, AuthorizationOrigin, Budget, ContextItem, ContextKind, Definition,
@@ -21,6 +24,26 @@ use agalma_contracts::{
 
 /// Marker text seeded as the package's frozen repository instruction.
 pub const SEED_INSTRUCTION: &str = "harness fixture: frozen repository instruction\n";
+
+/// The frozen protected *behavioral* judge a valid baseline must carry (nonempty
+/// files + nonempty commands). A trivially-passing script run through
+/// `$AGALMA_PROTECTED_DIR` keeps the fixture honest without asserting behavior.
+const PROTECTED_JUDGE_TEXT: &str = "#!/bin/sh\nexit 0\n";
+const PROTECTED_JUDGE_COMMAND: &str = "sh \"$AGALMA_PROTECTED_DIR/judge.sh\"";
+
+fn protected_baseline() -> ProtectedBaseline {
+    ProtectedBaseline {
+        format: PROTECTED_BASELINE_FORMAT.to_string(),
+        files: vec![BaselineFile {
+            path: "judge.sh".to_string(),
+            mode: "100755".to_string(),
+            digest: sha256_digest(PROTECTED_JUDGE_TEXT.as_bytes()),
+            bytes: PROTECTED_JUDGE_TEXT.len() as u64,
+            text: PROTECTED_JUDGE_TEXT.to_string(),
+        }],
+        commands: vec![PROTECTED_JUDGE_COMMAND.to_string()],
+    }
+}
 
 /// Write `bytes` as a content-addressed object; return its reference.
 fn write_object(state_dir: &Path, bytes: &[u8]) -> PackageArtifactRef {
@@ -41,15 +64,34 @@ fn write_object(state_dir: &Path, bytes: &[u8]) -> PackageArtifactRef {
 ///
 /// The document and every referenced object are persisted under the scratch
 /// state dir's frozen package store, so `resolve_recorded_package` resolves it
-/// and the strict render produces the full frozen context.
-pub fn seed_recorded_package(state_dir: &Path, task_id: &str, generation: u32) {
+/// and the strict render produces the full frozen context. SF.6 makes the
+/// frozen `scope.oracle` the selected operator protected entry, so this seeds a
+/// *valid* `ProtectedEntry/v1` whose allowed paths agree with the recorded
+/// scope; `acceptance` is recorded as the package's frozen acceptance list (a
+/// caller passes the behavior it wants verified).
+pub fn seed_recorded_package(
+    state_dir: &Path,
+    task_id: &str,
+    generation: u32,
+    acceptance: &[String],
+    allowed_paths: &[String],
+) {
     let instruction = ContextItem {
         kind: ContextKind::Instruction,
         source: "AGENTS.md".to_string(),
         artifact: write_object(state_dir, SEED_INSTRUCTION.as_bytes()),
     };
     let receipt = write_object(state_dir, b"{}");
-    let oracle = write_object(state_dir, b"harness-oracle");
+    let base_sha = "a".repeat(40);
+    let entry = ProtectedEntry {
+        task_id: task_id.to_string(),
+        repository_root: "harness-fixture".to_string(),
+        base_sha: base_sha.clone(),
+        allowed_paths: allowed_paths.to_vec(),
+        protected_paths: Vec::new(),
+        baseline: protected_baseline(),
+    };
+    let oracle = write_object(state_dir, &entry.freeze().expect("freeze protected entry"));
     let package = TaskPackage {
         format: TASK_PACKAGE_FORMAT.to_string(),
         task_id: task_id.to_string(),
@@ -58,7 +100,7 @@ pub fn seed_recorded_package(state_dir: &Path, task_id: &str, generation: u32) {
         lease_generation: 1,
         repository: RepositoryRef {
             identity: "harness-fixture".to_string(),
-            base_sha: "a".repeat(40),
+            base_sha,
         },
         directive: DirectiveRef {
             id: "directive/v0".to_string(),
@@ -76,11 +118,11 @@ pub fn seed_recorded_package(state_dir: &Path, task_id: &str, generation: u32) {
             design: TextObject::new("fixture/design", ""),
             notes: TextObject::new("fixture/notes", ""),
             machine_block: String::new(),
-            acceptance: vec!["sh -c 'true'".to_string()],
+            acceptance: acceptance.to_vec(),
         },
         context: vec![instruction],
         scope: Scope {
-            allowed_paths: Vec::new(),
+            allowed_paths: allowed_paths.to_vec(),
             protected_paths: Vec::new(),
             readable_artifacts: Vec::new(),
             oracle,
@@ -105,8 +147,14 @@ pub fn seed_recorded_package(state_dir: &Path, task_id: &str, generation: u32) {
 }
 
 /// Seed generations `1..=max_generation` for `task_id`.
-pub fn seed_recorded_packages(state_dir: &Path, task_id: &str, max_generation: u32) {
+pub fn seed_recorded_packages(
+    state_dir: &Path,
+    task_id: &str,
+    max_generation: u32,
+    acceptance: &[String],
+    allowed_paths: &[String],
+) {
     for generation in 1..=max_generation {
-        seed_recorded_package(state_dir, task_id, generation);
+        seed_recorded_package(state_dir, task_id, generation, acceptance, allowed_paths);
     }
 }

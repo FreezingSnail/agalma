@@ -30,13 +30,14 @@
 //! package-scoped `cargo test -p agalma-conductor` run still exercises the real
 //! process boundary. Scratch dirs auto-remove on success (kept on failure).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use agalma_contracts::{
     ArtifactRef, BindingId, ContractError, ExecutionApi, ExecutionId, ExecutionPhase,
-    ExecutionState, OperationId, StateSnapshot, TaskId, TimerRecord, TimerState,
+    ExecutionState, OperationId, StateSnapshot, TaskId, TimerRecord, TimerState, SNAPSHOT_FORMAT,
 };
 use agalma_ipc::{
     Client, CommandSpec, EffectContext, EffectDispatch, EffectProbe as IpcProbe, ExecutionClient,
@@ -51,6 +52,8 @@ use agalma_kernel::{
 use agalma_ledger::SqliteLedger;
 use agalma_testkit::ScratchDir;
 use serde_json::json;
+
+use agalma_kernel::engine::META_CANCELLATION_SETTLEMENT;
 
 use agalma_conductor::execution_process::{
     execution_server_spec, execution_socket, execution_wire, ExecutionProcess, ExecutionTransport,
@@ -332,7 +335,39 @@ fn normalize(mut snapshot: StateSnapshot) -> StateSnapshot {
     for d in &mut snapshot.directives {
         d.received_at_unix_ms = 0;
     }
+    // `kernel_meta` carries the cancellation settlement as a JSON *string*, so
+    // its embedded wall-clock stamps survive the top-level zeroing above. Parse
+    // and zero only those two fields; every other field (known or unknown) is
+    // preserved so semantic differences stay visible.
+    for (key, value) in snapshot.kernel_meta.iter_mut() {
+        if key.starts_with(META_CANCELLATION_SETTLEMENT) {
+            *value = normalize_settlement_meta_value(value);
+        }
+    }
     snapshot
+}
+
+/// Canonicalize one `kernel_meta` cancellation-settlement JSON value: zero the
+/// two wall-clock fields (`requested_at_unix_ms`, `settled_at_unix_ms`) and
+/// preserve every other field, including unknown ones. A numeric timestamp
+/// becomes `0`; a non-numeric value (e.g. a `null` "not yet settled" stamp) is
+/// left untouched so the `Option` shape is not conflated with an epoch stamp.
+/// A value that is not a JSON object is returned unchanged.
+fn normalize_settlement_meta_value(value: &str) -> String {
+    let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(value) else {
+        return value.to_string();
+    };
+    let Some(object) = parsed.as_object_mut() else {
+        return value.to_string();
+    };
+    for field in ["requested_at_unix_ms", "settled_at_unix_ms"] {
+        if let Some(slot) = object.get_mut(field) {
+            if slot.is_number() {
+                *slot = json!(0);
+            }
+        }
+    }
+    serde_json::to_string(&parsed).unwrap_or_else(|_| value.to_string())
 }
 
 /// A normalized, timing-free transcript of one kernel engine-op scenario.
@@ -562,6 +597,205 @@ fn shadow_parity_in_process_vs_process() {
     drop(connect_client);
     let _ = kernel_connect.stop();
     let _ = ledger_connect.stop();
+}
+
+// ===========================================================================
+// Case f — cancellation-settlement timestamp normalization (`agalma-5fy.14`)
+// ===========================================================================
+
+/// Deterministic SplitMix64 generator (test-only, no new dependency). Replay
+/// scheme: `state += 0x9E37_79B9_7F4A_7C15`, then the standard splitmix64 mix.
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Self {
+        Rng(seed)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+}
+
+const SETTLEMENT_META_KEY: &str = "cancellation_settlement:exec:test:1";
+
+/// A minimal but valid snapshot carrying one `kernel_meta` settlement value.
+fn settlement_snapshot(value: &str) -> StateSnapshot {
+    let mut kernel_meta = BTreeMap::new();
+    kernel_meta.insert(SETTLEMENT_META_KEY.to_string(), value.to_string());
+    StateSnapshot {
+        format: SNAPSHOT_FORMAT.to_string(),
+        schema_version: 4,
+        exec_def_version: "exec_def/v1".to_string(),
+        kernel_version: "0.1.0".to_string(),
+        kill_latch: false,
+        kernel_meta,
+        lease_generations: BTreeMap::new(),
+        executions: Vec::new(),
+        events: Vec::new(),
+        receipts: Vec::new(),
+        intents: Vec::new(),
+        timers: Vec::new(),
+        directives: Vec::new(),
+        bindings: Vec::new(),
+    }
+}
+
+/// Run the test-only `normalize()` and return just the settlement meta value.
+fn normalized_meta_value(value: &str) -> String {
+    normalize(settlement_snapshot(value))
+        .kernel_meta
+        .get(SETTLEMENT_META_KEY)
+        .cloned()
+        .expect("settlement meta preserved")
+}
+
+/// Encode a settlement JSON string with the two wall-clock fields supplied and
+/// the semantic fields fixed. `extra_marker` stands in for an unknown field.
+fn settlement_json(requested: u64, settled: Option<u64>, semantic: &serde_json::Value) -> String {
+    json!({
+        "execution_id": "exec:test:1",
+        "state": semantic["state"].clone(),
+        "request_operation_id": semantic["request_operation_id"].clone(),
+        "requested_at_unix_ms": requested,
+        "settled_at_unix_ms": settled,
+        "unconfirmed_operations": semantic["unconfirmed_operations"].clone(),
+        "extra_marker": semantic["extra_marker"].clone(),
+    })
+    .to_string()
+}
+
+/// Concrete regression: the exact shape that broke process parity — two
+/// settlement transcripts that differ only in their embedded wall-clock stamps
+/// (the values observed in the SF.9 repro) normalize to the same canonical
+/// form, while the two named fields are the only ones zeroed.
+#[test]
+fn cancellation_settlement_nested_timestamps_normalize() {
+    let semantic = json!({
+        "state": "Settled",
+        "request_operation_id": "exec:test:1/cancel",
+        "unconfirmed_operations": [],
+        "extra_marker": "unknown-field",
+    });
+    let left = settlement_json(1792105018981, Some(1792105018981), &semantic);
+    let right = settlement_json(1792105019005, Some(1792105019005), &semantic);
+    assert_ne!(left, right, "raw value differs only in timestamps");
+
+    let normalized_left = normalized_meta_value(&left);
+    let normalized_right = normalized_meta_value(&right);
+    assert_eq!(
+        normalized_left, normalized_right,
+        "equivalent timestamps normalize identically"
+    );
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&normalized_left).expect("normalized value is JSON");
+    // Only the two named wall-clock fields are zeroed.
+    assert_eq!(parsed["requested_at_unix_ms"], json!(0));
+    assert_eq!(parsed["settled_at_unix_ms"], json!(0));
+    // All other metadata (known and unknown) is preserved.
+    assert_eq!(parsed["execution_id"], json!("exec:test:1"));
+    assert_eq!(parsed["state"], json!("Settled"));
+    assert_eq!(parsed["request_operation_id"], json!("exec:test:1/cancel"));
+    assert_eq!(parsed["unconfirmed_operations"], json!([]));
+    assert_eq!(parsed["extra_marker"], json!("unknown-field"));
+
+    // A `null` "not yet settled" stamp stays `null` (distinct from an epoch
+    // stamp), and requesting at any time still collapses.
+    let settling_a = normalized_meta_value(&settlement_json(7, None, &semantic));
+    let settling_b = normalized_meta_value(&settlement_json(u64::MAX, None, &semantic));
+    assert_eq!(settling_a, settling_b, "null settlement normalizes stably");
+    let settling: serde_json::Value = serde_json::from_str(&settling_a).expect("json");
+    assert_eq!(settling["settled_at_unix_ms"], serde_json::Value::Null);
+    assert_eq!(settling["requested_at_unix_ms"], json!(0));
+}
+
+/// Deterministic generated property coverage (`agalma-5fy.14`):
+///
+/// generator: SplitMix64 (`state += 0x9E37_79B9_7F4A_7C15`, standard mix)
+/// seed:      `0x5f9c_2026`
+/// budget:    128 cases (mixed boundary + generated timestamps)
+/// replay:    cargo test --offline --locked -p agalma-conductor \
+///              --test execution_process \
+///              cancellation_settlement_timestamps_normalize_deterministically
+///
+/// Invariants:
+/// 1. Arbitrary `requested_at_unix_ms`/`settled_at_unix_ms` (including boundary
+///    values) normalize to one canonical form.
+/// 2. Only those two fields are zeroed; semantic and unknown fields survive.
+/// 3. Mutating any semantic (non-time) field keeps snapshots distinguishable.
+#[test]
+fn cancellation_settlement_timestamps_normalize_deterministically() {
+    const SEED: u64 = 0x5f9c_2026;
+    const BUDGET: usize = 128;
+
+    let boundaries: [u64; 6] = [0, 1, 1 << 31, 1 << 32, (1 << 53) - 1, u64::MAX];
+    let semantic = json!({
+        "state": "Settled",
+        "request_operation_id": "exec:test:1/cancel",
+        "unconfirmed_operations": [],
+        "extra_marker": "unknown-field",
+    });
+    let reference = normalized_meta_value(&settlement_json(0, Some(0), &semantic));
+
+    let mut rng = Rng::new(SEED);
+    let mut distinct = std::collections::BTreeSet::new();
+    for case in 0..BUDGET {
+        let requested = if case % 2 == 0 {
+            boundaries[case % boundaries.len()]
+        } else {
+            rng.next_u64()
+        };
+        let settled = if case % 2 == 0 {
+            Some(boundaries[(case + 3) % boundaries.len()])
+        } else {
+            Some(rng.next_u64())
+        };
+        let raw = settlement_json(requested, settled, &semantic);
+        let normalized = normalized_meta_value(&raw);
+
+        // 1 + 2: deterministic, equal to the canonical reference.
+        assert_eq!(
+            normalized, reference,
+            "case {case}: requested={requested} settled={settled:?} must normalize to the reference"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&normalized).expect("json");
+        assert_eq!(parsed["requested_at_unix_ms"], json!(0));
+        assert_eq!(parsed["settled_at_unix_ms"], json!(0));
+        assert_eq!(parsed["state"], json!("Settled"));
+        assert_eq!(parsed["request_operation_id"], json!("exec:test:1/cancel"));
+        assert_eq!(parsed["unconfirmed_operations"], json!([]));
+        assert_eq!(parsed["execution_id"], json!("exec:test:1"));
+        assert_eq!(parsed["extra_marker"], json!("unknown-field"));
+
+        // 3: a semantic mutation stays distinguishable after normalization.
+        for field in [
+            "state",
+            "request_operation_id",
+            "unconfirmed_operations",
+            "extra_marker",
+        ] {
+            let mut mutated = semantic.clone();
+            mutated[field] = json!(format!("mutated-{case}"));
+            let mutated_raw = settlement_json(requested, settled, &mutated);
+            assert_ne!(
+                normalized_meta_value(&mutated_raw),
+                reference,
+                "case {case}: semantic field {field} must stay distinguishable"
+            );
+        }
+
+        distinct.insert(normalized);
+    }
+    assert_eq!(
+        distinct.len(),
+        1,
+        "all {BUDGET} generated cases collapse to one normalized form"
+    );
 }
 
 /// The transport selector used by a caller defaults to in-process and maps

@@ -213,7 +213,9 @@ protected denylist; the denylist wins. Check both sides of a rename, deletions,
 mode changes, symlinks, generated outputs and nested repositories. Acceptance
 commands stay pinned strings using the existing scope-checked command runner.
 Builder visibility excludes held-out answers. Verification runs in a separate
-read-only-oracle sandbox against a pinned candidate SHA and records both digests.
+read-only-oracle root against a pinned candidate SHA and records both digests
+(read-only is convention-only since the sandbox removal, 2026-10-16; see
+[sandbox-removal-design.md](sandbox-removal-design.md)).
 
 The human-approved [SF.6 protected-input admission amendment](sf6-protected-inputs.md)
 defines the operator-supplied bootstrap manifest, immutable package capture,

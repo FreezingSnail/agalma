@@ -3,6 +3,13 @@
 Status: draft v0. Captures the design decisions from planning. Questions still open
 are marked **[open]**.
 
+> **Amendment (2026-10-16):** the sandbox layer was removed. Process launch,
+> liveness, and evidence-backed tree termination now use `ProcessApi` /
+> `LocalLauncher` (`agalma-process`); OS read/write confinement, protected-root
+> read-only enforcement, and network egress denial are dropped as an accepted
+> guarantee reduction. See [sandbox-removal-design.md](sandbox-removal-design.md).
+> Unamended sandbox references below are historical design records.
+
 Agalma is an always-running software factory. It evaluates, builds, and ships its
 target — and never stops. The first milestone is a bootstrapping MVP that can
 begin to improve itself.
@@ -88,10 +95,10 @@ agalma (Rust supervisor + nano service composition and bindings)
 ├── ExecutionApi → embedded seed executor, later bootstrap kernel
 ├── LedgerApi → SQLite state, jobs, decisions, runs, operation receipts
 ├── HarnessApi → OpenCode adapter (initial implementation)
-│     ├── SandboxApi → confined opencode serve child per attempt
+│     ├── ProcessApi → opencode serve child per attempt (process-group lifecycle)
 │     ├── private HTTP/SSE client, native sessions, configuration renderer
 │     └── private nerve plugin → normalized hooks/events and policy requests
-├── SandboxApi → Seatbelt process lifecycle
+├── ProcessApi → local process lifecycle (launch, liveness, tree-kill)
 ├── WorkspaceApi → Git checkouts, artifacts, integration
 ├── TaskQueueApi → bd backlog adapter
 ├── DecisionApi → static policy or optional inference adapter
@@ -104,9 +111,10 @@ agalma (Rust supervisor + nano service composition and bindings)
 ```
 
 - One disposable harness runtime per attempt, with fresh sessions for its phases.
-  The OpenCode adapter initially uses a server. On macOS `SandboxApi` launches
-  the entire worker under Seatbelt via `sandbox-exec`, so built-in file tools and
-  subprocesses share the boundary.
+  The OpenCode adapter initially uses a server. The worker is launched as a
+  process-group leader through `ProcessApi`; OS confinement was removed by
+  design (see the amendment above), so built-in file tools and subprocesses are
+  no longer confined.
 - A dedicated child process is used instead of the user's shared background
   service: the factory owns the runtime lifecycle and version, and never fights
   the human's TUI for config or state. Visibility for the human is a mirror
@@ -123,7 +131,7 @@ agalma (Rust supervisor + nano service composition and bindings)
 - Crash semantics: harness runtime crash = attempt runtime crash. The conductor
   recovers execution progress through `ExecutionApi`/`LedgerApi`, reconciles
   receipts with the pinned component, and terminates surviving processes through
-  `SandboxApi` before retrying or parking. Native session state is disposable
+  `ProcessApi` before retrying or parking. Native session state is disposable
   cache, not a recovery prerequisite.
 
 ### 2.1 Nano service boundaries and replacement
@@ -182,7 +190,7 @@ effects. Responsibilities:
   validation, static fallback, and durable decision records
 - watchers on normalized harness events (repeat loops, failure streaks, budget)
 - attempt/session lifecycle through `HarnessApi`, process cleanup through
-  `SandboxApi`; optional capabilities negotiated before use
+  `ProcessApi`; optional capabilities negotiated before use
 - deterministic verification (build/test/lint commands and exit codes)
 - integration: merge, tag, rollback through `WorkspaceApi`
 - bench invocation and evidence-based promotion decisions under the active directive
@@ -352,7 +360,7 @@ directive updates. Runtime timers are wakeups: after restart the conductor loads
 the stored deadlines. Directive records bind to a version, source, target scope,
 and platform constraint version. An updated directive can supersede queued work
 or cancel in-flight work; it never silently authorizes a changed candidate.
-`PolicyApi` owns authorization, budgets, sandbox lifecycle, and integration.
+`PolicyApi` owns authorization, budgets, process lifecycle, and integration.
 
 Long-running handlers heartbeat. Cancellation explicitly interrupts sessions and
 terminates their process trees. Job timeout or lease expiration alone is not proof
@@ -446,7 +454,7 @@ choice/scoring models and constrained generative models. Generative inference
 uses `HarnessApi`; a specialized model may require a separate local adapter, since
 its output API need not support text generation. Compatibility is proved rather
 than assumed. All implementations expose `DecisionApi`. An optional local adapter
-runs as a process supervised through `SandboxApi`, with read-only weights,
+runs as a process supervised through `ProcessApi`, with read-only weights,
 bounded inputs/outputs, and no ledger, Git, or tool
 authority. Hosted adapters use scoped provider access. Local weights load on
 demand with an idle unload policy; residency is an explicit configuration choice.
@@ -748,21 +756,16 @@ porting a mechanism; build only what the data justifies.
 
 ## 11. Safety and governance
 
-- macOS MVP sandbox: Seatbelt via `sandbox-exec`, applied to the entire
-  harness worker and its descendants through `SandboxApi`. Each attempt has an
-  independent checkout and disposable runtime, build, cache, and temporary
-  directories. Writes are
-  restricted to those directories; the main checkout, ledger, conductor state,
-  personal credentials, and protected evaluation files are inaccessible.
-  S0b proved the boundary on macOS 26.6.2 (59/59 assertions, fail-closed
-  initialization, negligible idle overhead; [results](spikes/s0b-confinement.md)).
-  Production conditions: conductor-side fail-closed launch gate, attempt-scoped
-  `TMPDIR`/`XDG_*`, per-attempt rendered toolchain read paths, narrowed
-  `mach-lookup`, and termination that kills the process group/tree — a leader
-  SIGTERM alone orphans descendants, and macOS may reject a group signal
-  (signal descendants explicitly; S0d).
-- Verification runs separately under a sandbox, with protected tests readable
-  but unwritable. Candidate build scripts and tests receive the same confinement.
+- macOS MVP confinement (removed 2026-10-16): Seatbelt via `sandbox-exec` was
+  applied to the entire harness worker and its descendants through the former
+  `SandboxApi`; S0b proved that boundary on macOS 26.6.2
+  ([results](spikes/s0b-confinement.md)). The layer is deleted. Process
+  lifecycle keeps the parts that never needed Seatbelt: process-group launch,
+  attempt-scoped `TMPDIR`/`XDG_*`, and tree termination that kills descendants,
+  not just the leader. OS confinement, protected-root read-only enforcement, and
+  egress denial no longer hold (accepted loss; see the amendment above).
+- Verification runs in a separate scratch checkout, with protected tests readable
+  but no longer OS-enforced unwritable (accepted loss; see the amendment above).
 - Permission rulesets per agent supplement the OS boundary. Integration and
   privileged factory operations run through the conductor; workers receive no
   Git hosting credentials. Provider credentials remain outside the worker and
@@ -771,11 +774,10 @@ porting a mechanism; build only what the data justifies.
 - Dependency downloads are permitted in the MVP. This does not establish a
   general network isolation guarantee; workers must not receive secrets through
   files, environment variables, or service responses.
-- Unattended execution requires successful sandbox initialization. Failure
-  parks the task without launching the worker. `sandbox-exec` is deprecated;
-  compatibility and the deny matrix are proved in S0b (macOS 26.6.2; re-verify
-  on OS upgrades). If confinement cannot be established, a Linux
-  container in a VM is required before unattended execution.
+- Unattended execution no longer has a confinement gate: the fail-closed
+  `sandbox-exec` initialization check was removed with the layer (accepted
+  loss). If OS confinement returns, a Linux namespace/bubblewrap backend can be
+  added behind `ProcessApi` without re-adding the IPC/server seam.
 - Protected paths: bench, guards, policy files. Denied by rules and checked
   before merge; the factory never edits its own judge.
 - The active directive supplies goals, scope, acceptance intent, budgets, and
@@ -852,7 +854,7 @@ completion neither duplicates the update nor loses completion; surviving worker
 processes are reconciled before redispatch; ledger reflects the run.
 
 **M1 — working loop.** bd queue; builder/verifier phases over real repo tasks;
-independent checkouts; Seatbelt workers and separate sandboxed verification;
+independent checkouts; process-group workers and separate verification checkouts;
 deterministic verification; merge on green; cost recorded; digest
 generated. bd intake uses stable execution IDs, fenced claims, and reconciled
 status projections. Routing/triage choices use the versioned decision contract
@@ -964,8 +966,8 @@ review.
 | Directive authority | New directives may change authorized goals/scope; work outside scope is parked and reported |
 | Self-correction | Bounded repair, rerun pinned criteria, reject/revert on failure, continue on other tasks |
 | Sessions | Fresh per (task, phase, attempt) |
-| Topology | Persistent composition/supervision; disposable sandboxed harness runtime per attempt |
-| MVP sandbox | macOS Seatbelt via `sandbox-exec`; fail closed; prove in S0 |
+| Topology | Persistent composition/supervision; disposable isolated harness runtime per attempt |
+| Process isolation | Process-group launch/terminate via `agalma-process`; independent checkout per attempt |
 | Attempt isolation | Independent checkout and Git metadata per attempt |
 | Credentials | External provider authentication proxy; no worker Git credentials |
 | Network stance | Dependency downloads permitted; no general network isolation guarantee |

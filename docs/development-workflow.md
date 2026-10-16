@@ -141,7 +141,7 @@ missing tool fails the scope instead of silently narrowing its checks.
 | Scope | Selection and purpose | Limits |
 |---|---|---|
 | `focused` | Explicit crate and required target or unit-test module selection; verifies changed behavior and affected consumers | Does not establish workspace acceptance or unselected process boundaries |
-| `peers` | The five required ledger, workspace, taskqueue, execution, and sandbox local process smokes | Does not establish paid-provider behavior, all process failure paths, or full conductor acceptance |
+| `peers` | The four required ledger, workspace, taskqueue, and execution local process smokes | Does not establish paid-provider behavior, all process failure paths, or full conductor acceptance |
 | `full` | Workspace tests, including doctests, with necessary binary prerequisites | Does not establish ignored live-provider checks or any other unexecuted acceptance |
 
 Example target interface: `bash scripts/test.sh focused agalma-conductor

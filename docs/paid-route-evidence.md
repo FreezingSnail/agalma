@@ -74,8 +74,8 @@ proxy request: allowed=true POST opencode.ai:443
 ```
 
 The token is read by the parent from `~/.local/share/opencode/auth.json`
-(`opencode-go.key`), never logged, never copied into the sandbox, and never
-written to the ledger/digest. The sandbox holds only the dummy key
+(`opencode-go.key`), never logged, never copied into the worker environment, and never
+written to the ledger/digest. The worker environment holds only the dummy key
 `agalma-proxy`; the proxy strips any inbound credential header and injects
 `Authorization: Bearer <token>` plus `x-opencode-session` (OpenCode Go requires
 it) upstream.
@@ -144,7 +144,7 @@ Verified against the OpenCode v2 provider config (docs
   The confined adapter sets `OPENCODE_CONFIG_DIR` to the checkout (the config
   discovery short-circuit the confine profile needs), so the override is a
   written-then-locally-excluded `opencode.json` in the checkout.
-- `opencode-go` uses env `OPENCODE_API_KEY`; the sandbox gets the dummy and the
+- `opencode-go` uses env `OPENCODE_API_KEY`; the worker environment gets the dummy and the
   proxy injects the real bearer token.
 
 Rendered shape (`render_provider_config`):

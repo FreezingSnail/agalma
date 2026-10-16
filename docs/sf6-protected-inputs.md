@@ -83,3 +83,20 @@ Socket fixture support is a separate bounded infrastructure issue if existing
 supported paths cannot run required IPC/process checks. This does not authorize
 implementation in the primary checkout, skipped required cases, unbounded
 diagnosis or acceptance based only on helper tests.
+
+## Amendment (2026-10-16): sandbox removal
+
+The sandbox layer was removed; see
+[sandbox-removal-design.md](sandbox-removal-design.md). Consequences for this
+amendment, from the accepted guarantee reduction (human decision 2026-10-15):
+
+- The protected root is still materialized outside candidate-writable roots and
+  still supplied via `AGALMA_PROTECTED_DIR`, but it is **no longer OS-enforced
+  read-only**. "Cannot write protected files" is a convention property now, not
+  a sandbox-proved one.
+- Frozen commands run through `ProcessApi`/`LocalLauncher` instead of
+  `SandboxApi`; the scoped command runner and frozen-command judging are
+  unchanged.
+- `tests/sf_scope_guard.rs` no longer claims OS-enforced isolation.
+
+All other requirements of this document stand.

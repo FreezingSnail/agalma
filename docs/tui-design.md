@@ -106,7 +106,7 @@ Actions are human-only; the TUI adds no privileges the CLI does not have.
 |---|---|---|
 | TUI.1 `agalma-3kr.2` | read-model completion: `schema_version`, `pending_operations`, top-level `binding`; grep-level acceptance; no TTY tests | — |
 | TUI.2 `agalma-3kr.3` | `agalma watch`: ratatui shell, executions table (phase/state/attempt/pending ops, kill latch, binding), refresh loop, resize/quit | TUI.1 |
-| TUI.3 `agalma-3kr.4` | component vision: latest + per-op pinned bindings, binding states, transports (`in-process|process` envs), sandbox `alive` / server pid+socket / `provider_health` liveness | TUI.1 |
+| TUI.3 `agalma-3kr.4` | component vision: latest + per-op pinned bindings, binding states, transports (`in-process|process` envs), process-launcher `alive` / server pid+socket / `provider_health` liveness | TUI.1 |
 | TUI.4 `agalma-3kr.5` | economics + timeline: derived spend (`usage` events / `CostSummary`), `budget_usd` from intake fence (display only), digests, parked/degradation alerts, curated `execution_events` timeline | TUI.1 |
 | TUI.5 `agalma-3kr.6` | controls: pause/resume/cancel, typed confirmations, ledger v4 `control_receipts`, cancellation events | TUI.1 |
 | TUI.6 `agalma-3kr.7` | full-screen composition: panes, keybindings, focus model, `docs/tui.md`; pane resize isolation | TUI.2–TUI.5 |

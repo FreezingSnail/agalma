@@ -306,6 +306,9 @@ frozen evidence; no frozen receipt is rewritten.
 
 ## 9. Bead breakdown
 
+Status (2026-10-16): implemented as filed — P1–P4 merged and reviewed; P5
+(docs) lands with this document's amendments. Commits and evidence: §12.
+
 Each bead merges green; one bead = one implement/verify loop. P2 and P3 are
 independent (different crates, disjoint file ownership) and run in parallel from
 the same base after P1.
@@ -360,3 +363,38 @@ Remaining risks:
 - Adding a replacement confinement backend.
 - Any change to ledger, workspace, taskqueue, or execution boundaries beyond the
   sandbox references listed above.
+
+## 12. Implementation record
+
+Beads (authored/closed with `--actor opencode-go/deepseek-v4.1-flash`; each ran
+in `target/worktrees/<bead>` on `task/<bead>` with a redirected cache):
+
+| Bead | Commit | Status | Notes |
+| --- | --- | --- | --- |
+| `agalma-ib2` (P1) | `351d1c7` | merged | launcher + `ProcessApi` contract; 6 property tests |
+| `agalma-zfc` (P2) | `db7e583` (merge `edf86a0`) | merged | conductor + harness; 10/10 acceptance selections |
+| `agalma-wmk` (P3) | `14a1ecd` (merge `8319b3a`) | merged | kernel + execution boundary; merged-tree checks pass |
+| `agalma-o1i` (P4) | `431a5d6` (merge `7187e6f`) | merged | deletions + handle-less regression; peers 4/4; one full suite pass |
+| `agalma-4xn` (P5) | this commit | — | documentation amendments |
+
+Reviewer gate: `REVIEW: APPROVED` for the post-merge `agalma-zfc` +
+`agalma-wmk` range; `agalma-o1i` reviewed against its deletion/regression scope.
+
+Accepted deviations, recorded:
+
+- `sf_cancel.rs` kernel-adapter Case 4 removed as duplication of
+  `agalma-kernel/tests/sf_cancel_kernel.rs`; the conductor-level Case 2
+  (unconfirmed → `Settling`) is retained.
+- `designer_payload.rs` process-transport case folded into the local
+  `MockLauncher` in-process test (the harness server builds its own launcher,
+  §5.2).
+- `xcrun.rs` profile-allowance case dropped with the profile; `cargo_home.rs`
+  kept profile-free.
+- `crates/agalma-process/src/local.rs:5` retains a historical path reference in
+  a comment (no symbol, no dependency).
+- `md-to-html` regeneration (adding this document and moving the frozen
+  `b1-sandbox-evidence` entry) is deferred: the docs-tooling session owned
+  `scripts/md-to-html.mjs` at removal time.
+
+Evidence: `target/test-runs/{agalma-ib2,agalma-zfc,agalma-wmk,agalma-o1i}/` —
+raw logs, exact commands, exit statuses, and failed iterations retained.

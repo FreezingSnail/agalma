@@ -180,10 +180,11 @@ unchanged; the digest records the engine.
 `agalma-harness-codex` implements `HarnessApi` over `codex exec --json`:
 JSONL normalization (`turn.*`, token usage, rate-limit observations, `error`),
 prompt via stdin, final message capture (`--output-last-message`), working
-directory = sandboxed checkout, Seatbelt confinement with Codex's own sandbox
-disabled so Agalma is the only boundary. Credentials stay parent-side; Codex
+directory = isolated scratch checkout. OS confinement was removed by design
+([sandbox-removal-design.md](sandbox-removal-design.md)); Agalma's own process
+launcher is the boundary mechanism. Credentials stay parent-side; Codex
 token refresh hosts go through the parent proxy allowlist, never into the
-sandbox. Exact flags and stream shape are pinned from a captured fixture during
+worker environment. Exact flags and stream shape are pinned from a captured fixture during
 implementation (one gated live smoke); nothing is assumed from docs alone.
 
 ### 4.9 Observability (SR.8)

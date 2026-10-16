@@ -5,6 +5,14 @@ with a versioned API, explicit responsibilities, and owned state. A compatible
 implementation can replace any component without rewriting its consumers.
 OpenCode is the first harness implementation behind Agalma's `HarnessApi`.
 
+> **Amendment (2026-10-16):** the sandbox component was removed. Process launch,
+> ownership/status, and evidence-backed termination are `ProcessApi`
+> (`agalma-process`, an in-process launcher — no IPC/server seam); OS
+> confinement, protected-root read-only enforcement, and egress denial are
+> dropped as an accepted guarantee reduction. See
+> [sandbox-removal-design.md](sandbox-removal-design.md). Sandbox references
+> below are historical where not updated.
+
 ## Boundaries and local deployment
 
 Each nano service exposes domain requests, results, and events through an Agalma
@@ -45,7 +53,7 @@ implementation regardless of tier.
 | Ledger | `LedgerApi`: read canonical state, atomically commit transitions/receipts/intents, export/import, backup/restore | SQLite; SQL, transactions, WAL, and physical schema |
 | Task backlog | `TaskQueueApi`: task definitions, dependencies, ready candidates, claims, status projections, and export/import | bd adapter; issue bodies, CLI calls, and native IDs |
 | Agent harness | `HarnessApi`: attempt/session/turn lifecycle, normalized events, usage, artifact references, reconciliation | OpenCode adapter; HTTP/SSE, configuration rendering, auth, sessions, and nerve hooks |
-| Sandbox and process lifecycle | `SandboxApi`: confined launch, process ownership/status, termination, cleanup | macOS Seatbelt backend; profiles and process-tree tracking |
+| Process lifecycle | `ProcessApi`: launch, process ownership/status, termination, cleanup | `agalma-process` local launcher; process-group tracking; no OS confinement (removed, see amendment) |
 | Workspace and integration | `WorkspaceApi`: isolated checkout, artifact/diff inspection, compare-and-update integration, tag/revert, reconciliation | Git adapter; repository metadata and command details |
 | Verification | `VerificationApi`: run directive-derived checks against an identified candidate, return evidence and verdict | Sandboxed command runner; protected tests and logs |
 | Evaluation | `EvaluationApi`: evaluator assessments and paired bench results for immutable candidate/baseline inputs | Fixture/history runner and evaluator roles through `HarnessApi` |
@@ -72,7 +80,7 @@ add replacement procedure when a replacement is actually scheduled.
 
 | Tier | Components | Required at MVP | Added when a replacement is scheduled |
 |---|---|---|---|
-| 1 — frozen seams | `HarnessApi`, `SandboxApi`, `WorkspaceApi`, `ExecutionApi`, `LedgerApi`, `TaskQueueApi` | Canonical schemas and IDs, operation receipts, binding pins, reconciliation, fail-closed conformance, versioned export/import where durable state exists | Nothing deferred; these seams are exercised at S0, not promised |
+| 1 — frozen seams | `HarnessApi`, `ProcessApi`, `WorkspaceApi`, `ExecutionApi`, `LedgerApi`, `TaskQueueApi` | Canonical schemas and IDs, operation receipts, binding pins, reconciliation, fail-closed conformance, versioned export/import where durable state exists | Nothing deferred; these seams are exercised at S0, not promised |
 | 2 — declared boundaries | `DirectiveApi`, `PolicyApi`, `GenomeApi`, `VerificationApi`, `EvaluationApi`, `DecisionApi`, `MemoryApi`, `TelemetryApi`, `ProviderAuthApi`, `FactoryToolsApi` | Canonical schemas, ownership declaration, `Describe`/`Health`, no private-state access, typed module behind the contract | Capability negotiation, staged drain/rebind, export/import, conformance fixtures |
 
 Day-one invariants, all components:
@@ -131,13 +139,14 @@ exists is speculative generality; tolerating private-state access because
   these atomicity and durability semantics.
 - **Authority and isolation.** API access carries caller identity and scoped
   capabilities. Policy authorizes privileged effects; the corresponding owner
-  enforces that authorization. Process launch always passes through `SandboxApi`.
-  Harness workers cannot bypass confinement, access the ledger or main checkout,
-  or obtain integration credentials. Trusted adapters use scoped APIs to record
+  enforces that authorization. Process launch always passes through `ProcessApi`.
+  Harness workers cannot access the ledger or main checkout, or obtain
+  integration credentials. Trusted adapters use scoped APIs to record
   mappings and evidence; they never access another component's private state.
-  In-process modules are trusted code under the deployment policy; untrusted
-  workers and candidate implementations require OS confinement.
-  Replacing policy/sandbox implementations
+  In-process modules are trusted code under the deployment policy. OS
+  confinement for untrusted workers was removed (accepted loss; see the
+  amendment above).
+  Replacing policy/process-launcher implementations
   follows the active directive and protected platform constraints; API
   compatibility grants no new authority.
 
@@ -149,12 +158,12 @@ native API to the conductor:
 
 | Operation | Domain behavior |
 |---|---|
-| `StartAttempt` | Accept workspace handle, directive-authorized role/tool policy, genome and constraint references, resource limits, and operation identity; request confined launch through `SandboxApi`; return an Agalma attempt handle |
+| `StartAttempt` | Accept workspace handle, directive-authorized role/tool policy, genome and constraint references, resource limits, and operation identity; request launch through `ProcessApi`; return an Agalma attempt handle |
 | `CreateSession` | Create a fresh phase context from canonical role/model, prompts, skills, handoff artifacts, and factory-tool bindings |
 | `RunTurn` | Start a bounded turn, returning an operation handle for asynchronous observation |
 | `InspectOperation` / `ReadEvents` | Report running/terminal/unknown state and normalized progress, tool outcomes, usage, errors, and result artifact references; recover after stream interruption |
 | `CancelOperation` | Request interruption; return acknowledgment and termination state separately (`CancelAck`); retain enough evidence for reconciliation |
-| `CloseSession` / `StopAttempt` | Release session resources; confirm process cleanup through `SandboxApi`, including descendants, returning cleanup evidence (`StopEvidence`) |
+| `CloseSession` / `StopAttempt` | Release session resources; confirm process cleanup through `ProcessApi`, including descendants, returning cleanup evidence (`StopEvidence`) |
 
 Normalized events include turn started/completed/failed, tool outcome, usage
 snapshot, intervention request, and runtime failure. Persist needed evidence and
@@ -175,7 +184,7 @@ binding whose required set is unmet (S0d).
 The OpenCode implementation owns `opencode serve` invocation, version/auth
 discovery, its HTTP client and SSE translation, `.opencode` configuration, native
 session IDs, and the nerve plugin. Its launcher describes the approved process to
-`SandboxApi`; it does not launch outside that boundary. Another implementation
+`ProcessApi`; it does not launch outside that boundary. Another implementation
 can use a CLI, SDK, or local server and expose the same Agalma API. The rest of
 the factory continues to use canonical sessions, events, results, and policies.
 

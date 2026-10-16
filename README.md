@@ -26,7 +26,7 @@ Canonical role definitions (`docs/architecture.md` §3.5):
 
 ## What exists today
 
-A Rust workspace implementing the factory core. The conductor drives tasks from `bd`, executes them in confined sandboxed checkouts via OpenCode, verifies acceptance, merges on green, and records steps in a durable SQLite ledger. Tier-1 components (harness, sandbox, workspace, task queue, ledger, execution) have versioned Agalma contracts and can run behind framed-JSON process boundaries (`agalma-ipc`).
+A Rust workspace implementing the factory core. The conductor drives tasks from `bd`, executes them in isolated scratch checkouts via OpenCode, verifies acceptance, merges on green, and records steps in a durable SQLite ledger. Tier-1 components (harness, workspace, task queue, ledger, execution) have versioned Agalma contracts and can run behind framed-JSON process boundaries (`agalma-ipc`). OS-level confinement was removed by design; see [sandbox-removal-design.md](docs/sandbox-removal-design.md).
 
 | Crate | Responsibility |
 |---|---|
@@ -35,7 +35,7 @@ A Rust workspace implementing the factory core. The conductor drives tasks from 
 | `agalma-ledger` | SQLite ledger: atomic commits, receipts, export/import |
 | `agalma-execution` | Execution service: serial executor, receipts, reconciliation |
 | `agalma-kernel` | Durable execution kernel (B0): history, timers, cancellation, upgrade |
-| `agalma-sandbox` | macOS Seatbelt confinement, process-group kill |
+| `agalma-process` | Local process launcher: process-group launch, liveness, evidence-backed tree-kill |
 | `agalma-workspace` | Git checkout, merge, reconcile, revert |
 | `agalma-taskqueue` | `bd` backlog adapter |
 | `agalma-decision` | Decision contract, static policies, model routing |
@@ -70,7 +70,8 @@ agalma gc         Reap terminal executions' heavy scratch from a state dir
 
 Operational posture: the current production defaults use process transports for the
 harness, ledger, workspace, and task queue; `AGALMA_*_TRANSPORT=in-process` retains
-the in-process override. Sandbox always uses a process. Execution/kernel remains
+the in-process override. The process launcher is in-process by design (no server
+boundary exists). Execution/kernel remains
 in-process by default; its production integration is planned in CV.1
 (`agalma-pob.1`). Work is supervised, one task at a time, on a scratch clone; the
 factory does not yet run unattended. Peer socket bounds and smoke evidence are in
@@ -89,7 +90,7 @@ unknown-plugin end-to-end acceptance has not been established. See the
 
 - **Recovery:** crash mid-build terminates survivors before redispatch; crash after merge completes without re-merge; duplicate delivery returns the recorded receipt; kill latch survives restart; stale-lease workers cannot advance state.
 - **Durability:** restart during retry delay fires the timer once; directive updates survive restart; compatible upgrades resume pending work and preserve IDs/receipts.
-- **Confinement:** workers launch under Seatbelt; harness egress goes through a parent-owned loopback proxy; verification runs in a pristine sandboxed checkout.
+- **Process lifecycle:** workers launch as process-group leaders via `agalma-process`; termination proves the descendant tree is gone. OS confinement and egress denial were removed by design ([sandbox-removal-design.md](docs/sandbox-removal-design.md)); the provider proxy remains for credential handling.
 - **Replacement:** S0d bind gate refuses unmet capabilities; dual-binding rebind works between attempts; rollback reconciles before dispatch.
 - **Extraction (B1):** all Tier-1 seams process-hosted behind framed JSON contracts; per-boundary shadow parity, staged rebind, and rollback evidence (`docs/b1-exit-evidence.md`); architecture test forbids impl→impl dependencies.
 - Fixtures in `fixtures/recovery-pack/` are immutable (`MANIFEST.sha256`, `pack_integrity.rs`).

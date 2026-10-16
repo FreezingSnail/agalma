@@ -141,6 +141,12 @@ Reuse S0c fixture cases where the semantics overlap (tests ported into
 
 ## Sandbox details
 
+> **Removed 2026-10-16.** The `agalma-sandbox` crate, its profile, and
+> `SandboxApi` no longer exist; process lifecycle is
+> `ProcessApi`/`LocalLauncher` (`agalma-process`). See
+> [sandbox-removal-design.md](sandbox-removal-design.md). The paragraphs below
+> are the historical M0 record.
+
 Product profile at `crates/agalma-sandbox/profiles/worker.sb` (from S0b, params
 `ATTEMPT`, `PROTECTED`, `SOCKDIR`, `EXTRA_RO`, `EXTRA_RO2`, `EXTRA_RO3`,
 `EXTRA_RW`). The launcher always renders every extra-root slot; unused slots

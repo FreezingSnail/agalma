@@ -1991,6 +1991,11 @@ impl VerifyActivity {
         // the parent then persists it under artifacts.
         let artifacts_diagnosis = artifacts.join(format!("diagnosis@{}.md", ctx.attempt));
         let started = Instant::now();
+        // The per-attempt verifier prompt is written for every red attempt,
+        // scripted or live: pre-SF.6 it was rendered unconditionally here, and
+        // the scripted repository-mode fixture asserts it. The live session below
+        // reads the same path.
+        let prompt_path = self.write_verifier_prompt(root, ctx)?;
         let usage = if self.scripted {
             let failure = std::fs::read_to_string(failure_path).unwrap_or_default();
             let diff =
@@ -2019,7 +2024,6 @@ impl VerifyActivity {
             // The diagnosis inputs (diff/failure) live under `<run>/artifacts`
             // and are readable through the verifier's read-only run-root
             // PROTECTED grant; the output is written inside the narrow ATTEMPT.
-            let prompt_path = self.write_verifier_prompt(root, ctx)?;
             let runtime_diagnosis = runtime.join(format!("diagnosis@{}.md", ctx.attempt));
             let usage = self.run_verifier_session(
                 checkout,

@@ -33,7 +33,6 @@ use agalma_conductor::harness_binding::{
 use agalma_conductor::harness_process::{
     ready_json, reference_server_spec, resolve_server_binary, ProcessBinding, READY_TIMEOUT,
 };
-use agalma_conductor::sandbox_process::SandboxProcess;
 use agalma_ledger::SqliteLedger;
 use agalma_testkit::ScratchDir;
 
@@ -887,21 +886,24 @@ fn supervisor_startup_restart_drop_lifecycle() {
 }
 
 #[test]
-fn shared_boundary_sandbox_ready_timeout_leaves_no_process() {
+fn shared_boundary_ready_timeout_leaves_no_process() {
     // The cleanup owner lives in the shared `spawn_supervised` helper, so a
-    // READY failure on a non-harness boundary is covered as well.
-    let dir = fresh("shared-sandbox");
+    // READY failure on any supervised boundary is covered as well.
+    let dir = fresh("shared-boundary");
     let socket = dir.join("s.sock");
     let leader = dir.join("leader.pid");
     let descendant = dir.join("descendant.pid");
 
-    let err = match SandboxProcess::spawn_with_spec(
+    let err = match ProcessBinding::spawn(
         mock_spec(&leader, &descendant, None),
         PathBuf::from("/bin/sh"),
         socket,
+        1,
+        MODEL,
+        Wire::Connect,
         Duration::from_millis(300),
     ) {
-        Ok(_) => panic!("sandbox mock startup must fail"),
+        Ok(_) => panic!("boundary mock startup must fail"),
         Err(e) => e,
     };
     assert!(err.contains("did not announce READY"), "{err:?}");
@@ -909,11 +911,11 @@ fn shared_boundary_sandbox_ready_timeout_leaves_no_process() {
     let leader_pid = read_pid(&leader);
     assert!(
         wait_gone(leader_pid, Duration::from_secs(5)),
-        "sandbox leader {leader_pid} survived failed startup"
+        "boundary leader {leader_pid} survived failed startup"
     );
-    assert!(proc_stat(leader_pid).is_none(), "sandbox leader not reaped");
+    assert!(proc_stat(leader_pid).is_none(), "boundary leader not reaped");
     assert!(
         wait_gone(read_pid(&descendant), Duration::from_secs(5)),
-        "sandbox descendant survived failed startup"
+        "boundary descendant survived failed startup"
     );
 }

@@ -1,10 +1,11 @@
-//! Gated live smoke: a Seatbelt-confined OpenCode turn reaches the free model
-//! **through the parent-owned loopback proxy**.
+//! Gated live smoke: an OpenCode turn reaches the free model **through the
+//! parent-owned loopback proxy**.
 //!
-//! Background (M0.6): the worker confine profile denies arbitrary network, so
-//! the confined harness cannot reach the provider directly. The
-//! [`agalma_conductor::provider_proxy`] parent proxy is the fix; this test
-//! proves it end to end.
+//! Background (M0.6): the worker confine profile denied arbitrary network, so
+//! the confined harness could not reach the provider directly. Sandbox removal
+//! (P2) means the child *can* reach the network directly now, so the proxy is no
+//! longer a security boundary (`docs/sandbox-removal-design.md` §7.2); it is
+//! still the credential/audit path. This test proves the proxy path end to end.
 //!
 //! Ignored by default. Run it explicitly with the live flag set:
 //!
@@ -15,12 +16,10 @@
 //!
 //! Evidence asserted:
 //!
-//! 1. the confined turn reaches a terminal `Completed` with usage or a result;
+//! 1. the turn reaches a terminal `Completed` with usage or a result;
 //! 2. the proxy log shows an allowlisted `CONNECT` (`*.opencode.ai`) was the
 //!    path used;
-//! 3. a confined direct-network probe (`curl http://1.1.1.1/`) still fails —
-//!    the profile boundary is intact, the proxy is the only egress;
-//! 4. the user's OpenCode state is untouched.
+//! 3. the user's OpenCode state is untouched.
 //!
 //! All scratch state lives under `target/test-runs/proxy-live-*` (never `/tmp`);
 //! scratch dirs auto-remove on success (kept on failure for forensics).
@@ -37,10 +36,9 @@ use agalma_contracts::harness::{
     CreateSessionRequest, HarnessApi, OperationHandle, OperationState, RunTurnRequest,
     StartAttemptRequest,
 };
-use agalma_contracts::ids::{ArtifactRef, AttemptId, OperationId};
-use agalma_contracts::sandbox::{LaunchSpec, SandboxApi};
+use agalma_contracts::ids::{ArtifactRef, OperationId};
 use agalma_harness_opencode::{OpenCodeHarness, OpenCodeHarnessConfig};
-use agalma_sandbox::{SeatbeltSandbox, PRODUCT_PROFILE};
+use agalma_process::LocalLauncher;
 use agalma_testkit::ScratchDir;
 
 fn live_enabled() -> bool {
@@ -99,67 +97,9 @@ fn poll_terminal(
     }
 }
 
-/// Launch a confined `curl` probe against a raw external IP and return its
-/// recorded exit code. A non-zero code means the direct network stayed denied.
-fn confined_direct_network_exit_code(root: &Path) -> i32 {
-    let attempt = root.join("probe-attempt");
-    let tmp = attempt.join("tmp");
-    let work = attempt.join("work");
-    for dir in [&attempt, &tmp, &work] {
-        fs::create_dir_all(dir).expect("create probe dir");
-    }
-    // The profile's `subpath` filter matches resolved paths; the Seatbelt
-    // params must be canonical (the adapter's `canonical_dir` does the same).
-    let attempt = fs::canonicalize(&attempt).expect("resolve probe attempt");
-    let tmp = fs::canonicalize(&tmp).expect("resolve probe tmp");
-    let work = fs::canonicalize(&work).expect("resolve probe work");
-    let protected = fs::canonicalize(root.join("protected")).expect("resolve protected");
-    let sock = fs::canonicalize(root.join("sock")).expect("resolve sock");
-    let profile = fs::canonicalize(root.join("worker.sb")).expect("resolve profile");
-    let code_file = attempt.join("net-code.txt");
-    let _ = fs::remove_file(&code_file);
-
-    let mut sandbox = SeatbeltSandbox::new();
-    let command = format!(
-        "curl -sS --max-time 5 -o /dev/null http://1.1.1.1/ ; echo $? > {}",
-        code_file.display()
-    );
-    let mut env = std::collections::BTreeMap::new();
-    env.insert(
-        "PATH".to_string(),
-        "/usr/bin:/bin:/usr/sbin:/sbin".to_string(),
-    );
-    env.insert("HOME".to_string(), work.to_string_lossy().into_owned());
-    env.insert("TMPDIR".to_string(), tmp.to_string_lossy().into_owned());
-    let spec = LaunchSpec {
-        program: "/bin/sh".to_string(),
-        args: vec!["-c".to_string(), command],
-        cwd: attempt.to_string_lossy().into_owned(),
-        env,
-        profile: profile.to_string_lossy().into_owned(),
-        attempt: AttemptId::derive(2),
-        attempt_dir: attempt.to_string_lossy().into_owned(),
-        protected_dir: protected.to_string_lossy().into_owned(),
-        sock_dir: sock.to_string_lossy().into_owned(),
-        extra_ro_roots: vec![protected.to_string_lossy().into_owned()],
-        extra_rw_roots: Vec::new(),
-    };
-    let child = sandbox.launch(spec).expect("launch confined network probe");
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while sandbox.alive(&child).unwrap_or(false) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    let _ = sandbox.terminate(&child);
-    fs::read_to_string(&code_file)
-        .expect("confined probe must record an exit code (profile/exec worked)")
-        .trim()
-        .parse::<i32>()
-        .expect("exit code is an integer")
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
-async fn confined_turn_reaches_provider_through_parent_proxy() {
+async fn turn_reaches_provider_through_parent_proxy() {
     if !live_enabled() {
         eprintln!("proxy live smoke skipped: set AGALMA_PROXY_LIVE=1 to run");
         return;
@@ -167,14 +107,10 @@ async fn confined_turn_reaches_provider_through_parent_proxy() {
 
     let root = run_root();
     let attempt_dir = root.join("attempt");
-    let protected = root.join("protected");
-    let sock = root.join("sock");
     let workspace = attempt_dir.join("work");
-    for dir in [&attempt_dir, &protected, &sock, &workspace] {
+    for dir in [&attempt_dir, &workspace] {
         fs::create_dir_all(dir).expect("create attempt dir");
     }
-    let profile = root.join("worker.sb");
-    fs::write(&profile, PRODUCT_PROFILE).expect("write profile");
 
     // Mirror `WorkspaceApi::prepare`: opencode's project discovery resolves the
     // git root, so an init'd checkout is created instead of climbing outward.
@@ -201,12 +137,10 @@ async fn confined_turn_reaches_provider_through_parent_proxy() {
         proxy.url()
     );
 
-    let mut config = OpenCodeHarnessConfig::new(&profile, &attempt_dir, &protected, &sock);
+    let mut config = OpenCodeHarnessConfig::new();
+    config.attempt_dir = attempt_dir.clone();
     config.proxy_url = Some(proxy.url());
-    if let Some(extra) = std::env::var_os("AGALMA_HARNESS_EXTRA_RO") {
-        config.extra_ro = Some(PathBuf::from(extra));
-    }
-    let mut harness = OpenCodeHarness::new(Box::new(SeatbeltSandbox::new()), config);
+    let mut harness = OpenCodeHarness::new(Box::new(LocalLauncher::new()), config);
 
     let attempt = harness
         .start_attempt(StartAttemptRequest {
@@ -279,15 +213,10 @@ async fn confined_turn_reaches_provider_through_parent_proxy() {
         "no confined process may survive stop"
     );
 
-    // 3. Direct external network is still denied inside the same profile.
-    let exit_code = confined_direct_network_exit_code(&root);
-    eprintln!("confined direct-network curl exit code: {exit_code}");
-    assert_ne!(
-        exit_code, 0,
-        "confined direct network must stay denied (curl succeeded unproxied)"
-    );
+    // The proxy is no longer a security boundary (sandbox removal §7.2), but a
+    // direct-network denial is no longer asserted here.
 
-    // 4. User OpenCode state untouched.
+    // 3. User OpenCode state untouched.
     assert_eq!(
         mtime(&user_config),
         before_config,

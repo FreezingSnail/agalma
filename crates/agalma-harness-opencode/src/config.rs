@@ -13,14 +13,8 @@ use crate::adapter::{OpenCodeHarnessConfig, DEFAULT_PAID_PROVIDER_ID, DUMMY_PROV
 /// Inputs to [`build_config`]; the per-slice values both call sites already have.
 #[derive(Clone, Debug)]
 pub struct OpenCodeConfigInit {
-    /// Rendered, fail-closed sandbox profile.
-    pub profile_path: PathBuf,
-    /// Attempt-owned read/write root.
+    /// Attempt-owned runtime root (isolated `HOME`/`TMPDIR`/`XDG_*`).
     pub attempt_dir: PathBuf,
-    /// Protected-tests root (readable, not writable).
-    pub protected_dir: PathBuf,
-    /// Parent-owned Unix-socket directory.
-    pub sock_dir: PathBuf,
     /// Resolved model for the session.
     pub model: String,
     /// Parent-owned forward-proxy URL (provider egress).
@@ -28,11 +22,6 @@ pub struct OpenCodeConfigInit {
     /// Whether the paid provider path is active (points the provider at the
     /// loopback proxy with a dummy key).
     pub paid_proxy: bool,
-    /// Extra read-only roots for the confined worker.
-    pub extra_ro_roots: Vec<PathBuf>,
-    /// Extra read/write roots (at most one honoured), e.g. a target repo the
-    /// session edits while its runtime state stays under `attempt_dir`.
-    pub extra_rw_roots: Vec<PathBuf>,
     /// Additional child environment (toolchain homes, PATH additions).
     pub extra_env: BTreeMap<String, String>,
 }
@@ -40,22 +29,18 @@ pub struct OpenCodeConfigInit {
 /// Assemble an [`OpenCodeHarnessConfig`] from explicit inputs.
 ///
 /// The paid-provider override is applied only when the model's provider matches
-/// [`DEFAULT_PAID_PROVIDER_ID`]; the real credential never enters the sandbox.
+/// [`DEFAULT_PAID_PROVIDER_ID`]; the real credential never enters the child.
 pub fn build_config(init: OpenCodeConfigInit) -> OpenCodeHarnessConfig {
     let OpenCodeConfigInit {
-        profile_path,
         attempt_dir,
-        protected_dir,
-        sock_dir,
         model,
         proxy_url,
         paid_proxy,
-        extra_ro_roots,
-        extra_rw_roots,
         extra_env,
     } = init;
 
-    let mut config = OpenCodeHarnessConfig::new(profile_path, attempt_dir, protected_dir, sock_dir);
+    let mut config = OpenCodeHarnessConfig::new();
+    config.attempt_dir = attempt_dir;
     config.model = Some(model.clone());
     config.proxy_url = proxy_url.clone();
     if paid_proxy {
@@ -72,8 +57,6 @@ pub fn build_config(init: OpenCodeConfigInit) -> OpenCodeHarnessConfig {
             }
         }
     }
-    config.extra_ro_roots = extra_ro_roots;
-    config.extra_rw_roots = extra_rw_roots;
     config.extra_env = extra_env;
     config
 }
@@ -84,15 +67,10 @@ mod tests {
 
     fn init(model: &str, paid: bool) -> OpenCodeConfigInit {
         OpenCodeConfigInit {
-            profile_path: PathBuf::from("worker.sb"),
             attempt_dir: PathBuf::from("attempt"),
-            protected_dir: PathBuf::from("protected"),
-            sock_dir: PathBuf::from("sock"),
             model: model.to_string(),
             proxy_url: Some("http://127.0.0.1:41234".to_string()),
             paid_proxy: paid,
-            extra_ro_roots: Vec::new(),
-            extra_rw_roots: Vec::new(),
             extra_env: BTreeMap::new(),
         }
     }

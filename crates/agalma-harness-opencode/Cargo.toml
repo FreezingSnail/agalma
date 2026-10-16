@@ -6,16 +6,16 @@ license.workspace = true
 description = "Agalma OpenCode harness adapter. Owning wave: M0.6 — vendor details confined here."
 publish = false
 
-# B1.3: the harness server drives confined launches through the extracted
-# `SandboxApi` boundary (a `SandboxClient`), so `agalma-sandbox` is no longer a
-# normal dependency. It remains a dev-dependency for the live smoke test, which
-# constructs the backend directly.
+# The harness launches `opencode serve` through the extracted
+# `agalma_contracts::ProcessApi` boundary. The server builds its own
+# `agalma_process::LocalLauncher` (no confinement profile), so `agalma-sandbox`
+# is gone entirely.
 [dependencies]
 agalma-contracts = { path = "../agalma-contracts" }
 agalma-ipc = { path = "../agalma-ipc" }
+agalma-process = { path = "../agalma-process" }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-agalma-sandbox = { path = "../agalma-sandbox" }
 agalma-testkit = { path = "../agalma-testkit" }

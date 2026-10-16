@@ -1195,7 +1195,7 @@ fn fixture_dir() -> PathBuf {
 }
 
 /// The production scripted activity set (same wiring recovery.rs uses) so
-/// `build_probe` terminates recorded survivors through the real sandbox.
+/// `build_probe` terminates recorded survivors through the real launcher.
 fn build_survivor_harness(state_dir: &Path) -> SurvivorHarness {
     fs::create_dir_all(state_dir).expect("state dir");
     let deps = PhaseDeps {
@@ -1206,12 +1206,10 @@ fn build_survivor_harness(state_dir: &Path) -> SurvivorHarness {
         route: "builder:fix".to_string(),
         verifier_route: "verifier:fix".to_string(),
         role: "builder".to_string(),
-        profile_path: state_dir.join("unused-worker.sb"),
         builder_prompt: state_dir.join("unused-builder.md"),
         proxy_url: None,
         verifier_proxy_url: None,
         paid_proxy: false,
-        extra_ro_roots: Vec::new(),
         toolchain_env: BTreeMap::new(),
         turn_timeout: Duration::from_secs(1),
         verify_timeout: Duration::from_secs(1),

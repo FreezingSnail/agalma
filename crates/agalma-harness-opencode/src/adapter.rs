@@ -6,15 +6,16 @@
 //! prompt text. The conductor and the contract never see any of it.
 //!
 //! Launch is not done directly: the adapter builds an attempt-scoped
-//! [`agalma_contracts::sandbox::LaunchSpec`] and hands it to the injected
-//! [`SandboxApi`] (the composition root supplies `agalma-sandbox`), so this crate
-//! depends only on `agalma-contracts` in `src/`. The server's stdout/stderr are
-//! inherited from the launcher; readiness is proved over loopback HTTP.
+//! [`agalma_contracts::process::ProcessSpec`] and hands it to the injected
+//! [`agalma_contracts::ProcessApi`] (the composition root supplies
+//! `agalma-process`), so this crate depends only on `agalma-contracts` in
+//! `src/`. The server's stdout/stderr are inherited from the launcher;
+//! readiness is proved over loopback HTTP.
 //!
 //! The adapter is synchronous (the frozen `HarnessApi` is sync) but every method
-//! that touches the sandbox must run inside a Tokio runtime, because
-//! `SandboxApi::launch`/`terminate` drive the confined child through
-//! `tokio::process`. The conductor calls it from its async dispatch loop.
+//! that touches the launcher must run inside a Tokio runtime, because
+//! `ProcessApi::launch`/`terminate` drive the child through `tokio::process`.
+//! The conductor calls it from its async dispatch loop.
 //!
 //! Transport: `std::net::TcpStream` with hand-rolled HTTP/1.1 (port of the S0d
 //! client). Reconciliation uses the durable session projection
@@ -35,7 +36,7 @@ use agalma_contracts::harness::{
     HARNESS_API,
 };
 use agalma_contracts::ids::{ArtifactRef, AttemptId, OperationId, SessionId};
-use agalma_contracts::sandbox::{LaunchSpec, SandboxApi, SandboxChild};
+use agalma_contracts::process::{ProcessApi, ProcessChild, ProcessSpec};
 use serde_json::{json, Value};
 
 use crate::http::HttpClient;
@@ -60,32 +61,15 @@ const NO_PROXY: &str = "127.0.0.1,localhost";
 
 /// Attempt-scoped configuration for one [`OpenCodeHarness`].
 ///
-/// The four sandbox roots mirror [`LaunchSpec`]; the adapter never invents them.
-/// `attempt_dir` is the Seatbelt `ATTEMPT` root: the isolated
-/// `xdg-config`/`xdg-data`/`tmp`/`work` directories are created under it.
+/// `attempt_dir` is the runtime root: the isolated
+/// `xdg-config`/`xdg-data`/`tmp`/`work` directories are created under it. The
+/// former confinement roots (profile, protected/socket dirs, extra read/write
+/// roots) are gone with the sandbox (`docs/sandbox-removal-design.md` §4.3).
 #[derive(Clone, Debug)]
 pub struct OpenCodeHarnessConfig {
-    /// Rendered, fail-closed sandbox profile (Seatbelt `-f` file).
-    pub profile_path: PathBuf,
-    /// Attempt-owned read/write root (Seatbelt `ATTEMPT`).
+    /// Attempt-owned runtime root (isolated `HOME`/`TMPDIR`/`XDG_*`).
     pub attempt_dir: PathBuf,
-    /// Protected-tests root, readable not writable (Seatbelt `PROTECTED`).
-    pub protected_dir: PathBuf,
-    /// Parent-owned Unix-socket directory (Seatbelt `SOCKDIR`).
-    pub sock_dir: PathBuf,
-    /// Extra read-only root (Seatbelt `EXTRA_RO`). When `None`, derived from the
-    /// resolved opencode install tree.
-    pub extra_ro: Option<PathBuf>,
-    /// Additional read-only roots rendered into the remaining extra-root slots
-    /// (Seatbelt `EXTRA_RO2`, `EXTRA_RO3`), e.g. toolchain homes the confined
-    /// worker needs (`~/.cargo`, `~/.rustup`). At most two are honoured.
-    pub extra_ro_roots: Vec<PathBuf>,
-    /// Extra read/write root (Seatbelt `EXTRA_RW`; at most one honoured), e.g.
-    /// the target repo a planning session edits. Keeping the repo here instead
-    /// of making it `attempt_dir` keeps OpenCode's runtime state (XDG dirs, its
-    /// git snapshot store) out of the worktree it snapshots.
-    pub extra_rw_roots: Vec<PathBuf>,
-    /// Additional environment variables for the confined server, merged over
+    /// Additional environment variables for the launched server, merged over
     /// the adapter's base environment (e.g. `RUSTUP_HOME`, `CARGO_HOME`,
     /// `PATH` additions for the toolchain).
     pub extra_env: BTreeMap<String, String>,
@@ -95,16 +79,15 @@ pub struct OpenCodeHarnessConfig {
     pub model: Option<String>,
     /// Optional parent-owned forward-proxy URL (e.g. `http://127.0.0.1:41234`).
     ///
-    /// When set, the confined server receives `HTTPS_PROXY`/`HTTP_PROXY` (and
-    /// their lower-case forms) plus `NO_PROXY=127.0.0.1,localhost`, so provider
-    /// egress tunnels through the parent while loopback control traffic
-    /// bypasses the proxy. When `None`, no proxy variables are injected (an
-    /// unconfined or otherwise network-enabled launch stays reachable).
+    /// When set, the child receives `HTTPS_PROXY`/`HTTP_PROXY` (and their
+    /// lower-case forms) plus `NO_PROXY=127.0.0.1,localhost`, so provider egress
+    /// tunnels through the parent while loopback control traffic bypasses the
+    /// proxy. When `None`, no proxy variables are injected.
     pub proxy_url: Option<String>,
     /// Paid HTTP-forward mode (`agalma-csw.2`): when set, the isolated XDG
     /// config points `provider_id` at `provider_base_url` (the loopback paid
     /// proxy) with `provider_api_key` as a **dummy** credential. The real token
-    /// never enters the sandbox; the parent proxy injects it upstream.
+    /// never enters the child; the parent proxy injects it upstream.
     pub provider_base_url: Option<String>,
     /// Provider id to override (e.g. `opencode-go`). Defaults to `opencode-go`
     /// when [`OpenCodeHarnessConfig::provider_base_url`] is set.
@@ -132,21 +115,11 @@ pub const KEEP_STATE_ENV: &str = "AGALMA_HARNESS_KEEP_STATE";
 const SERVER_CONFIG_CONTENT: &str = r#"{"snapshots":false}"#;
 
 impl OpenCodeHarnessConfig {
-    /// Build a config with the four sandbox roots and a 30 s readiness timeout.
-    pub fn new(
-        profile_path: impl Into<PathBuf>,
-        attempt_dir: impl Into<PathBuf>,
-        protected_dir: impl Into<PathBuf>,
-        sock_dir: impl Into<PathBuf>,
-    ) -> Self {
+    /// Build a config with a 30 s readiness timeout. `attempt_dir` is assigned
+    /// by the caller (the runtime root is context-specific).
+    pub fn new() -> Self {
         OpenCodeHarnessConfig {
-            profile_path: profile_path.into(),
-            attempt_dir: attempt_dir.into(),
-            protected_dir: protected_dir.into(),
-            sock_dir: sock_dir.into(),
-            extra_ro: None,
-            extra_ro_roots: Vec::new(),
-            extra_rw_roots: Vec::new(),
+            attempt_dir: PathBuf::new(),
             extra_env: BTreeMap::new(),
             program: None,
             model: None,
@@ -157,6 +130,12 @@ impl OpenCodeHarnessConfig {
             readiness_timeout: Duration::from_secs(30),
             keep_runtime_state: std::env::var(KEEP_STATE_ENV).is_ok_and(|v| v == "1"),
         }
+    }
+}
+
+impl Default for OpenCodeHarnessConfig {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -193,12 +172,12 @@ struct OcOp {
 
 /// OpenCode-backed [`HarnessApi`].
 pub struct OpenCodeHarness {
-    sandbox: Box<dyn SandboxApi + Send>,
+    launcher: Box<dyn ProcessApi + Send>,
     config: OpenCodeHarnessConfig,
     model: String,
     impl_version: String,
     http: Option<HttpClient>,
-    child: Option<SandboxChild>,
+    child: Option<ProcessChild>,
     attempt_id: Option<AttemptId>,
     attempt: Option<AttemptHandle>,
     workspace: Option<String>,
@@ -219,11 +198,11 @@ pub struct OpenCodeHarness {
 }
 
 impl OpenCodeHarness {
-    /// Construct an adapter around an injected sandbox backend.
+    /// Construct an adapter around an injected process launcher.
     ///
-    /// The sandbox implementation (the Seatbelt backend) is selected by the
-    /// composition root, keeping this crate free of impl-to-impl edges.
-    pub fn new(sandbox: Box<dyn SandboxApi + Send>, config: OpenCodeHarnessConfig) -> Self {
+    /// The launcher (`agalma-process::LocalLauncher` in production) is selected
+    /// by the composition root, keeping this crate free of impl-to-impl edges.
+    pub fn new(launcher: Box<dyn ProcessApi + Send>, config: OpenCodeHarnessConfig) -> Self {
         let model = config
             .model
             .clone()
@@ -236,7 +215,7 @@ impl OpenCodeHarness {
             .or_else(|| std::env::var_os("OPENCODE_BIN").map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("opencode"));
         OpenCodeHarness {
-            sandbox,
+            launcher,
             config,
             model,
             impl_version: detect_version(&version_source),
@@ -296,13 +275,6 @@ impl OpenCodeHarness {
             .clone()
             .ok_or_else(|| ContractError::KnownFailure("attempt id not allocated".to_string()))?;
         let program = self.resolve_program()?;
-        let opencode_root = self
-            .config
-            .extra_ro
-            .clone()
-            .unwrap_or_else(|| derive_extra_ro(&program));
-        let mut extra_ro_roots = vec![opencode_root];
-        extra_ro_roots.extend(self.config.extra_ro_roots.iter().cloned());
 
         // Isolated attempt tree: <attempt>/{xdg-config,xdg-data,xdg-cache,
         // xdg-state,tmp,work}. `work` is the attempt-scoped HOME. The guard runs
@@ -322,20 +294,6 @@ impl OpenCodeHarness {
         for sub in RUNTIME_SUBDIRS {
             dirs.insert(sub, canonical_dir(&root.join(sub))?);
         }
-        let protected = canonical_dir(&self.config.protected_dir)?;
-        let sock = canonical_dir(&self.config.sock_dir)?;
-        let profile = fs::canonicalize(&self.config.profile_path).map_err(|e| {
-            ContractError::KnownFailure(format!(
-                "sandbox profile {:?} cannot be resolved: {e}",
-                self.config.profile_path
-            ))
-        })?;
-        let extra_rw_roots = self
-            .config
-            .extra_rw_roots
-            .iter()
-            .map(|dir| canonical_dir(dir))
-            .collect::<Result<Vec<_>, _>>()?;
 
         // Allocate a loopback port for the child. `allocate_port` probes the
         // port after releasing it and retries if a concurrent process grabbed
@@ -437,7 +395,7 @@ impl OpenCodeHarness {
             SERVER_CONFIG_CONTENT.to_string(),
         );
 
-        let spec = LaunchSpec {
+        let spec = ProcessSpec {
             program: program.to_string_lossy().into_owned(),
             args: vec![
                 "serve".to_string(),
@@ -448,22 +406,10 @@ impl OpenCodeHarness {
             ],
             cwd: workspace_abs.to_string_lossy().into_owned(),
             env,
-            profile: profile.to_string_lossy().into_owned(),
             attempt: attempt_id,
-            attempt_dir: root.to_string_lossy().into_owned(),
-            protected_dir: protected.to_string_lossy().into_owned(),
-            sock_dir: sock.to_string_lossy().into_owned(),
-            extra_ro_roots: extra_ro_roots
-                .iter()
-                .map(|root| root.to_string_lossy().into_owned())
-                .collect(),
-            extra_rw_roots: extra_rw_roots
-                .iter()
-                .map(|root| root.to_string_lossy().into_owned())
-                .collect(),
         };
 
-        let child = self.sandbox.launch(spec)?;
+        let child = self.launcher.launch(spec)?;
         self.http = Some(HttpClient::new("127.0.0.1", port, AUTH_USER, &password));
         self.child = Some(child);
         self.wait_ready()
@@ -473,7 +419,7 @@ impl OpenCodeHarness {
         let deadline = Instant::now() + self.config.readiness_timeout;
         loop {
             if let Some(child) = self.child.as_ref() {
-                if !self.sandbox.alive(child)? {
+                if !self.launcher.alive(child)? {
                     return Err(ContractError::KnownFailure(
                         "opencode serve exited before readiness".to_string(),
                     ));
@@ -501,9 +447,9 @@ impl OpenCodeHarness {
 
     fn terminate_child(&mut self) -> StopEvidence {
         match self.child.take() {
-            Some(child) => self.sandbox.terminate(&child).unwrap_or(StopEvidence {
+            Some(child) => self.launcher.terminate(&child).unwrap_or(StopEvidence {
                 process_group_gone: false,
-                detail: format!("sandbox terminate failed for pid {}", child.pid),
+                detail: format!("process terminate failed for pid {}", child.pid),
             }),
             None => StopEvidence {
                 process_group_gone: true,
@@ -786,21 +732,6 @@ impl HarnessApi for OpenCodeHarness {
         self.http = None;
         Ok(evidence)
     }
-}
-
-/// Derive the read-only harness install tree from the resolved binary, matching
-/// the S0b p08 derivation: the `packages/cli/` prefix for a source install, else
-/// the binary's parent directory.
-fn derive_extra_ro(program: &Path) -> PathBuf {
-    let real = fs::canonicalize(program).unwrap_or_else(|_| program.to_path_buf());
-    let text = real.to_string_lossy();
-    if let Some(idx) = text.find("/packages/cli/") {
-        let end = idx + "/packages/cli/".len();
-        return PathBuf::from(&text[..end]);
-    }
-    real.parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| real.clone())
 }
 
 /// Attempt-root subdirectories the adapter renders as the server's runtime
@@ -1089,24 +1020,6 @@ mod tests {
     }
 
     #[test]
-    fn extra_ro_uses_packages_cli_prefix_for_source_install() {
-        let derived = derive_extra_ro(Path::new(
-            "/Users/x/code/opencode/packages/cli/dist/bin/opencode",
-        ));
-        assert_eq!(
-            derived,
-            PathBuf::from("/Users/x/code/opencode/packages/cli/")
-        );
-    }
-
-    #[test]
-    fn extra_ro_falls_back_to_parent_for_standalone_binary() {
-        // A non-existent path cannot be canonicalized; the parent is used.
-        let derived = derive_extra_ro(Path::new("/opt/tools/bin/opencode"));
-        assert_eq!(derived, PathBuf::from("/opt/tools/bin"));
-    }
-
-    #[test]
     fn prompt_selects_cancel_prompt_for_cancel_input() {
         assert_eq!(
             prompt_for(&ArtifactRef::derive("cancel-turn")),
@@ -1167,21 +1080,20 @@ mod tests {
     /// Records launches and reports the child dead, so `start_attempt` fails
     /// fast at readiness without a real server.
     #[derive(Clone, Default)]
-    struct RecordingSandbox {
-        launches: std::sync::Arc<std::sync::Mutex<Vec<LaunchSpec>>>,
+    struct RecordingLauncher {
+        launches: std::sync::Arc<std::sync::Mutex<Vec<ProcessSpec>>>,
     }
 
-    impl RecordingSandbox {
-        fn launches(&self) -> Vec<LaunchSpec> {
+    impl RecordingLauncher {
+        fn launches(&self) -> Vec<ProcessSpec> {
             self.launches.lock().expect("launch log").clone()
         }
     }
 
-    impl SandboxApi for RecordingSandbox {
-        fn launch(&mut self, spec: LaunchSpec) -> Result<SandboxChild, ContractError> {
+    impl ProcessApi for RecordingLauncher {        fn launch(&mut self, spec: ProcessSpec) -> Result<ProcessChild, ContractError> {
             let attempt = spec.attempt.clone();
             self.launches.lock().expect("launch log").push(spec);
-            Ok(SandboxChild {
+            Ok(ProcessChild {
                 pid: 0,
                 pgid: 0,
                 attempt,
@@ -1189,11 +1101,11 @@ mod tests {
             })
         }
 
-        fn alive(&self, _child: &SandboxChild) -> Result<bool, ContractError> {
+        fn alive(&self, _child: &ProcessChild) -> Result<bool, ContractError> {
             Ok(false)
         }
 
-        fn terminate(&mut self, _child: &SandboxChild) -> Result<StopEvidence, ContractError> {
+        fn terminate(&mut self, _child: &ProcessChild) -> Result<StopEvidence, ContractError> {
             Ok(StopEvidence {
                 process_group_gone: true,
                 detail: "fake".to_string(),
@@ -1220,16 +1132,11 @@ mod tests {
         (root, workspace)
     }
 
-    fn harness(root: &Path, attempt: &Path, sandbox: &RecordingSandbox) -> OpenCodeHarness {
-        let mut config = OpenCodeHarnessConfig::new(
-            root.join("worker.sb"),
-            attempt,
-            root.join("protected"),
-            root.join("sock"),
-        );
+    fn harness(_root: &Path, attempt: &Path, launcher: &RecordingLauncher) -> OpenCodeHarness {
+        let mut config = OpenCodeHarnessConfig::new();
+        config.attempt_dir = attempt.to_path_buf();
         config.program = Some(PathBuf::from("/usr/bin/true"));
-        config.extra_ro = Some(PathBuf::from("/usr/bin"));
-        OpenCodeHarness::new(Box::new(sandbox.clone()), config)
+        OpenCodeHarness::new(Box::new(launcher.clone()), config)
     }
 
     fn start(harness: &mut OpenCodeHarness, workspace: &Path) -> ContractError {
@@ -1266,25 +1173,20 @@ mod tests {
     }
 
     #[test]
-    fn runtime_state_stays_outside_a_workspace_granted_read_write() {
-        // agalma-22f: a planning session edits the repo (EXTRA_RW) while
-        // OpenCode's XDG/tmp/HOME state — its git snapshot store included —
-        // lives in a conductor-owned attempt root, never in the worktree.
+    fn runtime_state_stays_outside_the_workspace() {
+        // agalma-22f: a planning session edits the repo while OpenCode's
+        // XDG/tmp/HOME state — its git snapshot store included — lives in a
+        // conductor-owned attempt root, never in the worktree.
         let (root, workspace) = layout("runtime-outside");
-        let sandbox = RecordingSandbox::default();
+        let sandbox = RecordingLauncher::default();
         let mut h = harness(&root, &root.join("attempt"), &sandbox);
-        h.config.extra_rw_roots = vec![workspace.clone()];
         let err = start(&mut h, &workspace);
         assert!(err.to_string().contains("readiness"), "{err}");
 
         let launches = sandbox.launches();
         assert_eq!(launches.len(), 1, "one launch");
         let spec = &launches[0];
-        assert_eq!(spec.attempt_dir, root.join("attempt").to_string_lossy());
-        assert_eq!(
-            spec.extra_rw_roots,
-            vec![workspace.to_string_lossy().into_owned()]
-        );
+        assert_eq!(spec.cwd, workspace.to_string_lossy(), "runs in the workspace");
         for key in [
             "HOME",
             "TMPDIR",
@@ -1312,7 +1214,7 @@ mod tests {
     fn unignored_attempt_root_inside_workspace_is_refused() {
         let (root, workspace) = layout("runtime-refused");
         for attempt in [workspace.clone(), workspace.join(".agalma-runtime")] {
-            let sandbox = RecordingSandbox::default();
+            let sandbox = RecordingLauncher::default();
             let mut h = harness(&root, &attempt, &sandbox);
             let err = start(&mut h, &workspace);
             assert!(
@@ -1341,7 +1243,7 @@ mod tests {
     fn ignored_attempt_root_inside_workspace_is_allowed() {
         let (root, workspace) = layout("runtime-ignored");
         fs::write(workspace.join(".git/info/exclude"), ".agalma-runtime/\n").expect("exclude");
-        let sandbox = RecordingSandbox::default();
+        let sandbox = RecordingLauncher::default();
         let attempt = workspace.join(".agalma-runtime");
         let mut h = harness(&root, &attempt, &sandbox);
         let err = start(&mut h, &workspace);
@@ -1363,7 +1265,7 @@ mod tests {
         let (root, workspace) = layout("paid-release");
         let user = br#"{"provider":{"ollama":{"options":{"baseURL":"http://127.0.0.1:11434"}}}}"#;
         fs::write(workspace.join(provider_lease::CONFIG_FILE), user).expect("user config");
-        let sandbox = RecordingSandbox::default();
+        let sandbox = RecordingLauncher::default();
         let mut h = harness(&root, &root.join("attempt"), &sandbox);
         h.config.provider_base_url = Some("http://127.0.0.1:9".to_string());
         start(&mut h, &workspace);
@@ -1404,7 +1306,7 @@ mod tests {
         )
         .unwrap();
 
-        let sandbox = RecordingSandbox::default();
+        let sandbox = RecordingLauncher::default();
         let mut h = harness(&root, &root.join("attempt"), &sandbox);
         start(&mut h, &workspace);
         assert_eq!(
@@ -1447,7 +1349,7 @@ mod tests {
         // agalma-mlw: Agalma never rewinds through OpenCode, so its per-step git
         // snapshots of the workspace are pure cost (the 3.8 GB store).
         let (root, workspace) = layout("no-snapshots");
-        let sandbox = RecordingSandbox::default();
+        let sandbox = RecordingLauncher::default();
         let mut h = harness(&root, &root.join("attempt"), &sandbox);
         h.config.extra_env.insert(
             "OPENCODE_CONFIG_CONTENT".to_string(),
@@ -1469,7 +1371,7 @@ mod tests {
         let (root, workspace) = layout("stale-runtime");
         let attempt = root.join("attempt");
         seed_runtime(&attempt);
-        let sandbox = RecordingSandbox::default();
+        let sandbox = RecordingLauncher::default();
         let mut h = harness(&root, &attempt, &sandbox);
         h.config.keep_runtime_state = true; // isolate the pre-launch clear
         start(&mut h, &workspace);
@@ -1494,7 +1396,7 @@ mod tests {
         let (root, workspace) = layout("runtime-cleanup");
         for via_stop in [false, true] {
             let attempt = root.join(format!("attempt-{via_stop}"));
-            let sandbox = RecordingSandbox::default();
+            let sandbox = RecordingLauncher::default();
             let mut h = harness(&root, &attempt, &sandbox);
             h.config.keep_runtime_state = false;
             start(&mut h, &workspace);
@@ -1535,7 +1437,7 @@ mod tests {
             .expect("git init")
             .success());
         fs::write(workspace.join("src.rs"), "fn main() {}\n").unwrap();
-        let sandbox = RecordingSandbox::default();
+        let sandbox = RecordingLauncher::default();
         let mut h = harness(&root, &attempt, &sandbox);
         h.config.keep_runtime_state = false;
         start(&mut h, &workspace);
@@ -1557,7 +1459,7 @@ mod tests {
     fn keep_flag_retains_runtime_state_for_forensics() {
         let (root, workspace) = layout("keep-runtime");
         let attempt = root.join("attempt");
-        let sandbox = RecordingSandbox::default();
+        let sandbox = RecordingLauncher::default();
         let mut h = harness(&root, &attempt, &sandbox);
         h.config.keep_runtime_state = true;
         start(&mut h, &workspace);
@@ -1617,7 +1519,7 @@ mod tests {
     fn drop_cleans_runtime_after_a_stopped_harness_is_restarted() {
         let (root, workspace) = layout("restart-cleanup");
         let attempt = root.join("attempt");
-        let sandbox = RecordingSandbox::default();
+        let sandbox = RecordingLauncher::default();
         let mut h = harness(&root, &attempt, &sandbox);
         h.config.keep_runtime_state = false;
         start(&mut h, &workspace);
@@ -1669,19 +1571,19 @@ mod tests {
         assert!(port > 0, "a concrete port is returned");
     }
 
-    /// Drive one launch through the adapter and capture the sandbox `LaunchSpec`
+    /// Drive one launch through the adapter and capture the `ProcessSpec`
     /// it produced (the fake child is never ready, so `start_attempt` fails after
     /// recording the launch).
-    fn launch_spec_of(config: OpenCodeHarnessConfig, workspace: &Path) -> LaunchSpec {
-        let sandbox = RecordingSandbox::default();
-        let mut harness = OpenCodeHarness::new(Box::new(sandbox.clone()), config);
+    fn launch_spec_of(config: OpenCodeHarnessConfig, workspace: &Path) -> ProcessSpec {
+        let launcher = RecordingLauncher::default();
+        let mut harness = OpenCodeHarness::new(Box::new(launcher.clone()), config);
         let err = start(&mut harness, workspace);
         assert!(
             err.to_string().contains("readiness"),
             "expected a recorded launch then a readiness failure: {err}"
         );
         drop(harness);
-        sandbox
+        launcher
             .launches()
             .into_iter()
             .next()
@@ -1696,12 +1598,12 @@ mod tests {
     }
 
     /// agalma-tqf: the in-process and process transports must produce the same
-    /// sandbox `LaunchSpec` for the same explicit launch config — the custom `bd`
-    /// PATH addition, toolchain homes, `CARGO_HOME`, and read roots included — and
-    /// a worker must be able to locate and execute `bd` and the toolchain from
-    /// the transmitted PATH. Paths contain spaces to match real host layouts.
+    /// `ProcessSpec` for the same explicit launch config — the custom `bd` PATH
+    /// addition, toolchain homes, and `CARGO_HOME` included — and a worker must
+    /// be able to locate and execute `bd` and the toolchain from the transmitted
+    /// PATH. Paths contain spaces to match real host layouts.
     #[test]
-    fn process_transport_preserves_bd_toolchain_env_and_read_roots() {
+    fn process_transport_preserves_bd_toolchain_env() {
         let (root, workspace) = layout("launch-parity");
 
         // A toolchain/bd bin directory whose name contains a space.
@@ -1733,15 +1635,10 @@ mod tests {
         );
 
         let mut in_config = build_config(OpenCodeConfigInit {
-            profile_path: root.join("worker.sb"),
             attempt_dir: root.join("attempt"),
-            protected_dir: root.join("protected"),
-            sock_dir: root.join("sock"),
             model: "opencode-go/deepseek".to_string(),
             proxy_url: Some("http://127.0.0.1:41234".to_string()),
             paid_proxy: true,
-            extra_ro_roots: vec![bin_dir.clone()],
-            extra_rw_roots: vec![workspace.clone()],
             extra_env,
         });
         in_config.program = Some(PathBuf::from("/usr/bin/true"));
@@ -1750,17 +1647,11 @@ mod tests {
         // The conductor's process transport serializes exactly these fields; the
         // server reconstructs its config from them.
         let launch = LaunchConfig {
-            profile_path: in_config.profile_path.clone(),
             attempt_dir: in_config.attempt_dir.clone(),
-            protected_dir: in_config.protected_dir.clone(),
-            sock_dir: in_config.sock_dir.clone(),
             model: in_config.model.clone().expect("model"),
             proxy_url: in_config.proxy_url.clone(),
             paid_proxy: in_config.provider_base_url.is_some(),
             program: in_config.program.clone(),
-            extra_ro: in_config.extra_ro.clone(),
-            extra_ro_roots: in_config.extra_ro_roots.clone(),
-            extra_rw_roots: in_config.extra_rw_roots.clone(),
             extra_env: in_config.extra_env.clone(),
         };
         let lookup = |key: &str| -> Option<String> {
@@ -1774,41 +1665,21 @@ mod tests {
         let proc_config = config_from_lookup(root.clone(), lookup);
         let proc_spec = launch_spec_of(proc_config, &workspace);
 
-        // LaunchSpec parity (modulo the per-attempt random password).
+        // ProcessSpec parity (modulo the per-attempt random password).
         let mut in_env = in_spec.env.clone();
         let mut proc_env = proc_spec.env.clone();
         in_env.remove("OPENCODE_PASSWORD");
         proc_env.remove("OPENCODE_PASSWORD");
         assert_eq!(in_env, proc_env, "child environment parity");
-        assert_eq!(
-            in_spec.extra_ro_roots, proc_spec.extra_ro_roots,
-            "read-root parity"
-        );
-        assert_eq!(
-            in_spec.extra_rw_roots, proc_spec.extra_rw_roots,
-            "read/write-root parity"
-        );
-        assert_eq!(in_spec.profile, proc_spec.profile, "profile parity");
-        assert_eq!(
-            in_spec.attempt_dir, proc_spec.attempt_dir,
-            "attempt-root parity"
-        );
+        assert_eq!(in_spec.cwd, proc_spec.cwd, "cwd parity");
 
-        // The custom bd/toolchain PATH, CARGO_HOME, and read root survived.
+        // The custom bd/toolchain PATH and CARGO_HOME survived.
         assert_eq!(proc_env["PATH"], path_value);
         assert!(proc_env["PATH"].contains(&bin_dir.to_string_lossy().to_string()));
         assert_eq!(proc_env["CARGO_HOME"], cargo_home.to_string_lossy());
-        assert!(
-            proc_spec
-                .extra_ro_roots
-                .iter()
-                .any(|r| r == &bin_dir.to_string_lossy().to_string()),
-            "bd root must travel as a read-only root: {:?}",
-            proc_spec.extra_ro_roots
-        );
         assert!(!proc_env.contains_key("AWS_SECRET_ACCESS_KEY"));
 
-        // A sandboxed worker can locate and execute bd and the toolchain.
+        // A launched worker can locate and execute bd and the toolchain.
         let bd = find_on_path(&proc_env["PATH"], "bd").expect("bd on transmitted PATH");
         assert_eq!(
             String::from_utf8_lossy(&Command::new(&bd).output().expect("run bd").stdout).trim(),

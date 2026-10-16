@@ -14,10 +14,6 @@
 //!   effect, an unconfirmed (ambiguous / missing-activity) probe that stays
 //!   pending and never redispatches, crash-before-settlement recovery, and a
 //!   no-op cancel of already-completed work;
-//! - kernel-adapter cases drive a real `KernelEngine` with a fake `SandboxApi`
-//!   that reports the process group gone (settled) versus no sandbox
-//!   (settling), asserting the idempotent cancel, the `Cancelled` projection,
-//!   and that a cancelled pending operation cannot dispatch;
 //! - a production case drives the real `agalma work --once` + `agalma cancel`
 //!   CLI over a scratch git + `bd` store in scripted mode: pause, cancel an
 //!   in-flight task, resume, run work, and confirm the cancelled task parks as
@@ -34,15 +30,12 @@ use std::process::{Command, Output};
 use std::rc::Rc;
 
 use agalma_contracts::{
-    CancellationState, ContractError, ExecutionApi, ExecutionId, ExecutionPhase, ExecutionState,
-    LaunchSpec, LedgerApi, OperationId, SandboxApi, SandboxChild, StepOutcome, StopEvidence, TaskId,
+    CancellationState, ExecutionApi, ExecutionId, ExecutionPhase, ExecutionState, LedgerApi,
+    OperationId, StepOutcome, TaskId,
 };
 use agalma_execution::{
     Activity, ActivityError, ActivityNext, ActivityOutcome, DispatchOutcome, EffectProbe, Executor,
     ExecutorConfig, OperationContext, EXECUTION_DEFINITION_VERSION,
-};
-use agalma_kernel::{
-    Command as KernelCommand, ExecState, Inputs, KernelEngine, Probe, WorkerRecord,
 };
 use agalma_ledger::SqliteLedger;
 use agalma_testkit::ScratchDir;
@@ -490,171 +483,6 @@ fn crash_before_settlement_recovers_and_completed_cancel_is_noop() {
         1,
         "duplicate no-op cancel records nothing new"
     );
-}
-
-// ===========================================================================
-// Case 4 — kernel adapter: idempotent cancel, projection, settled vs settling
-// ===========================================================================
-
-/// A fake sandbox whose processes are always already gone.
-struct GoneSandbox;
-
-impl SandboxApi for GoneSandbox {
-    fn launch(&mut self, _spec: LaunchSpec) -> Result<SandboxChild, ContractError> {
-        Err(ContractError::UnsupportedCapability("gone sandbox cannot launch".into()))
-    }
-
-    fn alive(&self, _child: &SandboxChild) -> Result<bool, ContractError> {
-        Ok(false)
-    }
-
-    fn terminate(&mut self, _child: &SandboxChild) -> Result<StopEvidence, ContractError> {
-        Ok(StopEvidence {
-            process_group_gone: true,
-            detail: "already gone".to_string(),
-        })
-    }
-}
-
-fn start_and_deliver(engine: &mut KernelEngine<SqliteLedger>, task: &TaskId, exec: &ExecutionId) {
-    let lease = engine.begin_lease(task).expect("lease");
-    engine
-        .apply(
-            exec,
-            &KernelCommand::Start {
-                task_id: task.clone(),
-                generation: 1,
-            },
-            &Inputs {
-                lease_generation: lease,
-                now_unix_ms: 1,
-                ..Inputs::default()
-            },
-        )
-        .expect("start");
-    let build = OperationId::derive(exec, "build");
-    engine
-        .apply(
-            exec,
-            &KernelCommand::Deliver {
-                operation_id: build,
-                inputs_hash: "h1".to_string(),
-            },
-            &Inputs {
-                probe: Probe::Absent,
-                lease_generation: lease,
-                now_unix_ms: 2,
-                ..Inputs::default()
-            },
-        )
-        .expect("deliver");
-}
-
-#[test]
-fn kernel_cancel_is_idempotent_and_projects_per_settlement() {
-    let scratch = ScratchDir::new("sf-cancel-kernel-gone");
-    let db = scratch.child("state").join("ledger.sqlite");
-    let task = TaskId::new("k-cancel");
-    let exec = ExecutionId::derive(&task, 1);
-
-    // (a) Sandbox reports the process group gone -> Settled.
-    {
-        let ledger = SqliteLedger::open(&db).expect("ledger");
-        let mut engine = KernelEngine::open(ledger)
-            .expect("kernel")
-            .with_sandbox(Box::new(GoneSandbox));
-        start_and_deliver(&mut engine, &task, &exec);
-        let build = OperationId::derive(&exec, "build");
-        assert_eq!(engine.pending_dispatch().expect("pending").len(), 1);
-        engine
-            .record_worker(&WorkerRecord {
-                execution_id: exec.clone(),
-                operation_id: build,
-                phase: ExecutionPhase::Build,
-                attempt: 0,
-                lease_generation: 1,
-                pid: 4242,
-                pgid: 4242,
-                started_at_unix_ms: 1,
-            })
-            .expect("record worker");
-
-        let first = engine.cancel(&exec, 5).expect("cancel");
-        assert_eq!(first.state.state, ExecState::Cancelled);
-        let settlement = engine
-            .cancellation_settlement(&exec)
-            .expect("settlement")
-            .expect("some settlement");
-        assert_eq!(settlement.state, CancellationState::Settled);
-        assert!(settlement.unconfirmed_operations.is_empty(), "{settlement:?}");
-
-        // Idempotent duplicate: no new history/effect.
-        let revision = engine.load(&exec).expect("load").revision;
-        let second = engine.cancel(&exec, 6).expect("duplicate cancel");
-        assert_eq!(second.state.state, ExecState::Cancelled);
-        assert_eq!(engine.load(&exec).expect("load").revision, revision);
-
-        let status = ExecutionApi::status(&engine, &exec).expect("status");
-        assert_eq!(
-            (status.phase, status.state),
-            (ExecutionPhase::Parked, ExecutionState::Failed),
-            "native Cancelled maps to Failed/Parked"
-        );
-        assert_eq!(status.parked_reason.as_deref(), Some("Cancelled"));
-        assert_eq!(status.cancellation, CancellationState::Settled);
-        assert!(
-            engine.pending_dispatch().expect("pending").is_empty(),
-            "a settled cancellation releases the pending intent"
-        );
-    }
-
-    // (b) No sandbox -> the recorded worker cannot be confirmed gone -> Settling.
-    {
-        let scratch = ScratchDir::new("sf-cancel-kernel-nosandbox");
-        let db = scratch.child("state").join("ledger.sqlite");
-        let task = TaskId::new("k-cancel2");
-        let exec = ExecutionId::derive(&task, 1);
-        let ledger = SqliteLedger::open(&db).expect("ledger");
-        let mut engine = KernelEngine::open(ledger).expect("kernel");
-        start_and_deliver(&mut engine, &task, &exec);
-        let build = OperationId::derive(&exec, "build");
-        engine
-            .record_worker(&WorkerRecord {
-                execution_id: exec.clone(),
-                operation_id: build.clone(),
-                phase: ExecutionPhase::Build,
-                attempt: 0,
-                lease_generation: 1,
-                pid: 4242,
-                pgid: 4242,
-                started_at_unix_ms: 1,
-            })
-            .expect("record worker");
-
-        engine.cancel(&exec, 5).expect("cancel");
-        let settlement = engine
-            .cancellation_settlement(&exec)
-            .expect("settlement")
-            .expect("some settlement");
-        assert_eq!(
-            settlement.state,
-            CancellationState::Settling,
-            "no sandbox makes termination unconfirmed"
-        );
-        assert_eq!(settlement.unconfirmed_operations, vec![build]);
-
-        let status = ExecutionApi::status(&engine, &exec).expect("status");
-        assert_eq!((status.phase, status.state), (ExecutionPhase::Parked, ExecutionState::Failed));
-        assert_eq!(status.cancellation, CancellationState::Settling);
-        assert!(engine.pending_dispatch().expect("pending").is_empty());
-
-        // Retrying settlement without a sandbox stays Settling (never a guess).
-        let retried = engine
-            .settle_cancellation(&exec, 9)
-            .expect("retry")
-            .expect("some settlement");
-        assert_eq!(retried.state, CancellationState::Settling);
-    }
 }
 
 // ===========================================================================

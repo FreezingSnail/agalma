@@ -25,13 +25,11 @@ pub const PROVIDER_HEALTH_KIND: &str = "provider_health";
 /// The boundary transport selectors, one per supervised component.
 ///
 /// Derived from the same env selectors the conductor binds with
-/// (`AGALMA_LEDGER_TRANSPORT`, `AGALMA_HARNESS_TRANSPORT`, …). The sandbox
-/// boundary is always a supervised process server (no in-process variant).
+/// (`AGALMA_LEDGER_TRANSPORT`, `AGALMA_HARNESS_TRANSPORT`, …).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Transports {
     pub ledger: &'static str,
     pub harness: &'static str,
-    pub sandbox: &'static str,
     pub workspace: &'static str,
     pub taskqueue: &'static str,
     pub execution: &'static str,
@@ -43,7 +41,6 @@ impl Transports {
         Transports {
             ledger: crate::ledger_process::LedgerTransport::from_env().as_str(),
             harness: crate::harness_process::HarnessTransport::from_env().as_str(),
-            sandbox: "process",
             workspace: crate::workspace_process::WorkspaceTransport::from_env().as_str(),
             taskqueue: crate::taskqueue_process::TaskQueueTransport::from_env().as_str(),
             execution: crate::execution_process::ExecutionTransport::from_env().as_str(),
@@ -55,7 +52,6 @@ impl Transports {
         Transports {
             ledger: "in-process",
             harness: "in-process",
-            sandbox: "process",
             workspace: "in-process",
             taskqueue: "in-process",
             execution: "in-process",
@@ -78,7 +74,7 @@ impl Transports {
 /// One component row in the read model.
 #[derive(Debug, Clone, Serialize)]
 pub struct ComponentSnapshot {
-    /// Stable component name (`ledger`, `harness`, `sandbox`, …).
+    /// Stable component name (`ledger`, `harness`, …).
     pub component: String,
     /// Component API name (`LedgerApi`, `HarnessApi`, …).
     pub api: String,
@@ -136,12 +132,6 @@ const COMPONENTS: &[ComponentSpec] = &[
         api: agalma_contracts::harness::HARNESS_API,
         socket: "harness",
         glob: true,
-    },
-    ComponentSpec {
-        name: "sandbox",
-        api: "SandboxApi",
-        socket: crate::sandbox_process::SANDBOX_SOCKET_NAME,
-        glob: false,
     },
     ComponentSpec {
         name: "workspace",
@@ -284,7 +274,6 @@ fn transport_for(name: &str, transports: &Transports) -> &'static str {
     match name {
         "ledger" => transports.ledger,
         "harness" => transports.harness,
-        "sandbox" => transports.sandbox,
         "workspace" => transports.workspace,
         "taskqueue" => transports.taskqueue,
         "execution" => transports.execution,
@@ -292,7 +281,7 @@ fn transport_for(name: &str, transports: &Transports) -> &'static str {
     }
 }
 
-/// Human-facing socket label (`sandbox.sock`, `harness*.sock`).
+/// Human-facing socket label (`harness*.sock`, `ledger.sock`).
 fn socket_label(spec: &ComponentSpec) -> String {
     if spec.glob {
         format!("{}*.sock", spec.socket)
@@ -464,20 +453,20 @@ mod tests {
     fn socket_liveness_tracks_files_under_state_dir() {
         let dir = ScratchDir::new("components-socket");
         std::fs::write(
-            dir.path().join(crate::sandbox_process::SANDBOX_SOCKET_NAME),
+            dir.path().join(crate::workspace_process::WORKSPACE_SOCKET_NAME),
             b"",
         )
-        .expect("touch sandbox socket");
+        .expect("touch workspace socket");
         std::fs::write(dir.path().join("harness-build.sock"), b"").expect("touch harness socket");
         let components =
             derive::<SqliteLedger>(dir.path(), None, &[], &Transports::all_in_process());
 
-        let sandbox = components
+        let workspace = components
             .iter()
-            .find(|c| c.component == "sandbox")
-            .expect("sandbox row");
-        assert!(sandbox.socket_present);
-        assert_eq!(sandbox.socket.as_deref(), Some("sandbox.sock"));
+            .find(|c| c.component == "workspace")
+            .expect("workspace row");
+        assert!(workspace.socket_present);
+        assert_eq!(workspace.socket.as_deref(), Some("workspace.sock"));
 
         let harness = components
             .iter()

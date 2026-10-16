@@ -2,9 +2,9 @@
 //!
 //! The epic sweep (CP.3) runs one designer session per epic; the concierge
 //! intake (CP.4) runs one concierge session per goal. Both go through the same
-//! machinery: a per-attempt sandbox profile, the OpenCode adapter, a harness
-//! socket, one bounded turn, and a terminal poll. Factoring it here keeps that
-//! path single-sourced; [`crate::sweep::LiveDesignerSession`] and
+//! machinery: the OpenCode adapter, a harness socket, one bounded turn, and a
+//! terminal poll. Factoring it here keeps that path single-sourced;
+//! [`crate::sweep::LiveDesignerSession`] and
 //! [`crate::concierge::LiveConciergeSession`] differ only in the
 //! [`SessionSpec`] they hand in.
 //!
@@ -34,20 +34,16 @@ use crate::harness_process::{self, HarnessTransport, OpenCodeHarnessInit};
 use crate::phases::{ensure_cargo_home, poll_terminal, PollOutcome};
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
 use crate::routing;
-use crate::sandbox_process::SandboxSource;
 use crate::stop::StopControl;
 
 /// Per-conductor live session configuration shared by every role.
 ///
-/// The state dir owns the sandbox profile, the harness scratch dirs, and the
-/// harness socket directory; `toolchain_env`/`extra_ro_roots` carry the
-/// read-only toolchain the confined session may use.
+/// The state dir owns the harness scratch dirs and the harness socket
+/// directory; `toolchain_env` carries the toolchain the session may use.
 pub struct LiveSession {
     state_dir: PathBuf,
-    profile_path: PathBuf,
     proxy_url: Option<String>,
     paid_proxy: bool,
-    extra_ro_roots: Vec<PathBuf>,
     toolchain_env: BTreeMap<String, String>,
     turn_timeout: Duration,
     idle_timeout: Duration,
@@ -68,10 +64,10 @@ pub struct LiveSession {
 }
 
 impl LiveSession {
-    /// Assemble the live session config (materializing the sandbox profile) with
-    /// the given stop control. The control is the **same** binding used for
-    /// admission (`agalma-5fy.5`), so the mid-turn poll reads the selected ledger
-    /// service, not a second database.
+    /// Assemble the live session config with the given stop control. The
+    /// control is the **same** binding used for admission (`agalma-5fy.5`), so
+    /// the mid-turn poll reads the selected ledger service, not a second
+    /// database.
     pub fn build(
         state_dir: &Path,
         proxy_url: Option<String>,
@@ -80,27 +76,18 @@ impl LiveSession {
     ) -> Result<Self, ContractError> {
         // The state dir may not exist yet on a fresh `--state-dir` (e.g. a
         // nested path): the session path owns materializing it before any
-        // profile/scratch write (agalma-lmo).
+        // scratch write (agalma-lmo).
         std::fs::create_dir_all(state_dir).map_err(|e| {
             ContractError::KnownFailure(format!(
                 "cannot create state dir {}: {e}",
                 state_dir.display()
             ))
         })?;
-        let profile_path = state_dir.join("worker.sb");
-        std::fs::write(&profile_path, agalma_sandbox::PRODUCT_PROFILE).map_err(|e| {
-            ContractError::KnownFailure(format!(
-                "cannot write sandbox profile {}: {e}",
-                profile_path.display()
-            ))
-        })?;
-        let (extra_ro_roots, toolchain_env) = crate::composition::toolchain()?;
+        let (_, toolchain_env) = crate::composition::toolchain()?;
         Ok(LiveSession {
             state_dir: state_dir.to_path_buf(),
-            profile_path,
             proxy_url,
             paid_proxy: paid_available && routing::allow_paid_from_env(),
-            extra_ro_roots,
             toolchain_env,
             turn_timeout: crate::composition::DEFAULT_TURN_TIMEOUT,
             idle_timeout: crate::composition::resolve_idle_timeout(),
@@ -139,8 +126,7 @@ pub struct SessionSpec {
     pub role: String,
     /// Planner-route model pinned for the session.
     pub model: String,
-    /// Target repository (read/write via the extra read/write root; never the
-    /// sandbox ATTEMPT root, which holds runtime state).
+    /// Target repository (launched worker workspace; the harness runs here).
     pub repo: PathBuf,
     /// Scratch subdirectory under the state dir (e.g. `sweep/<epic>`).
     pub dir_key: String,
@@ -240,16 +226,12 @@ pub fn run_session_end(
         .or_else(|| live.proxy_url.clone());
 
     let root = live.state_dir.join(&spec.dir_key);
-    let protected = canonical_dir(&root.join("protected"))?;
-    let sock = canonical_dir(&root.join("sock"))?;
 
-    // The session authors tickets via `bd` in the target repo, so the repo must
-    // be writable — but as the extra read/write root, not the sandbox ATTEMPT
-    // root. ATTEMPT holds OpenCode's runtime state (XDG dirs, tmp, HOME, its git
-    // snapshot store); inside the repo that state is snapshotted back into
-    // itself and grows without bound (agalma-22f). It lives under the state dir.
+    // The session authors tickets via `bd` in the target repo. OpenCode's
+    // runtime state (XDG dirs, tmp, HOME, its git snapshot store) lives in a
+    // conductor-owned attempt root under the state dir, never inside the repo
+    // (agalma-22f).
     let attempt_dir = canonical_dir(&attempt_root(&live.state_dir, &spec.dir_key))?;
-    let repo = canonical_dir(&spec.repo)?;
 
     let mut env = live.toolchain_env.clone();
     let cargo_home = ensure_cargo_home(&root)
@@ -258,9 +240,8 @@ pub fn run_session_end(
         "CARGO_HOME".to_string(),
         cargo_home.to_string_lossy().into_owned(),
     );
-    // `bd` must be reachable inside the sandbox: prepend its directory to PATH
-    // and expose that directory read-only.
-    let mut extra_ro_roots = live.extra_ro_roots.clone();
+    // `bd` must be reachable by the launched worker: prepend its directory to
+    // PATH.
     if let Some(dir) = bd_bin_dir() {
         let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
         let base = env.get("PATH").cloned().unwrap_or_default();
@@ -268,24 +249,16 @@ pub fn run_session_end(
             "PATH".to_string(),
             format!("{}:{}", dir.to_string_lossy(), base),
         );
-        extra_ro_roots.push(dir);
     }
 
     let config = build_config(OpenCodeConfigInit {
-        profile_path: live.profile_path.clone(),
         attempt_dir,
-        protected_dir: protected,
-        sock_dir: sock,
         model: spec.model.clone(),
         proxy_url,
         paid_proxy: live.paid_proxy,
-        extra_ro_roots,
-        extra_rw_roots: vec![repo],
         extra_env: env,
     });
 
-    let sandbox = SandboxSource::new(live.state_dir.clone());
-    let sandbox_socket = sandbox.ensure()?;
     let transport = HarnessTransport::from_env();
     let harness_socket = session_harness_socket(&live.state_dir, transport, &spec.socket_name);
     let mut harness = harness_process::open_opencode_harness(OpenCodeHarnessInit {
@@ -294,7 +267,6 @@ pub fn run_session_end(
         root: root.clone(),
         model: spec.model.clone(),
         generation: 1,
-        sandbox_socket,
         harness_socket,
     })
     .map_err(ContractError::KnownFailure)?;
@@ -397,9 +369,9 @@ fn capture_output(path: Option<&Path>) -> Option<String> {
     path.map(|path| std::fs::read_to_string(path).unwrap_or_default())
 }
 
-/// The sandbox ATTEMPT root for the session keyed `dir_key`: conductor-owned,
+/// The attempt runtime root for the session keyed `dir_key`: conductor-owned,
 /// under the state dir, never inside the target repo. Session handoff files
-/// the confined session reads or writes (e.g. the concierge goal/output) belong
+/// the launched session reads or writes (e.g. the concierge goal/output) belong
 /// here too. Matches the process-transport server's `<root>/attempt`.
 pub fn attempt_root(state_dir: &Path, dir_key: &str) -> PathBuf {
     state_dir.join(dir_key).join("attempt")
@@ -525,15 +497,15 @@ mod tests {
     #[test]
     fn live_session_creates_fresh_nested_state_dir() {
         // agalma-lmo: a `--state-dir` that does not yet exist (even nested)
-        // must be materialized before the sandbox profile is written.
+        // must be materialized before the session scratch is written.
         let dir = scratch_dir("nested-state");
         let nested = dir.join("a").join("b").join("c");
         assert!(!nested.exists(), "nested state dir must start absent");
         let stop: Rc<dyn StopControl> = Rc::new(FileStopControl::new(&nested));
         let live = LiveSession::build(&nested, None, false, stop).expect("build with fresh state dir");
         assert!(
-            nested.join("worker.sb").exists(),
-            "sandbox profile materialized under the created state dir"
+            nested.is_dir(),
+            "state dir materialized under the created path"
         );
         drop(live);
     }

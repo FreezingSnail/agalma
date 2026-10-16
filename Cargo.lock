@@ -14,7 +14,7 @@ dependencies = [
  "agalma-ipc",
  "agalma-kernel",
  "agalma-ledger",
- "agalma-sandbox",
+ "agalma-process",
  "agalma-taskqueue",
  "agalma-testkit",
  "agalma-workspace",
@@ -69,7 +69,7 @@ version = "0.1.0"
 dependencies = [
  "agalma-contracts",
  "agalma-ipc",
- "agalma-sandbox",
+ "agalma-process",
  "agalma-testkit",
  "serde_json",
  "tokio",

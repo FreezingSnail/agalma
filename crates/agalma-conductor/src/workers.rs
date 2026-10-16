@@ -8,7 +8,7 @@
 //! On boot the executor probes each pending operation. For a phase with a
 //! recorded worker this module either:
 //!
-//! - terminates a live survivor through [`SandboxApi`] and writes the returned
+//! - terminates a live survivor through [`ProcessApi`] and writes the returned
 //!   [`StopEvidence`] to `<run>/stop/<phase>-<attempt>.json` (the proof required
 //!   before any redispatch), or
 //! - reports that the worker died without completing, which the caller treats
@@ -20,7 +20,7 @@
 use std::path::{Path, PathBuf};
 
 use agalma_contracts::ids::AttemptId;
-use agalma_contracts::sandbox::{SandboxApi, SandboxChild};
+use agalma_contracts::process::{ProcessApi, ProcessChild};
 use agalma_contracts::ExecutionId;
 use agalma_execution::{ActivityError, ActivityOutcome};
 use serde::de::DeserializeOwned;
@@ -44,9 +44,9 @@ pub struct WorkerRecord {
 }
 
 impl WorkerRecord {
-    /// Reconstruct the sandbox handle used to probe/terminate the process.
-    pub fn child(&self) -> SandboxChild {
-        SandboxChild {
+    /// Reconstruct the process handle used to probe/terminate the process.
+    pub fn child(&self) -> ProcessChild {
+        ProcessChild {
             pid: self.pid,
             pgid: self.pgid,
             attempt: AttemptId::derive(self.attempt),
@@ -204,9 +204,9 @@ pub fn clear_markers(state_dir: &Path, execution: &ExecutionId, phase: &str, att
     let _ = std::fs::remove_file(started_path(state_dir, execution, phase, attempt));
 }
 
-/// Reconcile a phase's recorded worker against the sandbox.
+/// Reconcile a phase's recorded worker against the launcher.
 ///
-/// A live survivor is terminated through `sandbox` (evidence written to
+/// A live survivor is terminated through `launcher` (evidence written to
 /// `<run>/stop/<phase>-<attempt>.json`) and its record removed. A worker that is
 /// already gone but never completed is reported as [`Survivor::Died`].
 pub fn reconcile_survivor(
@@ -214,7 +214,7 @@ pub fn reconcile_survivor(
     execution: &ExecutionId,
     phase: &str,
     attempt: u32,
-    sandbox: &mut dyn SandboxApi,
+    launcher: &mut dyn ProcessApi,
 ) -> Result<Survivor, ActivityError> {
     let Some(record): Option<WorkerRecord> =
         read_json(&worker_path(state_dir, execution, phase, attempt))
@@ -227,14 +227,14 @@ pub fn reconcile_survivor(
     };
 
     let child = record.child();
-    let alive = sandbox.alive(&child).map_err(|e| {
+    let alive = launcher.alive(&child).map_err(|e| {
         ActivityError::KnownFailure(format!("probe worker pid {}: {e}", record.pid))
     })?;
     if !alive {
         return Ok(Survivor::Died);
     }
 
-    let evidence = sandbox.terminate(&child).map_err(|e| {
+    let evidence = launcher.terminate(&child).map_err(|e| {
         ActivityError::KnownFailure(format!("terminate worker pid {}: {e}", record.pid))
     })?;
     let payload = serde_json::json!({

@@ -7,9 +7,9 @@
 //!     --test live_smoke -- --ignored --nocapture
 //! ```
 //!
-//! It starts an attempt confined by [`agalma_sandbox::SeatbeltSandbox`], creates
+//! It starts an attempt through [`agalma_process::LocalLauncher`], creates
 //! sessions, runs a free-model turn to a terminal state, cancels a second turn,
-//! stops the attempt with evidence, and asserts no confined process survives and
+//! stops the attempt with evidence, and asserts no launched process survives and
 //! that the user's OpenCode state was not touched. All scratch state lives under
 //! `target/test-runs/harness-live-*` (never `/tmp`).
 
@@ -26,7 +26,7 @@ use agalma_contracts::harness::{
 };
 use agalma_contracts::ids::{ArtifactRef, OperationId};
 use agalma_harness_opencode::{OpenCodeHarness, OpenCodeHarnessConfig};
-use agalma_sandbox::{SeatbeltSandbox, PRODUCT_PROFILE};
+use agalma_process::LocalLauncher;
 use agalma_testkit::ScratchDir;
 
 fn live_enabled() -> bool {
@@ -96,14 +96,10 @@ async fn live_attempt_turn_cancel_stop_no_orphans() {
 
     let root = run_root();
     let attempt_dir = root.join("attempt");
-    let protected = root.join("protected");
-    let sock = root.join("sock");
     let workspace = attempt_dir.join("work");
-    for dir in [&attempt_dir, &protected, &sock, &workspace] {
+    for dir in [&attempt_dir, &workspace] {
         fs::create_dir_all(dir).expect("create attempt dir");
     }
-    let profile = root.join("worker.sb");
-    fs::write(&profile, PRODUCT_PROFILE).expect("write profile");
 
     // The real build workspace is a git checkout (`WorkspaceApi::prepare` runs
     // `git init`); opencode's project discovery resolves the git root, so the
@@ -123,15 +119,10 @@ async fn live_attempt_turn_cancel_stop_no_orphans() {
     let before_data = mtime(&user_data);
 
     eprintln!("live smoke root: {}", root.display());
-    let mut config = OpenCodeHarnessConfig::new(&profile, &attempt_dir, &protected, &sock);
-    // The adapter points OpenCode's global config dir at the worktree, which
-    // short-circuits its ancestor config walk (see `spawn_server`). This optional
-    // override exists for hosts where a broader read root is needed instead.
-    if let Some(extra) = std::env::var_os("AGALMA_HARNESS_EXTRA_RO") {
-        config.extra_ro = Some(PathBuf::from(extra));
-    }
+    let mut config = OpenCodeHarnessConfig::new();
+    config.attempt_dir = attempt_dir.clone();
     let keep_runtime_state = config.keep_runtime_state;
-    let mut harness = OpenCodeHarness::new(Box::new(SeatbeltSandbox::new()), config);
+    let mut harness = OpenCodeHarness::new(Box::new(LocalLauncher::new()), config);
 
     let describe = harness.describe();
     eprintln!(

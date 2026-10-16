@@ -331,8 +331,8 @@ pub struct LiveConciergeSession {
 }
 
 impl LiveConciergeSession {
-    /// Assemble the live session config (materializing the sandbox profile),
-    /// using the same bound stop control passed for admission (`agalma-5fy.5`).
+    /// Assemble the live session config, using the same bound stop control
+    /// passed for admission (`agalma-5fy.5`).
     pub fn build(
         state_dir: &Path,
         proxy_url: Option<String>,
@@ -441,16 +441,13 @@ mod tests {
     #[test]
     fn live_concierge_session_builds_fresh_nested_state_dir() {
         // agalma-lmo: `agalma concierge --state-dir <fresh>` must not fail on
-        // the profile write; the state dir is created before `worker.sb`.
+        // the session build; the state dir is created first.
         let dir = ScratchDir::new("concierge-nested-state");
         let nested = dir.join("a").join("b").join("c");
         assert!(!nested.exists(), "nested state dir must start absent");
         let stop: Rc<dyn StopControl> = Rc::new(crate::stop::FileStopControl::new(&nested));
         let _session = LiveConciergeSession::build(&nested, None, false, stop)
             .expect("build fresh state dir");
-        assert!(
-            nested.join("worker.sb").exists(),
-            "sandbox profile materialized under the created state dir"
-        );
+        assert!(nested.is_dir(), "state dir materialized under the created path");
     }
 }

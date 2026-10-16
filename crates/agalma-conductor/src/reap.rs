@@ -3,7 +3,7 @@
 //!
 //! A run directory (`<state>/runs/<exec>`) accumulates heavyweight temp trees
 //! over an execution's lifetime: the checkout clone, the agent `target/`, the
-//! verify sandbox homes/tmp, the isolated cargo home, and the OpenCode XDG
+//! verify runtime homes/tmp, the isolated cargo home, and the OpenCode XDG
 //! runtime dirs. They are pure scratch: nothing reads them after the execution
 //! reaches a terminal state, and together they reach gigabytes.
 //!
@@ -26,8 +26,8 @@ use crate::phases::run_root;
 
 /// Heavy scratch subdirectories under a run root, safe to delete on terminal.
 ///
-/// Mirrors the union of the workspace checkout (`checkout`), the confined
-/// build (`build-runtime`, `agent-target`, `cargo-home`), the verify sandbox
+/// Mirrors the union of the workspace checkout (`checkout`), the build
+/// runtime (`build-runtime`, `agent-target`, `cargo-home`), the verify runtime
 /// (`verify-checkout`, `verify-runtime`, plus legacy `verify-tmp`/`verify-home`),
 /// and the OpenCode runtime state
 /// (`xdg-*`, `tmp`, `protected`, `sock`, `work`). The phase marker dirs

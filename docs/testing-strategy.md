@@ -1,12 +1,9 @@
 # Testing strategy
 
-Requested on 2026-10-14: implementers should test the areas affected by a change
-and run independent checks concurrently. Selection rules apply immediately to
-handoffs. The runner changes below are a proposed Luna/Flash implementation;
-`scripts/test.sh` remains unimplemented.
-
-Bounded implementation handoff: `agalma-i15`, deferred pending release to
-GPT-6 Luna or DeepSeek Flash through OpenCode.
+Requested on 2026-10-14; the runner below was implemented in `agalma-i15`.
+`bash scripts/test.sh <scope> [selection]` implements concurrent focused
+execution and retains the existing peers/full contracts. Its own bounded
+verification tests live in `scripts/tests/` (`bash scripts/tests/run.sh`).
 
 ## Select behavior before commands
 
@@ -63,15 +60,43 @@ the existing amendment authority; do not silently replace them.
 
 ## Current commands and an example
 
-Until the unified runner exists, use the Makefile focused entry point,
-`make test-focused SELECTION='-p <crate> --test <target> [filter]'`
-(development-workflow.md), selecting integration targets with `--test` and unit
-modules with `--lib` plus a filter. The target runs the documented Cargo command
-and records the exact command line, raw log, and exit status under
-`target/test-runs/<bead>/<run-id>/` until `scripts/test.sh` exists. Multiple
-relevant integration targets in one crate can be selected in one invocation.
-This reduces scope but does not claim concurrent target execution. Keep Rust's
-existing case concurrency unless the selected cases require isolation.
+Use the unified runner: `bash scripts/test.sh focused <selection>`
+(or `make test-focused SELECTION='<selection>'`). A selection is one or more
+units, each naming an explicit crate and target/module:
+
+```
+-p <crate> (--test <name>|--lib|--bin <name>|--example <name>|--bench <name>) [filter...] [--exact]
+```
+
+Multiple units select multiple crates/targets in one invocation, and each unit's
+filter applies only to its own target. The runner compiles exactly the selected
+targets once, then runs the compiled binaries through a bounded pool. It records
+the exact commands, raw logs, exit status, compile and execution durations,
+resource groups, and observed peak concurrency under
+`target/test-runs/<bead>/<run-id>/`.
+
+Focused-runner controls:
+
+- Isolation markers, per unit, default to conservative serialization:
+  `--isolated` (known-isolated; may overlap), `--group <name>` (named exclusive
+  resource; the same group serializes), or no marker (unknown; serializes with
+  every unit). Two `--isolated` units overlap when `JOBS=2`.
+- Prerequisites: `--prereq <crate>` builds that crate's bins; `--prereq-bins`
+  builds all workspace bins. They are runner options, not Cargo test args.
+- Budget: `JOBS` (default 2, capped by CPUs) and `THREADS` (per-binary case
+  threads; default divides the CPU budget). The effective budget is printed.
+- Rejections: an empty or invalid focused selection fails before a build; a
+  filter matching no required cases fails; an ignored-only required selection
+  cannot pass; any failing selection fails the run even when another passes.
+- Evidence: `$RUN_ROOT/$BEAD/$RUN_ID/` (`RUN_ROOT` defaults to the primary
+  checkout's `target/test-runs`, so it survives worktree removal). Raw logs and
+  status are authoritative.
+- Prerequisites on PATH: `jq` (focused-selection validation against `cargo
+  metadata`, and compile-output parsing) and `rg` (peer-scope smoke-evidence
+  checks). A missing tool fails the scope; the runner does not silently fall back
+  to a narrower check.
+
+Keep Rust's existing case concurrency unless the selected cases require isolation.
 
 For SF.4 cancellation, retain the required conductor `sf_cancel` acceptance target.
 Candidate supporting kernel selections are `exec_api`, `transition`, and `recovery`
@@ -95,9 +120,9 @@ claiming a performance improvement.
 
 ## Unified runner concurrency contract
 
-Extend the existing `bash scripts/test.sh <scope> [selection]` design in
-development-workflow.md. Use Cargo and the native Rust test harness; introducing
-a test framework or automatic dependency graph is outside this task.
+The implemented runner (`bash scripts/test.sh <scope> [selection]`, agalma-i15)
+follows the contract below. Use Cargo and the native Rust test harness;
+introducing a test framework or automatic dependency graph is outside this task.
 
 1. Validate a bounded list of explicit selections. Reject a focused request with
    no target/module selection. Support several crates/targets in one request;
@@ -132,12 +157,12 @@ a test framework or automatic dependency graph is outside this task.
    progress. Every launched child must be reaped; any failure fails the run and
    interruption leaves an incomplete outcome with cleanup of owned processes.
 
-Keep focused, peers, and full as the only scopes. The runner's first delivery
-implements concurrent focused execution and the existing peers/full contracts.
-Full can retain ordinary Cargo execution; accelerating it is outside this task.
-Retain the peer script only as the documented compatibility entry, explicitly
-preserving broader checks for callers that require them. Paid-provider checks
-remain separately authorized.
+Keep focused, peers, and full as the only scopes. The delivered runner implements
+concurrent focused execution and retains the existing peers/full contracts. Full
+retains ordinary Cargo execution; accelerating it is outside this task. The peer
+script is retained only as the documented compatibility entry, forwarding to the
+`peers` scope and preserving the broader checks for callers that require them.
+Paid-provider checks remain separately authorized.
 
 ## Acceptance for the implementation
 
@@ -163,6 +188,10 @@ remain separately authorized.
   selections and result sequences. Retain their replay inputs and all run evidence
   at the persistent artifact root; implement and repair in the named task worktree.
 
-Stop after this runner and its guidance satisfy these checks. Automatic selection,
-factory scheduling changes, a new framework, build-trigger repair, and changes to
-frozen historical receipts require separate decisions.
+Stop after this runner and its guidance satisfy these checks. These acceptance
+items are covered by `scripts/tests/run.sh` (property tests in
+`scripts/tests/runner-properties.sh`; end-to-end cases in
+`scripts/tests/runner-focused.sh`), with evidence under the persistent
+`target/test-runs/<bead>/<run-id>/` root. Automatic selection, factory scheduling
+changes, a new framework, build-trigger repair, and changes to frozen historical
+receipts require separate decisions.

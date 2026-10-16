@@ -127,13 +127,16 @@ Each handoff names affected behavior, explicit test targets/modules, prerequisit
 resource conflicts, and the reason for any broader acceptance. Whole-crate baseline
 and post-change runs are not routine requirements.
 
-The target entry point is `bash scripts/test.sh <scope> [selection]`.
-**It is not implemented yet.** Building it is a Luna/Flash task. This document
-defines its contract without claiming that documentation creates a working tool.
-Until it exists, the Makefile scope targets are the entry point. They forward to
-`scripts/test.sh` as soon as that file is executable, so there is a single
-implementation rather than two, and they record raw output and exit status under
+The entry point is `bash scripts/test.sh <scope> [selection]`. It is implemented
+(agalma-i15) and supports the `focused`, `peers`, and `full` scopes only. The
+Makefile scope targets forward to it, so there is a single implementation rather
+than two, and they record raw output and exit status under
 `target/test-runs/<bead>/<run-id>/`. Set `BEAD=<id>` to label evidence for a task.
+
+The runner requires `jq` (it validates focused selections against `cargo metadata`
+and parses Cargo's machine-readable build output) and `rg` (the `peers` scope uses
+it to check the smoke evidence). Both are accepted prerequisites, not optional: a
+missing tool fails the scope instead of silently narrowing its checks.
 
 | Scope | Selection and purpose | Limits |
 |---|---|---|
@@ -170,28 +173,35 @@ The runner must:
   for ordinary tests. Existing promotion contracts still require their evidence.
 
 During the transition, use the Makefile target for the chosen scope. Each target
-runs the command below (or forwards to `scripts/test.sh` once implemented) and
-keeps the exact command line, raw log, and exit status under
-`target/test-runs/<bead>/<run-id>/`:
+forwards to `scripts/test.sh` (implemented in agalma-i15) and keeps the exact
+command line, raw log, and exit status under `target/test-runs/<bead>/<run-id>/`.
+The runner reproduces the commands below and additionally compiles selected
+targets once, discovers matching required cases, runs compiled binaries through a
+bounded pool, and writes a per-target summary:
 
-- Focused: `make test-focused SELECTION='-p <crate> --test <target> [filter]'`,
-  which runs `cargo test --offline --locked -p <crate> --test <target> [filter]`,
-  or `SELECTION='-p <crate> --lib <module/filter>'` for unit tests, with required
-  binary prerequisites stated separately. This command alone does not build sibling
-  server binaries or prove that a selection executed a required case. An empty
-  `SELECTION` fails before any build.
-- Peer acceptance: `make test-peers`, which runs
-  `bash scripts/verify-peer-transports.sh`. The existing script also builds all
-  workspace binaries and runs the full conductor suite; state that broader cost
-  and coverage before using it. It is not a focused peer runner.
-- Full: `make test-full`, which runs `cargo build --offline --workspace --bins`,
-  then `cargo test --offline --workspace`; preserve task-specific environment and
-  serialization requirements. An exit of zero does not prove ignored cases ran.
+- Focused: `make test-focused SELECTION='-p <crate> --test <target> [filter]'`.
+  The runner validates the selection, compiles exactly the selected targets plus
+  declared prerequisites (`--prereq <crate>` / `--prereq-bins`, not part of the
+  `SELECTION` Cargo args), and fails before any build on an empty or invalid
+  selection. An empty `SELECTION` also fails at the Makefile level.
+- Peer acceptance: `make test-peers`, which forwards to `bash scripts/test.sh
+  peers`. This builds all workspace binaries, preflights each server executable,
+  runs the five required process smokes, and then the retained conductor suite.
+  `scripts/verify-peer-transports.sh` is now a compatibility forwarder to the
+  same scope, so its callers keep the broader behavior.
+- Full: `make test-full`, which forwards to `bash scripts/test.sh full` and runs
+  `cargo build --offline --locked --workspace --bins` then `cargo test --offline
+  --locked --workspace`. An exit of zero does not prove ignored cases ran.
 
-The unified runner should replace routine alternatives. Retain the old peer
-script only as a compatibility entry that forwards to the appropriate scope and
-preserves any acceptance behavior its callers still require. Do not create
-additional ad hoc wrappers during the transition.
+`bash scripts/test.sh peers --print` and `bash scripts/test.sh full --print`
+print the exact commands a scope would run without executing them. This is a
+diagnostic for verifying the retained contracts, not a substitute for running a
+scope.
+
+The unified runner replaces routine alternatives. The old peer script is retained
+only as a compatibility entry that forwards to the `peers` scope and preserves the
+acceptance behavior its callers require. Do not create additional ad hoc wrappers
+during the transition.
 
 ## Investigation, artifacts, and review evidence
 

@@ -6,14 +6,18 @@
 //! the ledger contract alone (`LedgerApi::schema_version`, `executions`,
 //! `pending_intents`, `kill_latch`, and the recorded harness binding events).
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use agalma_contracts::{ExecutionRecord, LedgerApi};
-use agalma_ledger::SqliteLedger;
 use serde::Serialize;
 
-use crate::components::{ComponentSnapshot, Transports};
+use crate::components::{ComponentSnapshot, PluginComponent, Transports};
 use crate::economics::EconomicsSnapshot;
+use crate::ledger_process::{LedgerHandle, LedgerTransport};
+use crate::plugin_reports::ReportIngestor;
 
 /// Top-level read-model document emitted by `agalma status --json`.
 ///
@@ -35,6 +39,9 @@ pub struct Snapshot {
     pub executions: Vec<ExecutionSnapshot>,
     /// Per-component vision: bindings, transports, socket liveness, health.
     pub components: Vec<ComponentSnapshot>,
+    /// Registry/report-driven plugin components and their declarative views
+    /// (HP.6). Empty when no production registry/report read model is attached.
+    pub plugins: Vec<PluginComponent>,
     /// Economics + timeline: spend vs intake-fence allowance, digest summaries,
     /// parked/degradation alerts, curated event timeline (TUI.4).
     pub economics: EconomicsSnapshot,
@@ -71,9 +78,38 @@ pub fn snapshot(state_dir: &Path) -> Result<Snapshot, String> {
 /// The transport selectors are process-global (env-derived); passing them in
 /// keeps the snapshot deterministic for tests and callers that already resolved
 /// them. The per-component panel carries them so the TUI never re-derives them.
+///
+/// The plugin panel is derived from the **selected ledger service**: the
+/// durable `RegistryCheckpoint` is read through the ledger handle and the
+/// hub-owned installed manifests supply the declared views. The ledger binding
+/// is the one pinned in `transports.ledger`.
 pub fn snapshot_with_transports(
     state_dir: &Path,
     transports: &Transports,
+) -> Result<Snapshot, String> {
+    snapshot_with_selected_transport(state_dir, transports, ledger_transport_for(transports))
+}
+
+/// The selected ledger binding for the pinned boundary transports.
+fn ledger_transport_for(transports: &Transports) -> LedgerTransport {
+    match transports.ledger {
+        "in-process" => LedgerTransport::InProcess,
+        _ => LedgerTransport::Process,
+    }
+}
+
+/// Build the read model over an explicit selected ledger binding.
+///
+/// This is the production read path for both `agalma status --json` and
+/// `agalma watch`: the ledger is reached through the selected
+/// [`LedgerHandle`] (never a direct SQLite helper), and the plugin panel comes
+/// from the durable registry/report state. An absent ledger is not an error;
+/// any ledger read failure after the file is present is (the caller reports it
+/// and exits non-zero).
+pub fn snapshot_with_selected_transport(
+    state_dir: &Path,
+    transports: &Transports,
+    ledger_transport: LedgerTransport,
 ) -> Result<Snapshot, String> {
     let ledger_path = state_dir.join("ledger.sqlite");
     if !ledger_path.exists() {
@@ -84,13 +120,19 @@ pub fn snapshot_with_transports(
             schema_version: None,
             binding: None,
             executions: Vec::new(),
-            components: crate::components::derive::<SqliteLedger>(state_dir, None, &[], transports),
+            components: crate::components::derive::<LedgerHandle>(state_dir, None, &[], transports),
+            plugins: Vec::new(),
             economics: EconomicsSnapshot::default(),
         });
     }
 
-    let ledger = SqliteLedger::open(&ledger_path)
-        .map_err(|err| format!("cannot open ledger {}: {err}", ledger_path.display()))?;
+    let ledger =
+        LedgerHandle::from_transport_existing(state_dir, ledger_transport).map_err(|err| {
+            format!(
+                "cannot open selected ledger service at {}: {err}",
+                ledger_path.display()
+            )
+        })?;
     let schema_version = ledger
         .schema_version()
         .map_err(|err| format!("cannot read ledger schema: {err}"))?;
@@ -132,8 +174,51 @@ pub fn snapshot_with_transports(
         binding: overall_binding(&ledger, &records),
         executions,
         components: crate::components::derive(state_dir, Some(&ledger), &records, transports),
-        economics: crate::economics::derive(&ledger, &records, &std::collections::BTreeMap::new()),
+        plugins: read_plugin_panel(state_dir, &ledger)?,
+        economics: crate::economics::derive(&ledger, &records, &BTreeMap::new()),
     })
+}
+
+/// Derive the plugin panel from the durable registry state and the report
+/// component store, both reached through the selected ledger handle.
+///
+/// The report ingestor is opened over the **same** ledger handle (a
+/// `component-store/v1` read), so no second connection or private store is used.
+///
+/// Fails closed: a selected-ledger registry or report read failure is surfaced
+/// as an error (the caller reports it and exits non-zero), never a silently
+/// empty/healthy plugin panel.
+fn read_plugin_panel(
+    state_dir: &Path,
+    ledger: &LedgerHandle,
+) -> Result<Vec<PluginComponent>, String> {
+    let sources = crate::components::load_plugin_sources(state_dir, ledger).map_err(|err| {
+        format!("cannot read plugin registry state from the selected ledger: {err}")
+    })?;
+    let active_generations: BTreeMap<String, u64> = sources
+        .iter()
+        .filter_map(|source| {
+            source
+                .generation
+                .map(|generation| (source.plugin_id.clone(), generation))
+        })
+        .collect();
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0);
+    let clock: Arc<dyn Fn() -> u64 + Send + Sync> = Arc::new(move || now_ms);
+    let ingestor = ReportIngestor::open(
+        Box::new(Mutex::new(ledger.clone())),
+        clock,
+        active_generations,
+        BTreeSet::new(),
+    )
+    .map_err(|err| format!("cannot read plugin report state from the selected ledger: {err}"))?;
+    Ok(crate::components::derive_plugin_components_from_sources(
+        &sources,
+        Some(&ingestor),
+    ))
 }
 
 /// Serialize a snapshot as the compact JSON contract (`--json`).
@@ -196,8 +281,19 @@ mod tests {
         CommitBatch, DispatchIntent, ExecutionId, ExecutionPhase, ExecutionState, OperationId,
         TaskId,
     };
+    use agalma_ledger::SqliteLedger;
     use agalma_testkit::ScratchDir;
     use serde_json::json;
+
+    /// Read the snapshot over an explicit in-process selected ledger binding
+    /// (deterministic; the env default is the process transport).
+    fn snapshot_in_process(state_dir: &Path) -> Result<Snapshot, String> {
+        snapshot_with_selected_transport(
+            state_dir,
+            &Transports::all_in_process(),
+            LedgerTransport::InProcess,
+        )
+    }
 
     /// A ledger with one running execution, one pending operation, and a pin.
     fn ledger_with_execution(dir: &ScratchDir) -> ExecutionId {
@@ -248,7 +344,7 @@ mod tests {
     #[test]
     fn absent_ledger_is_not_an_error() {
         let dir = ScratchDir::new("status-absent");
-        let snapshot = snapshot(dir.path()).expect("snapshot");
+        let snapshot = snapshot_in_process(dir.path()).expect("snapshot");
         assert!(!snapshot.exists);
         assert!(!snapshot.kill_latch);
         assert_eq!(snapshot.schema_version, None);
@@ -266,7 +362,7 @@ mod tests {
     fn present_ledger_reports_schema_pending_and_binding() {
         let dir = ScratchDir::new("status-present");
         let exec = ledger_with_execution(&dir);
-        let snapshot = snapshot(dir.path()).expect("snapshot");
+        let snapshot = snapshot_in_process(dir.path()).expect("snapshot");
 
         assert!(snapshot.exists);
         assert_eq!(snapshot.schema_version, Some(agalma_ledger::SCHEMA_VERSION));
@@ -308,7 +404,7 @@ mod tests {
             let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).expect("open ledger");
             ledger.set_kill_latch(true).expect("set latch");
         }
-        let snapshot = snapshot(dir.path()).expect("snapshot");
+        let snapshot = snapshot_in_process(dir.path()).expect("snapshot");
         assert!(snapshot.kill_latch);
     }
 }

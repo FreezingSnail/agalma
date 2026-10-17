@@ -52,7 +52,7 @@ use agalma_execution::{Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
 use agalma_ledger::SqliteLedger;
 
 use crate::cli::WatchArgs;
-use crate::components::Transports;
+use crate::components::{ComponentSnapshot, ComponentView, PluginComponent, Transports, ViewBlock};
 use crate::control::{
     new_action_id, Actor, ControlAction, ControlOutcome, ControlPlane, ControlRequest,
 };
@@ -182,6 +182,8 @@ pub struct App {
     pub focus: Pane,
     /// Selected execution row (index into `snapshot.executions`).
     pub selection: usize,
+    /// Bounded scroll offset (rows) into the components pane.
+    pub components_offset: usize,
     /// Interaction mode (normal / typed confirmation).
     pub mode: Mode,
     /// Last control outcome or notice, shown in the footer.
@@ -202,6 +204,7 @@ impl App {
             interval_ms,
             focus: Pane::Executions,
             selection: 0,
+            components_offset: 0,
             mode: Mode::Normal,
             status: None,
             quit: false,
@@ -246,6 +249,17 @@ impl App {
         }
         let next = self.selection as isize + delta;
         self.selection = next.clamp(0, len as isize - 1) as usize;
+    }
+
+    /// Scroll the components pane by `delta` rows, saturating at the ends.
+    pub fn scroll_components(&mut self, delta: isize) {
+        let total = component_lines(self).len();
+        if total == 0 {
+            self.components_offset = 0;
+            return;
+        }
+        let next = self.components_offset as isize + delta;
+        self.components_offset = next.clamp(0, total as isize - 1) as usize;
     }
 
     /// Handle one key event. Destructive actions collect a typed confirmation
@@ -293,6 +307,10 @@ impl App {
             KeyCode::Char('4') => self.focus = Pane::Timeline,
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
+            KeyCode::Char('[') => self.scroll_components(-1),
+            KeyCode::Char(']') => self.scroll_components(1),
+            KeyCode::PageUp => self.scroll_components(-10),
+            KeyCode::PageDown => self.scroll_components(10),
             KeyCode::Char('r') => {
                 self.refresh_requested = true;
                 self.status = Some("refresh requested".to_string());
@@ -753,61 +771,326 @@ fn draw_executions(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_stateful_widget(table, area, &mut state);
 }
 
-/// Components pane (TUI.3): transport, api@version, socket liveness, bindings,
-/// and watchdog/provider-health signals.
+/// The visible `[start, end)` slice of the components pane plus its marker
+/// flags, for a given scroll offset and pane height. Distinct from
+/// [`draw_components`] so the boundary is directly testable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ComponentsWindow {
+    start: usize,
+    end: usize,
+    earlier: bool,
+    more: bool,
+}
+
+/// Compute the bounded-navigation window.
+///
+/// When every row fits (`total <= max_rows`) the whole list is shown with no
+/// markers, so no line vanishes. Otherwise the window reserves up to one row
+/// each for the "earlier" and "more" markers, and the offset is clamped so the
+/// final window ends exactly at `total`: every item stays reachable.
+fn components_window(total: usize, offset: usize, max_rows: usize) -> ComponentsWindow {
+    if total == 0 {
+        return ComponentsWindow {
+            start: 0,
+            end: 0,
+            earlier: false,
+            more: false,
+        };
+    }
+    if total <= max_rows {
+        return ComponentsWindow {
+            start: 0,
+            end: total,
+            earlier: false,
+            more: false,
+        };
+    }
+    let window = max_rows.saturating_sub(2).max(1);
+    let start = offset.min(total - window);
+    let end = start + window;
+    ComponentsWindow {
+        start,
+        end,
+        earlier: start > 0,
+        more: end < total,
+    }
+}
+
+/// Components pane (TUI.3 + HP.6): boundary components, then registry/report
+/// driven plugin components and their generic declarative views, windowed to the
+/// visible height with bounded scroll navigation.
 fn draw_components(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let lines = component_lines(app);
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let max_rows = inner_height.max(1);
+    let total = lines.len();
+
+    let mut body: Vec<Line> = Vec::new();
+    if total == 0 {
+        body.push(Line::from(Span::styled(
+            "(no components)",
+            Style::new().fg(Color::DarkGray),
+        )));
+    } else {
+        let window = components_window(total, app.components_offset, max_rows);
+        if window.earlier {
+            body.push(scroll_marker(format!("… {} earlier", window.start)));
+        }
+        body.extend(lines[window.start..window.end].iter().cloned());
+        if window.more {
+            body.push(scroll_marker(format!("… {} more", total - window.end)));
+        }
+    }
+
+    // No wrapping: one logical line per pane row keeps bounded navigation
+    // coherent (long view text is truncated, which is itself a bound).
+    let pane = Paragraph::new(Text::from(body)).block(pane_block(
+        Pane::Components.title(),
+        app.focus == Pane::Components,
+    ));
+    frame.render_widget(pane, area);
+}
+
+/// A dim "N earlier / N more" bounded-navigation marker.
+fn scroll_marker(text: String) -> Line<'static> {
+    Line::from(Span::styled(text, Style::new().fg(Color::DarkGray)))
+}
+
+/// The number of rows the components pane currently holds. Bounded-navigation
+/// callers use this to clamp the scroll offset.
+pub fn component_line_count(app: &App) -> usize {
+    component_lines(app).len()
+}
+
+/// Build every components-pane line: boundary components then plugin components.
+fn component_lines(app: &App) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
-    if app.snapshot.components.is_empty() {
+    if app.snapshot.components.is_empty() && app.snapshot.plugins.is_empty() {
         lines.push(Line::from(Span::styled(
             "(no components)",
             Style::new().fg(Color::DarkGray),
         )));
     }
     for component in &app.snapshot.components {
-        let version = component
-            .api_version
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "-".to_string());
-        let socket = match &component.socket {
-            Some(name) if component.socket_present => format!("{name} up"),
-            Some(name) => format!("{name} down"),
-            None => "-".to_string(),
-        };
-        let socket_style = if component.socket_present {
-            Style::new().fg(Color::Green)
-        } else {
-            Style::new().fg(Color::DarkGray)
-        };
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{:<10}", component.component),
-                Style::new().fg(Color::Cyan),
-            ),
-            Span::raw(format!("{:<10} ", component.transport)),
-            Span::raw(format!("{:<16} ", format!("{}@{}", component.api, version))),
-            Span::styled(socket, socket_style),
-        ]));
-        if !component.bindings.is_empty() {
-            lines.push(Line::from(Span::styled(
-                format!("    {}", component_binding_text(component)),
-                Style::new().fg(Color::Gray),
-            )));
-        }
-        if component.stalls > 0 {
-            let reason = component.last_health_reason.as_deref().unwrap_or("-");
-            lines.push(Line::from(Span::styled(
-                format!("    health: {} stall(s) · last: {reason}", component.stalls),
-                Style::new().fg(Color::Yellow),
-            )));
-        }
+        push_boundary_component(&mut lines, component);
     }
-    let pane = Paragraph::new(Text::from(lines))
-        .block(pane_block(
-            Pane::Components.title(),
-            app.focus == Pane::Components,
-        ))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(pane, area);
+    for component in &app.snapshot.plugins {
+        push_plugin_component(&mut lines, component);
+    }
+    lines
+}
+
+/// One boundary [`ComponentSnapshot`] row plus its binding/health detail.
+fn push_boundary_component(lines: &mut Vec<Line<'static>>, component: &ComponentSnapshot) {
+    let version = component
+        .api_version
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let socket = match &component.socket {
+        Some(name) if component.socket_present => format!("{name} up"),
+        Some(name) => format!("{name} down"),
+        None => "-".to_string(),
+    };
+    let socket_style = if component.socket_present {
+        Style::new().fg(Color::Green)
+    } else {
+        Style::new().fg(Color::DarkGray)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{:<10}", component.component),
+            Style::new().fg(Color::Cyan),
+        ),
+        Span::raw(format!("{:<10} ", component.transport)),
+        Span::raw(format!("{:<16} ", format!("{}@{}", component.api, version))),
+        Span::styled(socket, socket_style),
+    ]));
+    if !component.bindings.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("    {}", component_binding_text(component)),
+            Style::new().fg(Color::Gray),
+        )));
+    }
+    if component.stalls > 0 {
+        let reason = component.last_health_reason.as_deref().unwrap_or("-");
+        lines.push(Line::from(Span::styled(
+            format!("    health: {} stall(s) · last: {reason}", component.stalls),
+            Style::new().fg(Color::Yellow),
+        )));
+    }
+}
+
+/// One registry/report driven plugin component and its declarative views.
+fn push_plugin_component(lines: &mut Vec<Line<'static>>, component: &PluginComponent) {
+    let generation = component
+        .generation
+        .map(|gen| gen.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let freshness_style = match component.freshness.as_str() {
+        "fresh" => Style::new().fg(Color::Green),
+        "stale" => Style::new().fg(Color::Yellow),
+        "unavailable" => Style::new().fg(Color::Red),
+        _ => Style::new().fg(Color::DarkGray),
+    };
+    let mut spans = vec![
+        Span::styled(
+            format!("{:<18}", component.plugin_id),
+            Style::new().fg(Color::Cyan),
+        ),
+        Span::raw(format!("{:<10} ", component.origin)),
+        Span::raw(format!("gen{generation} {:<10} ", component.lifecycle)),
+        Span::styled(component.freshness.clone(), freshness_style),
+    ];
+    if component.stale {
+        spans.push(Span::styled(
+            " STALE",
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+    }
+    if component.disconnected {
+        spans.push(Span::styled(
+            " DISCONNECTED",
+            Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ));
+    }
+    if component.incomplete {
+        spans.push(Span::styled(" INCOMPLETE", Style::new().fg(Color::Yellow)));
+    }
+    lines.push(Line::from(spans));
+
+    if let Some(health) = &component.health {
+        lines.push(Line::from(Span::styled(
+            format!("    health: {} · {}", health.state, health.detail),
+            Style::new().fg(Color::Gray),
+        )));
+    }
+    if let Some(error) = &component.last_error {
+        lines.push(Line::from(Span::styled(
+            format!("    error: {error}"),
+            Style::new().fg(Color::Red),
+        )));
+    }
+    if !component.actions.is_empty() {
+        let actions = component
+            .actions
+            .iter()
+            .map(|action| action.action_id.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(Line::from(Span::styled(
+            format!("    actions: {actions}"),
+            Style::new().fg(Color::Gray),
+        )));
+    }
+    if component.views.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "    (no declared views)",
+            Style::new().fg(Color::DarkGray),
+        )));
+    }
+    for view in &component.views {
+        push_view(lines, view);
+    }
+}
+
+/// One declarative view header, its state marker, note, and rendered blocks.
+fn push_view(lines: &mut Vec<Line<'static>>, view: &ComponentView) {
+    let (state_text, state_style) = match view.state.as_str() {
+        "rendered" => (String::new(), Style::new().fg(Color::DarkGray)),
+        "awaiting-data" => (
+            " [awaiting-data]".to_string(),
+            Style::new().fg(Color::Yellow),
+        ),
+        "unsupported" => (
+            " [unsupported]".to_string(),
+            Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+        other => (format!(" [{other}]"), Style::new().fg(Color::Yellow)),
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {} {}", view.kind, view.title),
+            Style::new().fg(Color::Cyan),
+        ),
+        Span::styled(state_text, state_style),
+    ]));
+    if let Some(note) = &view.note {
+        lines.push(Line::from(Span::styled(
+            format!("    {note}"),
+            Style::new().fg(Color::DarkGray),
+        )));
+    }
+    for block in &view.blocks {
+        push_block(lines, block);
+    }
+}
+
+/// One generic rendered view block.
+fn push_block(lines: &mut Vec<Line<'static>>, block: &ViewBlock) {
+    match block {
+        ViewBlock::Status { value } => lines.push(Line::from(Span::styled(
+            format!("    {value}"),
+            Style::new().fg(Color::Gray),
+        ))),
+        ViewBlock::Metrics { rows } => {
+            if rows.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "    (no fields)",
+                    Style::new().fg(Color::DarkGray),
+                )));
+            }
+            for row in rows {
+                lines.push(Line::from(vec![
+                    Span::raw(format!("    {:<18} ", row.name)),
+                    Span::styled(row.value.clone(), Style::new().fg(Color::Gray)),
+                ]));
+            }
+        }
+        ViewBlock::Table {
+            headers,
+            rows,
+            truncated,
+        } => {
+            lines.push(Line::from(Span::styled(
+                format!("    {}", headers.join(" | ")),
+                Style::new().fg(Color::Gray).add_modifier(Modifier::BOLD),
+            )));
+            for row in rows {
+                lines.push(Line::from(Span::styled(
+                    format!("    {}", row.join(" | ")),
+                    Style::new().fg(Color::Gray),
+                )));
+            }
+            if *truncated > 0 {
+                lines.push(Line::from(Span::styled(
+                    format!("    … {truncated} more rows"),
+                    Style::new().fg(Color::DarkGray),
+                )));
+            }
+        }
+        ViewBlock::Timeline { rows } => {
+            for row in rows {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("    {:<14} ", row.time),
+                        Style::new().fg(Color::DarkGray),
+                    ),
+                    Span::raw(row.text.clone()),
+                ]));
+            }
+        }
+        ViewBlock::Alert { level, message } => lines.push(Line::from(vec![
+            Span::styled(
+                format!("    [{}] ", level),
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(message.clone()),
+        ])),
+        ViewBlock::ArtifactLink { label, target } => lines.push(Line::from(vec![
+            Span::raw(format!("    {label} → ")),
+            Span::styled(target.clone(), Style::new().fg(Color::Cyan)),
+        ])),
+    }
 }
 
 /// Economics pane (TUI.4): spend vs allowance, digest rollup, alerts.
@@ -918,7 +1201,7 @@ fn draw_timeline(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 /// Footer: keybindings on one line, the current mode/status on the next.
 fn draw_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let keys = "q quit   r refresh   Tab/1-4 focus   j/k select   p pause   R resume   c cancel";
+    let keys = "q quit   r refresh   Tab/1-4 focus   j/k select   [ ] scroll   p pause   R resume   c cancel";
     let mut lines = vec![Line::from(Span::styled(keys, Style::new().fg(Color::Gray)))];
 
     match &app.mode {
@@ -1079,6 +1362,7 @@ mod tests {
             binding: None,
             executions: Vec::new(),
             components: Vec::new(),
+            plugins: Vec::new(),
             economics: EconomicsSnapshot::default(),
         }
     }
@@ -1141,6 +1425,7 @@ mod tests {
                 harness: "reference@reference/v1".to_string(),
             }],
             components: components(),
+            plugins: Vec::new(),
             economics: economics(),
         }
     }
@@ -1388,6 +1673,71 @@ mod tests {
         assert_eq!(app.focus, Pane::Components);
         app.handle_key(press(KeyCode::Char('3')), &mut driver);
         assert_eq!(app.focus, Pane::Economics);
+    }
+
+    #[test]
+    fn components_window_covers_every_row_at_every_boundary() {
+        // Everything fits: the whole list renders, with no marker and no
+        // vanished trailing line (the previous boundary bug).
+        for total in 1..=5usize {
+            let window = components_window(total, 0, 5);
+            assert_eq!((window.start, window.end), (0, total), "total={total}");
+            assert!(!window.earlier && !window.more, "total={total}");
+        }
+        // Exactly one row over the pane: the last row stays reachable.
+        let window = components_window(6, 5, 5);
+        assert_eq!(window.start, 3);
+        assert_eq!(window.end, 6);
+        assert!(window.earlier && !window.more);
+
+        // Exhaustive reachability: every index appears in some window, and no
+        // window exceeds the pane height.
+        for max_rows in 1..=8usize {
+            for total in 1..=20usize {
+                let mut seen = vec![false; total];
+                for offset in 0..total {
+                    let window = components_window(total, offset, max_rows);
+                    assert!(
+                        window.end <= total,
+                        "window escaped: total={total} offset={offset} max_rows={max_rows}"
+                    );
+                    let markers = usize::from(window.earlier) + usize::from(window.more);
+                    let shown = window.end - window.start;
+                    if max_rows >= 3 {
+                        assert!(
+                            shown + markers <= max_rows,
+                            "window overflows: total={total} offset={offset} max_rows={max_rows} \
+                             shown={shown} markers={markers}"
+                        );
+                    }
+                    for index in window.start..window.end {
+                        seen[index] = true;
+                    }
+                }
+                assert!(
+                    seen.iter().all(|covered| *covered),
+                    "unreachable row: total={total} max_rows={max_rows}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn components_scroll_keybindings_are_bounded() {
+        let mut app = app(present());
+        let mut driver = RecordingDriver::applied();
+        let total = component_line_count(&app);
+        assert!(total > 1, "fixture has component rows: {total}");
+
+        app.handle_key(press(KeyCode::Char(']')), &mut driver);
+        assert_eq!(app.components_offset, 1);
+        app.handle_key(press(KeyCode::Char('[')), &mut driver);
+        assert_eq!(app.components_offset, 0);
+
+        app.handle_key(press(KeyCode::PageDown), &mut driver);
+        assert!(app.components_offset <= total - 1);
+        app.handle_key(press(KeyCode::PageUp), &mut driver);
+        assert_eq!(app.components_offset, 0);
     }
 
     #[test]
@@ -1674,7 +2024,12 @@ mod tests {
         let _ = ex.start(&TaskId::new("watch")).expect("start execution");
         drop(ex);
 
-        let snapshot = crate::status::snapshot(dir.path()).expect("snapshot");
+        let snapshot = crate::status::snapshot_with_selected_transport(
+            dir.path(),
+            &ctx_transports(),
+            crate::ledger_process::LedgerTransport::InProcess,
+        )
+        .expect("snapshot");
         let mut app = App::new(snapshot, ctx_transports(), 1000);
         let mut driver = LedgerControlDriver::new(dir.path());
 
@@ -1701,7 +2056,12 @@ mod tests {
         let execution = ex.start(&TaskId::new("watch")).expect("start execution");
         drop(ex);
 
-        let snapshot = crate::status::snapshot(dir.path()).expect("snapshot");
+        let snapshot = crate::status::snapshot_with_selected_transport(
+            dir.path(),
+            &ctx_transports(),
+            crate::ledger_process::LedgerTransport::InProcess,
+        )
+        .expect("snapshot");
         let mut app = App::new(snapshot, ctx_transports(), 1000);
         let mut driver = LedgerControlDriver::new(dir.path());
 

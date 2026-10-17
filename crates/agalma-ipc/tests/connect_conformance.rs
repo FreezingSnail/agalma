@@ -45,9 +45,20 @@ fn test_server(counter: Arc<AtomicU64>) -> Server {
     server.on("echo", |params: Value| -> Result<Value, ContractError> {
         Ok(params)
     });
+    let increment = counter.clone();
     server.on(
         "counter.increment",
         move |_params: Value| -> Result<Value, ContractError> {
+            let n = increment.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(json!({ "count": n }))
+        },
+    );
+    // A deliberately slow effectful method: a concurrent duplicate must arrive
+    // while the first execution is still in flight.
+    server.on(
+        "counter.slow",
+        move |_params: Value| -> Result<Value, ContractError> {
+            std::thread::sleep(Duration::from_millis(150));
             let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
             Ok(json!({ "count": n }))
         },
@@ -71,6 +82,17 @@ async fn spawn_server(server: Server, socket: PathBuf) {
     tokio::spawn(async move {
         agalma_ipc::connect::serve(server, &socket).await.ok();
     });
+}
+
+/// Connect under a stable logical identity, retrying until the socket is bound.
+async fn connect_as(socket: &Path, client_id: &str) -> ConnectClient {
+    for _ in 0..500 {
+        match ConnectClient::connect_as(socket, client_id).await {
+            Ok(client) => return client,
+            Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+        }
+    }
+    panic!("connect server never became ready at {}", socket.display());
 }
 
 /// Connect, retrying until the server's READY line has bound the socket.
@@ -130,12 +152,15 @@ async fn connect_duplicate_id_returns_recorded_result() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn connect_replay_survives_reconnect() {
+    // One logical client keeps the same stable identity across a reconnect, so
+    // its explicit-id replay still returns the prior receipt (HP.4,
+    // `agalma-jmr.4`): identity is carried in `x-agalma-client`, not the envelope.
     let counter = Arc::new(AtomicU64::new(0));
     let (_dir, socket) = socket_path("reconnect");
     spawn_server(test_server(counter.clone()), socket.clone()).await;
 
     {
-        let client = connect(&socket).await;
+        let client = connect_as(&socket, "logical-a").await;
         let first = client
             .call_with_id(1, "counter.increment", json!({}))
             .await
@@ -143,13 +168,30 @@ async fn connect_replay_survives_reconnect() {
         assert_eq!(first, json!({ "count": 1 }));
     } // connection dropped
 
-    let client = connect(&socket).await;
+    let client = connect_as(&socket, "logical-a").await;
     let replay = client
         .call_with_id(1, "counter.increment", json!({}))
         .await
         .expect("replay after reconnect");
     assert_eq!(replay, json!({ "count": 1 }));
     assert_eq!(counter.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn connect_receipts_are_scoped_per_client() {
+    // Two independent clients (distinct identities) draw the same numeric
+    // request id: their receipts must not collide.
+    let counter = Arc::new(AtomicU64::new(0));
+    let (_dir, socket) = socket_path("scope");
+    spawn_server(test_server(counter.clone()), socket.clone()).await;
+
+    let a = connect_as(&socket, "client-a").await;
+    let b = connect_as(&socket, "client-b").await;
+    let from_a = a.call_with_id(1, "counter.increment", json!({})).await.expect("a");
+    let from_b = b.call_with_id(1, "counter.increment", json!({})).await.expect("b");
+    assert_eq!(from_a, json!({ "count": 1 }));
+    assert_eq!(from_b, json!({ "count": 2 }), "independent clients do not share receipts");
+    assert_eq!(counter.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -256,4 +298,37 @@ async fn connect_multiplexes_concurrent_calls() {
     );
     assert_eq!(a.expect("first"), json!({"a": 1}));
     assert_eq!(b.expect("second"), json!({"b": 2}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connect_concurrent_duplicate_runs_handler_once() {
+    // HP.4 (`agalma-jmr.4`): concurrent duplicates of one logical client's
+    // request id must run the handler exactly once — the dispatcher holds an
+    // atomic in-flight claim, and later duplicates await the outcome and replay
+    // it instead of re-running the effect.
+    let counter = Arc::new(AtomicU64::new(0));
+    let (_dir, socket) = socket_path("dup-concurrent");
+    spawn_server(test_server(counter.clone()), socket.clone()).await;
+
+    let client = Arc::new(connect(&socket).await);
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let client = client.clone();
+        handles.push(tokio::spawn(async move {
+            client.call_with_id(42, "counter.slow", json!({})).await
+        }));
+    }
+    for handle in handles {
+        let response = handle.await.expect("task").expect("duplicate acknowledged");
+        assert_eq!(
+            response,
+            json!({ "count": 1 }),
+            "every concurrent duplicate replays the one recorded effect"
+        );
+    }
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "the slow handler ran exactly once for the shared request id"
+    );
 }

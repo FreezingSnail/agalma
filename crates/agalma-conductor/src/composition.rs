@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use agalma_contracts::harness::StopEvidence;
@@ -27,6 +28,10 @@ use crate::plugin_manifest::{DiscoveryDiagnostic, DiscoveredPackage};
 use crate::plugin_registry::{
     plugin_socket_path, DesiredState, DesiredStateStore, HubInstallStore, InMemoryDesiredStateStore,
     PluginRegistry,
+};
+use crate::plugin_router::{
+    CapabilityAdapter, CapabilityRouter, LaunchGrant, OperationJournal, RouterService,
+    RpcHealthProbe, RunningStop, StopAdmission,
 };
 use crate::plugin_supervisor::{
     BackoffPolicy, Clock, HealthProbe, LaunchRequest, PluginSupervisor, RestartPlan, Spawned,
@@ -48,6 +53,15 @@ pub const BUILDER_PROMPT: &str = include_str!("../prompts/builder.md");
 /// repository feature build never inherits the fixture's one-line instruction
 /// (`agalma-5fy.1`).
 pub const BUILDER_FIXTURE_PROMPT: &str = include_str!("../prompts/builder-fixture.md");
+
+/// Per-launch hub capability grant lifetime (24h), refreshed on each restart.
+pub const LAUNCH_GRANT_TTL_MS: u64 = 24 * 60 * 60 * 1000;
+/// Private launch-channel env: the hub capability RPC socket the spoke calls.
+pub const HUB_SOCKET_ENV: &str = "AGALMA_HUB_SOCKET";
+/// Private launch-channel env: the spoke's per-launch scoped grant token.
+pub const PLUGIN_GRANT_ENV: &str = "AGALMA_PLUGIN_GRANT";
+/// Private launch-channel env: the capability the grant authorizes.
+pub const PLUGIN_GRANT_CAPABILITY_ENV: &str = "AGALMA_PLUGIN_GRANT_CAPABILITY";
 
 /// Default bound on one model turn (free model can be slow; M0 allows minutes).
 pub const DEFAULT_TURN_TIMEOUT: Duration = Duration::from_secs(600);
@@ -417,6 +431,29 @@ pub struct InstalledPlugin {
     pub package_digest: String,
 }
 
+/// Injected hub capability-service seams (HP.4; HP.5 owns durable persistence).
+///
+/// The hub router needs an operation journal (durable effect dedup), a stop
+/// admission policy (SF stop authority), and the authorized typed adapters.
+/// HP.5 replaces the volatile default journal with the selected-ledger store;
+/// HP.7 owns the action service. Nothing here claims durable production
+/// action recovery yet.
+pub struct HubServices {
+    pub journal: Box<dyn OperationJournal>,
+    pub stop: Arc<dyn StopAdmission>,
+    pub adapters: Vec<Box<dyn CapabilityAdapter>>,
+}
+
+impl Default for HubServices {
+    fn default() -> Self {
+        HubServices {
+            journal: Box::new(crate::plugin_router::InMemoryOperationJournal::new()),
+            stop: Arc::new(RunningStop),
+            adapters: Vec::new(),
+        }
+    }
+}
+
 /// The assembled plugin host.
 pub struct PluginHost {
     pub state_dir: PathBuf,
@@ -428,6 +465,12 @@ pub struct PluginHost {
     pub diagnostics: Vec<DiscoveryDiagnostic>,
     /// Generation installed for each discovered plugin id.
     pub installed: BTreeMap<String, u64>,
+    /// The hub's capability RPC service (served by [`crate::plugin_router::serve_hub`]).
+    pub router: Arc<RouterService>,
+    /// The hub capability RPC socket spokes call back on.
+    pub hub_socket: PathBuf,
+    /// Per-launch grants issued for installed plugins (private launch channel).
+    grants: BTreeMap<String, LaunchGrant>,
     desired: Box<dyn DesiredStateStore>,
 }
 
@@ -452,6 +495,24 @@ impl PluginHost {
         installations: &dyn InstallationSource,
         desired: Box<dyn DesiredStateStore>,
         clock: Rc<dyn Clock>,
+    ) -> Result<PluginHost, ContractError> {
+        PluginHost::assemble_with_hub(config, installations, desired, clock, HubServices::default())
+    }
+
+    /// Assemble the plugin host with injected hub capability-service seams
+    /// (`agalma-jmr.4`).
+    ///
+    /// Same as [`PluginHost::assemble`], but the hub capability router is built
+    /// from the injected journal/stop/adapters and a per-launch scoped grant is
+    /// issued for each installed plugin, carried to the child through the private
+    /// launch channel ([`LaunchRequest::env`]). Persistence stays injected until
+    /// HP.5.
+    pub fn assemble_with_hub(
+        config: &PluginHostConfig,
+        installations: &dyn InstallationSource,
+        desired: Box<dyn DesiredStateStore>,
+        clock: Rc<dyn Clock>,
+        services: HubServices,
     ) -> Result<PluginHost, ContractError> {
         std::fs::create_dir_all(&config.state_dir).map_err(|err| {
             FailureCode::StateUnavailable.failure(
@@ -496,7 +557,18 @@ impl PluginHost {
         let mut desired = desired;
         registry.load_desired(desired.as_mut())?;
 
-        let supervisor = PluginSupervisor::new(clock, BackoffPolicy::default(), READY_TIMEOUT);
+        let supervisor = PluginSupervisor::new(clock.clone(), BackoffPolicy::default(), READY_TIMEOUT);
+
+        // Hub capability service (HP.4). Grants are NOT issued at assembly: a
+        // fresh launch-scoped grant is issued for every launch epoch by
+        // [`PluginHost::launch_request`], so a restart rotates the token while
+        // the immutable binding scope stays the same.
+        let mut router = CapabilityRouter::new(services.journal, services.stop);
+        for adapter in services.adapters {
+            router.register_adapter(adapter);
+        }
+        let router = Arc::new(RouterService::new(router));
+        let hub_socket = plugin_socket_path(&state_dir, "hub", 0);
 
         Ok(PluginHost {
             state_dir,
@@ -506,6 +578,9 @@ impl PluginHost {
             supervisor,
             diagnostics,
             installed,
+            router,
+            hub_socket,
+            grants: BTreeMap::new(),
             desired,
         })
     }
@@ -577,29 +652,96 @@ impl PluginHost {
     /// it becomes active, so a later restart relaunches the active generation.
     /// Rehashes the hub-owned installed copy first (frozen contract: rehash on
     /// install, stage and launch); a tampered installed generation is refused.
-    pub fn launch_request(&self, plugin_id: &str) -> Result<LaunchRequest, ContractError> {
-        let entry = self.registry.entry(plugin_id).ok_or_else(|| {
-            FailureCode::InvalidRecord.failure(plugin_id, "plugin is not registered")
-        })?;
-        let generation = entry
-            .pending_generation
-            .or(entry.active_generation)
-            .ok_or_else(|| {
-                FailureCode::InvalidRecord.failure(
+    ///
+    /// Every call is one launch: it issues a **fresh** launch-scoped grant for
+    /// the launch epoch and revokes the prior token, so a restart never reuses a
+    /// token while the immutable binding scope (plugin/generation/method/
+    /// capability) is unchanged. The token travels only through the private
+    /// launch channel ([`LaunchRequest::env`]).
+    pub fn launch_request(&mut self, plugin_id: &str) -> Result<LaunchRequest, ContractError> {
+        let (generation, installed) = {
+            let entry = self.registry.entry(plugin_id).ok_or_else(|| {
+                FailureCode::InvalidRecord.failure(plugin_id, "plugin is not registered")
+            })?;
+            let generation = entry
+                .pending_generation
+                .or(entry.active_generation)
+                .ok_or_else(|| {
+                    FailureCode::InvalidRecord.failure(
+                        plugin_id,
+                        "plugin has no staged candidate or active generation",
+                    )
+                })?;
+            let installed = entry.generations.get(&generation).cloned().ok_or_else(|| {
+                FailureCode::StaleGeneration.failure(
                     plugin_id,
-                    "plugin has no staged candidate or active generation",
+                    format!("active generation {generation} is not installed"),
                 )
             })?;
-        let installed = entry.generations.get(&generation).ok_or_else(|| {
-            FailureCode::StaleGeneration.failure(
-                plugin_id,
-                format!("active generation {generation} is not installed"),
-            )
-        })?;
+            (generation, installed)
+        };
         installed.rehash()?;
-        let epoch = entry.launch_epoch + 1;
+        let epoch = self
+            .registry
+            .entry(plugin_id)
+            .map(|entry| entry.launch_epoch + 1)
+            .unwrap_or(1);
         let socket = plugin_socket_path(&self.state_dir, plugin_id, epoch);
-        Ok(LaunchRequest::from_installed(installed, socket))
+        let mut request = LaunchRequest::from_installed(&installed, socket);
+
+        // Rotate the per-launch grant: revoke the prior token, then issue a
+        // fresh token for the identical immutable binding scope.
+        if let Some(capability) = installed.approved_capabilities.first().cloned() {
+            if let Some(previous) = self.grants.remove(plugin_id) {
+                self.router.router().revoke_grant(&previous.fingerprint());
+            }
+            let binding = agalma_contracts::BindingPin {
+                binding_id: plugin_id.to_string(),
+                api: "plugin".to_string(),
+                api_version: 1,
+                implementation_version: installed.package_version.clone(),
+                generation,
+                config_digest: installed.config_digest.clone(),
+            };
+            let expiry = crate::plugin_router::wall_clock_now_ms()
+                .saturating_add(LAUNCH_GRANT_TTL_MS);
+            let grant = LaunchGrant::for_capability(
+                plugin_id.to_string(),
+                binding,
+                agalma_ipc::plugin_server::METHOD_INVOKE_CAPABILITY,
+                capability,
+                expiry,
+                None,
+            )?;
+            self.router.router().install_grant(&grant);
+            request
+                .env
+                .insert(PLUGIN_GRANT_ENV.to_string(), grant.token_hex());
+            request.env.insert(
+                PLUGIN_GRANT_CAPABILITY_ENV.to_string(),
+                grant.scope().resource_namespace.clone(),
+            );
+            self.grants.insert(plugin_id.to_string(), grant);
+        }
+
+        // Private launch channel: the hub socket and the spoke's per-launch
+        // scoped grant (never a peer socket or database handle).
+        request.env.insert(
+            HUB_SOCKET_ENV.to_string(),
+            self.hub_socket.to_string_lossy().into_owned(),
+        );
+        Ok(request)
+    }
+
+    /// The per-launch grant issued for `plugin_id`, if any (private launch
+    /// channel; the token is never logged).
+    pub fn launch_grant(&self, plugin_id: &str) -> Option<&LaunchGrant> {
+        self.grants.get(plugin_id)
+    }
+
+    /// Every issued per-launch grant, keyed by plugin id (diagnostics/tests).
+    pub fn launch_grants(&self) -> &BTreeMap<String, LaunchGrant> {
+        &self.grants
     }
 
     /// Advance the production supervise loop one tick.
@@ -758,14 +900,28 @@ pub async fn run_plugin_host(args: &PluginHostArgs) -> std::process::ExitCode {
         }
     };
     eprintln!(
-        "agalma: plugin host state_dir={} roots={} installed={} diagnostics={}",
+        "agalma: plugin host state_dir={} roots={} installed={} diagnostics={} grant_plugins={}",
         host.state_dir.display(),
         host.roots.len(),
         host.installed.len(),
-        host.diagnostics.len()
+        host.diagnostics.len(),
+        host.launch_grants().len()
     );
-    // HP.4 attaches the real capability-scoped RPC health probe.
-    let mut probe = AlwaysHealthy;
+    // Serve the hub capability RPC so spokes can call back with their per-launch
+    // grant; HP.5 attaches durable persistence to the router's journal.
+    {
+        let hub_socket = host.hub_socket.clone();
+        let router = host.router.clone();
+        tokio::spawn(async move {
+            if let Err(err) = crate::plugin_router::serve_hub(&hub_socket, router).await {
+                eprintln!("agalma: hub capability socket stopped: {err}");
+            }
+        });
+    }
+    // HP.4 (`agalma-jmr.4`) attaches the real capability-scoped RPC health
+    // probe: it performs the common plugin protocol handshake + `plugin.Health`
+    // over the child's Connect UDS instead of assuming readiness.
+    let mut probe = RpcHealthProbe::new(host.state_dir.clone());
     if let Err(err) = host.start_desired(&mut probe) {
         eprintln!("agalma: plugin host start failed: {err:?}");
         let _ = host.shutdown();
@@ -807,15 +963,6 @@ pub async fn run_plugin_host(args: &PluginHostArgs) -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-/// Stand-in health probe used until HP.4 attaches the real RPC probe.
-struct AlwaysHealthy;
-
-impl HealthProbe for AlwaysHealthy {
-    fn probe(&mut self, _plugin_id: &str, _epoch: u64) -> Result<bool, ContractError> {
-        Ok(true)
-    }
-}
-
 /// Assemble and start the plugin host for the `agalma work` loop.
 ///
 /// Best-effort: a host-assembly or start failure is reported but never blocks
@@ -842,7 +989,7 @@ pub fn attach_work_plugin_host(
             return None;
         }
     };
-    let mut probe = AlwaysHealthy;
+    let mut probe = RpcHealthProbe::new(host.state_dir.clone());
     if let Err(err) = host.start_desired(&mut probe) {
         eprintln!("agalma: plugin host start failed: {err:?}");
     }

@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufReader, BufWriter, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use agalma_contracts::ContractError;
 use serde::{Deserialize, Serialize};
@@ -64,11 +65,20 @@ impl ServerInfo {
     }
 }
 
+/// Receipt-cache scope: a stable client identity. `0` is the framed/embedded
+/// server's single implicit client; the Connect transport assigns one per
+/// connection so two independent clients with overlapping numeric request ids
+/// cannot replay each other's receipts (`agalma-jmr.4`).
+pub type ReceiptScope = u64;
+
+/// The framed/embedded single-client scope.
+pub const FRAMED_SCOPE: ReceiptScope = 0;
+
 /// A serial IPC server over a Unix socket.
 pub struct Server {
     info: ServerInfo,
-    handlers: BTreeMap<String, Box<dyn Handler>>,
-    receipts: BTreeMap<u64, Response>,
+    handlers: BTreeMap<String, Arc<dyn Handler>>,
+    receipts: BTreeMap<(ReceiptScope, u64), Response>,
 }
 
 impl Server {
@@ -91,12 +101,58 @@ impl Server {
     where
         F: Handler + 'static,
     {
-        self.handlers.insert(method.into(), Box::new(handler));
+        self.handlers.insert(method.into(), Arc::new(handler));
     }
 
     /// Whether a handler is registered for `method`.
     pub fn has_handler(&self, method: &str) -> bool {
         self.handlers.contains_key(method)
+    }
+
+    /// A reference-counted clone of the handler for `method`, if registered.
+    ///
+    /// HP.4 (`agalma-jmr.4`): the concurrent Connect dispatcher copies this
+    /// reference **while holding the server lock**, then releases the lock before
+    /// executing the handler. That lets a handler make an external RPC (e.g. call
+    /// a spoke that calls back into this same server) without deadlocking on the
+    /// shared server mutex.
+    pub fn handler(&self, method: &str) -> Option<Arc<dyn Handler>> {
+        self.handlers.get(method).cloned()
+    }
+
+    /// The recorded receipt for `id` in `scope` ([`FRAMED_SCOPE`] by default).
+    pub fn recorded(&self, id: u64) -> Option<Response> {
+        self.recorded_scoped(FRAMED_SCOPE, id)
+    }
+
+    /// The recorded receipt for `id` in an explicit client `scope`.
+    ///
+    /// Receipts are **not** shared across scopes: a different client's request id
+    /// never replays here, so independent clients with overlapping numeric ids do
+    /// not collide.
+    pub fn recorded_scoped(&self, scope: ReceiptScope, id: u64) -> Option<Response> {
+        self.receipts.get(&(scope, id)).cloned()
+    }
+
+    /// Record `response` for `id` in `scope` unless an earlier receipt exists.
+    ///
+    /// Returns the receipt that is authoritative after the call (the pre-existing
+    /// one on a concurrent duplicate, else `response`).
+    pub fn record(&mut self, id: u64, response: Response) -> Response {
+        self.record_scoped(FRAMED_SCOPE, id, response)
+    }
+
+    /// Record `response` for `id` in an explicit client `scope`.
+    pub fn record_scoped(
+        &mut self,
+        scope: ReceiptScope,
+        id: u64,
+        response: Response,
+    ) -> Response {
+        self.receipts
+            .entry((scope, id))
+            .or_insert(response)
+            .clone()
     }
 
     /// Bind the listener, remove any stale socket, and print the `READY` line.
@@ -192,8 +248,15 @@ impl Server {
     /// connection-unique on the client side (see [`crate::client`] module docs),
     /// so a fresh connection never collides with a prior one's recorded ids.
     pub fn dispatch(&mut self, request: &Request) -> Response {
-        if let Some(recorded) = self.receipts.get(&request.id) {
-            return recorded.clone();
+        self.dispatch_scoped(FRAMED_SCOPE, request)
+    }
+
+    /// Dispatch one request within an explicit client `scope`, recording and
+    /// replaying that scope's receipts. The framed server uses
+    /// [`FRAMED_SCOPE`]; the Connect dispatcher uses one scope per connection.
+    pub fn dispatch_scoped(&mut self, scope: ReceiptScope, request: &Request) -> Response {
+        if let Some(recorded) = self.recorded_scoped(scope, request.id) {
+            return recorded;
         }
 
         let outcome = self
@@ -211,8 +274,7 @@ impl Server {
             ),
         };
 
-        self.receipts.insert(request.id, response.clone());
-        response
+        self.record_scoped(scope, request.id, response)
     }
 }
 

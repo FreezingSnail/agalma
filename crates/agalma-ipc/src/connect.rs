@@ -17,6 +17,7 @@
 //! names (including `UnknownOutcome`); transport faults surface as
 //! [`IpcError::Unavailable`] and protocol faults as [`IpcError::Protocol`].
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -33,17 +34,25 @@ use serde_json::Value;
 use tower::Service as _;
 
 use crate::client::seed_next_id;
-use crate::envelope::{Request, Response, PROTOCOL_VERSION};
+use crate::envelope::{Response, PROTOCOL_VERSION};
 use crate::error::{IpcError, CODE_PROTOCOL};
 use crate::proto::agalma::ipc::v1::{
     Ipc, IpcClient, IpcError as ProtoError, IpcRequest, IpcResponse, IpcServer,
 };
-use crate::server::Server;
+use crate::server::{Handler, ReceiptScope, Server};
 
 /// Authority used as the HTTP/2 `:authority` pseudo-header for the local
 /// socket. Ignored for routing (the socket path selects the peer); the Connect
 /// path always begins with `agalma.ipc.v1.Ipc/Call`.
 const AUTHORITY: &str = "http://agalma.local";
+
+/// Request header carrying a client's stable logical identity.
+///
+/// Receipt replay is scoped by this value (a transport header, not an envelope
+/// field — the frozen envelope is unchanged). Independent clients use distinct
+/// identities and never collide on overlapping numeric request ids; a client
+/// that reconnects and reuses its identity still replays its own receipts.
+pub const CLIENT_ID_HEADER: &str = "x-agalma-client";
 
 // ---------------------------------------------------------------------------
 // Wire selector
@@ -157,20 +166,104 @@ fn watch_stdin_for_parent_death() {
 /// the envelope ordering guarantee (one mutating call at a time per boundary)
 /// while HTTP/2 multiplexes the transport.
 pub struct IpcDispatcher {
-    server: Arc<Mutex<Server>>,
+    state: Arc<Mutex<DispatchState>>,
+    /// Client identity → receipt scope interner.
+    ///
+    /// A client identifies itself with the [`CLIENT_ID_HEADER`] transport
+    /// header. Requests without it share the framed scope. Distinct client
+    /// identities never share receipts, so two independent clients drawing
+    /// overlapping numeric request ids do not collide; a client that reconnects
+    /// and reuses its identity still replays its own recorded receipts.
+    scopes: Arc<Mutex<BTreeMap<String, ReceiptScope>>>,
+    next_scope: Arc<std::sync::atomic::AtomicU64>,
+}
+
+/// Shared dispatch state: the receipt/handler server plus the atomic in-flight
+/// claim table, under one lock so the replay/claim check is atomic.
+struct DispatchState {
+    server: Server,
+    /// `(client scope, request id)` → completion signal for the one in-flight
+    /// execution of that request. A concurrent duplicate waits on this and
+    /// replays the outcome instead of re-running the handler.
+    inflight: BTreeMap<(ReceiptScope, u64), tokio::sync::watch::Sender<bool>>,
+}
+
+/// What the atomic claim phase decided for one request.
+enum Claim {
+    /// A recorded receipt already exists: replay it.
+    Replay(Response),
+    /// Another task owns the in-flight execution: await its completion signal.
+    Wait(tokio::sync::watch::Sender<bool>),
+    /// This task owns the claim; run the handler (if any).
+    Run(Option<Arc<dyn Handler>>),
 }
 
 impl IpcDispatcher {
     /// Wrap `server` behind the ConnectRPC dispatcher.
     pub fn new(server: Server) -> Self {
         IpcDispatcher {
-            server: Arc::new(Mutex::new(server)),
+            state: Arc::new(Mutex::new(DispatchState {
+                server,
+                inflight: BTreeMap::new(),
+            })),
+            scopes: Arc::new(Mutex::new(BTreeMap::new())),
+            next_scope: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         }
+    }
+
+    /// The receipt scope for `client_id` (interning a new scope on first sight).
+    fn scope_for(&self, client_id: Option<&str>) -> ReceiptScope {
+        let Some(client_id) = client_id else {
+            return crate::server::FRAMED_SCOPE;
+        };
+        let mut scopes = self.scopes.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(scope) = scopes.get(client_id) {
+            return *scope;
+        }
+        let scope = self
+            .next_scope
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        scopes.insert(client_id.to_string(), scope);
+        scope
+    }
+
+    /// Atomically claim `(scope, id)` under one lock: replay a recorded receipt,
+    /// wait on an existing in-flight claim, or take the claim for this task.
+    fn claim(&self, scope: ReceiptScope, id: u64, method: &str) -> Claim {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(recorded) = state.server.recorded_scoped(scope, id) {
+            return Claim::Replay(recorded);
+        }
+        if let Some(signal) = state.inflight.get(&(scope, id)) {
+            return Claim::Wait(signal.clone());
+        }
+        let handler = state.server.handler(method);
+        let (signal, _receiver) = tokio::sync::watch::channel(false);
+        state.inflight.insert((scope, id), signal);
+        Claim::Run(handler)
+    }
+
+    /// Record the terminal response and wake any waiters, under the lock.
+    fn settle(&self, scope: ReceiptScope, id: u64, response: Response) -> Response {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let recorded = state.server.record_scoped(scope, id, response);
+        if let Some(signal) = state.inflight.remove(&(scope, id)) {
+            let _ = signal.send(true);
+        }
+        recorded
     }
 
     /// Map one envelope request to a response, preserving all envelope
     /// semantics (version refusal, receipt replay, unknown-method refusal).
-    fn handle(&self, request: IpcRequest) -> IpcResponse {
+    ///
+    /// HP.4 (`agalma-jmr.4`): the shared lock is held only to atomically claim
+    /// the request (replay check + in-flight claim + handler reference) and again
+    /// to settle it. It is **released while the handler runs**, so a handler may
+    /// make an external RPC (a spoke calling back into this hub) without
+    /// deadlocking on the shared lock. A concurrent duplicate of the same client
+    /// identity and request id waits on the claim and replays the outcome rather
+    /// than re-running the effect.
+    async fn handle(&self, scope: ReceiptScope, request: IpcRequest) -> IpcResponse {
         // Version mismatch is refused in-band and never recorded (the id may be
         // reused), mirroring `Server::serve_connection`.
         if request.v != PROTOCOL_VERSION {
@@ -184,8 +277,8 @@ impl IpcDispatcher {
             );
         }
 
-        let params: Value = match serde_json::from_slice(&request.params_json) {
-            Ok(params) => params,
+        let mut params = match serde_json::from_slice::<Value>(&request.params_json) {
+            Ok(params) => Some(params),
             Err(e) => {
                 return error_proto(
                     request.id,
@@ -195,31 +288,67 @@ impl IpcDispatcher {
             }
         };
 
-        let envelope = Request {
-            v: request.v,
-            id: request.id,
-            method: request.method,
-            params,
-        };
-
-        let response = {
-            let mut server = self.server.lock().unwrap_or_else(PoisonError::into_inner);
-            server.dispatch(&envelope)
-        };
-        response_to_proto(&response)
+        let id = request.id;
+        let method = request.method;
+        loop {
+            match self.claim(scope, id, &method) {
+                Claim::Replay(recorded) => return response_to_proto(&recorded),
+                Claim::Wait(signal) => {
+                    // Subscribe and, if the claim already completed, do not wait
+                    // for a second edge (watch receivers see the current value).
+                    let mut receiver = signal.subscribe();
+                    if !*receiver.borrow() {
+                        let _ = receiver.changed().await;
+                    }
+                    // Loop: the receipt is now recorded (settle records before
+                    // waking), or another claim was taken.
+                }
+                Claim::Run(handler) => {
+                    let response = match handler {
+                        Some(handler) => {
+                            let params = params.take().unwrap_or(Value::Null);
+                            let joined =
+                                tokio::task::spawn_blocking(move || handler.handle(params)).await;
+                            match joined {
+                                Ok(Ok(result)) => Response::ok(id, result),
+                                Ok(Err(error)) => Response::from_contract_error(id, &error),
+                                Err(join_error) => Response::error(
+                                    id,
+                                    CODE_PROTOCOL,
+                                    format!("handler for id {id} panicked: {join_error}"),
+                                ),
+                            }
+                        }
+                        None => Response::error(
+                            id,
+                            crate::server::ERR_UNKNOWN_METHOD,
+                            format!("unknown method: {method}"),
+                        ),
+                    };
+                    // Settle records the receipt before waking waiters, so a
+                    // waiter that observes completion always finds it recorded.
+                    let recorded = self.settle(scope, id, response);
+                    return response_to_proto(&recorded);
+                }
+            }
+        }
     }
 }
 
 impl Ipc for IpcDispatcher {
     fn call<'a>(
         &'a self,
-        _ctx: RequestContext,
+        ctx: RequestContext,
         request: ServiceRequest<'_, IpcRequest>,
     ) -> impl std::future::Future<
         Output = ServiceResult<impl connectrpc::Encodable<IpcResponse> + Send + use<'a>>,
     > + Send {
+        let scope = self.scope_for(
+            ctx.header(CLIENT_ID_HEADER)
+                .and_then(|value| value.to_str().ok()),
+        );
         let request = request.to_owned_message();
-        async move { connectrpc::Response::ok(self.handle(request)) }
+        async move { connectrpc::Response::ok(self.handle(scope, request).await) }
     }
 }
 
@@ -319,13 +448,32 @@ pub struct ConnectClient {
 
 impl ConnectClient {
     /// Connect to the server listening on `socket` and speak Connect.
+    ///
+    /// The client presents a fresh logical identity, so its receipts are isolated
+    /// from every other client. Use [`ConnectClient::connect_as`] to resume the
+    /// same identity (and its recorded receipts) after a reconnect.
     pub async fn connect(socket: &Path) -> Result<ConnectClient, IpcError> {
+        ConnectClient::connect_as(socket, fresh_client_id()).await
+    }
+
+    /// Connect with a caller-chosen stable logical identity.
+    ///
+    /// Reusing the same `client_id` across reconnects preserves that logical
+    /// client's receipt replay; a different id is a different client and never
+    /// replays another's receipts. The id travels in the [`CLIENT_ID_HEADER`]
+    /// transport header, so the frozen envelope is unchanged.
+    pub async fn connect_as(
+        socket: &Path,
+        client_id: impl Into<String>,
+    ) -> Result<ConnectClient, IpcError> {
         let authority: http::Uri = AUTHORITY.parse().expect("static authority is a valid URI");
         let connection = connectrpc::client::Http2Connection::builder()
             .connect_unix(socket, authority.clone())
             .await
             .map_err(|e| IpcError::unavailable(format!("connect to {}: {e}", socket.display())))?;
-        let config = ClientConfig::new(authority).with_protocol(connectrpc::Protocol::Connect);
+        let config = ClientConfig::new(authority)
+            .with_protocol(connectrpc::Protocol::Connect)
+            .with_default_header(CLIENT_ID_HEADER, client_id.into());
         Ok(ConnectClient {
             client: IpcClient::new(connection.shared(1), config),
             next_id: seed_next_id(),
@@ -409,6 +557,14 @@ impl ConnectClient {
         serde_json::from_value(result)
             .map_err(|e| IpcError::protocol(format!("decode result: {e}")))
     }
+}
+
+/// A fresh, process-unique logical client id.
+fn fresh_client_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("c{:016x}{:016x}", seed_next_id(), n)
 }
 
 /// Classify a ConnectRPC transport error as an [`IpcError`].

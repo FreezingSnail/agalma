@@ -40,6 +40,8 @@ pub mod harness_client;
 pub mod harness_server;
 pub mod ledger_client;
 pub mod ledger_server;
+pub mod plugin_client;
+pub mod plugin_server;
 pub mod server;
 pub mod taskqueue_client;
 pub mod taskqueue_server;
@@ -103,6 +105,13 @@ pub use ledger_client::{
     SNAPSHOT_EXPORT_FILE, SNAPSHOT_IMPORT_FILE,
 };
 pub use ledger_server::{register_ledger, serve_ledger, LEDGER_METHODS};
+pub use plugin_client::{HubCallbackClient, PluginClient, PluginIdentity};
+pub use plugin_server::{
+    is_hub_method, is_spoke_method, plugin_server_info, register_hub, register_plugin, HubHandler,
+    PluginHandler, HUB_METHODS, METHOD_CANCEL, METHOD_DESCRIBE, METHOD_HEALTH, METHOD_INVOKE,
+    METHOD_INVOKE_CAPABILITY, METHOD_PUBLISH_REPORT, METHOD_RECONCILE, METHOD_RECONCILE_CAPABILITY,
+    METHOD_SNAPSHOT, PLUGIN_API, PLUGIN_PROTOCOL_MAJOR, SPOKE_METHODS,
+};
 pub use server::{socket_from_args, Handler, Server, ServerInfo};
 pub use taskqueue_client::{
     CloseParams, CommentParams, IssueProjection, LabelParams, StatusParams, TaskCall,

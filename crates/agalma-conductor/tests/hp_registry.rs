@@ -993,7 +993,7 @@ fn stage_and_launch_rehash_installed_bytes() {
     assert!(!sup.is_running(PLUGIN_ID));
 
     // The host's launch_request refuses a tampered active generation too.
-    let host = assemble_host(
+    let mut host = assemble_host(
         &scratch,
         &package,
         installation_for(&package),

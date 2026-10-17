@@ -167,6 +167,12 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
 
     crate::install_signal_handler(state_dir.clone(), LedgerTransport::from_env());
 
+    // HP.3: assemble the plugin host for this state dir and start configured
+    // desired plugins. Best-effort and a no-op with no configured roots; the
+    // host is held for the loop's lifetime and shut down when `work` returns.
+    let _plugin_host =
+        crate::composition::attach_work_plugin_host(&state_dir, &args.plugin_roots);
+
     let mode = ActivityMode::from_env();
     let proxy = if mode == ActivityMode::Live {
         Some(

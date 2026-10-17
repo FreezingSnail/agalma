@@ -551,7 +551,7 @@ fn verify_artifact_refs(package_dir: &Path, manifest: &PluginManifest) -> Result
 
 /// Verify one `ArtifactRef`: relative safe path, present regular file inside the
 /// package, and bytes matching the pinned byte count and SHA-256 digest.
-fn verify_artifact_ref(
+pub(crate) fn verify_artifact_ref(
     package_dir: &Path,
     id: &str,
     label: &str,

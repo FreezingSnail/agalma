@@ -24,6 +24,8 @@ pub mod ledger_process;
 pub mod phases;
 pub mod plan_check;
 pub mod plugin_manifest;
+pub mod plugin_registry;
+pub mod plugin_supervisor;
 pub mod provider_auth;
 pub mod provider_proxy;
 pub mod reap;
@@ -96,6 +98,7 @@ pub async fn run() -> ExitCode {
         Command::Concierge(args) => crate::concierge::run_concierge_command(&args),
         Command::Designer(args) => crate::designer::run_designer_command(&args),
         Command::Gc(args) => gc_command(&args),
+        Command::Plugins(args) => crate::composition::run_plugin_host(&args).await,
     }
 }
 

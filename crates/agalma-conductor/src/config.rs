@@ -64,6 +64,30 @@ pub fn resolve_plugin_roots(args: &PluginRootArgs) -> Vec<PluginRoot> {
     roots
 }
 
+/// Resolved configuration for the HP.3 plugin-host entry (`agalma plugins`).
+///
+/// Deliberately independent of `Config`: a configured reporting plugin must be
+/// operable without a fixture, a model selection or a paid factory task. It
+/// reuses the common state-dir and plugin-root resolution only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginHostConfig {
+    pub state_dir: PathBuf,
+    pub plugin_roots: Vec<PluginRoot>,
+    /// Run one assemble/start/observe/shutdown cycle and exit.
+    pub once: bool,
+}
+
+impl PluginHostConfig {
+    /// Resolve from the `plugins` CLI arguments (flag > environment > default).
+    pub fn resolve(args: &crate::cli::PluginHostArgs) -> Result<Self, String> {
+        Ok(PluginHostConfig {
+            state_dir: resolve_state_dir(args.state_dir.as_deref())?,
+            plugin_roots: resolve_plugin_roots(&args.plugin_roots),
+            once: args.once,
+        })
+    }
+}
+
 /// Resolve the state directory.
 ///
 /// Precedence: `--state-dir` > `AGALMA_STATE_DIR` > `~/Library/Application

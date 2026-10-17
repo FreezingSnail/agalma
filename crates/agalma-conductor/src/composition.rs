@@ -7,19 +7,31 @@
 //! architecture lint in `tests/architecture.rs` enforces that.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
-use agalma_contracts::{ContractError, ExecutionApi, ExecutionPhase, LedgerApi};
+use agalma_contracts::harness::StopEvidence;
+use agalma_contracts::{ContractError, ExecutionApi, ExecutionPhase, FailureCode, LedgerApi, PluginInstallation};
 use agalma_execution::{Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
 use agalma_process::LocalLauncher;
 
-use crate::config::Config;
+use crate::cli::PluginHostArgs;
+use crate::config::{Config, PluginHostConfig};
 use crate::harness_binding::{harness_handle, HarnessChoice};
+use crate::harness_process::READY_TIMEOUT;
 use crate::ledger_process::{LedgerHandle, LedgerTransport};
 use crate::phases::{activities, PhaseDeps, RunState};
+use crate::plugin_manifest::{DiscoveryDiagnostic, DiscoveredPackage};
+use crate::plugin_registry::{
+    plugin_socket_path, DesiredState, DesiredStateStore, HubInstallStore, InMemoryDesiredStateStore,
+    PluginRegistry,
+};
+use crate::plugin_supervisor::{
+    BackoffPolicy, Clock, HealthProbe, LaunchRequest, PluginSupervisor, RestartPlan, Spawned,
+    SystemClock,
+};
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
 use crate::stop::{BoundStopControl, StopControl};
 use crate::task::{self, TaskDescriptor};
@@ -341,6 +353,500 @@ pub(crate) fn toolchain() -> Result<(Vec<PathBuf>, BTreeMap<String, String>), Co
     );
     env.insert("PATH".to_string(), path);
     Ok((roots, env))
+}
+
+// --- HP.3 plugin host assembly ---------------------------------------------
+//
+// The hub's production plugin host: discover configured roots, install each
+// validated package into hub-owned immutable storage, restore durable desired
+// state, and run the common supervisor. HP.3 supplies the assembled host and its
+// injected seams; HP.4 attaches the real RPC probe and HP.5 attaches the durable
+// selected-ledger installation/desired-state stores. Until those land, the
+// `agalma plugins` entry runs with the in-memory seams (no plugins start) and a
+// configured reporting plugin still needs no paid factory task.
+
+/// The conductor's built-in components, represented in the registry without
+/// claiming their implementations have migrated to the plugin protocol.
+pub const BUILTIN_COMPONENTS: &[&str] = &[
+    "component:ledger",
+    "component:workspace",
+    "component:harness",
+    "component:taskqueue",
+    "component:provider-proxy",
+];
+
+/// Injected source of pinned [`PluginInstallation`] records.
+///
+/// HP.5 attaches the durable selected-ledger implementation. A package with no
+/// supplied installation is discovered but not started (an explicit diagnostic),
+/// so a hub never launches an unapproved generation.
+pub trait InstallationSource {
+    /// The approved installation for `plugin_id`, if any.
+    fn installation(&self, plugin_id: &str) -> Option<PluginInstallation>;
+}
+
+/// In-memory installation source (test/stand-in double).
+#[derive(Clone, Debug, Default)]
+pub struct InMemoryInstallations {
+    map: BTreeMap<String, PluginInstallation>,
+}
+
+impl InMemoryInstallations {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record `installation` under its plugin id.
+    pub fn insert(&mut self, installation: PluginInstallation) {
+        self.map
+            .insert(installation.plugin_id.clone(), installation);
+    }
+}
+
+impl InstallationSource for InMemoryInstallations {
+    fn installation(&self, plugin_id: &str) -> Option<PluginInstallation> {
+        self.map.get(plugin_id).cloned()
+    }
+}
+
+/// One assembled, installable plugin entry recorded by the host.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstalledPlugin {
+    pub plugin_id: String,
+    pub generation: u64,
+    pub package_digest: String,
+}
+
+/// The assembled plugin host.
+pub struct PluginHost {
+    pub state_dir: PathBuf,
+    pub roots: Vec<crate::plugin_manifest::PluginRoot>,
+    pub install_store: HubInstallStore,
+    pub registry: PluginRegistry,
+    pub supervisor: PluginSupervisor,
+    /// Non-fatally skipped packages (e.g. no approved installation).
+    pub diagnostics: Vec<DiscoveryDiagnostic>,
+    /// Generation installed for each discovered plugin id.
+    pub installed: BTreeMap<String, u64>,
+    desired: Box<dyn DesiredStateStore>,
+}
+
+/// What one supervise tick observed and did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SuperviseOutcome {
+    /// Children whose unexpected exit was observed and scheduled for restart.
+    pub crashed: Vec<RestartPlan>,
+    /// Plugins restarted and health-confirmed this tick.
+    pub restarted: Vec<Spawned>,
+}
+
+impl PluginHost {
+    /// Discover roots, install validated packages and restore desired state.
+    ///
+    /// `desired` is the injected persistence seam: HP.5 attaches the durable
+    /// selected-ledger store here without changing HP.3 wiring; tests inject a
+    /// fake store. `installations` is the injected source of pinned
+    /// `PluginInstallation/v1` records.
+    pub fn assemble(
+        config: &PluginHostConfig,
+        installations: &dyn InstallationSource,
+        desired: Box<dyn DesiredStateStore>,
+        clock: Rc<dyn Clock>,
+    ) -> Result<PluginHost, ContractError> {
+        std::fs::create_dir_all(&config.state_dir).map_err(|err| {
+            FailureCode::StateUnavailable.failure(
+                config.state_dir.display().to_string(),
+                format!("cannot create plugin-host state dir: {err}"),
+            )
+        })?;
+        let state_dir = std::fs::canonicalize(&config.state_dir).unwrap_or_else(|_| {
+            config.state_dir.clone()
+        });
+
+        let report = crate::plugin_manifest::discover_plugins(&config.plugin_roots)?;
+        let store = HubInstallStore::new(&state_dir);
+        let mut registry = PluginRegistry::new();
+        let now = clock.now_ms();
+        for component in BUILTIN_COMPONENTS {
+            registry.register_builtin(component, now);
+        }
+
+        let mut diagnostics = report.diagnostics.clone();
+        let mut installed = BTreeMap::new();
+        for package in &report.packages {
+            let Some(installation) = installations.installation(&package.plugin_id) else {
+                diagnostics.push(DiscoveryDiagnostic {
+                    root: package.root.clone(),
+                    message: format!(
+                        "plugin `{}` has no approved installation; discovered but not started",
+                        package.plugin_id
+                    ),
+                });
+                continue;
+            };
+            verify_installation(package, &installation)?;
+            let generation = registry.install(&store, package, &installation)?;
+            // Stage the candidate; it becomes active only after it is Ready and
+            // activation is receipted (frozen contract). New work must not switch
+            // onto a candidate that has not passed startup/health gating.
+            registry.stage(&package.plugin_id, generation)?;
+            installed.insert(package.plugin_id.clone(), generation);
+        }
+
+        let mut desired = desired;
+        registry.load_desired(desired.as_mut())?;
+
+        let supervisor = PluginSupervisor::new(clock, BackoffPolicy::default(), READY_TIMEOUT);
+
+        Ok(PluginHost {
+            state_dir,
+            roots: config.plugin_roots.clone(),
+            install_store: store,
+            registry,
+            supervisor,
+            diagnostics,
+            installed,
+            desired,
+        })
+    }
+
+    /// Desired-state store (HP.5 attaches the durable implementation).
+    pub fn desired_mut(&mut self) -> &mut dyn DesiredStateStore {
+        self.desired.as_mut()
+    }
+
+    /// Record `plugin_id`'s desired state through the injected store.
+    pub fn set_desired(
+        &mut self,
+        plugin_id: &str,
+        desired: DesiredState,
+    ) -> Result<(), ContractError> {
+        let now = self.supervisor.now_ms();
+        self.registry
+            .set_desired(plugin_id, desired, self.desired.as_mut(), now)
+    }
+
+    /// Start every plugin whose desired state is `Running`.
+    ///
+    /// A plugin's health gate must pass before it is recorded `Ready`; a failed
+    /// start is recorded (`Failed`) and its backoff scheduled, and the next
+    /// plugin is attempted. Returns the successfully started plugins.
+    pub fn start_desired(
+        &mut self,
+        probe: &mut dyn HealthProbe,
+    ) -> Result<Vec<Spawned>, ContractError> {
+        let ids: Vec<String> = self
+            .registry
+            .plugin_ids()
+            .into_iter()
+            .filter(|id| {
+                self.registry.desired(id) == DesiredState::Running
+                    && self.registry.entry(id).is_some_and(|entry| {
+                        entry.pending_generation.is_some() || entry.active_generation.is_some()
+                    })
+            })
+            .map(str::to_string)
+            .collect();
+
+        let mut started = Vec::new();
+        for id in ids {
+            let request = match self.launch_request(&id) {
+                Ok(request) => request,
+                Err(err) => {
+                    eprintln!("agalma: plugin `{id}` launch refused: {err:?}");
+                    continue;
+                }
+            };
+            match self.supervisor.spawn(&mut self.registry, &request) {
+                Ok(spawned) => {
+                    if self.supervisor.confirm_ready(&mut self.registry, &id, probe)? {
+                        started.push(spawned);
+                    }
+                }
+                Err(err) => {
+                    eprintln!("agalma: plugin `{id}` did not start: {err:?}");
+                }
+            }
+        }
+        Ok(started)
+    }
+
+    /// Build the launch request for `plugin_id`'s candidate or active generation.
+    ///
+    /// A staged candidate (still pending startup) is launched first; once Ready
+    /// it becomes active, so a later restart relaunches the active generation.
+    /// Rehashes the hub-owned installed copy first (frozen contract: rehash on
+    /// install, stage and launch); a tampered installed generation is refused.
+    pub fn launch_request(&self, plugin_id: &str) -> Result<LaunchRequest, ContractError> {
+        let entry = self.registry.entry(plugin_id).ok_or_else(|| {
+            FailureCode::InvalidRecord.failure(plugin_id, "plugin is not registered")
+        })?;
+        let generation = entry
+            .pending_generation
+            .or(entry.active_generation)
+            .ok_or_else(|| {
+                FailureCode::InvalidRecord.failure(
+                    plugin_id,
+                    "plugin has no staged candidate or active generation",
+                )
+            })?;
+        let installed = entry.generations.get(&generation).ok_or_else(|| {
+            FailureCode::StaleGeneration.failure(
+                plugin_id,
+                format!("active generation {generation} is not installed"),
+            )
+        })?;
+        installed.rehash()?;
+        let epoch = entry.launch_epoch + 1;
+        let socket = plugin_socket_path(&self.state_dir, plugin_id, epoch);
+        Ok(LaunchRequest::from_installed(installed, socket))
+    }
+
+    /// Advance the production supervise loop one tick.
+    ///
+    /// Observes owned child exits (scheduling their backoff restart) and then
+    /// restarts any scheduled plugin whose backoff is due, health-gating the
+    /// replacement under the injected clock. The logical generation is
+    /// unchanged; the replacement reuses the pinned generation under a fresh
+    /// launch epoch.
+    pub fn supervise_tick(
+        &mut self,
+        probe: &mut dyn HealthProbe,
+    ) -> Result<SuperviseOutcome, ContractError> {
+        let crashed = self.supervisor.reap_exited(&mut self.registry)?;
+        let due = self.supervisor.take_due_restarts(self.supervisor.now_ms());
+        let mut restarted = Vec::new();
+        for id in due {
+            let request = match self.launch_request(&id) {
+                Ok(request) => request,
+                Err(err) => {
+                    eprintln!("agalma: plugin `{id}` restart refused: {err:?}");
+                    continue;
+                }
+            };
+            match self.supervisor.spawn(&mut self.registry, &request) {
+                Ok(spawned) => {
+                    if self.supervisor.confirm_ready(&mut self.registry, &id, probe)? {
+                        restarted.push(spawned);
+                    }
+                }
+                Err(err) => {
+                    eprintln!("agalma: plugin `{id}` restart failed: {err:?}");
+                }
+            }
+        }
+        Ok(SuperviseOutcome { crashed, restarted })
+    }
+
+    /// Stop the whole owned plugin group and return cleanup evidence.
+    pub fn shutdown(&mut self) -> Vec<(String, StopEvidence)> {
+        self.supervisor.stop_all()
+    }
+}
+
+/// Verify an approved `PluginInstallation/v1` pins this package.
+///
+/// Validates the record's format/digest, plugin id and package digest, then its
+/// launch profile, its frozen configuration ref against the package bytes, and
+/// its approved grants against the manifest's requested capabilities (a grant
+/// must be requested, unique and non-empty). HP.3 has no operator configuration
+/// store yet, so the pinned configuration ref must resolve inside the package;
+/// an external mutable configuration source attaches with HP.5.
+fn verify_installation(
+    package: &DiscoveredPackage,
+    installation: &PluginInstallation,
+) -> Result<(), ContractError> {
+    let plugin_id = package.plugin_id.as_str();
+    installation.version_gate()?;
+    installation.verify_installation_digest()?;
+    if installation.plugin_id != plugin_id {
+        return Err(FailureCode::IdentityConflict.failure(
+            plugin_id,
+            format!(
+                "installation is for `{}`, not `{plugin_id}`",
+                installation.plugin_id
+            ),
+        ));
+    }
+    if installation.package_digest != package.package_digest {
+        return Err(FailureCode::IntegrityMismatch.failure(
+            plugin_id,
+            format!(
+                "installation pins {} but discovered package is {}",
+                installation.package_digest, package.package_digest
+            ),
+        ));
+    }
+    if installation.launch_profile != package.manifest.entrypoint.launch_profile {
+        return Err(FailureCode::InvalidRecord.failure(
+            plugin_id,
+            format!(
+                "installation launch profile `{}` != package `{}`",
+                installation.launch_profile, package.manifest.entrypoint.launch_profile
+            ),
+        ));
+    }
+
+    let requested: BTreeSet<&str> = package
+        .manifest
+        .requested_capabilities
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for capability in &installation.approved_capabilities {
+        if capability.is_empty() {
+            return Err(FailureCode::InvalidRecord.failure(
+                plugin_id,
+                "installation approves an empty capability",
+            ));
+        }
+        if !seen.insert(capability.as_str()) {
+            return Err(FailureCode::InvalidRecord.failure(
+                plugin_id,
+                format!("installation approves `{capability}` more than once"),
+            ));
+        }
+        if !requested.contains(capability.as_str()) {
+            return Err(FailureCode::ScopeDenied.failure(
+                plugin_id,
+                format!("installation grants `{capability}`, which the package did not request"),
+            ));
+        }
+    }
+
+    // The frozen configuration ref must verify against the validated package.
+    crate::plugin_manifest::verify_artifact_ref(
+        &package.package_dir,
+        plugin_id,
+        "installation.configuration",
+        &installation.configuration,
+    )?;
+    Ok(())
+}
+
+/// Run the HP.3 production plugin host for one command invocation.
+///
+/// `--once` assembles, starts the desired plugins, records their state and
+/// shuts the group down. Without `--once` it supervises until the stop sentinel
+/// appears. It never claims a paid queue task and requires no fixture/model.
+pub async fn run_plugin_host(args: &PluginHostArgs) -> std::process::ExitCode {
+    let config = match PluginHostConfig::resolve(args) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("agalma: {err}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    if let Err(err) = std::fs::create_dir_all(&config.state_dir) {
+        eprintln!(
+            "agalma: cannot create state dir {}: {err}",
+            config.state_dir.display()
+        );
+        return std::process::ExitCode::FAILURE;
+    }
+    let clock: Rc<dyn Clock> = Rc::new(SystemClock);
+    // HP.5 replaces this in-memory installation source and desired-state store
+    // with the durable selected-ledger stores.
+    let installations = InMemoryInstallations::new();
+    let desired: Box<dyn DesiredStateStore> = Box::new(InMemoryDesiredStateStore::new());
+    let mut host = match PluginHost::assemble(&config, &installations, desired, clock.clone()) {
+        Ok(host) => host,
+        Err(err) => {
+            eprintln!("agalma: plugin host assembly failed: {err:?}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    eprintln!(
+        "agalma: plugin host state_dir={} roots={} installed={} diagnostics={}",
+        host.state_dir.display(),
+        host.roots.len(),
+        host.installed.len(),
+        host.diagnostics.len()
+    );
+    // HP.4 attaches the real capability-scoped RPC health probe.
+    let mut probe = AlwaysHealthy;
+    if let Err(err) = host.start_desired(&mut probe) {
+        eprintln!("agalma: plugin host start failed: {err:?}");
+        let _ = host.shutdown();
+        return std::process::ExitCode::FAILURE;
+    }
+
+    if config.once {
+        let evidence = host.shutdown();
+        for (plugin_id, stop) in &evidence {
+            eprintln!(
+                "agalma: plugin `{plugin_id}` stopped: gone={} ({})",
+                stop.process_group_gone, stop.detail
+            );
+        }
+        return std::process::ExitCode::SUCCESS;
+    }
+
+    // Long-running supervise loop: observe child exits, restart under backoff,
+    // and drain due restarts until the stop sentinel.
+    loop {
+        if let Some(reason) = crate::stop::observe_sentinel(&host.state_dir).reason() {
+            eprintln!("agalma: plugin host stopping: {reason}");
+            break;
+        }
+        match host.supervise_tick(&mut probe) {
+            Ok(outcome) => {
+                for plan in &outcome.crashed {
+                    eprintln!(
+                        "agalma: plugin exited; restart #{} in {}ms (gone={})",
+                        plan.attempt, plan.delay_ms, plan.stop.process_group_gone
+                    );
+                }
+            }
+            Err(err) => eprintln!("agalma: plugin supervise tick failed: {err:?}"),
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    host.shutdown();
+    std::process::ExitCode::SUCCESS
+}
+
+/// Stand-in health probe used until HP.4 attaches the real RPC probe.
+struct AlwaysHealthy;
+
+impl HealthProbe for AlwaysHealthy {
+    fn probe(&mut self, _plugin_id: &str, _epoch: u64) -> Result<bool, ContractError> {
+        Ok(true)
+    }
+}
+
+/// Assemble and start the plugin host for the `agalma work` loop.
+///
+/// Best-effort: a host-assembly or start failure is reported but never blocks
+/// factory work. No configured roots yields an empty host (a no-op). The
+/// returned host must be held for the loop's lifetime; dropping it shuts the
+/// owned plugin group down. HP.5 replaces the in-memory installation and
+/// desired-state stores with the durable selected-ledger stores.
+pub fn attach_work_plugin_host(
+    state_dir: &Path,
+    roots: &crate::cli::PluginRootArgs,
+) -> Option<PluginHost> {
+    let config = PluginHostConfig {
+        state_dir: state_dir.to_path_buf(),
+        plugin_roots: crate::config::resolve_plugin_roots(roots),
+        once: true,
+    };
+    let clock: Rc<dyn Clock> = Rc::new(SystemClock);
+    let installations = InMemoryInstallations::new();
+    let desired: Box<dyn DesiredStateStore> = Box::new(InMemoryDesiredStateStore::new());
+    let mut host = match PluginHost::assemble(&config, &installations, desired, clock) {
+        Ok(host) => host,
+        Err(err) => {
+            eprintln!("agalma: plugin host assembly failed: {err:?}");
+            return None;
+        }
+    };
+    let mut probe = AlwaysHealthy;
+    if let Err(err) = host.start_desired(&mut probe) {
+        eprintln!("agalma: plugin host start failed: {err:?}");
+    }
+    Some(host)
 }
 
 #[cfg(test)]

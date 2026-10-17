@@ -43,6 +43,8 @@ pub enum Command {
     Designer(DesignerArgs),
     /// Reap terminal executions' heavy scratch (manual/older state dirs).
     Gc(GcArgs),
+    /// Run the HP.3 plugin host: assemble/start/shutdown configured plugins.
+    Plugins(PluginHostArgs),
 }
 
 /// Arguments for `agalma work`.
@@ -90,6 +92,24 @@ pub struct PluginRootArgs {
     /// visible diagnostic, not a refusal.
     #[arg(long = "plugin-root-optional", value_name = "DIR")]
     pub plugin_root_optional: Vec<PathBuf>,
+}
+
+/// Arguments for `agalma plugins` (HP.3 production plugin host).
+///
+/// Reuses the common state-dir and plugin-root selection; it does not select a
+/// paid factory task, a fixture or a model. `--once` performs one
+/// assemble/start/observe/shutdown cycle and exits.
+#[derive(Debug, Args)]
+pub struct PluginHostArgs {
+    /// Override the state directory.
+    #[arg(long, value_name = "DIR")]
+    pub state_dir: Option<PathBuf>,
+    /// Plugin discovery roots, shared with the `run`/`work` config path.
+    #[command(flatten)]
+    pub plugin_roots: PluginRootArgs,
+    /// Run one lifecycle cycle and exit (no long-running supervise loop).
+    #[arg(long)]
+    pub once: bool,
 }
 
 /// Arguments for `agalma reconcile`.

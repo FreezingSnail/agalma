@@ -10,10 +10,275 @@ use serde_json::Value;
 
 use crate::binding::BindingRecord;
 use crate::decision::{DecisionOutcome, DecisionRequest};
+use crate::digest::{canonical_digest, canonical_json, validate_digest, FailureCode};
 use crate::error::ContractError;
 use crate::execution::{ExecutionPhase, ExecutionState};
 use crate::ids::{ArtifactRef, ExecutionId, OperationId, TaskId};
+use crate::plugin::{
+    COMPONENT_CHECKPOINT_LIMIT_BYTES, COMPONENT_COMMIT_MAX_ROWS, COMPONENT_STORE_CAPABILITY,
+};
 use crate::snapshot::StateSnapshot;
+use crate::task_package::BindingPin;
+
+/// The revision-1 component commit format identifier.
+pub const COMPONENT_COMMIT_FORMAT: &str = "ComponentCommit/v1";
+/// Basename of the component commit's format family.
+pub const COMPONENT_COMMIT_FAMILY: &str = "ComponentCommit";
+
+/// Lifecycle of a durable component operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationState {
+    /// Journaled and accepted, not yet running.
+    Accepted,
+    /// Executing.
+    Running,
+    /// Finished successfully (terminal).
+    Completed,
+    /// Finished with a known failure (terminal).
+    Failed,
+    /// Cancellation requested; settlement pending.
+    CancelRequested,
+    /// Cancelled (terminal).
+    Cancelled,
+    /// Outcome could not be confirmed; reconcile before retry.
+    Unknown,
+}
+
+/// One durable component event, unique by `event_id`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentEvent {
+    pub event_id: String,
+    pub kind: String,
+    pub payload: Value,
+    pub recorded_at_unix_ms: u64,
+}
+
+/// One durable component operation: journaled intent plus pinned binding/state.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentOperation {
+    pub operation_id: String,
+    pub input_digest: String,
+    pub binding: BindingPin,
+    pub intent: Value,
+    pub state: OperationState,
+    pub deadline_unix_ms: u64,
+}
+
+/// One durable component operation receipt (idempotency anchor).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentReceipt {
+    pub operation_id: String,
+    pub input_digest: String,
+    pub binding: BindingPin,
+    pub outcome: Value,
+    pub completed_at_unix_ms: u64,
+}
+
+/// An atomic component-namespace transaction (`ComponentCommit/v1`).
+///
+/// Either all rows commit or none do. `input_digest` is the canonical digest of
+/// this commit excluding its own field; replaying a `commit_id` with identical
+/// content returns the original receipt, while different content under that ID
+/// conflicts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentCommit {
+    /// Wire format; gated by [`ComponentCommit::version_gate`].
+    pub format: String,
+    pub namespace: String,
+    pub commit_id: String,
+    /// Canonical digest of this commit excluding its own field.
+    pub input_digest: String,
+    /// Optimistic concurrency guard (0 only for initial creation).
+    pub expected_revision: u64,
+    pub checkpoint: Option<Value>,
+    pub events: Vec<ComponentEvent>,
+    pub operations: Vec<ComponentOperation>,
+    pub receipts: Vec<ComponentReceipt>,
+}
+
+impl ComponentCommit {
+    /// Gate the `format` family/version.
+    pub fn version_gate(&self) -> Result<(), ContractError> {
+        match parse_commit_format_version(&self.format) {
+            Ok(1) => Ok(()),
+            Ok(other) => Err(FailureCode::UnsupportedVersion.failure(
+                &self.namespace,
+                format!("ComponentCommit version {other} is unsupported (expected 1)"),
+            )),
+            Err(reason) => Err(FailureCode::UnsupportedSchema.failure(
+                &self.namespace,
+                format!("unrecognized commit format: {reason}"),
+            )),
+        }
+    }
+
+    /// The canonical document to hash: this commit minus its own `input_digest`.
+    pub fn canonical_document(&self) -> Result<Value, ContractError> {
+        let mut value = serde_json::to_value(self).map_err(|e| {
+            FailureCode::InvalidRecord.failure(
+                &self.namespace,
+                format!("cannot serialize commit: {e}"),
+            )
+        })?;
+        if let Some(object) = value.as_object_mut() {
+            object.remove("input_digest");
+        }
+        Ok(value)
+    }
+
+    /// Recompute the commit input digest over [`Self::canonical_document`].
+    pub fn computed_input_digest(&self) -> Result<String, ContractError> {
+        canonical_digest(&self.canonical_document()?)
+    }
+
+    /// Verify the recorded `input_digest` against the recomputed value.
+    pub fn verify_input_digest(&self) -> Result<(), ContractError> {
+        validate_digest(&self.input_digest, &self.commit_id)?;
+        let recomputed = self.computed_input_digest()?;
+        if recomputed != self.input_digest {
+            return Err(FailureCode::IntegrityMismatch.failure(
+                &self.commit_id,
+                format!(
+                    "commit input digest {} does not match recomputed {recomputed}",
+                    self.input_digest
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Refuse more than [`COMPONENT_COMMIT_MAX_ROWS`] rows of any kind, or a
+    /// checkpoint whose canonical encoding exceeds
+    /// [`COMPONENT_CHECKPOINT_LIMIT_BYTES`].
+    pub fn check_bounds(&self) -> Result<(), ContractError> {
+        for (label, count) in [
+            ("events", self.events.len()),
+            ("operations", self.operations.len()),
+            ("receipts", self.receipts.len()),
+        ] {
+            if count > COMPONENT_COMMIT_MAX_ROWS {
+                return Err(FailureCode::InvalidRecord.failure(
+                    &self.commit_id,
+                    format!(
+                        "component commit has {count} {label}, exceeding {COMPONENT_COMMIT_MAX_ROWS}"
+                    ),
+                ));
+            }
+        }
+        if let Some(checkpoint) = &self.checkpoint {
+            let text = canonical_json(checkpoint)?;
+            let bytes = text.len() as u64;
+            if bytes > COMPONENT_CHECKPOINT_LIMIT_BYTES {
+                return Err(FailureCode::InvalidRecord.failure(
+                    &self.commit_id,
+                    format!(
+                        "component checkpoint {bytes} bytes exceeds limit {COMPONENT_CHECKPOINT_LIMIT_BYTES}"
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Durable per-namespace component state row.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentStateRow {
+    pub namespace: String,
+    pub revision: u64,
+    pub watermark: u64,
+    pub checkpoint: Option<Value>,
+    pub recorded_at_unix_ms: u64,
+}
+
+/// A durable component event row: namespace plus monotonic per-namespace
+/// sequence.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentEventRow {
+    pub namespace: String,
+    pub sequence: u64,
+    pub event: ComponentEvent,
+}
+
+/// A durable component operation row.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentOperationRow {
+    pub namespace: String,
+    pub operation: ComponentOperation,
+}
+
+/// A durable component receipt row.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentReceiptRow {
+    pub namespace: String,
+    pub receipt: ComponentReceipt,
+}
+
+/// The durable replay anchor for one committed component transaction.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentCommitAnchor {
+    pub namespace: String,
+    pub commit_id: String,
+    pub input_digest: String,
+    pub revision: u64,
+    pub committed_at_unix_ms: u64,
+}
+
+impl ComponentCommitAnchor {
+    /// Replay check against another anchor: the same namespace/commit id with a
+    /// changed `input_digest` is [`FailureCode::IdentityConflict`]; identical
+    /// content returns the original receipt; a different anchor is independent.
+    pub fn check_replay(&self, other: &ComponentCommitAnchor) -> Result<(), ContractError> {
+        if self.namespace == other.namespace
+            && self.commit_id == other.commit_id
+            && self.input_digest != other.input_digest
+        {
+            return Err(FailureCode::IdentityConflict.failure(
+                &self.commit_id,
+                format!(
+                    "component commit {}/{} reused with changed input_digest",
+                    self.namespace, self.commit_id
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Default refusal for a ledger binding without the negotiated component-store
+/// capability.
+fn component_store_unavailable() -> ContractError {
+    FailureCode::MissingCapability.failure(
+        COMPONENT_STORE_CAPABILITY,
+        "component storage requires negotiated component-store/v1",
+    )
+}
+
+/// Parse `ComponentCommit/vN` into `N`.
+fn parse_commit_format_version(format: &str) -> Result<u64, String> {
+    let (family, version) = format
+        .split_once('/')
+        .ok_or_else(|| format!("{format:?} has no `/version`"))?;
+    if family != COMPONENT_COMMIT_FAMILY {
+        return Err(format!("unknown family {family:?}"));
+    }
+    let digits = version
+        .strip_prefix('v')
+        .ok_or_else(|| format!("version {version:?} is not `vN`"))?;
+    digits
+        .parse::<u64>()
+        .map_err(|_| format!("version {version:?} is not `vN`"))
+}
 
 /// Durable row for one execution.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -353,4 +618,41 @@ pub trait LedgerApi {
     /// it partially. Preserves canonical ids, receipts, and pending work
     /// (including the consumed flag of each dispatch intent).
     fn import_state(&mut self, snapshot: &StateSnapshot) -> Result<(), ContractError>;
+
+    /// Read one component namespace's durable state row, if any.
+    ///
+    /// Component storage requires the negotiated `component-store/v1`
+    /// capability; a binding without it refuses before dispatch.
+    fn component_read(&self, _namespace: &str) -> Result<Option<ComponentStateRow>, ContractError> {
+        Err(component_store_unavailable())
+    }
+
+    /// Component events for a namespace with sequence `> after`, up to `limit`.
+    fn component_events(
+        &self,
+        _namespace: &str,
+        _after: u64,
+        _limit: u32,
+    ) -> Result<Vec<ComponentEventRow>, ContractError> {
+        Err(component_store_unavailable())
+    }
+
+    /// One component operation row by namespace and operation id, if present.
+    fn component_operation(
+        &self,
+        _namespace: &str,
+        _operation_id: &str,
+    ) -> Result<Option<ComponentOperationRow>, ContractError> {
+        Err(component_store_unavailable())
+    }
+
+    /// Atomically commit a component-namespace transaction, returning its
+    /// durable anchor. Replaying `commit_id` with identical content returns the
+    /// original anchor; different content under that ID conflicts.
+    fn component_commit(
+        &mut self,
+        _commit: &ComponentCommit,
+    ) -> Result<ComponentCommitAnchor, ContractError> {
+        Err(component_store_unavailable())
+    }
 }

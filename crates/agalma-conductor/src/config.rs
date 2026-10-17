@@ -2,7 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::cli::RunArgs;
+use crate::cli::{PluginRootArgs, RunArgs};
+use crate::plugin_manifest::PluginRoot;
 
 /// Default model identifier (cheap free model used in S0d).
 pub const DEFAULT_MODEL: &str = "opencode/mimo-v2.6-flash-free";
@@ -29,6 +30,8 @@ pub struct Config {
     pub fixture: PathBuf,
     pub state_dir: PathBuf,
     pub model: String,
+    /// Configured plugin discovery roots (HP.2), in declaration order.
+    pub plugin_roots: Vec<PluginRoot>,
 }
 
 impl Config {
@@ -40,8 +43,25 @@ impl Config {
             fixture: args.fixture.clone(),
             state_dir: resolve_state_dir(args.state_dir.as_deref())?,
             model: resolve_model(args.model.as_deref()),
+            plugin_roots: resolve_plugin_roots(&args.plugin_roots),
         })
     }
+}
+
+/// Resolve configured plugin discovery roots from the common CLI flags (HP.2).
+///
+/// Required roots are listed before optional roots; discovery rejects a missing
+/// required root and tolerates a missing optional one. Pure: no filesystem I/O.
+pub fn resolve_plugin_roots(args: &PluginRootArgs) -> Vec<PluginRoot> {
+    let mut roots = Vec::with_capacity(args.plugin_root.len() + args.plugin_root_optional.len());
+    roots.extend(args.plugin_root.iter().cloned().map(PluginRoot::required));
+    roots.extend(
+        args.plugin_root_optional
+            .iter()
+            .cloned()
+            .map(PluginRoot::optional),
+    );
+    roots
 }
 
 /// Resolve the state directory.

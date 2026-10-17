@@ -70,6 +70,26 @@ pub struct WorkArgs {
     /// Harness implementation to bind (`opencode|reference|reference-fail`).
     #[arg(long, value_name = "ID")]
     pub harness: Option<String>,
+    /// Plugin discovery roots (HP.2), shared with the `run` config path.
+    #[command(flatten)]
+    pub plugin_roots: PluginRootArgs,
+}
+
+/// Common plugin-root selection (HP.2).
+///
+/// A root is required unless it is passed as `--plugin-root-optional`. A missing
+/// required root refuses discovery; a missing optional root contributes no
+/// packages and reports a diagnostic. This is deliberately not a per-plugin
+/// selector or a new configuration framework: it only names discovery roots.
+#[derive(Clone, Debug, Default, Args)]
+pub struct PluginRootArgs {
+    /// Plugin discovery root (repeatable). Required to exist.
+    #[arg(long = "plugin-root", value_name = "DIR")]
+    pub plugin_root: Vec<PathBuf>,
+    /// Optional plugin discovery root (repeatable): a missing directory is a
+    /// visible diagnostic, not a refusal.
+    #[arg(long = "plugin-root-optional", value_name = "DIR")]
+    pub plugin_root_optional: Vec<PathBuf>,
 }
 
 /// Arguments for `agalma reconcile`.
@@ -98,6 +118,9 @@ pub struct RunArgs {
     /// Override the model identifier.
     #[arg(long, value_name = "ID")]
     pub model: Option<String>,
+    /// Plugin discovery roots (HP.2) for this invocation.
+    #[command(flatten)]
+    pub plugin_roots: PluginRootArgs,
 }
 
 /// Arguments shared by the human `resume`/`status` subcommands.

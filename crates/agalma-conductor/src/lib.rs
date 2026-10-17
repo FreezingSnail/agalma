@@ -23,6 +23,7 @@ pub mod harness_process;
 pub mod ledger_process;
 pub mod phases;
 pub mod plan_check;
+pub mod plugin_manifest;
 pub mod provider_auth;
 pub mod provider_proxy;
 pub mod reap;

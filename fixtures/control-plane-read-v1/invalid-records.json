@@ -1,0 +1,251 @@
+[
+  {
+    "name": "report-envelope:format",
+    "expected_code": "UnsupportedVersion",
+    "record": {
+      "format": "ReportEnvelope/v2",
+      "plugin_id": "example.unfamiliar-reporter",
+      "binding": {
+        "binding_id": "fixture.reporter",
+        "api": "plugin",
+        "api_version": 1,
+        "implementation_version": "fixture-1",
+        "generation": 1,
+        "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "schema_namespace": "example.reporter.status",
+      "schema_version": 1,
+      "sequence": 1,
+      "reported_at_unix_ms": 1791820800000,
+      "observed_at_unix_ms": 1791820800001,
+      "execution_id": null,
+      "durability": "durable",
+      "payload": { "ready": true },
+      "payload_digest": "sha256:b342fc286d0216cc212e0d7ba234894e2e7283ddf14f959adf0fe7fd5924308a"
+    }
+  },
+  {
+    "name": "report-envelope:payload_digest",
+    "expected_code": "IntegrityMismatch",
+    "record": {
+      "format": "ReportEnvelope/v1",
+      "plugin_id": "example.unfamiliar-reporter",
+      "binding": {
+        "binding_id": "fixture.reporter",
+        "api": "plugin",
+        "api_version": 1,
+        "implementation_version": "fixture-1",
+        "generation": 1,
+        "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "schema_namespace": "example.reporter.status",
+      "schema_version": 1,
+      "sequence": 1,
+      "reported_at_unix_ms": 1791820800000,
+      "observed_at_unix_ms": 1791820800001,
+      "execution_id": null,
+      "durability": "durable",
+      "payload": { "ready": true },
+      "payload_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  {
+    "name": "read-metadata:format-family",
+    "expected_code": "UnsupportedSchema",
+    "record": {
+      "format": "SomethingElse/v1",
+      "collected_at_unix_ms": 1791820800000,
+      "registry_revision": null,
+      "report_watermark": null,
+      "sources": []
+    }
+  },
+  {
+    "name": "read-metadata:format-version",
+    "expected_code": "UnsupportedVersion",
+    "record": {
+      "format": "ControlPlaneRead/v2",
+      "collected_at_unix_ms": 1791820800000,
+      "registry_revision": null,
+      "report_watermark": null,
+      "sources": []
+    }
+  },
+  {
+    "name": "read-page-request:limit",
+    "expected_code": "InvalidRecord",
+    "record": { "limit": 0, "cursor": null }
+  },
+  {
+    "name": "read-page-request:cursor",
+    "expected_code": "InvalidRecord",
+    "record": { "limit": 50, "cursor": "not-a-cursor" }
+  },
+  {
+    "name": "read-cursor:revision",
+    "expected_code": "RevisionConflict",
+    "record": {
+      "cursor": "cp1:{\"after\":\"x\",\"collection\":\"components\",\"filter_digest\":\"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"revision\":\"1\"}",
+      "current_revision": "2"
+    }
+  },
+  {
+    "name": "read-artifact-chunk-request:max_bytes",
+    "expected_code": "InvalidRecord",
+    "record": {
+      "plugin_id": "example.unfamiliar-reporter",
+      "digest": "sha256:5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953",
+      "offset": null,
+      "max_bytes": 70000
+    }
+  },
+  {
+    "name": "read-artifact-chunk:offset",
+    "expected_code": "InvalidRecord",
+    "record": {
+      "metadata": {
+        "format": "ControlPlaneRead/v1",
+        "collected_at_unix_ms": 1791820800003,
+        "registry_revision": null,
+        "report_watermark": null,
+        "sources": []
+      },
+      "reference": {
+        "path": "objects/example.unfamiliar-reporter/report-artifact.bin",
+        "digest": "sha256:5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953",
+        "bytes": 2,
+        "media_type": "application/octet-stream"
+      },
+      "offset": "0",
+      "data_hex": "deadbeef",
+      "next_offset": null
+    }
+  },
+  {
+    "name": "read-artifact-chunk:total",
+    "expected_code": "InvalidRecord",
+    "record": {
+      "metadata": {
+        "format": "ControlPlaneRead/v1",
+        "collected_at_unix_ms": 1791820800003,
+        "registry_revision": null,
+        "report_watermark": null,
+        "sources": []
+      },
+      "reference": {
+        "path": "objects/example.unfamiliar-reporter/too-big.bin",
+        "digest": "sha256:5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953",
+        "bytes": 16777217,
+        "media_type": "application/octet-stream"
+      },
+      "offset": "0",
+      "data_hex": "",
+      "next_offset": null
+    }
+  },
+  {
+    "name": "exact-u64:identity",
+    "expected_code": "InvalidRecord",
+    "record": { "value": "12x" }
+  },
+  {
+    "name": "exact-amount:money",
+    "expected_code": "InvalidRecord",
+    "record": { "value": "1.2.3" }
+  },
+  {
+    "name": "read-cursor:revision-format",
+    "expected_code": "InvalidRecord",
+    "record": {
+      "cursor": "cp1:{\"after\":\"x\",\"collection\":\"components\",\"filter_digest\":\"sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"revision\":\"not-a-number\"}"
+    }
+  },
+  {
+    "name": "read-artifact-chunk:next-null",
+    "expected_code": "InvalidRecord",
+    "record": {
+      "metadata": {
+        "format": "ControlPlaneRead/v1",
+        "collected_at_unix_ms": 1791820800004,
+        "registry_revision": null,
+        "report_watermark": null,
+        "sources": []
+      },
+      "reference": {
+        "path": "objects/example.unfamiliar-reporter/report-artifact.bin",
+        "digest": "sha256:5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953",
+        "bytes": 4,
+        "media_type": "application/octet-stream"
+      },
+      "offset": "0",
+      "data_hex": "dead",
+      "next_offset": null
+    }
+  },
+  {
+    "name": "read-artifact-chunk:next-skip",
+    "expected_code": "InvalidRecord",
+    "record": {
+      "metadata": {
+        "format": "ControlPlaneRead/v1",
+        "collected_at_unix_ms": 1791820800004,
+        "registry_revision": null,
+        "report_watermark": null,
+        "sources": []
+      },
+      "reference": {
+        "path": "objects/example.unfamiliar-reporter/report-artifact.bin",
+        "digest": "sha256:5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953",
+        "bytes": 4,
+        "media_type": "application/octet-stream"
+      },
+      "offset": "0",
+      "data_hex": "dead",
+      "next_offset": "4"
+    }
+  },
+  {
+    "name": "read-artifact-chunk:zero-progress",
+    "expected_code": "InvalidRecord",
+    "record": {
+      "metadata": {
+        "format": "ControlPlaneRead/v1",
+        "collected_at_unix_ms": 1791820800005,
+        "registry_revision": null,
+        "report_watermark": null,
+        "sources": []
+      },
+      "reference": {
+        "path": "objects/example.unfamiliar-reporter/report-artifact.bin",
+        "digest": "sha256:5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953",
+        "bytes": 4,
+        "media_type": "application/octet-stream"
+      },
+      "offset": "0",
+      "data_hex": "",
+      "next_offset": "0"
+    }
+  },
+  {
+    "name": "read-artifact-chunk:next-at-end",
+    "expected_code": "InvalidRecord",
+    "record": {
+      "metadata": {
+        "format": "ControlPlaneRead/v1",
+        "collected_at_unix_ms": 1791820800004,
+        "registry_revision": null,
+        "report_watermark": null,
+        "sources": []
+      },
+      "reference": {
+        "path": "objects/example.unfamiliar-reporter/short.bin",
+        "digest": "sha256:5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953",
+        "bytes": 2,
+        "media_type": "application/octet-stream"
+      },
+      "offset": "0",
+      "data_hex": "dead",
+      "next_offset": "2"
+    }
+  }
+]

@@ -1,0 +1,104 @@
+{
+  "grammar": "A selector beginning with `/` is an object/array path using `~0` for a literal `~` and `~1` for a literal `/`. Any other selector is a literal top-level key. Selectors are never expressions; missing fields resolve to missing, never to healthy or empty state.",
+  "selectors": [
+    { "selector": "ready", "payload": { "ready": true }, "expect": "value" },
+    { "selector": "absent", "payload": { "ready": true }, "expect": "missing" },
+    { "selector": "/rows/0/state", "payload": { "rows": [{ "state": "ready" }] }, "expect": "value" },
+    { "selector": "/a~1b", "payload": { "a/b": "slash" }, "expect": "value" },
+    { "selector": "/a~0b", "payload": { "a~b": "tilde" }, "expect": "value" },
+    { "selector": "/rows/5", "payload": { "rows": [{ "state": "ready" }] }, "expect": "missing" },
+    { "selector": "/rows/x", "payload": { "rows": [1] }, "expect": "missing" },
+    { "selector": "/nope", "payload": { "a": 1 }, "expect": "missing" },
+    { "selector": "/a/b", "payload": { "a": 1 }, "expect": "missing" },
+    { "selector": "/a~2b", "payload": { "a": 1 }, "expect": "missing" }
+  ],
+  "blocks": [
+    {
+      "kind": "Status",
+      "convention": "Scalar or bounded object, labeled by field name; plugin health stays a separate hub observation.",
+      "view": {
+        "view_id": "status",
+        "schema_namespace": "example.reporter.status",
+        "kind": "Status",
+        "title": "Status",
+        "schema_version": 1,
+        "fields": ["ready"]
+      },
+      "payload": { "ready": true }
+    },
+    {
+      "kind": "Metrics",
+      "convention": "Scalar or `{value, unit}`; decimal values are text and unknown values stay unknown.",
+      "view": {
+        "view_id": "metrics",
+        "schema_namespace": "example.reporter.metrics",
+        "kind": "Metrics",
+        "title": "Metrics",
+        "schema_version": 1,
+        "fields": ["tokens"]
+      },
+      "payload": { "tokens": { "unit": "tokens", "value": "12" } }
+    },
+    {
+      "kind": "Table",
+      "convention": "Array of objects, columns from sorted keys; scalar rows use a Value column; each field selects its own table.",
+      "view": {
+        "view_id": "rows",
+        "schema_namespace": "example.reporter.rows",
+        "kind": "Table",
+        "title": "Rows",
+        "schema_version": 1,
+        "fields": ["rows"]
+      },
+      "payload": { "rows": [{ "count": "3", "state": "ready" }] }
+    },
+    {
+      "kind": "Timeline",
+      "convention": "Ordered array of entries; producer order preserved; time/title/detail fields displayed when present.",
+      "view": {
+        "view_id": "timeline",
+        "schema_namespace": "example.reporter.timeline",
+        "kind": "Timeline",
+        "title": "Timeline",
+        "schema_version": 1,
+        "fields": ["entries"]
+      },
+      "payload": {
+        "entries": [
+          { "at": "2026-10-17T00:00:00Z", "detail": "started", "title": "Started" }
+        ]
+      }
+    },
+    {
+      "kind": "Alert",
+      "convention": "Text or `{severity, message}`; an unsupported severity is visibly unknown.",
+      "view": {
+        "view_id": "alert",
+        "schema_namespace": "example.reporter.alert",
+        "kind": "Alert",
+        "title": "Alert",
+        "schema_version": 1,
+        "fields": ["alert"]
+      },
+      "payload": { "alert": { "message": "disk almost full", "severity": "warning" } }
+    },
+    {
+      "kind": "ArtifactLink",
+      "convention": "A canonical artifact reference resolved through the authorized adapter.",
+      "view": {
+        "view_id": "artifact",
+        "schema_namespace": "example.reporter.artifact",
+        "kind": "ArtifactLink",
+        "title": "Artifact",
+        "schema_version": 1,
+        "fields": ["artifact"]
+      },
+      "payload": {
+        "artifact": {
+          "digest": "sha256:5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953",
+          "path": "objects/example.unfamiliar-reporter/report-artifact.bin"
+        }
+      }
+    }
+  ]
+}

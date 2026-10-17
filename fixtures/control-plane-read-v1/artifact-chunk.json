@@ -1,0 +1,25 @@
+{
+  "metadata": {
+    "format": "ControlPlaneRead/v1",
+    "collected_at_unix_ms": 1791820800003,
+    "registry_revision": null,
+    "report_watermark": "2",
+    "sources": [
+      {
+        "source": "reports",
+        "state": "available",
+        "detail": "",
+        "observed_at_unix_ms": 1791820800003
+      }
+    ]
+  },
+  "reference": {
+    "path": "objects/example.unfamiliar-reporter/report-artifact.bin",
+    "digest": "sha256:5f78c33274e43fa9de5659265c1d917e25c03722dcb0b8d27db8d5feaa813953",
+    "bytes": 4,
+    "media_type": "application/octet-stream"
+  },
+  "offset": "0",
+  "data_hex": "deadbeef",
+  "next_offset": null
+}

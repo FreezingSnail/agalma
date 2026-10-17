@@ -15,6 +15,7 @@
 
 pub mod binding;
 pub mod budget;
+pub mod control_plane;
 pub mod decision;
 pub mod digest;
 pub mod error;
@@ -33,6 +34,16 @@ pub use binding::{BindingRecord, BindingState};
 pub use budget::{
     BillablePath, BudgetError, Nusd, PathClass, ProviderRequestProfile, RequestKind, Reservation,
     ReservationState, SpendState, UsageObservation, NUSD_PER_USD, TOKENS_PER_PRICE_UNIT,
+};
+pub use control_plane::{
+    check_cursor, resolve_field_selector, ComponentSummary, ExactAmount, ExactU64, ExecutionSummary,
+    FactoryStop, FieldResolution, Freshness, ListComponents, ReadArtifactChunk,
+    ReadArtifactChunkRequest, ReadComponent, ReadCursor, ReadMetadata, ReadOverview, ReadPage,
+    ReadPageRequest, SourceAvailability, SourceState, TimelineEntry, UsageCost,
+    ARTIFACT_CHUNK_MAX_BYTES, ARTIFACT_TOTAL_MAX_BYTES, CONTROL_PLANE_READ_CAPABILITY,
+    CONTROL_PLANE_READ_FAMILY, CONTROL_PLANE_READ_FORMAT, READ_CURSOR_PREFIX,
+    READ_PAGE_DEFAULT_LIMIT, READ_PAGE_MAX_BYTES, READ_PAGE_MAX_ENTRIES, READ_PAGE_MAX_LIMIT,
+    READ_PAGE_MIN_LIMIT,
 };
 pub use decision::{
     DecisionApi, DecisionAttempt, DecisionKind, DecisionOption, DecisionOutcome, DecisionPin,

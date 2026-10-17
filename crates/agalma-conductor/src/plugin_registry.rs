@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use agalma_contracts::{ContractError, FailureCode, PackageArtifactRef, PluginInstallation, PluginManifest};
+use agalma_contracts::{ContractError, FailureCode, LedgerApi, PackageArtifactRef, PluginInstallation, PluginManifest};
 
 use crate::plugin_manifest::{
     package_inventory_digest, verify_artifact_ref, DiscoveredPackage, PLUGIN_MANIFEST_FILE,
@@ -148,6 +148,175 @@ pub trait DesiredStateStore {
     fn load(&mut self) -> Result<BTreeMap<String, DesiredState>, ContractError>;
     /// Record the desired state for one plugin.
     fn save(&mut self, plugin_id: &str, desired: DesiredState) -> Result<(), ContractError>;
+}
+
+/// The durable registry checkpoint held in the selected ledger's
+/// [`crate::plugin_reports::REGISTRY_NAMESPACE`] component namespace.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryCheckpoint {
+    /// Desired state per plugin id (survives a hub restart).
+    pub desired: BTreeMap<String, DesiredState>,
+    /// Active generation per plugin id (what the registry last ran).
+    pub active_generations: BTreeMap<String, u64>,
+    /// Highest generation ever allocated per plugin id.
+    pub max_generations: BTreeMap<String, u64>,
+}
+
+/// Durable [`DesiredStateStore`] backed by the selected ledger component store.
+///
+/// Every save is one atomic `ComponentCommit/v1` carrying the updated registry
+/// checkpoint; a restart reconstructs the desired map from that checkpoint. No
+/// private file database or direct SQL is involved.
+pub struct LedgerDesiredStateStore {
+    ledger: crate::ledger_process::LedgerHandle,
+    revision: u64,
+    state: RegistryCheckpoint,
+}
+
+impl LedgerDesiredStateStore {
+    /// Open the durable store, loading the existing registry checkpoint.
+    pub fn open(
+        ledger: crate::ledger_process::LedgerHandle,
+    ) -> Result<LedgerDesiredStateStore, ContractError> {
+        let (revision, state) = read_registry_checkpoint(&ledger)?;
+        Ok(LedgerDesiredStateStore {
+            ledger,
+            revision,
+            state,
+        })
+    }
+
+    /// The current durable checkpoint.
+    pub fn checkpoint(&self) -> &RegistryCheckpoint {
+        &self.state
+    }
+
+    /// The selected ledger backing this store.
+    pub fn ledger(&self) -> &crate::ledger_process::LedgerHandle {
+        &self.ledger
+    }
+
+    /// Persist an arbitrary registry checkpoint update atomically.
+    ///
+    /// The durable ledger is the source of truth: the current checkpoint is
+    /// re-read before mutating so a host-assembly generation write and a later
+    /// desired-state save cannot fight over a stale cached revision.
+    pub fn update(
+        &mut self,
+        mutate: impl FnOnce(&mut RegistryCheckpoint),
+    ) -> Result<(), ContractError> {
+        let (revision, mut current) = read_registry_checkpoint(&self.ledger)?;
+        mutate(&mut current);
+        let checkpoint = serde_json::to_value(&current).map_err(|e| {
+            agalma_contracts::ContractError::KnownFailure(format!(
+                "registry checkpoint json: {e}"
+            ))
+        })?;
+        let commit_id = format!("registry-checkpoint:{}", revision + 1);
+        let mut commit = agalma_contracts::ComponentCommit {
+            format: agalma_contracts::COMPONENT_COMMIT_FORMAT.to_string(),
+            namespace: crate::plugin_reports::REGISTRY_NAMESPACE.to_string(),
+            commit_id,
+            input_digest: String::new(),
+            expected_revision: revision,
+            checkpoint: Some(checkpoint),
+            events: Vec::new(),
+            operations: Vec::new(),
+            receipts: Vec::new(),
+        };
+        commit.input_digest = commit.computed_input_digest()?;
+        let anchor = self.ledger.component_commit(&commit)?;
+        self.revision = anchor.revision;
+        self.state = current;
+        Ok(())
+    }
+}
+
+impl DesiredStateStore for LedgerDesiredStateStore {
+    fn load(&mut self) -> Result<BTreeMap<String, DesiredState>, ContractError> {
+        Ok(self.state.desired.clone())
+    }
+
+    fn save(&mut self, plugin_id: &str, desired: DesiredState) -> Result<(), ContractError> {
+        if self.state.desired.get(plugin_id) == Some(&desired) {
+            return Ok(());
+        }
+        let plugin = plugin_id.to_string();
+        self.update(move |checkpoint| {
+            checkpoint.desired.insert(plugin, desired);
+        })
+    }
+}
+
+/// Load the durable registry checkpoint from `ledger` (revision 0 / empty when
+/// none has been written yet).
+pub fn read_registry_checkpoint(
+    ledger: &crate::ledger_process::LedgerHandle,
+) -> Result<(u64, RegistryCheckpoint), ContractError> {
+    let row = ledger.component_read(crate::plugin_reports::REGISTRY_NAMESPACE)?;
+    let revision = row.as_ref().map(|r| r.revision).unwrap_or(0);
+    let state = match row.and_then(|r| r.checkpoint) {
+        Some(checkpoint) => serde_json::from_value(checkpoint).map_err(|e| {
+            agalma_contracts::ContractError::KnownFailure(format!(
+                "registry checkpoint is invalid: {e}"
+            ))
+        })?,
+        None => RegistryCheckpoint::default(),
+    };
+    Ok((revision, state))
+}
+
+/// Persist the registry's active/max generations into the durable checkpoint.
+///
+/// Called after host assembly so a later report-ingestor open and the control
+/// plane can see which generation each plugin is running.
+pub fn persist_registry_generations(
+    ledger: &mut crate::ledger_process::LedgerHandle,
+    registry: &PluginRegistry,
+) -> Result<(), ContractError> {
+    let (revision, mut state) = read_registry_checkpoint(ledger)?;
+    let mut changed = false;
+    for plugin_id in registry.plugin_ids() {
+        let Some(entry) = registry.entry(plugin_id) else {
+            continue;
+        };
+        let active = entry
+            .active_generation
+            .or(entry.pending_generation)
+            .unwrap_or(0);
+        if active != 0 && state.active_generations.get(plugin_id) != Some(&active) {
+            state.active_generations.insert(plugin_id.to_string(), active);
+            changed = true;
+        }
+        if state.max_generations.get(plugin_id).copied().unwrap_or(0) < entry.max_generation {
+            state
+                .max_generations
+                .insert(plugin_id.to_string(), entry.max_generation);
+            changed = true;
+        }
+    }
+    if !changed {
+        return Ok(());
+    }
+    let checkpoint = serde_json::to_value(&state).map_err(|e| {
+        agalma_contracts::ContractError::KnownFailure(format!("registry checkpoint json: {e}"))
+    })?;
+    let commit_id = format!("registry-checkpoint:{}", revision + 1);
+    let mut commit = agalma_contracts::ComponentCommit {
+        format: agalma_contracts::COMPONENT_COMMIT_FORMAT.to_string(),
+        namespace: crate::plugin_reports::REGISTRY_NAMESPACE.to_string(),
+        commit_id,
+        input_digest: String::new(),
+        expected_revision: revision,
+        checkpoint: Some(checkpoint),
+        events: Vec::new(),
+        operations: Vec::new(),
+        receipts: Vec::new(),
+    };
+    commit.input_digest = commit.computed_input_digest()?;
+    ledger.component_commit(&commit)?;
+    Ok(())
 }
 
 /// In-memory desired-state store (test double; HP.5 supplies the durable one).

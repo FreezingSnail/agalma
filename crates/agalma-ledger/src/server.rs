@@ -80,6 +80,13 @@ pub enum OpenMode {
 /// Server argv flag selecting [`OpenMode::Existing`].
 pub const OPEN_EXISTING_FLAG: &str = "--open-existing";
 
+/// Server argv flag requesting the explicit, quiescent v4 -> v5 migration.
+///
+/// A normal server start never migrates. With this flag the server opens the
+/// ledger, run [`crate::SqliteLedger::migrate_to_v5`] (quiescence + backup +
+/// receipt) and exits without serving. `--socket` is not required in this mode.
+pub const MIGRATE_V5_FLAG: &str = "--migrate-v5";
+
 /// Acquire the single-writer lock for `state_dir`, open the ledger at
 /// `<state_dir>/ledger.sqlite`, and bind `socket`; serve over the wire selected
 /// by `AGALMA_IPC_WIRE` (`connect` default, `framed` optional; IPCX.6) until
@@ -135,8 +142,19 @@ where
     I: IntoIterator<Item = String>,
 {
     let args: Vec<String> = args.into_iter().collect();
-    let socket = agalma_ipc::socket_from_args(args.clone())?;
     let state_dir = state_dir_from_args(&args)?;
+    if args.iter().any(|arg| arg == MIGRATE_V5_FLAG) {
+        // Explicit migration mode: quiescent, transactional, with a durable
+        // backup and receipt. Never taken by a normal server start.
+        let receipt = crate::migrate_to_v5(state_dir.join(DB_NAME))
+            .map_err(|e| format!("migrate ledger: {e}"))?;
+        println!(
+            "MIGRATED {}",
+            receipt.to_value()
+        );
+        return Ok(());
+    }
+    let socket = agalma_ipc::socket_from_args(args.clone())?;
     let mode = if args.iter().any(|arg| arg == OPEN_EXISTING_FLAG) {
         OpenMode::Existing
     } else {

@@ -62,6 +62,9 @@ pub const HUB_SOCKET_ENV: &str = "AGALMA_HUB_SOCKET";
 pub const PLUGIN_GRANT_ENV: &str = "AGALMA_PLUGIN_GRANT";
 /// Private launch-channel env: the capability the grant authorizes.
 pub const PLUGIN_GRANT_CAPABILITY_ENV: &str = "AGALMA_PLUGIN_GRANT_CAPABILITY";
+/// Private launch-channel env: the spoke's per-launch `hub.PublishReport` grant
+/// token (issued only when the plugin declares a report capability).
+pub const PLUGIN_REPORT_GRANT_ENV: &str = "AGALMA_PLUGIN_REPORT_GRANT";
 
 /// Default bound on one model turn (free model can be slow; M0 allows minutes).
 pub const DEFAULT_TURN_TIMEOUT: Duration = Duration::from_secs(600);
@@ -389,6 +392,48 @@ pub const BUILTIN_COMPONENTS: &[&str] = &[
     "component:provider-proxy",
 ];
 
+/// A `Clock` backed by a `Send + Sync` closure.
+///
+/// The production plugin host needs one injected clock that both the
+/// single-threaded supervisor and the `Send`-safe report ingestor can read.
+struct FnClock(Arc<dyn Fn() -> u64 + Send + Sync>);
+
+impl Clock for FnClock {
+    fn now_ms(&self) -> u64 {
+        (self.0)()
+    }
+}
+
+/// Declared report `(namespace, version)` pairs across every installed
+/// generation's manifest — the set the report ingestor accepts.
+fn allowed_schemas_in_registry(registry: &PluginRegistry) -> BTreeSet<(String, u64)> {
+    let mut out = BTreeSet::new();
+    for plugin_id in registry.plugin_ids() {
+        if let Some(entry) = registry.entry(plugin_id) {
+            for generation in entry.generations.values() {
+                for schema in &generation.manifest.report_schemas {
+                    out.insert((schema.namespace.clone(), schema.version));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The report capability an installed generation declares, if any.
+///
+/// The launch issues a `hub.PublishReport` grant only for a declared report
+/// capability, keeping the grant scope narrow (no unrelated action authority).
+fn report_capability(
+    installed: &crate::plugin_registry::InstalledGeneration,
+) -> Option<String> {
+    installed
+        .approved_capabilities
+        .iter()
+        .find(|capability| capability.as_str() == "report.publish" || capability.starts_with("report."))
+        .cloned()
+}
+
 /// Injected source of pinned [`PluginInstallation`] records.
 ///
 /// HP.5 attaches the durable selected-ledger implementation. A package with no
@@ -442,6 +487,8 @@ pub struct HubServices {
     pub journal: Box<dyn OperationJournal>,
     pub stop: Arc<dyn StopAdmission>,
     pub adapters: Vec<Box<dyn CapabilityAdapter>>,
+    /// Durable `hub.PublishReport` ingestor (HP.5). `None` refuses report routing.
+    pub reports: Option<Arc<std::sync::Mutex<crate::plugin_reports::ReportIngestor>>>,
 }
 
 impl Default for HubServices {
@@ -450,6 +497,7 @@ impl Default for HubServices {
             journal: Box::new(crate::plugin_router::InMemoryOperationJournal::new()),
             stop: Arc::new(RunningStop),
             adapters: Vec::new(),
+            reports: None,
         }
     }
 }
@@ -471,7 +519,13 @@ pub struct PluginHost {
     pub hub_socket: PathBuf,
     /// Per-launch grants issued for installed plugins (private launch channel).
     grants: BTreeMap<String, LaunchGrant>,
+    /// Per-launch `hub.PublishReport` grants (private launch channel).
+    report_grants: BTreeMap<String, LaunchGrant>,
     desired: Box<dyn DesiredStateStore>,
+    /// The selected durable ledger attached by [`PluginHost::assemble_with_ledger`].
+    ledger: Option<LedgerHandle>,
+    /// The durable report ingestor attached by [`PluginHost::assemble_with_ledger`].
+    pub reports: Option<Arc<std::sync::Mutex<crate::plugin_reports::ReportIngestor>>>,
 }
 
 /// What one supervise tick observed and did.
@@ -567,6 +621,10 @@ impl PluginHost {
         for adapter in services.adapters {
             router.register_adapter(adapter);
         }
+        let reports = services.reports;
+        if let Some(ingestor) = &reports {
+            router.install_reports(Arc::clone(ingestor));
+        }
         let router = Arc::new(RouterService::new(router));
         let hub_socket = plugin_socket_path(&state_dir, "hub", 0);
 
@@ -581,8 +639,78 @@ impl PluginHost {
             router,
             hub_socket,
             grants: BTreeMap::new(),
+            report_grants: BTreeMap::new(),
             desired,
+            ledger: None,
+            reports,
         })
+    }
+
+    /// Assemble the production plugin host attached to the **selected ledger**
+    /// (`agalma-jmr.5`).
+    ///
+    /// Desired state is persisted/reconstructed through the durable
+    /// [`crate::plugin_registry::LedgerDesiredStateStore`] (a selected-ledger
+    /// component commit), never an in-memory map or private file database. The
+    /// host keeps the attached ledger so report ingestion uses the same
+    /// `LedgerApi`, and it records the registry's active/max generations in the
+    /// durable registry checkpoint.
+    pub fn assemble_with_ledger(
+        config: &PluginHostConfig,
+        installations: &dyn InstallationSource,
+        ledger: LedgerHandle,
+        clock: Arc<dyn Fn() -> u64 + Send + Sync>,
+    ) -> Result<PluginHost, ContractError> {
+        let desired = Box::new(crate::plugin_registry::LedgerDesiredStateStore::open(
+            ledger.clone(),
+        )?);
+        let mut host = PluginHost::assemble_with_hub(
+            config,
+            installations,
+            desired,
+            Rc::new(FnClock(Arc::clone(&clock))),
+            HubServices::default(),
+        )?;
+        let mut ledger = ledger;
+        crate::plugin_registry::persist_registry_generations(&mut ledger, &host.registry)?;
+
+        // Durable report ingestion over the **selected** `LedgerHandle`
+        // (`component-store/v1`), attached to the host router so the production
+        // `hub.PublishReport` RPC routes to it. No second connection is opened:
+        // the same handle the host uses for desired state also stores reports.
+        let schemas = allowed_schemas_in_registry(&host.registry);
+        let ingestor = crate::plugin_reports::ReportIngestor::open(
+            Box::new(std::sync::Mutex::new(ledger.clone())),
+            Arc::clone(&clock),
+            host.active_generations(),
+            schemas,
+        )?;
+        let reports = Arc::new(std::sync::Mutex::new(ingestor));
+        host.router.router().install_reports(Arc::clone(&reports));
+        host.reports = Some(reports);
+        host.ledger = Some(ledger);
+        Ok(host)
+    }
+
+    /// The selected durable ledger attached to this host, when one is.
+    pub fn ledger(&self) -> Option<&LedgerHandle> {
+        self.ledger.as_ref()
+    }
+
+    /// The plugin -> active/pending generation map the registry is running.
+    ///
+    /// Used to open the [`crate::plugin_reports::ReportIngestor`] against the
+    /// same selected ledger.
+    pub fn active_generations(&self) -> BTreeMap<String, u64> {
+        let mut out = BTreeMap::new();
+        for plugin_id in self.registry.plugin_ids() {
+            if let Some(entry) = self.registry.entry(plugin_id) {
+                if let Some(generation) = entry.active_generation.or(entry.pending_generation) {
+                    out.insert(plugin_id.to_string(), generation);
+                }
+            }
+        }
+        out
     }
 
     /// Desired-state store (HP.5 attaches the durable implementation).
@@ -689,25 +817,25 @@ impl PluginHost {
         let socket = plugin_socket_path(&self.state_dir, plugin_id, epoch);
         let mut request = LaunchRequest::from_installed(&installed, socket);
 
-        // Rotate the per-launch grant: revoke the prior token, then issue a
-        // fresh token for the identical immutable binding scope.
+        // Rotate the per-launch grants: revoke the prior tokens, then issue
+        // fresh tokens for the identical immutable binding scope.
+        let binding = agalma_contracts::BindingPin {
+            binding_id: plugin_id.to_string(),
+            api: "plugin".to_string(),
+            api_version: 1,
+            implementation_version: installed.package_version.clone(),
+            generation,
+            config_digest: installed.config_digest.clone(),
+        };
+        let expiry =
+            crate::plugin_router::wall_clock_now_ms().saturating_add(LAUNCH_GRANT_TTL_MS);
         if let Some(capability) = installed.approved_capabilities.first().cloned() {
             if let Some(previous) = self.grants.remove(plugin_id) {
                 self.router.router().revoke_grant(&previous.fingerprint());
             }
-            let binding = agalma_contracts::BindingPin {
-                binding_id: plugin_id.to_string(),
-                api: "plugin".to_string(),
-                api_version: 1,
-                implementation_version: installed.package_version.clone(),
-                generation,
-                config_digest: installed.config_digest.clone(),
-            };
-            let expiry = crate::plugin_router::wall_clock_now_ms()
-                .saturating_add(LAUNCH_GRANT_TTL_MS);
             let grant = LaunchGrant::for_capability(
                 plugin_id.to_string(),
-                binding,
+                binding.clone(),
                 agalma_ipc::plugin_server::METHOD_INVOKE_CAPABILITY,
                 capability,
                 expiry,
@@ -724,6 +852,28 @@ impl PluginHost {
             self.grants.insert(plugin_id.to_string(), grant);
         }
 
+        // A plugin that declares a report capability gets a separate,
+        // launch-scoped `hub.PublishReport` grant. The scope is narrow: the
+        // pinned binding/generation plus the report capability namespace only.
+        if let Some(capability) = report_capability(&installed) {
+            if let Some(previous) = self.report_grants.remove(plugin_id) {
+                self.router.router().revoke_grant(&previous.fingerprint());
+            }
+            let grant = LaunchGrant::for_capability(
+                plugin_id.to_string(),
+                binding,
+                agalma_ipc::plugin_server::METHOD_PUBLISH_REPORT,
+                capability,
+                expiry,
+                None,
+            )?;
+            self.router.router().install_grant(&grant);
+            request
+                .env
+                .insert(PLUGIN_REPORT_GRANT_ENV.to_string(), grant.token_hex());
+            self.report_grants.insert(plugin_id.to_string(), grant);
+        }
+
         // Private launch channel: the hub socket and the spoke's per-launch
         // scoped grant (never a peer socket or database handle).
         request.env.insert(
@@ -737,6 +887,12 @@ impl PluginHost {
     /// channel; the token is never logged).
     pub fn launch_grant(&self, plugin_id: &str) -> Option<&LaunchGrant> {
         self.grants.get(plugin_id)
+    }
+
+    /// The per-launch `hub.PublishReport` grant issued for `plugin_id`, if the
+    /// plugin declares a report capability (private launch channel).
+    pub fn report_grant(&self, plugin_id: &str) -> Option<&LaunchGrant> {
+        self.report_grants.get(plugin_id)
     }
 
     /// Every issued per-launch grant, keyed by plugin id (diagnostics/tests).

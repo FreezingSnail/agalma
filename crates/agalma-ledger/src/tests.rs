@@ -15,11 +15,12 @@ use serde_json::{json, Value};
 use agalma_testkit::ScratchDir;
 
 use agalma_contracts::{
-    ArtifactRef, BindingId, BindingRecord, BindingState, CommitBatch, ContractError,
+    ArtifactRef, BindingId, BindingRecord, BindingState, CommitBatch, ComponentCommit,
+    ComponentEvent, ComponentOperation, ComponentReceipt, ContractError,
     ControlReceipt, DecisionKind, DecisionOutcome, DecisionPin, DecisionRequest, DigestRecord,
     DirectiveRow, DirectiveState, DispatchIntent, ExecutionEvent, ExecutionId, ExecutionPhase,
     ExecutionRecord, ExecutionState, LedgerApi, OperationId, OperationReceipt, TaskId, TimerRecord,
-    TimerState,
+    TimerState, COMPONENT_COMMIT_FORMAT,
 };
 
 use crate::{SqliteLedger, SCHEMA_VERSION};
@@ -1075,4 +1076,500 @@ fn open_existing_incompatible_refuses_without_migrating() {
         )
         .unwrap();
     assert_eq!(version, "999", "open_existing must not migrate/rewrite");
+}
+
+// ---------------------------------------------------------------------------
+// HP.5 schema v5 component store, explicit migration and complete-state v2
+// (`agalma-jmr.5`)
+// ---------------------------------------------------------------------------
+
+use agalma_contracts::task_package::BindingPin;
+
+fn fixture_binding(generation: u64) -> BindingPin {
+    BindingPin {
+        binding_id: "fixture.reporter".to_string(),
+        api: "plugin".to_string(),
+        api_version: 1,
+        implementation_version: "fixture-1".to_string(),
+        generation,
+        config_digest: format!("sha256:{}", "a".repeat(64)),
+    }
+}
+
+fn sealed(mut commit: ComponentCommit) -> ComponentCommit {
+    commit.input_digest = commit.computed_input_digest().unwrap();
+    commit
+}
+
+fn sample_component_commit(revision: u64, value: i64) -> ComponentCommit {
+    let binding = fixture_binding(1);
+    sealed(ComponentCommit {
+        format: COMPONENT_COMMIT_FORMAT.to_string(),
+        namespace: "example.action-fixture".to_string(),
+        commit_id: format!("commit-{revision}"),
+        input_digest: String::new(),
+        expected_revision: revision,
+        checkpoint: Some(json!({ "value": value })),
+        events: vec![ComponentEvent {
+            event_id: format!("event-{revision}"),
+            kind: "fixture.updated".to_string(),
+            payload: json!({ "value": value }),
+            recorded_at_unix_ms: 1_791_820_800_000 + revision,
+        }],
+        operations: vec![ComponentOperation {
+            operation_id: format!("example.action-fixture/op-{revision}"),
+            input_digest: format!("sha256:{}", "1".repeat(64)),
+            binding: binding.clone(),
+            intent: json!({ "value": value }),
+            state: agalma_contracts::ComponentOperationState::Completed,
+            deadline_unix_ms: 1_791_820_810_000,
+        }],
+        receipts: vec![ComponentReceipt {
+            operation_id: format!("example.action-fixture/op-{revision}"),
+            input_digest: format!("sha256:{}", "1".repeat(64)),
+            binding,
+            outcome: json!({ "value": value }),
+            completed_at_unix_ms: 1_791_820_800_001 + revision,
+        }],
+    })
+}
+
+#[test]
+fn component_commit_is_atomic_and_replay_safe() {
+    let dir = run_dir("component-commit");
+    let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
+
+    let commit = sample_component_commit(0, 1);
+    let anchor = ledger.component_commit(&commit).unwrap();
+    assert_eq!(anchor.revision, 1);
+    assert_eq!(anchor.input_digest, commit.input_digest);
+
+    let state = ledger.component_read(&commit.namespace).unwrap().unwrap();
+    assert_eq!(state.revision, 1);
+    assert_eq!(state.watermark, 1);
+    assert_eq!(state.checkpoint, Some(json!({ "value": 1 })));
+    let events = ledger.component_events(&commit.namespace, 0, 10).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event.payload, json!({ "value": 1 }));
+    let op = ledger
+        .component_operation(&commit.namespace, "example.action-fixture/op-0")
+        .unwrap()
+        .unwrap();
+    assert_eq!(op.operation.state, agalma_contracts::ComponentOperationState::Completed);
+
+    // Identical replay returns the original anchor even though the revision has
+    // not changed (replay is checked before the revision guard).
+    let replay = ledger.component_commit(&commit).unwrap();
+    assert_eq!(replay, anchor);
+
+    // Changed content under the same commit id conflicts.
+    let mut changed = commit.clone();
+    changed.checkpoint = Some(json!({ "value": 99 }));
+    changed.input_digest = changed.computed_input_digest().unwrap();
+    let err = ledger.component_commit(&changed).unwrap_err();
+    assert_eq!(
+        agalma_contracts::digest::failure_code(&err),
+        Some(agalma_contracts::FailureCode::IdentityConflict)
+    );
+
+    // A new commit id with a stale expected revision conflicts and writes
+    // nothing.
+    let mut stale = sample_component_commit(1, 2);
+    stale.commit_id = "commit-stale".to_string();
+    stale.expected_revision = 0;
+    stale.operations.clear();
+    stale.receipts.clear();
+    let stale = sealed(stale);
+    let err = ledger.component_commit(&stale).unwrap_err();
+    assert_eq!(
+        agalma_contracts::digest::failure_code(&err),
+        Some(agalma_contracts::FailureCode::RevisionConflict)
+    );
+    assert_eq!(
+        ledger.component_read(&commit.namespace).unwrap().unwrap().revision,
+        1
+    );
+    assert_eq!(
+        ledger.component_events(&commit.namespace, 0, 10).unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn component_commit_duplicate_operation_content_conflicts_without_partial_rows() {
+    let dir = run_dir("component-conflict");
+    let mut ledger = SqliteLedger::open(dir.join("ledger.sqlite")).unwrap();
+    ledger.component_commit(&sample_component_commit(0, 1)).unwrap();
+
+    // New commit id + new event, but reuses op-0 with changed content.
+    let mut conflicting = sample_component_commit(1, 2);
+    conflicting.operations[0].operation_id = "example.action-fixture/op-0".to_string();
+    conflicting.operations[0].intent = json!({ "value": 999 });
+    conflicting.receipts.clear();
+    let conflicting = sealed(conflicting);
+    let err = ledger.component_commit(&conflicting).unwrap_err();
+    assert_eq!(
+        agalma_contracts::digest::failure_code(&err),
+        Some(agalma_contracts::FailureCode::IdentityConflict)
+    );
+    // Nothing partially committed: revision/event count unchanged.
+    assert_eq!(
+        ledger.component_read(&"example.action-fixture").unwrap().unwrap().revision,
+        1
+    );
+    assert_eq!(
+        ledger.component_events("example.action-fixture", 0, 10).unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn normal_v4_open_does_not_upgrade_to_v5() {
+    let dir = run_dir("v4-no-upgrade");
+    let path = dir.join("ledger.sqlite");
+    {
+        let ledger = SqliteLedger::open(&path).unwrap();
+        assert_eq!(ledger.schema_version().unwrap(), SCHEMA_VERSION);
+        ledger.downgrade_to_v4().unwrap();
+        assert_eq!(ledger.schema_version().unwrap(), 4);
+    }
+
+    // A normal open leaves the v4 database untouched (no silent v5 migration).
+    let ledger = SqliteLedger::open(&path).unwrap();
+    assert_eq!(ledger.schema_version().unwrap(), 4);
+    assert!(
+        ledger.component_read("ns").is_err(),
+        "v4 use refuses v5 component reads"
+    );
+
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let version: String = conn
+        .query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, "4", "normal open must not migrate v4 -> v5");
+}
+
+#[test]
+fn explicit_v5_migration_refuses_non_quiescent_state() {
+    let dir = run_dir("v5-refuse-inflight");
+    let path = dir.join("ledger.sqlite");
+    let exec = fixture_exec();
+    {
+        let mut ledger = SqliteLedger::open(&path).unwrap();
+        ledger
+            .commit(CommitBatch {
+                expected_revision: None,
+                state: Some(record(&exec, ExecutionPhase::Build, ExecutionState::Running)),
+                events: vec![],
+                receipts: vec![],
+                intents: vec![],
+            })
+            .unwrap();
+        ledger.downgrade_to_v4().unwrap();
+    }
+
+    let mut ledger = SqliteLedger::open(&path).unwrap();
+    let err = ledger.migrate_to_v5().unwrap_err();
+    assert!(
+        err.to_string().contains("not quiescent"),
+        "refusal names quiescence: {err}"
+    );
+    assert_eq!(ledger.schema_version().unwrap(), 4, "no upgrade on refusal");
+    let backups: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains("v4-backup"))
+        .collect();
+    assert!(backups.is_empty(), "refused migration writes no backup");
+
+    // A parked row alone is not quiescence when an unresolved effect remains.
+    let dir2 = run_dir("v5-refuse-parked-intent");
+    let path2 = dir2.join("ledger.sqlite");
+    let exec2 = fixture_exec();
+    {
+        let mut pending = SqliteLedger::open(&path2).unwrap();
+        pending
+            .commit(CommitBatch {
+                expected_revision: None,
+                state: Some(record(
+                    &exec2,
+                    ExecutionPhase::Parked,
+                    ExecutionState::Parked,
+                )),
+                events: vec![],
+                receipts: vec![],
+                intents: vec![intent(&exec2, &OperationId::derive(&exec2, "build"))],
+            })
+            .unwrap();
+        pending.downgrade_to_v4().unwrap();
+    }
+    let err = SqliteLedger::open(&path2).unwrap().migrate_to_v5().unwrap_err();
+    assert!(
+        err.to_string().contains("unconsumed dispatch intent"),
+        "parked row with a pending intent is not quiescent: {err}"
+    );
+}
+
+#[test]
+fn explicit_v5_migration_is_transactional_with_backup_and_receipt() {
+    let dir = run_dir("v5-migrate");
+    let path = dir.join("ledger.sqlite");
+    let exec = fixture_exec();
+    let op = OperationId::derive(&exec, "build");
+    {
+        let mut ledger = SqliteLedger::open(&path).unwrap();
+        ledger
+            .commit(CommitBatch {
+                expected_revision: None,
+                state: Some(record(&exec, ExecutionPhase::Done, ExecutionState::Completed)),
+                events: vec![event(&exec, "done", json!({ "ok": true }))],
+                receipts: vec![OperationReceipt {
+                    operation_id: op.clone(),
+                    execution_id: exec.clone(),
+                    kind: "build".to_string(),
+                    inputs_hash: "h".to_string(),
+                    result: json!({ "ok": true }),
+                    completed_at_unix_ms: 7,
+                }],
+                intents: vec![],
+            })
+            .unwrap();
+        ledger
+            .record_control_receipt(&ControlReceipt {
+                action_id: "pause-1".to_string(),
+                action: "pause".to_string(),
+                target: String::new(),
+                actor: "human".to_string(),
+                request: json!({ "outcome": "applied" }),
+                recorded_at_unix_ms: 9,
+            })
+            .unwrap();
+        ledger.downgrade_to_v4().unwrap();
+    }
+
+    let mut ledger = SqliteLedger::open(&path).unwrap();
+    assert_eq!(ledger.schema_version().unwrap(), 4);
+    let receipt = ledger.migrate_to_v5().unwrap();
+    assert_eq!(receipt.from_version, 4);
+    assert_eq!(receipt.to_version, 5);
+    assert_eq!(ledger.schema_version().unwrap(), 5);
+    assert!(
+        Path::new(&receipt.backup_path).is_file(),
+        "durable backup exists at {}",
+        receipt.backup_path
+    );
+    let stored = ledger.migration_receipt(&receipt.migration_id).unwrap().unwrap();
+    assert_eq!(stored, receipt);
+
+    // Existing v4 data survived and the new component store is live.
+    assert!(ledger.operation_receipt(&op).unwrap().is_some());
+    assert_eq!(ledger.control_receipts().unwrap().len(), 1);
+    ledger
+        .component_commit(&sample_component_commit(0, 1))
+        .unwrap();
+    assert_eq!(
+        ledger.component_read("example.action-fixture").unwrap().unwrap().revision,
+        1
+    );
+}
+
+#[test]
+fn complete_state_v2_round_trip_preserves_every_section() {
+    let source_dir = run_dir("complete-v2-source");
+    let mut source = SqliteLedger::open(source_dir.join("ledger.sqlite")).unwrap();
+    let exec = fixture_exec();
+    let op = OperationId::derive(&exec, "build");
+
+    source
+        .commit(CommitBatch {
+            expected_revision: None,
+            state: Some(record(&exec, ExecutionPhase::Done, ExecutionState::Completed)),
+            events: vec![event(&exec, "done", json!({ "ok": true }))],
+            receipts: vec![OperationReceipt {
+                operation_id: op.clone(),
+                execution_id: exec.clone(),
+                kind: "build".to_string(),
+                inputs_hash: "h".to_string(),
+                result: json!({ "ok": true }),
+                completed_at_unix_ms: 7,
+            }],
+            intents: vec![],
+        })
+        .unwrap();
+    let decision = DecisionRequest {
+        version: 1,
+        operation_id: op.clone(),
+        kind: DecisionKind::TriagePickNext,
+        context: json!({ "prompt": "p" }),
+        artifacts: vec![],
+        options: vec![agalma_contracts::DecisionOption {
+            option_id: "a".to_string(),
+            attributes: json!({}),
+        }],
+        deadline_unix_ms: 1000,
+        pin: agalma_contracts::DecisionPin {
+            policy: "policy/v1".to_string(),
+            genome: "genome/v1".to_string(),
+            model: "static".to_string(),
+        },
+    };
+    source.record_decision(&decision).unwrap();
+    source
+        .record_decision_outcome(
+            &op,
+            &DecisionOutcome::Applied {
+                chosen: Some("a".to_string()),
+                scores: vec![],
+            },
+        )
+        .unwrap();
+    source
+        .record_digest(&DigestRecord {
+            execution_id: exec.clone(),
+            version: 1,
+            summary: json!({ "cost_nusd": 1 }),
+            artifact_ref: Some(ArtifactRef::derive("digest.json")),
+            recorded_at_unix_ms: 12,
+        })
+        .unwrap();
+    source
+        .record_control_receipt(&ControlReceipt {
+            action_id: "cancel-1".to_string(),
+            action: "cancel".to_string(),
+            target: exec.as_str().to_string(),
+            actor: "human".to_string(),
+            request: json!({ "outcome": "applied" }),
+            recorded_at_unix_ms: 13,
+        })
+        .unwrap();
+    source
+        .insert_timer(&TimerRecord {
+            timer_id: "timer-1".to_string(),
+            execution_id: exec.clone(),
+            kind: "retry".to_string(),
+            fire_at_unix_ms: 100,
+            state: TimerState::Fired,
+            payload: json!({ "attempt": 1 }),
+        })
+        .unwrap();
+    source
+        .upsert_directive(&DirectiveRow {
+            directive_id: "d1".to_string(),
+            version: 1,
+            source: "human".to_string(),
+            state: DirectiveState::Active,
+            payload: json!({ "allow": ["prompt"] }),
+            received_at_unix_ms: 14,
+        })
+        .unwrap();
+    source
+        .upsert_binding(&BindingRecord {
+            binding_id: BindingId::new("binding:ledger"),
+            component_api: "ledger".to_string(),
+            api_version: 1,
+            implementation: "sqlite".to_string(),
+            implementation_version: "v1".to_string(),
+            capabilities: BTreeSet::new(),
+            required_capabilities: BTreeSet::new(),
+            optional_capabilities: BTreeSet::new(),
+            config_hash: "cfg".to_string(),
+            generation: 1,
+            state: BindingState::Active,
+        })
+        .unwrap();
+    source.begin_lease(&TaskId::new("fix-answer")).unwrap();
+    source
+        .kernel_meta_set("exec_def_version", "exec_def/v1")
+        .unwrap();
+    source.component_commit(&sample_component_commit(0, 1)).unwrap();
+    source.component_commit(&sample_component_commit(1, 2)).unwrap();
+
+    let exported = source.export_complete_state().unwrap();
+    assert_eq!(exported.format, agalma_contracts::COMPLETE_STATE_FORMAT);
+    assert_eq!(exported.schema_version, 5);
+    assert!(!exported.decisions.is_empty());
+    assert!(!exported.decision_outcomes.is_empty());
+    assert!(!exported.digests.is_empty());
+    assert!(!exported.control_receipts.is_empty());
+    assert!(!exported.component_states.is_empty());
+    assert_eq!(exported.component_events.len(), 2);
+    assert_eq!(exported.component_operations.len(), 2);
+    assert_eq!(exported.component_receipts.len(), 2);
+    assert_eq!(exported.component_commits.len(), 2);
+    assert_eq!(exported.component_states[0].revision, 2);
+
+    let dest_dir = run_dir("complete-v2-dest");
+    let mut dest = SqliteLedger::open(dest_dir.join("ledger.sqlite")).unwrap();
+    let json = exported.to_canonical_json().unwrap();
+    dest.import_complete_state_json(&json).unwrap();
+
+    let reexported = dest.export_complete_state().unwrap();
+    assert_eq!(reexported, exported, "complete v2 round trip preserves identity");
+
+    // Durable replay identity survives restore: identical commit replays its
+    // original anchor; changed input conflicts.
+    let replay = dest.component_commit(&sample_component_commit(0, 1)).unwrap();
+    let original = exported
+        .component_commits
+        .iter()
+        .find(|a| a.commit_id == "commit-0")
+        .unwrap()
+        .clone();
+    assert_eq!(replay, original);
+    let mut changed = sample_component_commit(0, 1);
+    changed.checkpoint = Some(json!({ "value": 999 }));
+    changed.input_digest = changed.computed_input_digest().unwrap();
+    assert_eq!(
+        agalma_contracts::digest::failure_code(&dest.component_commit(&changed).unwrap_err()),
+        Some(agalma_contracts::FailureCode::IdentityConflict)
+    );
+}
+
+#[test]
+fn complete_state_import_refuses_nonempty_legacy_unknown_and_incomplete() {
+    let dir = run_dir("complete-v2-refusals");
+    let source_path = dir.join("source.sqlite");
+    let mut source = SqliteLedger::open(&source_path).unwrap();
+    source
+        .component_commit(&sample_component_commit(0, 1))
+        .unwrap();
+    let exported = source.export_complete_state().unwrap();
+
+    // Non-empty destination refuses.
+    let mut dest = SqliteLedger::open(dir.join("dest.sqlite")).unwrap();
+    dest.component_commit(&sample_component_commit(0, 1)).unwrap();
+    let err = dest.import_complete_state(&exported).unwrap_err();
+    assert!(matches!(err, ContractError::Conflict(_)), "non-empty: {err}");
+
+    // Legacy v1 export alone is incomplete for production restore.
+    let legacy = source.export_state().unwrap().to_canonical_json().unwrap();
+    let mut empty = SqliteLedger::open(dir.join("empty.sqlite")).unwrap();
+    assert_eq!(
+        agalma_contracts::digest::failure_code(
+            &empty.import_complete_state_json(&legacy).unwrap_err()
+        ),
+        Some(agalma_contracts::FailureCode::LegacyInputsMissing)
+    );
+
+    // Unknown sections refuse.
+    let mut unknown: Value = serde_json::to_value(&exported).unwrap();
+    unknown
+        .as_object_mut()
+        .unwrap()
+        .insert("future_section".to_string(), json!([]));
+    assert_eq!(
+        agalma_contracts::digest::failure_code(
+            &empty
+                .import_complete_state_json(&unknown.to_string())
+                .unwrap_err()
+        ),
+        Some(agalma_contracts::FailureCode::UnsupportedSchema)
+    );
+
+    // Incomplete v2 (missing a required section) refuses.
+    let mut incomplete: Value = serde_json::to_value(&exported).unwrap();
+    incomplete.as_object_mut().unwrap().remove("component_commits");
+    assert!(empty
+        .import_complete_state_json(&incomplete.to_string())
+        .is_err());
 }

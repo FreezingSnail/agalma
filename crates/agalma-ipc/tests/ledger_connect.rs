@@ -350,13 +350,24 @@ fn ledger_connect_missing_socket_is_unavailable() {
     assert!(err.is_unavailable(), "expected Unavailable, got {err:?}");
 }
 
-/// The wire method surface stays consistent: 33 methods including the
-/// agalma-3kr.6 control-receipt ops.
+/// The wire method surface stays consistent: it includes the agalma-3kr.6
+/// control-receipt ops, the HP.5 snapshot file transfer, and the HP.5
+/// component-store + complete-state ops.
 #[test]
 fn ledger_methods_include_control_receipt_ops() {
-    assert_eq!(LEDGER_METHODS.len(), 33);
+    assert_eq!(LEDGER_METHODS.len(), 39);
     assert!(LEDGER_METHODS.contains(&"record_control_receipt"));
     assert!(LEDGER_METHODS.contains(&"control_receipts"));
     assert!(LEDGER_METHODS.contains(&"export_state_to"));
     assert!(LEDGER_METHODS.contains(&"import_state_from"));
+    for method in [
+        "component_read",
+        "component_events",
+        "component_operation",
+        "component_commit",
+        "export_complete_state_to",
+        "import_complete_state_from",
+    ] {
+        assert!(LEDGER_METHODS.contains(&method), "missing `{method}`");
+    }
 }

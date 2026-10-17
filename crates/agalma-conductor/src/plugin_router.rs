@@ -43,7 +43,7 @@ use agalma_contracts::digest::{canonical_digest, FailureCode};
 use agalma_contracts::task_package::BindingPin;
 use agalma_contracts::{
     ComponentOperationState, ComponentReceipt, ContractError, PluginOperationStatus,
-    PLUGIN_OPERATION_STATUS_FORMAT,
+    ReportEnvelope, ReportPublication, PLUGIN_OPERATION_STATUS_FORMAT,
 };
 use agalma_ipc::plugin_server::{
     self, HubHandler, METHOD_INVOKE_CAPABILITY, METHOD_PUBLISH_REPORT, METHOD_RECONCILE_CAPABILITY,
@@ -466,9 +466,26 @@ pub struct CapabilityCallRequest {
     pub depth: u32,
 }
 
+/// A report publication over the hub RPC (`hub.PublishReport`).
+///
+/// The authenticated per-launch grant determines the caller; `plugin_id` and
+/// `generation` are the caller's declared identity and must match the grant.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishReportCall {
+    /// The presented per-launch grant token (lowercase hex).
+    pub grant: String,
+    /// The caller's declared plugin id (checked against the grant).
+    pub plugin_id: String,
+    /// The caller's declared binding generation (checked against the grant).
+    pub generation: u64,
+    /// The producer's report publication (identity/content validated by the
+    /// ingestor; the hub adds the observation timestamp).
+    pub publication: ReportPublication,
+}
+
 /// A validated, journaled capability invocation ready to execute.
-pub struct PreparedInvocation {
-    pub operation_key: String,
+pub struct PreparedInvocation {    pub operation_key: String,
     pub operation_id: String,
     pub input: Value,
     pub scope: GrantScope,
@@ -485,6 +502,7 @@ pub struct CapabilityRouter {
     stop: Arc<dyn StopAdmission>,
     now: Arc<dyn Fn() -> u64 + Send + Sync>,
     max_depth: u32,
+    reports: Option<Arc<Mutex<crate::plugin_reports::ReportIngestor>>>,
 }
 
 impl CapabilityRouter {
@@ -497,7 +515,61 @@ impl CapabilityRouter {
             stop,
             now: Arc::new(system_now_ms),
             max_depth: DEFAULT_MAX_DEPTH,
+            reports: None,
         }
+    }
+
+    /// Attach the durable report ingestor (`hub.PublishReport`).
+    pub fn install_reports(
+        &mut self,
+        reports: Arc<Mutex<crate::plugin_reports::ReportIngestor>>,
+    ) {
+        self.reports = Some(reports);
+    }
+
+    /// Authenticate and route one `hub.PublishReport` call to the attached
+    /// ingestor. A missing ingestor refuses before any effect.
+    pub fn publish_report(
+        &mut self,
+        call: &PublishReportCall,
+    ) -> Result<ReportEnvelope, ContractError> {
+        let token = hex_decode_32(&call.grant)?;
+        let now = (self.now)();
+        let scope = self.grants.authenticate(&token, now)?.clone();
+        if scope.method != METHOD_PUBLISH_REPORT {
+            return Err(FailureCode::AuthorityDenied.failure(
+                &scope.plugin_id,
+                format!(
+                    "grant authorizes `{}`, not `{METHOD_PUBLISH_REPORT}`",
+                    scope.method
+                ),
+            ));
+        }
+        if scope.plugin_id != call.plugin_id {
+            return Err(FailureCode::AuthorityDenied.failure(
+                &scope.plugin_id,
+                format!(
+                    "grant identity `{}` does not match supplied `{}`",
+                    scope.plugin_id, call.plugin_id
+                ),
+            ));
+        }
+        if scope.binding.generation != call.generation {
+            return Err(FailureCode::StaleGeneration.failure(
+                &scope.plugin_id,
+                format!(
+                    "grant pins generation {}, request declared {}",
+                    scope.binding.generation, call.generation
+                ),
+            ));
+        }
+        let Some(reports) = self.reports.as_ref() else {
+            return Err(ContractError::UnsupportedCapability(format!(
+                "report ingestion is not attached to this hub ({METHOD_PUBLISH_REPORT})"
+            )));
+        };
+        let mut ingestor = reports.lock().unwrap_or_else(PoisonError::into_inner);
+        ingestor.publish(&scope.plugin_id, &scope.binding, &call.publication)
     }
 
     /// Override the clock (deterministic tests).
@@ -853,10 +925,21 @@ impl HubHandler for RouterService {
         to_value(status)
     }
 
-    fn publish_report(&self, _request: Value) -> Result<Value, ContractError> {
-        Err(ContractError::UnsupportedCapability(format!(
-            "report ingestion is HP.5-owned; HP.4 only carries `{METHOD_PUBLISH_REPORT}`"
-        )))
+    fn publish_report(&self, request: Value) -> Result<Value, ContractError> {
+        let call: PublishReportCall = serde_json::from_value(request).map_err(|e| {
+            FailureCode::InvalidRecord.failure(
+                METHOD_PUBLISH_REPORT,
+                format!("malformed publish-report call: {e}"),
+            )
+        })?;
+        let mut router = self.router.lock().unwrap_or_else(PoisonError::into_inner);
+        let envelope = router.publish_report(&call)?;
+        serde_json::to_value(envelope).map_err(|e| {
+            FailureCode::InvalidRecord.failure(
+                METHOD_PUBLISH_REPORT,
+                format!("encode report envelope: {e}"),
+            )
+        })
     }
 }
 

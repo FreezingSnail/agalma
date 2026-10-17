@@ -14,7 +14,7 @@
 //! partially applying state. Serialization is canonical: `BTreeMap`s and the
 //! ordered vectors make the JSON stable for a given state.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -140,6 +140,231 @@ impl CompleteStateV2 {
         serde_json::from_str(text)
             .map_err(|e| ContractError::KnownFailure(format!("complete-state json: {e}")))
     }
+
+    /// Validate the complete document **before** any destination mutation.
+    ///
+    /// Enforces the declared format/schema, section ordering, duplicate durable
+    /// identities and execution foreign keys for history rows. Unknown sections
+    /// are already refused by `serde(deny_unknown_fields)` at parse time; a
+    /// legacy `agalma-state/v1` document is refused by
+    /// [`Self::version_gate`].
+    pub fn validate_complete(&self) -> Result<(), ContractError> {
+        self.version_gate()?;
+        if self.schema_version != COMPLETE_STATE_SCHEMA_VERSION {
+            return Err(FailureCode::UnsupportedSchema.failure(
+                &self.format,
+                format!(
+                    "complete-state schema {} is unsupported (expected {COMPLETE_STATE_SCHEMA_VERSION})",
+                    self.schema_version
+                ),
+            ));
+        }
+
+        // Declared section ordering (`snapshot-sections.json`).
+        check_ordered(&self.executions, "executions", |r| {
+            r.execution_id.as_str().to_string()
+        })?;
+        check_ordered(&self.events, "events", |e| {
+            (e.execution_id.as_str().to_string(), e.sequence)
+        })?;
+        check_ordered(&self.receipts, "receipts", |r| {
+            r.operation_id.as_str().to_string()
+        })?;
+        check_ordered(&self.intents, "intents", |i| {
+            i.operation_id.as_str().to_string()
+        })?;
+        check_ordered(&self.timers, "timers", |t| t.timer_id.clone())?;
+        check_ordered(&self.directives, "directives", |d| d.directive_id.clone())?;
+        check_ordered(&self.bindings, "bindings", |b| {
+            b.binding_id.as_str().to_string()
+        })?;
+        check_ordered(&self.decisions, "decisions", |d| {
+            d.operation_id.as_str().to_string()
+        })?;
+        check_ordered(&self.decision_outcomes, "decision_outcomes", |d| {
+            d.operation_id.as_str().to_string()
+        })?;
+        check_ordered(&self.digests, "digests", |d| {
+            (d.execution_id.as_str().to_string(), d.version)
+        })?;
+        check_ordered(&self.control_receipts, "control_receipts", |c| {
+            c.action_id.clone()
+        })?;
+        check_ordered(&self.component_states, "component_states", |s| {
+            s.namespace.clone()
+        })?;
+        check_ordered(&self.component_events, "component_events", |e| {
+            (e.namespace.clone(), e.sequence)
+        })?;
+        check_ordered(&self.component_operations, "component_operations", |o| {
+            (o.namespace.clone(), o.operation.operation_id.clone())
+        })?;
+        check_ordered(&self.component_receipts, "component_receipts", |r| {
+            (r.namespace.clone(), r.receipt.operation_id.clone())
+        })?;
+        check_ordered(&self.component_commits, "component_commits", |c| {
+            (c.namespace.clone(), c.commit_id.clone())
+        })?;
+
+        // Duplicate durable identities and execution foreign keys.
+        let mut executions = BTreeSet::new();
+        for record in &self.executions {
+            if !executions.insert(record.execution_id.as_str().to_string()) {
+                return Err(identity_conflict(
+                    record.execution_id.as_str(),
+                    "duplicate execution row in complete state",
+                ));
+            }
+        }
+        let mut event_keys = BTreeSet::new();
+        for event in &self.events {
+            if !executions.contains(event.execution_id.as_str()) {
+                return Err(FailureCode::InvalidRecord.failure(
+                    event.execution_id.as_str(),
+                    "event references an execution absent from the snapshot",
+                ));
+            }
+            if !event_keys.insert((event.execution_id.as_str().to_string(), event.sequence)) {
+                return Err(identity_conflict(
+                    event.execution_id.as_str(),
+                    format!("duplicate execution event sequence {}", event.sequence),
+                ));
+            }
+        }
+        let mut receipt_ids = BTreeSet::new();
+        for receipt in &self.receipts {
+            if !executions.contains(receipt.execution_id.as_str()) {
+                return Err(FailureCode::InvalidRecord.failure(
+                    receipt.operation_id.as_str(),
+                    "receipt references an execution absent from the snapshot",
+                ));
+            }
+            if !receipt_ids.insert(receipt.operation_id.as_str().to_string()) {
+                return Err(identity_conflict(
+                    receipt.operation_id.as_str(),
+                    "duplicate operation receipt in complete state",
+                ));
+            }
+        }
+        let mut intent_ids = BTreeSet::new();
+        for intent in &self.intents {
+            if !executions.contains(intent.execution_id.as_str()) {
+                return Err(FailureCode::InvalidRecord.failure(
+                    intent.operation_id.as_str(),
+                    "intent references an execution absent from the snapshot",
+                ));
+            }
+            if !intent_ids.insert(intent.operation_id.as_str().to_string()) {
+                return Err(identity_conflict(
+                    intent.operation_id.as_str(),
+                    "duplicate dispatch intent in complete state",
+                ));
+            }
+        }
+        let mut timer_ids = BTreeSet::new();
+        for timer in &self.timers {
+            if !executions.contains(timer.execution_id.as_str()) {
+                return Err(FailureCode::InvalidRecord.failure(
+                    &timer.timer_id,
+                    "timer references an execution absent from the snapshot",
+                ));
+            }
+            if !timer_ids.insert(timer.timer_id.clone()) {
+                return Err(identity_conflict(
+                    &timer.timer_id,
+                    "duplicate timer row in complete state",
+                ));
+            }
+        }
+        check_unique(&self.directives, "directives", |d| d.directive_id.clone())?;
+        check_unique(&self.bindings, "bindings", |b| {
+            b.binding_id.as_str().to_string()
+        })?;
+        check_unique(&self.decisions, "decisions", |d| {
+            d.operation_id.as_str().to_string()
+        })?;
+        check_unique(&self.decision_outcomes, "decision_outcomes", |d| {
+            d.operation_id.as_str().to_string()
+        })?;
+        check_unique(&self.control_receipts, "control_receipts", |c| {
+            c.action_id.clone()
+        })?;
+        check_unique(&self.component_states, "component_states", |s| {
+            s.namespace.clone()
+        })?;
+        check_unique(&self.component_events, "component_events", |e| {
+            (e.namespace.clone(), e.sequence)
+        })?;
+        check_unique(&self.component_events, "component_events", |e| {
+            (e.namespace.clone(), e.event.event_id.clone())
+        })?;
+        check_unique(&self.component_operations, "component_operations", |o| {
+            (o.namespace.clone(), o.operation.operation_id.clone())
+        })?;
+        check_unique(&self.component_receipts, "component_receipts", |r| {
+            (r.namespace.clone(), r.receipt.operation_id.clone())
+        })?;
+        check_unique(&self.component_commits, "component_commits", |c| {
+            (c.namespace.clone(), c.commit_id.clone())
+        })?;
+
+        let mut digest_keys = BTreeSet::new();
+        for digest in &self.digests {
+            // `record_digest` does not require a materialized execution row, so a
+            // digest is validated for duplicate identity only (not a hard FK).
+            if !digest_keys.insert((digest.execution_id.as_str().to_string(), digest.version)) {
+                return Err(identity_conflict(
+                    digest.execution_id.as_str(),
+                    format!("duplicate digest version {}", digest.version),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn identity_conflict(subject: &str, message: impl AsRef<str>) -> ContractError {
+    FailureCode::IdentityConflict.failure(subject, message)
+}
+
+/// Refuse a section that is not sorted by its declared key.
+fn check_ordered<T, K: Ord>(
+    section: &[T],
+    name: &str,
+    key: impl Fn(&T) -> K,
+) -> Result<(), ContractError> {
+    let mut prev: Option<K> = None;
+    for (index, item) in section.iter().enumerate() {
+        let current = key(item);
+        if let Some(previous) = &prev {
+            if *previous > current {
+                return Err(FailureCode::InvalidRecord.failure(
+                    name,
+                    format!("section `{name}` is not ordered at row {index}"),
+                ));
+            }
+        }
+        prev = Some(current);
+    }
+    Ok(())
+}
+
+/// Refuse duplicate declared identities inside one section.
+fn check_unique<T, K: Ord>(
+    section: &[T],
+    name: &str,
+    key: impl Fn(&T) -> K,
+) -> Result<(), ContractError> {
+    let mut seen = BTreeSet::new();
+    for item in section {
+        if !seen.insert(key(item)) {
+            return Err(FailureCode::InvalidRecord.failure(
+                name,
+                format!("section `{name}` contains a duplicate identity"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Parse `agalma-state/vN` into `N`.

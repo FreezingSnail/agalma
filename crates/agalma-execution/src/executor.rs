@@ -51,7 +51,7 @@ pub const EXECUTION_DEFINITION_VERSION: u32 = 1;
 /// Physical ledger schema this executor understands. Must match
 /// `agalma_ledger::SCHEMA_VERSION`; a mismatch parks dispatch (the ledger also
 /// refuses commits, so this gate runs before any effect).
-pub const LEDGER_SCHEMA_VERSION: u32 = 4;
+pub const LEDGER_SCHEMA_VERSION: u32 = 5;
 
 /// Environment variable selecting a crash-injection point (test support). When
 /// unset the hooks are inert. Points: `after_transition_commit`,

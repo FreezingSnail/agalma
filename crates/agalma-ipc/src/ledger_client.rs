@@ -19,13 +19,15 @@
 //! import it. [`LedgerOps`] exposes the path-based primitives directly so a
 //! quiesced rebind can hand the snapshot between servers without a round trip.
 
-use std::cell::RefCell;
+use std::sync::Mutex;
 use std::path::{Path, PathBuf};
 
 use agalma_contracts::{
-    BindingRecord, CommitBatch, CommitReceipt, ContractError, ControlReceipt, DecisionOutcome,
-    DecisionRequest, DigestRecord, DirectiveRow, DispatchIntent, ExecutionEvent, ExecutionId,
-    ExecutionRecord, LedgerApi, OperationId, OperationReceipt, StateSnapshot, TaskId, TimerRecord,
+    BindingRecord, CommitBatch, CommitReceipt, ComponentCommit, ComponentCommitAnchor,
+    ComponentEventRow, ComponentOperationRow, ComponentStateRow, ContractError, ControlReceipt,
+    DecisionOutcome, DecisionRequest, DigestRecord, DirectiveRow, DispatchIntent, ExecutionEvent,
+    ExecutionId, ExecutionRecord, LedgerApi, OperationId, OperationReceipt, StateSnapshot, TaskId,
+    TimerRecord,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -151,6 +153,33 @@ pub struct PathParams {
     pub path: String,
 }
 
+/// Params for the namespace-scoped component read.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NamespaceCall {
+    pub namespace: String,
+}
+
+/// Params for `component_events`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ComponentEventsCall {
+    pub namespace: String,
+    pub after: u64,
+    pub limit: u32,
+}
+
+/// Params for `component_operation`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ComponentOperationCall {
+    pub namespace: String,
+    pub operation_id: String,
+}
+
+/// Params for `component_commit`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ComponentCommitParams {
+    pub commit: ComponentCommit,
+}
+
 /// The full durable-state operation surface a ledger server hosts: the frozen
 /// [`LedgerApi`] plus the versioned snapshot **file** transfer required by D3
 /// (the server writes/reads the file, the client transfers only the path).
@@ -165,6 +194,25 @@ pub trait LedgerOps: LedgerApi {
     /// Replace all durable state from the snapshot at `path` (server-side),
     /// refusing an incompatible format/schema rather than applying it partially.
     fn import_snapshot_from(&mut self, path: &Path) -> Result<(), ContractError>;
+
+    /// Write the complete-state/v2 snapshot (schema v5) to `path` (server-side).
+    ///
+    /// This is the production export/import capability. The legacy v1
+    /// [`LedgerApi::export_state`] remains for fixtures/inspection and is not a
+    /// substitute for complete production recovery.
+    fn export_complete_state_to(&self, _path: &Path) -> Result<(), ContractError> {
+        Err(ContractError::UnsupportedCapability(
+            "complete-state/v2 export requires a schema-v5 ledger binding".to_string(),
+        ))
+    }
+
+    /// Replace an empty current-schema destination from the complete-state/v2
+    /// snapshot at `path` (server-side), atomically and after full validation.
+    fn import_complete_state_from(&mut self, _path: &Path) -> Result<(), ContractError> {
+        Err(ContractError::UnsupportedCapability(
+            "complete-state/v2 import requires a schema-v5 ledger binding".to_string(),
+        ))
+    }
 }
 
 /// The transport backing a [`LedgerClient`] (IPCX.6).
@@ -202,7 +250,7 @@ impl Drop for ConnectBackend {
 /// envelope semantics are identical on both; only the byte transport differs.
 /// Snapshot transfer stays file-based on both wires (D3, unchanged).
 pub struct LedgerClient {
-    backend: RefCell<Backend>,
+    backend: Mutex<Backend>,
     /// Directory the snapshot files are written to/read from (the run state
     /// dir shared with the server).
     snapshot_dir: PathBuf,
@@ -241,7 +289,7 @@ impl LedgerClient {
             }
         };
         Ok(LedgerClient {
-            backend: RefCell::new(backend),
+            backend: Mutex::new(backend),
             snapshot_dir: snapshot_dir.to_path_buf(),
         })
     }
@@ -249,7 +297,7 @@ impl LedgerClient {
     /// Build a framed client from an already-connected transport.
     pub fn from_client(client: Client, snapshot_dir: &Path) -> LedgerClient {
         LedgerClient {
-            backend: RefCell::new(Backend::Framed(client)),
+            backend: Mutex::new(Backend::Framed(client)),
             snapshot_dir: snapshot_dir.to_path_buf(),
         }
     }
@@ -264,7 +312,7 @@ impl LedgerClient {
         method: &str,
         params: &impl Serialize,
     ) -> Result<R, ContractError> {
-        match &mut *self.backend.borrow_mut() {
+        match &mut *self.backend.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
             Backend::Framed(client) => client.call_typed(method, params).map_err(map_ipc_error),
             Backend::Connect(backend) => {
                 crate::block_on_nested(
@@ -564,6 +612,57 @@ impl LedgerApi for LedgerClient {
             },
         )
     }
+
+    fn component_read(&self, namespace: &str) -> Result<Option<ComponentStateRow>, ContractError> {
+        self.call(
+            "component_read",
+            &NamespaceCall {
+                namespace: namespace.to_string(),
+            },
+        )
+    }
+
+    fn component_events(
+        &self,
+        namespace: &str,
+        after: u64,
+        limit: u32,
+    ) -> Result<Vec<ComponentEventRow>, ContractError> {
+        self.call(
+            "component_events",
+            &ComponentEventsCall {
+                namespace: namespace.to_string(),
+                after,
+                limit,
+            },
+        )
+    }
+
+    fn component_operation(
+        &self,
+        namespace: &str,
+        operation_id: &str,
+    ) -> Result<Option<ComponentOperationRow>, ContractError> {
+        self.call(
+            "component_operation",
+            &ComponentOperationCall {
+                namespace: namespace.to_string(),
+                operation_id: operation_id.to_string(),
+            },
+        )
+    }
+
+    fn component_commit(
+        &mut self,
+        commit: &ComponentCommit,
+    ) -> Result<ComponentCommitAnchor, ContractError> {
+        self.call(
+            "component_commit",
+            &ComponentCommitParams {
+                commit: commit.clone(),
+            },
+        )
+    }
 }
 
 impl LedgerOps for LedgerClient {
@@ -579,6 +678,24 @@ impl LedgerOps for LedgerClient {
     fn import_snapshot_from(&mut self, path: &Path) -> Result<(), ContractError> {
         self.call::<()>(
             "import_state_from",
+            &PathParams {
+                path: path.to_string_lossy().into_owned(),
+            },
+        )
+    }
+
+    fn export_complete_state_to(&self, path: &Path) -> Result<(), ContractError> {
+        self.call::<()>(
+            "export_complete_state_to",
+            &PathParams {
+                path: path.to_string_lossy().into_owned(),
+            },
+        )
+    }
+
+    fn import_complete_state_from(&mut self, path: &Path) -> Result<(), ContractError> {
+        self.call::<()>(
+            "import_complete_state_from",
             &PathParams {
                 path: path.to_string_lossy().into_owned(),
             },

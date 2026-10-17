@@ -25,6 +25,7 @@ pub mod phases;
 pub mod plan_check;
 pub mod plugin_manifest;
 pub mod plugin_registry;
+pub mod plugin_reports;
 pub mod plugin_router;
 pub mod plugin_supervisor;
 pub mod provider_auth;

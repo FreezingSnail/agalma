@@ -31,10 +31,26 @@
 //!
 //! Schema v4 adds the additive `control_receipts` table (TUI.5, `agalma-3kr.6`):
 //! one durable receipt per interactive control action (pause/resume/cancel),
-//! applied or denied. `open()` migrates v1/v2/v3 → v4 under the same rule: only
-//! when every execution is terminal; otherwise it refuses with no in-flight
-//! migration. Receipts are written/read through
+//! applied or denied. `open()` migrates v1/v2/v3 → the current version under the
+//! same rule: only when every execution is terminal; otherwise it refuses with
+//! no in-flight migration. Receipts are written/read through
 //! [`LedgerApi::record_control_receipt`] / [`LedgerApi::control_receipts`].
+//!
+//! ## Schema v5 (HP.5, `agalma-jmr.5`)
+//!
+//! Schema v5 adds the additive component-namespace store
+//! (`component_states`, `component_events`, `component_operations`,
+//! `component_receipts`, `component_commits`) plus `schema_migrations` for the
+//! explicit migration receipt. Unlike the earlier additive bumps, opening a v4
+//! ledger **never** silently performs this migration: `open()` leaves a v4
+//! database untouched (v4 use refuses), and the operator must request
+//! [`SqliteLedger::migrate_to_v5`] explicitly. That migration requires
+//! quiescence (every execution terminal, no unconsumed dispatch intents, no
+//! pending timers), takes exclusive writer ownership, writes a durable backup,
+//! applies the additive DDL in one transaction and records a migration receipt.
+//! The complete-state (`agalma-state/v2`) export/import carries every legacy
+//! section plus decisions, decision outcomes, digests, control receipts and the
+//! component sections.
 //!
 //! ## Sequence assignment
 //!
@@ -50,10 +66,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::BTreeMap;
 
 use agalma_contracts::{
-    BindingRecord, BindingState, CommitBatch, CommitReceipt, ContractError, ControlReceipt,
+    BindingRecord, BindingState, CommitBatch, CommitReceipt, ComponentCommit, ComponentCommitAnchor,
+    ComponentEvent, ComponentEventRow, ComponentOperation, ComponentOperationRow, ComponentReceipt,
+    ComponentReceiptRow, ComponentStateRow, CompleteStateV2, ContractError, ControlReceipt,
     DecisionOutcome, DecisionRequest, DigestRecord, DirectiveRow, DirectiveState, DispatchIntent,
     ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState, LedgerApi,
-    OperationId, OperationReceipt, StateSnapshot, TaskId, TimerRecord, TimerState, SNAPSHOT_FORMAT,
+    OperationId, OperationReceipt, SnapshotDecisionOutcomeRow, SnapshotDecisionRow, StateSnapshot,
+    TaskId, TimerRecord, TimerState, COMPLETE_STATE_FORMAT, COMPLETE_STATE_SCHEMA_VERSION,
+    SNAPSHOT_FORMAT,
 };
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -65,7 +85,7 @@ pub mod server;
 mod tests;
 
 /// Persisted physical schema version. Bump only with a migration.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// `kernel_meta` key holding the persisted execution-definition version.
 const META_EXEC_DEF_VERSION_KEY: &str = "exec_def_version";
@@ -203,9 +223,117 @@ CREATE TABLE IF NOT EXISTS control_receipts (
 );
 "#;
 
+/// Additive schema v5: the component-namespace store plus the explicit
+/// migration receipt table (HP.5, `agalma-jmr.5`).
+///
+/// `component_states` holds one row per namespace (`revision`, `watermark`,
+/// optional checkpoint); `component_events` holds ledger-assigned per-namespace
+/// sequences; `component_operations`/`component_receipts` hold the durable
+/// operation journal and terminal receipts; `component_commits` is the replay
+/// anchor (`namespace`, `commit_id`) -> `input_digest`/`revision`. A v4 database
+/// is never upgraded into these tables implicitly; [`SqliteLedger::migrate_to_v5`]
+/// does it explicitly and records a receipt in `schema_migrations`.
+const SCHEMA_V5_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS component_states (
+  namespace TEXT PRIMARY KEY,
+  revision INTEGER NOT NULL,
+  watermark INTEGER NOT NULL,
+  checkpoint_json TEXT,
+  recorded_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS component_events (
+  namespace TEXT NOT NULL,
+  sequence INTEGER NOT NULL,
+  event_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  recorded_at INTEGER NOT NULL,
+  PRIMARY KEY (namespace, sequence)
+);
+CREATE TABLE IF NOT EXISTS component_operations (
+  namespace TEXT NOT NULL,
+  operation_id TEXT NOT NULL,
+  input_digest TEXT NOT NULL,
+  binding_json TEXT NOT NULL,
+  intent_json TEXT NOT NULL,
+  state TEXT NOT NULL,
+  deadline INTEGER NOT NULL,
+  PRIMARY KEY (namespace, operation_id)
+);
+CREATE TABLE IF NOT EXISTS component_receipts (
+  namespace TEXT NOT NULL,
+  operation_id TEXT NOT NULL,
+  input_digest TEXT NOT NULL,
+  binding_json TEXT NOT NULL,
+  outcome_json TEXT NOT NULL,
+  completed_at INTEGER NOT NULL,
+  PRIMARY KEY (namespace, operation_id)
+);
+CREATE TABLE IF NOT EXISTS component_commits (
+  namespace TEXT NOT NULL,
+  commit_id TEXT NOT NULL,
+  input_digest TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  committed_at INTEGER NOT NULL,
+  PRIMARY KEY (namespace, commit_id)
+);
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  migration_id TEXT PRIMARY KEY,
+  from_version INTEGER NOT NULL,
+  to_version INTEGER NOT NULL,
+  backup_path TEXT NOT NULL,
+  receipt_json TEXT NOT NULL,
+  performed_at INTEGER NOT NULL
+);
+"#;
+
+/// Durable receipt for an explicit schema migration (`migrate_to_v5`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MigrationReceipt {
+    pub migration_id: String,
+    pub from_version: u32,
+    pub to_version: u32,
+    /// Absolute path of the durable pre-migration backup.
+    pub backup_path: String,
+    pub performed_at_unix_ms: u64,
+}
+
+impl MigrationReceipt {
+    /// JSON form stored in the `schema_migrations` receipt column.
+    pub fn to_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "migration_id": self.migration_id,
+            "from_version": self.from_version,
+            "to_version": self.to_version,
+            "backup_path": self.backup_path,
+            "performed_at_unix_ms": self.performed_at_unix_ms,
+        })
+    }
+
+    /// Parse a stored receipt value; `None` when a required field is missing.
+    fn from_value(value: &serde_json::Value) -> Option<Self> {
+        Some(MigrationReceipt {
+            migration_id: value.get("migration_id")?.as_str()?.to_string(),
+            from_version: value.get("from_version")?.as_u64()? as u32,
+            to_version: value.get("to_version")?.as_u64()? as u32,
+            backup_path: value.get("backup_path")?.as_str()?.to_string(),
+            performed_at_unix_ms: value.get("performed_at_unix_ms")?.as_u64()?,
+        })
+    }
+}
+
+/// Quiescence refusal returned by [`SqliteLedger::migrate_to_v5`] when live work
+/// or unresolved effects are present. Kept distinct from a generic failure so a
+/// caller can report the exact reason (a parked row alone is not quiescence).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MigrationRefused {
+    pub reason: String,
+}
+
 /// SQLite-backed [`LedgerApi`].
 pub struct SqliteLedger {
     conn: Connection,
+    path: std::path::PathBuf,
 }
 
 impl SqliteLedger {
@@ -214,12 +342,14 @@ impl SqliteLedger {
     /// Applies the durability pragmas per connection and runs first-open schema
     /// initialization. An existing database with a non-matching
     /// `schema_version` opens successfully but refuses all commits; it is never
-    /// auto-migrated.
+    /// auto-migrated. In particular a v4 database is left untouched (no implicit
+    /// v5 upgrade); use [`SqliteLedger::migrate_to_v5`] explicitly.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, ContractError> {
-        let conn = Connection::open(path).map_err(db_err)?;
+        let path = path.as_ref().to_path_buf();
+        let conn = Connection::open(&path).map_err(db_err)?;
         configure(&conn)?;
         ensure_schema(&conn)?;
-        Ok(SqliteLedger { conn })
+        Ok(SqliteLedger { conn, path })
     }
 
     /// Open an **existing** ledger without creating or initializing anything
@@ -261,7 +391,10 @@ impl SqliteLedger {
         )
         .map_err(db_err)?;
         configure(&conn)?;
-        let ledger = SqliteLedger { conn };
+        let ledger = SqliteLedger {
+            conn,
+            path: path.to_path_buf(),
+        };
         match ledger.stored_schema_version()? {
             Some(version) if version == SCHEMA_VERSION => Ok(ledger),
             other => Err(ContractError::Conflict(format!(
@@ -308,7 +441,7 @@ impl SqliteLedger {
         Ok(())
     }
 
-    /// Simulate a genuine v1 database: drop the additive v2/v3/v4 tables and
+    /// Simulate a genuine v1 database: drop the additive v2/v3/v4/v5 tables and
     /// record schema version 1. Test-only; used to exercise the migration path.
     #[cfg(test)]
     fn downgrade_to_v1(&self) -> Result<(), ContractError> {
@@ -321,14 +454,20 @@ impl SqliteLedger {
                  DROP TABLE IF EXISTS timers; \
                  DROP TABLE IF EXISTS directives; \
                  DROP TABLE IF EXISTS control_receipts; \
+                 DROP TABLE IF EXISTS component_states; \
+                 DROP TABLE IF EXISTS component_events; \
+                 DROP TABLE IF EXISTS component_operations; \
+                 DROP TABLE IF EXISTS component_receipts; \
+                 DROP TABLE IF EXISTS component_commits; \
+                 DROP TABLE IF EXISTS schema_migrations; \
                  UPDATE meta SET value='1' WHERE key='schema_version';",
             )
             .map_err(db_err)?;
         Ok(())
     }
 
-    /// Simulate a genuine v2 database: drop the additive v3/v4 tables and record
-    /// schema version 2. Test-only; used to exercise the v2 → v3 migration.
+    /// Simulate a genuine v2 database: drop the additive v3/v4/v5 tables and record
+    /// schema version 2. Test-only; used to exercise the v2 → current migration.
     #[cfg(test)]
     fn downgrade_to_v2(&self) -> Result<(), ContractError> {
         self.conn
@@ -337,24 +476,593 @@ impl SqliteLedger {
                  DROP TABLE IF EXISTS timers; \
                  DROP TABLE IF EXISTS directives; \
                  DROP TABLE IF EXISTS control_receipts; \
+                 DROP TABLE IF EXISTS component_states; \
+                 DROP TABLE IF EXISTS component_events; \
+                 DROP TABLE IF EXISTS component_operations; \
+                 DROP TABLE IF EXISTS component_receipts; \
+                 DROP TABLE IF EXISTS component_commits; \
+                 DROP TABLE IF EXISTS schema_migrations; \
                  UPDATE meta SET value='2' WHERE key='schema_version';",
             )
             .map_err(db_err)?;
         Ok(())
     }
 
-    /// Simulate a genuine v3 database: drop the additive v4 `control_receipts`
-    /// table and record schema version 3. Test-only; used to exercise the
-    /// v3 → v4 migration.
+    /// Simulate a genuine v3 database: drop the additive v4/v5 tables and record
+    /// schema version 3. Test-only; used to exercise the v3 → current migration.
     #[cfg(test)]
     fn downgrade_to_v3(&self) -> Result<(), ContractError> {
         self.conn
             .execute_batch(
                 "DROP TABLE IF EXISTS control_receipts; \
+                 DROP TABLE IF EXISTS component_states; \
+                 DROP TABLE IF EXISTS component_events; \
+                 DROP TABLE IF EXISTS component_operations; \
+                 DROP TABLE IF EXISTS component_receipts; \
+                 DROP TABLE IF EXISTS component_commits; \
+                 DROP TABLE IF EXISTS schema_migrations; \
                  UPDATE meta SET value='3' WHERE key='schema_version';",
             )
             .map_err(db_err)?;
         Ok(())
+    }
+
+    /// Simulate a genuine v4 database (as shipped before HP.5): drop only the
+    /// additive v5 tables and record schema version 4. Test-only; used to prove
+    /// normal v4 open performs no v5 upgrade and that the explicit migration
+    /// refuses non-quiescent state.
+    #[cfg(test)]
+    fn downgrade_to_v4(&self) -> Result<(), ContractError> {
+        self.drop_v5_and_record_v4()
+    }
+
+    /// Shared v4 fixture downgrade (also used by [`SqliteLedger::downgrade_to_v4`]).
+    #[cfg(test)]
+    fn drop_v5_and_record_v4(&self) -> Result<(), ContractError> {
+        self.conn
+            .execute_batch(
+                "DROP TABLE IF EXISTS component_states; \
+                 DROP TABLE IF EXISTS component_events; \
+                 DROP TABLE IF EXISTS component_operations; \
+                 DROP TABLE IF EXISTS component_receipts; \
+                 DROP TABLE IF EXISTS component_commits; \
+                 DROP TABLE IF EXISTS schema_migrations; \
+                 UPDATE meta SET value='4' WHERE key='schema_version';",
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Whether the ledger is quiescent: safe to migrate v4 → v5.
+    ///
+    /// Quiescence requires that no live work or unresolved effect remains:
+    /// every execution row is terminal, every dispatch intent is consumed and no
+    /// timer is pending. A single parked execution row alone therefore does not
+    /// establish quiescence when it retains an unconsumed intent or a pending
+    /// timer.
+    pub fn is_quiescent(&self) -> Result<(), MigrationRefused> {
+        if !all_executions_terminal(&self.conn).map_err(quiescence_err)? {
+            return Err(MigrationRefused {
+                reason: "in-flight or unknown-state execution present".to_string(),
+            });
+        }
+        let unconsumed: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM dispatch_intents WHERE consumed=0",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| quiescence_err(db_err(e)))?;
+        if unconsumed > 0 {
+            return Err(MigrationRefused {
+                reason: format!("{unconsumed} unconsumed dispatch intent(s) present"),
+            });
+        }
+        let pending: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM timers WHERE state='pending'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| quiescence_err(db_err(e)))?;
+        if pending > 0 {
+            return Err(MigrationRefused {
+                reason: format!("{pending} pending timer(s) present"),
+            });
+        }
+        Ok(())
+    }
+
+    /// Explicitly migrate a v4 ledger to v5: quiescent, transactional, with a
+    /// durable backup and a migration receipt.
+    ///
+    /// This is never called by [`SqliteLedger::open`]. It refuses any stored
+    /// version other than 4, refuses non-quiescent state, writes a durable
+    /// pre-migration backup of the database file, then applies the additive v5
+    /// DDL and the migration receipt inside one exclusive transaction.
+    pub fn migrate_to_v5(&mut self) -> Result<MigrationReceipt, ContractError> {
+        let stored = self.stored_schema_version()?.unwrap_or(0);
+        if stored != 4 {
+            return Err(ContractError::Conflict(format!(
+                "refusing v5 migration: stored schema version is {stored}, expected 4"
+            )));
+        }
+        self.is_quiescent()
+            .map_err(|refused| ContractError::KnownFailure(format!(
+                "refusing v5 migration: ledger is not quiescent: {}",
+                refused.reason
+            )))?;
+
+        // Durable pre-migration backup of the database file's committed state.
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(db_err)?;
+        let performed_at_unix_ms = now_ms();
+        let mut backup_path = self.path.clone();
+        let backup_name = format!(
+            "{}.v4-backup-{performed_at_unix_ms}",
+            self.path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "ledger.sqlite".to_string())
+        );
+        backup_path.set_file_name(backup_name);
+        std::fs::copy(&self.path, &backup_path).map_err(|e| {
+            ContractError::KnownFailure(format!(
+                "cannot write v4 backup {}: {e}",
+                backup_path.display()
+            ))
+        })?;
+        // Durability barrier for the backup: fsync the file and its directory.
+        sync_file_and_parent(&backup_path).map_err(ContractError::KnownFailure)?;
+
+        let migration_id = format!("v4-to-v5-{performed_at_unix_ms}");
+        let receipt = MigrationReceipt {
+            migration_id: migration_id.clone(),
+            from_version: 4,
+            to_version: 5,
+            backup_path: backup_path.to_string_lossy().into_owned(),
+            performed_at_unix_ms,
+        };
+        let receipt_json = receipt.to_value().to_string();
+
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Exclusive)
+            .map_err(db_err)?;
+        tx.execute_batch(SCHEMA_V5_SQL).map_err(db_err)?;
+        tx.execute(
+            "INSERT INTO schema_migrations(migration_id,from_version,to_version,backup_path,receipt_json,performed_at) \
+             VALUES(?1,?2,?3,?4,?5,?6)",
+            params![
+                migration_id,
+                4_i64,
+                5_i64,
+                receipt.backup_path,
+                receipt_json,
+                sql_u64(performed_at_unix_ms),
+            ],
+        )
+        .map_err(db_err)?;
+        tx.execute(
+            "UPDATE meta SET value=?1 WHERE key='schema_version'",
+            params![SCHEMA_VERSION.to_string()],
+        )
+        .map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+        Ok(receipt)
+    }
+
+    /// The recorded migration receipt for `migration_id`, if any.
+    pub fn migration_receipt(
+        &self,
+        migration_id: &str,
+    ) -> Result<Option<MigrationReceipt>, ContractError> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT receipt_json FROM schema_migrations WHERE migration_id=?1",
+                params![migration_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(db_err)?;
+        match raw {
+            Some(text) => {
+                let value: serde_json::Value = serde_json::from_str(&text).map_err(json_err)?;
+                Ok(MigrationReceipt::from_value(&value))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Every recorded migration receipt, ordered by `performed_at`.
+    pub fn migration_receipts(&self) -> Result<Vec<MigrationReceipt>, ContractError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT receipt_json FROM schema_migrations ORDER BY performed_at, migration_id",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(db_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            let text = row.map_err(db_err)?;
+            let value: serde_json::Value = serde_json::from_str(&text).map_err(json_err)?;
+            if let Some(receipt) = MigrationReceipt::from_value(&value) {
+                out.push(receipt);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Export the complete v2 state (`agalma-state/v2`, schema v5): every legacy
+    /// v1 section plus decisions, decision outcomes, digests, control receipts and
+    /// the component state/events/operations/receipts/commit anchors.
+    pub fn export_complete_state(&self) -> Result<CompleteStateV2, ContractError> {
+        let kernel_meta = all_kernel_meta(&self.conn)?;
+        let exec_def_version = kernel_meta
+            .get(META_EXEC_DEF_VERSION_KEY)
+            .cloned()
+            .unwrap_or_default();
+        let kernel_version = kernel_meta
+            .get(META_KERNEL_VERSION_KEY)
+            .cloned()
+            .unwrap_or_default();
+        Ok(CompleteStateV2 {
+            format: COMPLETE_STATE_FORMAT.to_string(),
+            schema_version: self.stored_schema_version()?.unwrap_or(0),
+            exec_def_version,
+            kernel_version,
+            kill_latch: self.kill_latch()?,
+            kernel_meta,
+            lease_generations: read_lease_generations(&self.conn)?,
+            executions: self.executions()?,
+            events: all_events(&self.conn)?,
+            receipts: all_receipts(&self.conn)?,
+            intents: all_intents(&self.conn)?,
+            timers: all_timers(&self.conn)?,
+            directives: all_directives(&self.conn)?,
+            bindings: self.bindings()?,
+            decisions: all_decisions(&self.conn)?,
+            decision_outcomes: all_decision_outcomes(&self.conn)?,
+            digests: all_digests(&self.conn)?,
+            control_receipts: self.control_receipts()?,
+            component_states: all_component_states(&self.conn)?,
+            component_events: all_component_events(&self.conn)?,
+            component_operations: all_component_operations(&self.conn)?,
+            component_receipts: all_component_receipts(&self.conn)?,
+            component_commits: all_component_commits(&self.conn)?,
+        })
+    }
+
+    /// Import a complete v2 state into an empty, current-schema destination.
+    ///
+    /// Validates the whole document first (format/schema gate, duplicate
+    /// identities and execution foreign keys), then commits every section in one
+    /// exclusive transaction. Unknown formats/sections refuse; a legacy v1 export
+    /// alone is not accepted as production recovery. Import never rewinds the
+    /// physical schema.
+    pub fn import_complete_state(&mut self, snapshot: &CompleteStateV2) -> Result<(), ContractError> {
+        snapshot
+            .check_compatible(COMPLETE_STATE_SCHEMA_VERSION)
+            .map_err(|reason| {
+                ContractError::Conflict(format!("refusing complete-state import: {reason}"))
+            })?;
+        self.ensure_compatible()?;
+        if !self.destination_is_empty()? {
+            return Err(ContractError::Conflict(
+                "refusing complete-state import: destination is not empty".to_string(),
+            ));
+        }
+        snapshot.validate_complete()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Exclusive)
+            .map_err(db_err)?;
+
+        for record in &snapshot.executions {
+            write_state(&tx, record, record.revision)?;
+        }
+        for event in &snapshot.events {
+            tx.execute(
+                "INSERT INTO execution_events(execution_id,sequence,kind,payload,recorded_at) \
+                 VALUES(?1,?2,?3,?4,?5)",
+                params![
+                    event.execution_id.as_str(),
+                    sql_u64(event.sequence),
+                    event.kind,
+                    serde_json::to_string(&event.payload).map_err(json_err)?,
+                    sql_u64(event.recorded_at_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for receipt in &snapshot.receipts {
+            tx.execute(
+                "INSERT INTO operations(operation_id,execution_id,kind,inputs_hash,result_json,completed_at) \
+                 VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    receipt.operation_id.as_str(),
+                    receipt.execution_id.as_str(),
+                    receipt.kind,
+                    receipt.inputs_hash,
+                    serde_json::to_string(&receipt.result).map_err(json_err)?,
+                    sql_u64(receipt.completed_at_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for intent in &snapshot.intents {
+            tx.execute(
+                "INSERT INTO dispatch_intents(operation_id,execution_id,payload,enqueued_at,consumed) \
+                 VALUES(?1,?2,?3,?4,?5)",
+                params![
+                    intent.operation_id.as_str(),
+                    intent.execution_id.as_str(),
+                    serde_json::to_string(&intent.payload).map_err(json_err)?,
+                    sql_u64(intent.enqueued_at_unix_ms),
+                    i64::from(intent.consumed),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for timer in &snapshot.timers {
+            tx.execute(
+                "INSERT INTO timers(timer_id,execution_id,kind,fire_at,state,payload) \
+                 VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    timer.timer_id,
+                    timer.execution_id.as_str(),
+                    timer.kind,
+                    sql_u64(timer.fire_at_unix_ms),
+                    timer_state_str(timer.state),
+                    serde_json::to_string(&timer.payload).map_err(json_err)?,
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for directive in &snapshot.directives {
+            tx.execute(
+                "INSERT INTO directives(directive_id,version,source,state,payload,received_at) \
+                 VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    directive.directive_id,
+                    sql_u64(directive.version),
+                    directive.source,
+                    directive_state_str(directive.state),
+                    serde_json::to_string(&directive.payload).map_err(json_err)?,
+                    sql_u64(directive.received_at_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for binding in &snapshot.bindings {
+            write_binding(&tx, binding)?;
+        }
+        for decision in &snapshot.decisions {
+            tx.execute(
+                "INSERT INTO decisions(operation_id,kind,inputs_hash,request_json,recorded_at) \
+                 VALUES(?1,?2,?3,?4,?5)",
+                params![
+                    decision.operation_id.as_str(),
+                    decision.kind,
+                    decision.inputs_hash,
+                    serde_json::to_string(&decision.request).map_err(json_err)?,
+                    sql_u64(decision.recorded_at_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for outcome in &snapshot.decision_outcomes {
+            tx.execute(
+                "INSERT INTO decision_outcomes(operation_id,outcome_json,recorded_at) \
+                 VALUES(?1,?2,?3)",
+                params![
+                    outcome.operation_id.as_str(),
+                    serde_json::to_string(&outcome.outcome).map_err(json_err)?,
+                    sql_u64(outcome.recorded_at_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for digest in &snapshot.digests {
+            tx.execute(
+                "INSERT INTO digests(execution_id,version,digest_json,artifact_ref,recorded_at) \
+                 VALUES(?1,?2,?3,?4,?5)",
+                params![
+                    digest.execution_id.as_str(),
+                    i64::from(digest.version),
+                    serde_json::to_string(digest).map_err(json_err)?,
+                    digest
+                        .artifact_ref
+                        .as_ref()
+                        .map(|r| r.as_str().to_string()),
+                    sql_u64(digest.recorded_at_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for receipt in &snapshot.control_receipts {
+            tx.execute(
+                "INSERT INTO control_receipts(action_id,action,target,actor,request_json,recorded_at) \
+                 VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    receipt.action_id,
+                    receipt.action,
+                    receipt.target,
+                    receipt.actor,
+                    serde_json::to_string(&receipt.request).map_err(json_err)?,
+                    sql_u64(receipt.recorded_at_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for state in &snapshot.component_states {
+            tx.execute(
+                "INSERT INTO component_states(namespace,revision,watermark,checkpoint_json,recorded_at) \
+                 VALUES(?1,?2,?3,?4,?5)",
+                params![
+                    state.namespace,
+                    sql_u64(state.revision),
+                    sql_u64(state.watermark),
+                    state
+                        .checkpoint
+                        .as_ref()
+                        .map(|v| serde_json::to_string(v).map_err(json_err))
+                        .transpose()?,
+                    sql_u64(state.recorded_at_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for event in &snapshot.component_events {
+            tx.execute(
+                "INSERT INTO component_events(namespace,sequence,event_id,kind,payload_json,recorded_at) \
+                 VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    event.namespace,
+                    sql_u64(event.sequence),
+                    event.event.event_id,
+                    event.event.kind,
+                    serde_json::to_string(&event.event.payload).map_err(json_err)?,
+                    sql_u64(event.event.recorded_at_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for operation in &snapshot.component_operations {
+            let op = &operation.operation;
+            tx.execute(
+                "INSERT INTO component_operations(namespace,operation_id,input_digest,binding_json,intent_json,state,deadline) \
+                 VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![
+                    operation.namespace,
+                    op.operation_id,
+                    op.input_digest,
+                    serde_json::to_string(&op.binding).map_err(json_err)?,
+                    serde_json::to_string(&op.intent).map_err(json_err)?,
+                    operation_state_str(op.state),
+                    sql_u64(op.deadline_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for receipt in &snapshot.component_receipts {
+            let r = &receipt.receipt;
+            tx.execute(
+                "INSERT INTO component_receipts(namespace,operation_id,input_digest,binding_json,outcome_json,completed_at) \
+                 VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    receipt.namespace,
+                    r.operation_id,
+                    r.input_digest,
+                    serde_json::to_string(&r.binding).map_err(json_err)?,
+                    serde_json::to_string(&r.outcome).map_err(json_err)?,
+                    sql_u64(r.completed_at_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for anchor in &snapshot.component_commits {
+            tx.execute(
+                "INSERT INTO component_commits(namespace,commit_id,input_digest,revision,committed_at) \
+                 VALUES(?1,?2,?3,?4,?5)",
+                params![
+                    anchor.namespace,
+                    anchor.commit_id,
+                    anchor.input_digest,
+                    sql_u64(anchor.revision),
+                    sql_u64(anchor.committed_at_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        for (key, value) in &snapshot.kernel_meta {
+            tx.execute(
+                "INSERT INTO kernel_meta(key,value) VALUES(?1,?2)",
+                params![key, value],
+            )
+            .map_err(db_err)?;
+        }
+        for (task, generation) in &snapshot.lease_generations {
+            tx.execute(
+                "INSERT INTO meta(key,value) VALUES(?1,?2)",
+                params![
+                    lease_key(&TaskId::new(task.clone())),
+                    generation.to_string()
+                ],
+            )
+            .map_err(db_err)?;
+        }
+        if snapshot.kill_latch {
+            tx.execute(
+                "UPDATE kill_latch SET active=1, updated_at=?1 WHERE id=1",
+                params![sql_u64(now_ms())],
+            )
+            .map_err(db_err)?;
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Parse and import a complete-state JSON document, refusing a legacy v1
+    /// export outright and any unknown/invalid section shape.
+    pub fn import_complete_state_json(&mut self, text: &str) -> Result<(), ContractError> {
+        let value: serde_json::Value = serde_json::from_str(text).map_err(json_err)?;
+        let format = value
+            .get("format")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if format == SNAPSHOT_FORMAT {
+            return Err(agalma_contracts::FailureCode::LegacyInputsMissing.failure(
+                format,
+                "a legacy agalma-state/v1 export omits decisions, outcomes, digests, control receipts and component sections; it is incomplete for production restore",
+            ));
+        }
+        let snapshot: CompleteStateV2 = serde_json::from_value(value).map_err(|e| {
+            agalma_contracts::FailureCode::UnsupportedSchema.failure(
+                "complete-state/v2",
+                format!("unknown or invalid snapshot section: {e}"),
+            )
+        })?;
+        self.import_complete_state(&snapshot)
+    }
+
+    /// Whether every durable state table is empty (a valid complete-import
+    /// destination).
+    fn destination_is_empty(&self) -> Result<bool, ContractError> {
+        for table in [
+            "executions",
+            "execution_events",
+            "operations",
+            "dispatch_intents",
+            "timers",
+            "directives",
+            "component_bindings",
+            "decisions",
+            "decision_outcomes",
+            "digests",
+            "control_receipts",
+            "component_states",
+            "component_events",
+            "component_operations",
+            "component_receipts",
+            "component_commits",
+        ] {
+            let count: i64 = self
+                .conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .map_err(db_err)?;
+            if count != 0 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 }
 
@@ -372,10 +1080,11 @@ fn ensure_schema(conn: &Connection) -> Result<(), ContractError> {
     conn.execute_batch(SCHEMA_V1_SQL).map_err(db_err)?;
     match meta_value(conn, "schema_version")? {
         None => {
-            // Fresh database: create v2 + v3 + v4 and record the version.
+            // Fresh database: create v2 + v3 + v4 + v5 and record the version.
             conn.execute_batch(SCHEMA_V2_SQL).map_err(db_err)?;
             conn.execute_batch(SCHEMA_V3_SQL).map_err(db_err)?;
             conn.execute_batch(SCHEMA_V4_SQL).map_err(db_err)?;
+            conn.execute_batch(SCHEMA_V5_SQL).map_err(db_err)?;
             let now = now_ms();
             let stmts: [(&str, String); 3] = [
                 ("schema_version", SCHEMA_VERSION.to_string()),
@@ -394,10 +1103,10 @@ fn ensure_schema(conn: &Connection) -> Result<(), ContractError> {
             let version: u32 = raw.parse().unwrap_or(0);
             match version {
                 1 => {
-                    // Auto-migrate v1 → v4 only when every execution is terminal.
+                    // Auto-migrate v1 → current only when every execution is terminal.
                     if !all_executions_terminal(conn)? {
                         return Err(ContractError::KnownFailure(
-                            "refusing v1 -> v4 migration: in-flight executions present \
+                            "refusing v1 -> v5 migration: in-flight executions present \
                              (no in-flight migration)"
                                 .to_string(),
                         ));
@@ -405,6 +1114,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), ContractError> {
                     conn.execute_batch(SCHEMA_V2_SQL).map_err(db_err)?;
                     conn.execute_batch(SCHEMA_V3_SQL).map_err(db_err)?;
                     conn.execute_batch(SCHEMA_V4_SQL).map_err(db_err)?;
+                    conn.execute_batch(SCHEMA_V5_SQL).map_err(db_err)?;
                     conn.execute(
                         "UPDATE meta SET value=?1 WHERE key='schema_version'",
                         params![SCHEMA_VERSION.to_string()],
@@ -412,16 +1122,17 @@ fn ensure_schema(conn: &Connection) -> Result<(), ContractError> {
                     .map_err(db_err)?;
                 }
                 2 => {
-                    // Auto-migrate v2 → v4 only when every execution is terminal.
+                    // Auto-migrate v2 → current only when every execution is terminal.
                     if !all_executions_terminal(conn)? {
                         return Err(ContractError::KnownFailure(
-                            "refusing v2 -> v4 migration: in-flight executions present \
+                            "refusing v2 -> v5 migration: in-flight executions present \
                              (no in-flight migration)"
                                 .to_string(),
                         ));
                     }
                     conn.execute_batch(SCHEMA_V3_SQL).map_err(db_err)?;
                     conn.execute_batch(SCHEMA_V4_SQL).map_err(db_err)?;
+                    conn.execute_batch(SCHEMA_V5_SQL).map_err(db_err)?;
                     conn.execute(
                         "UPDATE meta SET value=?1 WHERE key='schema_version'",
                         params![SCHEMA_VERSION.to_string()],
@@ -429,23 +1140,26 @@ fn ensure_schema(conn: &Connection) -> Result<(), ContractError> {
                     .map_err(db_err)?;
                 }
                 3 => {
-                    // Auto-migrate v3 → v4 only when every execution is terminal.
+                    // Auto-migrate v3 → current only when every execution is terminal.
                     if !all_executions_terminal(conn)? {
                         return Err(ContractError::KnownFailure(
-                            "refusing v3 -> v4 migration: in-flight executions present \
+                            "refusing v3 -> v5 migration: in-flight executions present \
                              (no in-flight migration)"
                                 .to_string(),
                         ));
                     }
                     conn.execute_batch(SCHEMA_V4_SQL).map_err(db_err)?;
+                    conn.execute_batch(SCHEMA_V5_SQL).map_err(db_err)?;
                     conn.execute(
                         "UPDATE meta SET value=?1 WHERE key='schema_version'",
                         params![SCHEMA_VERSION.to_string()],
                     )
                     .map_err(db_err)?;
                 }
-                // Version 4: tables already present. Any other version is a
-                // future or unknown schema: leave it untouched; use refuses.
+                // Version 4 (HP.5): the v5 component tables are NOT added
+                // implicitly. A v4 ledger stays v4 and refuses v5 use until an
+                // explicit `migrate_to_v5`. Any other version is a future or
+                // unknown schema: leave it untouched; use refuses.
                 _ => {}
             }
         }
@@ -456,8 +1170,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), ContractError> {
 /// True when every execution row is in a terminal state (`completed`, `failed`,
 /// `parked`). An empty database is vacuously terminal. Unknown states count as
 /// non-terminal so migration refuses rather than guessing.
-fn all_executions_terminal(conn: &Connection) -> Result<bool, ContractError> {
-    let mut stmt = conn
+fn all_executions_terminal(conn: &Connection) -> Result<bool, ContractError> {    let mut stmt = conn
         .prepare("SELECT state FROM executions")
         .map_err(db_err)?;
     let rows = stmt
@@ -1186,6 +1899,254 @@ impl LedgerApi for SqliteLedger {
         collect_rows(rows)
     }
 
+    fn component_read(&self, namespace: &str) -> Result<Option<ComponentStateRow>, ContractError> {
+        self.ensure_compatible()?;
+        read_component_state(&self.conn, namespace)
+    }
+
+    fn component_events(
+        &self,
+        namespace: &str,
+        after: u64,
+        limit: u32,
+    ) -> Result<Vec<ComponentEventRow>, ContractError> {
+        self.ensure_compatible()?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT namespace,sequence,event_id,kind,payload_json,recorded_at \
+                 FROM component_events WHERE namespace=?1 AND sequence>?2 \
+                 ORDER BY sequence LIMIT ?3",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(
+                params![namespace, sql_u64(after), i64::from(limit)],
+                |row| {
+                    let payload: String = row.get(4)?;
+                    Ok(ComponentEventRow {
+                        namespace: row.get(0)?,
+                        sequence: row.get::<_, i64>(1)? as u64,
+                        event: ComponentEvent {
+                            event_id: row.get(2)?,
+                            kind: row.get(3)?,
+                            payload: serde_json::from_str(&payload)
+                                .map_err(|e| conversion_err(4, e))?,
+                            recorded_at_unix_ms: row.get::<_, i64>(5)? as u64,
+                        },
+                    })
+                },
+            )
+            .map_err(db_err)?;
+        collect_rows(rows)
+    }
+
+    fn component_operation(
+        &self,
+        namespace: &str,
+        operation_id: &str,
+    ) -> Result<Option<ComponentOperationRow>, ContractError> {
+        self.ensure_compatible()?;
+        read_component_operation(&self.conn, namespace, operation_id)
+    }
+
+    fn component_commit(
+        &mut self,
+        commit: &ComponentCommit,
+    ) -> Result<ComponentCommitAnchor, ContractError> {
+        commit.version_gate()?;
+        commit.check_bounds()?;
+        commit.verify_input_digest()?;
+        self.ensure_compatible()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_err)?;
+
+        // Replay anchor first: an identical commit id/digest returns the original
+        // receipt *before* the revision guard is consulted.
+        if let Some(existing) =
+            read_component_anchor(&tx, &commit.namespace, &commit.commit_id)?
+        {
+            if existing.input_digest == commit.input_digest {
+                tx.commit().map_err(db_err)?;
+                return Ok(existing);
+            }
+            return Err(agalma_contracts::FailureCode::IdentityConflict.failure(
+                &commit.commit_id,
+                format!(
+                    "component commit {}/{} reused with changed input digest",
+                    commit.namespace, commit.commit_id
+                ),
+            ));
+        }
+
+        let current = read_component_state(&tx, &commit.namespace)?;
+        let current_revision = current.as_ref().map(|s| s.revision).unwrap_or(0);
+        if commit.expected_revision != current_revision {
+            return Err(agalma_contracts::FailureCode::RevisionConflict.failure(
+                &commit.commit_id,
+                format!(
+                    "expected revision {} but namespace {} is at {current_revision}",
+                    commit.expected_revision, commit.namespace
+                ),
+            ));
+        }
+        let new_revision = current_revision + 1;
+
+        // Ledger-assigned monotonic per-namespace event sequence.
+        let mut next_sequence: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(sequence),0)+1 FROM component_events WHERE namespace=?1",
+                params![commit.namespace],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        let mut last_sequence = next_sequence.saturating_sub(1) as u64;
+        for event in &commit.events {
+            // Duplicate event ids must carry identical content.
+            if let Some((kind, payload, recorded_at)) =
+                read_component_event_raw(&tx, &commit.namespace, &event.event_id)?
+            {
+                let expected = serde_json::to_string(&event.payload).map_err(json_err)?;
+                if kind == event.kind
+                    && payload == expected
+                    && recorded_at == event.recorded_at_unix_ms
+                {
+                    continue;
+                }
+                return Err(agalma_contracts::FailureCode::IdentityConflict.failure(
+                    &event.event_id,
+                    format!(
+                        "component event {} reused with changed content in {}",
+                        event.event_id, commit.namespace
+                    ),
+                ));
+            }
+            tx.execute(
+                "INSERT INTO component_events(namespace,sequence,event_id,kind,payload_json,recorded_at) \
+                 VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    commit.namespace,
+                    next_sequence,
+                    event.event_id,
+                    event.kind,
+                    serde_json::to_string(&event.payload).map_err(json_err)?,
+                    sql_u64(event.recorded_at_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+            last_sequence = next_sequence as u64;
+            next_sequence += 1;
+        }
+
+        for operation in &commit.operations {
+            if let Some(existing) =
+                read_component_operation(&tx, &commit.namespace, &operation.operation_id)?
+            {
+                if existing.operation == *operation {
+                    continue;
+                }
+                return Err(agalma_contracts::FailureCode::IdentityConflict.failure(
+                    &operation.operation_id,
+                    format!(
+                        "component operation {} reused with changed content in {}",
+                        operation.operation_id, commit.namespace
+                    ),
+                ));
+            }
+            tx.execute(
+                "INSERT INTO component_operations(namespace,operation_id,input_digest,binding_json,intent_json,state,deadline) \
+                 VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![
+                    commit.namespace,
+                    operation.operation_id,
+                    operation.input_digest,
+                    serde_json::to_string(&operation.binding).map_err(json_err)?,
+                    serde_json::to_string(&operation.intent).map_err(json_err)?,
+                    operation_state_str(operation.state),
+                    sql_u64(operation.deadline_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+
+        for receipt in &commit.receipts {
+            if let Some(existing) =
+                read_component_receipt(&tx, &commit.namespace, &receipt.operation_id)?
+            {
+                if existing.receipt == *receipt {
+                    continue;
+                }
+                return Err(agalma_contracts::FailureCode::IdentityConflict.failure(
+                    &receipt.operation_id,
+                    format!(
+                        "component receipt {} reused with changed content in {}",
+                        receipt.operation_id, commit.namespace
+                    ),
+                ));
+            }
+            tx.execute(
+                "INSERT INTO component_receipts(namespace,operation_id,input_digest,binding_json,outcome_json,completed_at) \
+                 VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    commit.namespace,
+                    receipt.operation_id,
+                    receipt.input_digest,
+                    serde_json::to_string(&receipt.binding).map_err(json_err)?,
+                    serde_json::to_string(&receipt.outcome).map_err(json_err)?,
+                    sql_u64(receipt.completed_at_unix_ms),
+                ],
+            )
+            .map_err(db_err)?;
+        }
+
+        let committed_at_unix_ms = now_ms();
+        let prior_watermark = current.as_ref().map(|s| s.watermark).unwrap_or(0);
+        let watermark = prior_watermark.max(last_sequence);
+        tx.execute(
+            "INSERT INTO component_states(namespace,revision,watermark,checkpoint_json,recorded_at) \
+             VALUES(?1,?2,?3,?4,?5) \
+             ON CONFLICT(namespace) DO UPDATE SET \
+               revision=excluded.revision, watermark=excluded.watermark, \
+               checkpoint_json=excluded.checkpoint_json, recorded_at=excluded.recorded_at",
+            params![
+                commit.namespace,
+                sql_u64(new_revision),
+                sql_u64(watermark),
+                commit
+                    .checkpoint
+                    .as_ref()
+                    .map(|v| serde_json::to_string(v).map_err(json_err))
+                    .transpose()?,
+                sql_u64(committed_at_unix_ms),
+            ],
+        )
+        .map_err(db_err)?;
+
+        let anchor = ComponentCommitAnchor {
+            namespace: commit.namespace.clone(),
+            commit_id: commit.commit_id.clone(),
+            input_digest: commit.input_digest.clone(),
+            revision: new_revision,
+            committed_at_unix_ms,
+        };
+        tx.execute(
+            "INSERT INTO component_commits(namespace,commit_id,input_digest,revision,committed_at) \
+             VALUES(?1,?2,?3,?4,?5)",
+            params![
+                anchor.namespace,
+                anchor.commit_id,
+                anchor.input_digest,
+                sql_u64(anchor.revision),
+                sql_u64(anchor.committed_at_unix_ms),
+            ],
+        )
+        .map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+        Ok(anchor)
+    }
+
     fn export_state(&self) -> Result<StateSnapshot, ContractError> {
         let kernel_meta = all_kernel_meta(&self.conn)?;
         let exec_def_version = kernel_meta
@@ -1394,6 +2355,35 @@ impl LedgerOps for SqliteLedger {
         })?;
         let snapshot = StateSnapshot::from_json(&text)?;
         self.import_state(&snapshot)
+    }
+
+    fn export_complete_state_to(&self, path: &Path) -> Result<(), ContractError> {
+        let snapshot = self.export_complete_state()?;
+        let text = snapshot.to_canonical_json()?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                ContractError::KnownFailure(format!(
+                    "create complete-state dir {}: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+        std::fs::write(path, text).map_err(|e| {
+            ContractError::KnownFailure(format!(
+                "write complete state {}: {e}",
+                path.display()
+            ))
+        })
+    }
+
+    fn import_complete_state_from(&mut self, path: &Path) -> Result<(), ContractError> {
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            ContractError::KnownFailure(format!(
+                "read complete state {}: {e}",
+                path.display()
+            ))
+        })?;
+        self.import_complete_state_json(&text)
     }
 }
 
@@ -1682,6 +2672,359 @@ fn all_directives(conn: &Connection) -> Result<Vec<DirectiveRow>, ContractError>
     collect_rows(rows)
 }
 
+// ---------------------------------------------------------------------------
+// Component store helpers (schema v5)
+// ---------------------------------------------------------------------------
+
+fn operation_state_str(state: agalma_contracts::ComponentOperationState) -> &'static str {
+    use agalma_contracts::ComponentOperationState as OperationState;
+    match state {
+        OperationState::Accepted => "accepted",
+        OperationState::Running => "running",
+        OperationState::Completed => "completed",
+        OperationState::Failed => "failed",
+        OperationState::CancelRequested => "cancel_requested",
+        OperationState::Cancelled => "cancelled",
+        OperationState::Unknown => "unknown",
+    }
+}
+
+fn operation_state_from(raw: &str) -> Option<agalma_contracts::ComponentOperationState> {
+    use agalma_contracts::ComponentOperationState as OperationState;
+    Some(match raw {
+        "accepted" => OperationState::Accepted,
+        "running" => OperationState::Running,
+        "completed" => OperationState::Completed,
+        "failed" => OperationState::Failed,
+        "cancel_requested" => OperationState::CancelRequested,
+        "cancelled" => OperationState::Cancelled,
+        "unknown" => OperationState::Unknown,
+        _ => return None,
+    })
+}
+
+fn read_component_state(
+    conn: &Connection,
+    namespace: &str,
+) -> Result<Option<ComponentStateRow>, ContractError> {
+    conn.query_row(
+        "SELECT namespace,revision,watermark,checkpoint_json,recorded_at \
+         FROM component_states WHERE namespace=?1",
+        params![namespace],
+        |row| {
+            let checkpoint: Option<String> = row.get(3)?;
+            Ok(ComponentStateRow {
+                namespace: row.get(0)?,
+                revision: row.get::<_, i64>(1)? as u64,
+                watermark: row.get::<_, i64>(2)? as u64,
+                checkpoint: match checkpoint {
+                    Some(text) => Some(
+                        serde_json::from_str(&text).map_err(|e| conversion_err(3, e))?,
+                    ),
+                    None => None,
+                },
+                recorded_at_unix_ms: row.get::<_, i64>(4)? as u64,
+            })
+        },
+    )
+    .optional()
+    .map_err(db_err)
+}
+
+fn read_component_anchor(
+    conn: &Connection,
+    namespace: &str,
+    commit_id: &str,
+) -> Result<Option<ComponentCommitAnchor>, ContractError> {
+    conn.query_row(
+        "SELECT namespace,commit_id,input_digest,revision,committed_at \
+         FROM component_commits WHERE namespace=?1 AND commit_id=?2",
+        params![namespace, commit_id],
+        |row| {
+            Ok(ComponentCommitAnchor {
+                namespace: row.get(0)?,
+                commit_id: row.get(1)?,
+                input_digest: row.get(2)?,
+                revision: row.get::<_, i64>(3)? as u64,
+                committed_at_unix_ms: row.get::<_, i64>(4)? as u64,
+            })
+        },
+    )
+    .optional()
+    .map_err(db_err)
+}
+
+fn read_component_event_raw(
+    conn: &Connection,
+    namespace: &str,
+    event_id: &str,
+) -> Result<Option<(String, String, u64)>, ContractError> {
+    conn.query_row(
+        "SELECT kind,payload_json,recorded_at FROM component_events \
+         WHERE namespace=?1 AND event_id=?2 LIMIT 1",
+        params![namespace, event_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)? as u64,
+            ))
+        },
+    )
+    .optional()
+    .map_err(db_err)
+}
+
+fn read_component_operation(
+    conn: &Connection,
+    namespace: &str,
+    operation_id: &str,
+) -> Result<Option<ComponentOperationRow>, ContractError> {
+    conn.query_row(
+        "SELECT namespace,operation_id,input_digest,binding_json,intent_json,state,deadline \
+         FROM component_operations WHERE namespace=?1 AND operation_id=?2",
+        params![namespace, operation_id],
+        |row| {
+            let binding: String = row.get(3)?;
+            let intent: String = row.get(4)?;
+            let state: String = row.get(5)?;
+            Ok(ComponentOperationRow {
+                namespace: row.get(0)?,
+                operation: ComponentOperation {
+                    operation_id: row.get(1)?,
+                    input_digest: row.get(2)?,
+                    binding: serde_json::from_str(&binding).map_err(|e| conversion_err(3, e))?,
+                    intent: serde_json::from_str(&intent).map_err(|e| conversion_err(4, e))?,
+                    state: operation_state_from(&state).ok_or_else(|| bad_column(5, "state"))?,
+                    deadline_unix_ms: row.get::<_, i64>(6)? as u64,
+                },
+            })
+        },
+    )
+    .optional()
+    .map_err(db_err)
+}
+
+fn read_component_receipt(
+    conn: &Connection,
+    namespace: &str,
+    operation_id: &str,
+) -> Result<Option<ComponentReceiptRow>, ContractError> {
+    conn.query_row(
+        "SELECT namespace,operation_id,input_digest,binding_json,outcome_json,completed_at \
+         FROM component_receipts WHERE namespace=?1 AND operation_id=?2",
+        params![namespace, operation_id],
+        |row| {
+            let binding: String = row.get(3)?;
+            let outcome: String = row.get(4)?;
+            Ok(ComponentReceiptRow {
+                namespace: row.get(0)?,
+                receipt: ComponentReceipt {
+                    operation_id: row.get(1)?,
+                    input_digest: row.get(2)?,
+                    binding: serde_json::from_str(&binding).map_err(|e| conversion_err(3, e))?,
+                    outcome: serde_json::from_str(&outcome).map_err(|e| conversion_err(4, e))?,
+                    completed_at_unix_ms: row.get::<_, i64>(5)? as u64,
+                },
+            })
+        },
+    )
+    .optional()
+    .map_err(db_err)
+}
+
+fn all_component_states(conn: &Connection) -> Result<Vec<ComponentStateRow>, ContractError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT namespace,revision,watermark,checkpoint_json,recorded_at \
+             FROM component_states ORDER BY namespace",
+        )
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |row| {
+            let checkpoint: Option<String> = row.get(3)?;
+            Ok(ComponentStateRow {
+                namespace: row.get(0)?,
+                revision: row.get::<_, i64>(1)? as u64,
+                watermark: row.get::<_, i64>(2)? as u64,
+                checkpoint: match checkpoint {
+                    Some(text) => Some(
+                        serde_json::from_str(&text).map_err(|e| conversion_err(3, e))?,
+                    ),
+                    None => None,
+                },
+                recorded_at_unix_ms: row.get::<_, i64>(4)? as u64,
+            })
+        })
+        .map_err(db_err)?;
+    collect_rows(rows)
+}
+
+fn all_component_events(conn: &Connection) -> Result<Vec<ComponentEventRow>, ContractError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT namespace,sequence,event_id,kind,payload_json,recorded_at \
+             FROM component_events ORDER BY namespace, sequence",
+        )
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |row| {
+            let payload: String = row.get(4)?;
+            Ok(ComponentEventRow {
+                namespace: row.get(0)?,
+                sequence: row.get::<_, i64>(1)? as u64,
+                event: ComponentEvent {
+                    event_id: row.get(2)?,
+                    kind: row.get(3)?,
+                    payload: serde_json::from_str(&payload).map_err(|e| conversion_err(4, e))?,
+                    recorded_at_unix_ms: row.get::<_, i64>(5)? as u64,
+                },
+            })
+        })
+        .map_err(db_err)?;
+    collect_rows(rows)
+}
+
+fn all_component_operations(
+    conn: &Connection,
+) -> Result<Vec<ComponentOperationRow>, ContractError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT namespace,operation_id,input_digest,binding_json,intent_json,state,deadline \
+             FROM component_operations ORDER BY namespace, operation_id",
+        )
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |row| {
+            let binding: String = row.get(3)?;
+            let intent: String = row.get(4)?;
+            let state: String = row.get(5)?;
+            Ok(ComponentOperationRow {
+                namespace: row.get(0)?,
+                operation: ComponentOperation {
+                    operation_id: row.get(1)?,
+                    input_digest: row.get(2)?,
+                    binding: serde_json::from_str(&binding).map_err(|e| conversion_err(3, e))?,
+                    intent: serde_json::from_str(&intent).map_err(|e| conversion_err(4, e))?,
+                    state: operation_state_from(&state).ok_or_else(|| bad_column(5, "state"))?,
+                    deadline_unix_ms: row.get::<_, i64>(6)? as u64,
+                },
+            })
+        })
+        .map_err(db_err)?;
+    collect_rows(rows)
+}
+
+fn all_component_receipts(conn: &Connection) -> Result<Vec<ComponentReceiptRow>, ContractError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT namespace,operation_id,input_digest,binding_json,outcome_json,completed_at \
+             FROM component_receipts ORDER BY namespace, operation_id",
+        )
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |row| {
+            let binding: String = row.get(3)?;
+            let outcome: String = row.get(4)?;
+            Ok(ComponentReceiptRow {
+                namespace: row.get(0)?,
+                receipt: ComponentReceipt {
+                    operation_id: row.get(1)?,
+                    input_digest: row.get(2)?,
+                    binding: serde_json::from_str(&binding).map_err(|e| conversion_err(3, e))?,
+                    outcome: serde_json::from_str(&outcome).map_err(|e| conversion_err(4, e))?,
+                    completed_at_unix_ms: row.get::<_, i64>(5)? as u64,
+                },
+            })
+        })
+        .map_err(db_err)?;
+    collect_rows(rows)
+}
+
+fn all_component_commits(
+    conn: &Connection,
+) -> Result<Vec<ComponentCommitAnchor>, ContractError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT namespace,commit_id,input_digest,revision,committed_at \
+             FROM component_commits ORDER BY namespace, commit_id",
+        )
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ComponentCommitAnchor {
+                namespace: row.get(0)?,
+                commit_id: row.get(1)?,
+                input_digest: row.get(2)?,
+                revision: row.get::<_, i64>(3)? as u64,
+                committed_at_unix_ms: row.get::<_, i64>(4)? as u64,
+            })
+        })
+        .map_err(db_err)?;
+    collect_rows(rows)
+}
+
+fn all_decisions(conn: &Connection) -> Result<Vec<SnapshotDecisionRow>, ContractError> {    let mut stmt = conn
+        .prepare(
+            "SELECT operation_id,kind,inputs_hash,request_json,recorded_at \
+             FROM decisions ORDER BY operation_id",
+        )
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |row| {
+            let request: String = row.get(3)?;
+            Ok(SnapshotDecisionRow {
+                operation_id: OperationId::new(row.get::<_, String>(0)?),
+                kind: row.get(1)?,
+                inputs_hash: row.get(2)?,
+                request: serde_json::from_str(&request).map_err(|e| conversion_err(3, e))?,
+                recorded_at_unix_ms: row.get::<_, i64>(4)? as u64,
+            })
+        })
+        .map_err(db_err)?;
+    collect_rows(rows)
+}
+
+fn all_decision_outcomes(
+    conn: &Connection,
+) -> Result<Vec<SnapshotDecisionOutcomeRow>, ContractError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT operation_id,outcome_json,recorded_at \
+             FROM decision_outcomes ORDER BY operation_id",
+        )
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |row| {
+            let outcome: String = row.get(1)?;
+            Ok(SnapshotDecisionOutcomeRow {
+                operation_id: OperationId::new(row.get::<_, String>(0)?),
+                outcome: serde_json::from_str(&outcome).map_err(|e| conversion_err(1, e))?,
+                recorded_at_unix_ms: row.get::<_, i64>(2)? as u64,
+            })
+        })
+        .map_err(db_err)?;
+    collect_rows(rows)
+}
+
+fn all_digests(conn: &Connection) -> Result<Vec<DigestRecord>, ContractError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT execution_id,version,digest_json,artifact_ref,recorded_at \
+             FROM digests ORDER BY execution_id, version",
+        )
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |row| {
+            // `record_digest` stores the whole DigestRecord in `digest_json`; the
+            // separate `artifact_ref` column is the plain reference string.
+            let record: String = row.get(2)?;
+            serde_json::from_str::<DigestRecord>(&record).map_err(|e| conversion_err(2, e))
+        })
+        .map_err(db_err)?;
+    collect_rows(rows)
+}
+
 fn all_kernel_meta(conn: &Connection) -> Result<BTreeMap<String, String>, ContractError> {
     let mut stmt = conn
         .prepare("SELECT key,value FROM kernel_meta ORDER BY key")
@@ -1904,4 +3247,61 @@ fn now_ms() -> u64 {
 
 fn sql_u64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+/// Convert a quiescence check failure into an internal error (only used while
+/// probing, never to mutate).
+fn quiescence_err(err: ContractError) -> MigrationRefused {
+    MigrationRefused {
+        reason: format!("quiescence probe failed: {err}"),
+    }
+}
+
+/// fsync `path`'s bytes and its parent directory (durable backup barrier).
+fn sync_file_and_parent(path: &Path) -> Result<(), String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    file.sync_all()
+        .map_err(|e| format!("sync {}: {e}", path.display()))?;
+    if let Some(parent) = path.parent() {
+        let dir = std::fs::File::open(parent)
+            .map_err(|e| format!("open dir {}: {e}", parent.display()))?;
+        dir.sync_all()
+            .map_err(|e| format!("sync dir {}: {e}", parent.display()))?;
+    }
+    Ok(())
+}
+
+/// Explicitly open `path` (possibly a v4 ledger), verify quiescence, migrate to
+/// v5 with a durable backup and receipt, and return the receipt.
+///
+/// This is the process-transport entry point used by the ledger server's
+/// explicit `--migrate-v5` mode; a normal open never calls it.
+pub fn migrate_to_v5(path: impl AsRef<Path>) -> Result<MigrationReceipt, ContractError> {
+    let mut ledger = SqliteLedger::open(path)?;
+    ledger.migrate_to_v5()
+}
+
+/// Write one component binding row (shared by the v1 and complete-v2 importers).
+fn write_binding(conn: &Connection, binding: &BindingRecord) -> Result<(), ContractError> {
+    conn.execute(
+        "INSERT INTO component_bindings( \
+           binding_id,component_api,api_version,implementation,implementation_version, \
+           capabilities,required_capabilities,optional_capabilities,config_hash,generation,state \
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        params![
+            binding.binding_id.as_str(),
+            binding.component_api,
+            i64::from(binding.api_version),
+            binding.implementation,
+            binding.implementation_version,
+            serde_json::to_string(&binding.capabilities).map_err(json_err)?,
+            serde_json::to_string(&binding.required_capabilities).map_err(json_err)?,
+            serde_json::to_string(&binding.optional_capabilities).map_err(json_err)?,
+            binding.config_hash,
+            sql_u64(binding.generation),
+            binding_state_str(binding.state),
+        ],
+    )
+    .map_err(db_err)?;
+    Ok(())
 }

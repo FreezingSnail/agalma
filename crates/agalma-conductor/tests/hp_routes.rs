@@ -1135,6 +1135,7 @@ fn assemble_production_host(
                 calls,
                 response: json!({ "routed": true }),
             })],
+            reports: None,
         },
     )
     .expect("production host assembles")

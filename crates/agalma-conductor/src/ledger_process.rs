@@ -22,17 +22,18 @@
 //! bounds the addressed path to `SUN_LEN` via [`crate::phases::bounded_socket_path`]
 //! while the socket file still lands in the state dir.
 
-use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::process::Child;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agalma_contracts::harness::StopEvidence;
 use agalma_contracts::{
-    BindingRecord, CommitBatch, CommitReceipt, ContractError, ControlReceipt, DecisionOutcome,
-    DecisionRequest, DigestRecord, DirectiveRow, DispatchIntent, ExecutionEvent, ExecutionId,
-    ExecutionRecord, LedgerApi, OperationId, OperationReceipt, StateSnapshot, TaskId, TimerRecord,
+    BindingRecord, CommitBatch, CommitReceipt, ComponentCommit, ComponentCommitAnchor,
+    ComponentEventRow, ComponentOperationRow, ComponentStateRow, ContractError, ControlReceipt,
+    DecisionOutcome, DecisionRequest, DigestRecord, DirectiveRow, DispatchIntent, ExecutionEvent,
+    ExecutionId, ExecutionRecord, LedgerApi, OperationId, OperationReceipt, StateSnapshot, TaskId,
+    TimerRecord,
 };
 use agalma_ipc::{CommandSpec, LedgerClient, LedgerOps, Wire, WIRE_ENV};
 use agalma_ledger::server::{server_command, OpenMode, OPEN_EXISTING_FLAG};
@@ -273,8 +274,8 @@ enum Backend {
 /// (D5).
 #[derive(Clone)]
 pub struct LedgerHandle {
-    backend: Rc<RefCell<Backend>>,
-    _process: Option<Rc<LedgerProcess>>,
+    backend: Arc<Mutex<Backend>>,
+    _process: Option<Arc<LedgerProcess>>,
 }
 
 impl LedgerHandle {
@@ -282,7 +283,7 @@ impl LedgerHandle {
     pub fn in_process(state_dir: &Path) -> Result<LedgerHandle, ContractError> {
         let ledger = SqliteLedger::open(state_dir.join("ledger.sqlite"))?;
         Ok(LedgerHandle {
-            backend: Rc::new(RefCell::new(Backend::InProcess(ledger))),
+            backend: Arc::new(Mutex::new(Backend::InProcess(ledger))),
             _process: None,
         })
     }
@@ -292,7 +293,7 @@ impl LedgerHandle {
     pub fn in_process_existing(state_dir: &Path) -> Result<LedgerHandle, ContractError> {
         let ledger = SqliteLedger::open_existing(state_dir.join("ledger.sqlite"))?;
         Ok(LedgerHandle {
-            backend: Rc::new(RefCell::new(Backend::InProcess(ledger))),
+            backend: Arc::new(Mutex::new(Backend::InProcess(ledger))),
             _process: None,
         })
     }
@@ -305,8 +306,8 @@ impl LedgerHandle {
             .client()
             .map_err(|e| ContractError::KnownFailure(format!("connect ledger server: {e}")))?;
         Ok(LedgerHandle {
-            backend: Rc::new(RefCell::new(Backend::Process(client))),
-            _process: Some(Rc::new(process)),
+            backend: Arc::new(Mutex::new(Backend::Process(client))),
+            _process: Some(Arc::new(process)),
         })
     }
 
@@ -319,8 +320,8 @@ impl LedgerHandle {
             .client()
             .map_err(|e| ContractError::KnownFailure(format!("connect ledger server: {e}")))?;
         Ok(LedgerHandle {
-            backend: Rc::new(RefCell::new(Backend::Process(client))),
-            _process: Some(Rc::new(process)),
+            backend: Arc::new(Mutex::new(Backend::Process(client))),
+            _process: Some(Arc::new(process)),
         })
     }
 
@@ -332,8 +333,8 @@ impl LedgerHandle {
             .client()
             .map_err(|e| ContractError::KnownFailure(format!("connect ledger server: {e}")))?;
         Ok(LedgerHandle {
-            backend: Rc::new(RefCell::new(Backend::Process(client))),
-            _process: Some(Rc::new(process)),
+            backend: Arc::new(Mutex::new(Backend::Process(client))),
+            _process: Some(Arc::new(process)),
         })
     }
 
@@ -360,42 +361,42 @@ impl LedgerHandle {
         }
     }
 
-    fn borrow(&self) -> std::cell::RefMut<'_, Backend> {
-        self.backend.borrow_mut()
+    fn lock(&self) -> std::sync::MutexGuard<'_, Backend> {
+        self.backend.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
 impl LedgerApi for LedgerHandle {
     fn commit(&mut self, batch: CommitBatch) -> Result<CommitReceipt, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.commit(batch),
             Backend::Process(c) => c.commit(batch),
         }
     }
 
     fn execution(&self, id: &ExecutionId) -> Result<Option<ExecutionRecord>, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.execution(id),
             Backend::Process(c) => c.execution(id),
         }
     }
 
     fn executions(&self) -> Result<Vec<ExecutionRecord>, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.executions(),
             Backend::Process(c) => c.executions(),
         }
     }
 
     fn pending_intents(&self) -> Result<Vec<DispatchIntent>, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.pending_intents(),
             Backend::Process(c) => c.pending_intents(),
         }
     }
 
     fn events(&self, id: &ExecutionId) -> Result<Vec<ExecutionEvent>, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.events(id),
             Backend::Process(c) => c.events(id),
         }
@@ -405,63 +406,63 @@ impl LedgerApi for LedgerHandle {
         &self,
         id: &OperationId,
     ) -> Result<Option<OperationReceipt>, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.operation_receipt(id),
             Backend::Process(c) => c.operation_receipt(id),
         }
     }
 
     fn lease_generation(&self, task: &TaskId) -> Result<u32, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.lease_generation(task),
             Backend::Process(c) => c.lease_generation(task),
         }
     }
 
     fn begin_lease(&mut self, task: &TaskId) -> Result<u32, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.begin_lease(task),
             Backend::Process(c) => c.begin_lease(task),
         }
     }
 
     fn kill_latch(&self) -> Result<bool, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.kill_latch(),
             Backend::Process(c) => c.kill_latch(),
         }
     }
 
     fn set_kill_latch(&mut self, latched: bool) -> Result<(), ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.set_kill_latch(latched),
             Backend::Process(c) => c.set_kill_latch(latched),
         }
     }
 
     fn upsert_binding(&mut self, binding: &BindingRecord) -> Result<(), ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.upsert_binding(binding),
             Backend::Process(c) => c.upsert_binding(binding),
         }
     }
 
     fn bindings(&self) -> Result<Vec<BindingRecord>, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.bindings(),
             Backend::Process(c) => c.bindings(),
         }
     }
 
     fn schema_version(&self) -> Result<u32, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.schema_version(),
             Backend::Process(c) => c.schema_version(),
         }
     }
 
     fn record_decision(&mut self, request: &DecisionRequest) -> Result<(), ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.record_decision(request),
             Backend::Process(c) => c.record_decision(request),
         }
@@ -472,7 +473,7 @@ impl LedgerApi for LedgerHandle {
         operation_id: &OperationId,
         outcome: &DecisionOutcome,
     ) -> Result<(), ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.record_decision_outcome(operation_id, outcome),
             Backend::Process(c) => c.record_decision_outcome(operation_id, outcome),
         }
@@ -482,14 +483,14 @@ impl LedgerApi for LedgerHandle {
         &self,
         operation_id: &OperationId,
     ) -> Result<Option<DecisionOutcome>, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.decision_outcome(operation_id),
             Backend::Process(c) => c.decision_outcome(operation_id),
         }
     }
 
     fn record_digest(&mut self, digest: &DigestRecord) -> Result<(), ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.record_digest(digest),
             Backend::Process(c) => c.record_digest(digest),
         }
@@ -499,49 +500,49 @@ impl LedgerApi for LedgerHandle {
         &self,
         execution_id: &ExecutionId,
     ) -> Result<Vec<DigestRecord>, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.digests_for_execution(execution_id),
             Backend::Process(c) => c.digests_for_execution(execution_id),
         }
     }
 
     fn kernel_meta_get(&self, key: &str) -> Result<Option<String>, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.kernel_meta_get(key),
             Backend::Process(c) => c.kernel_meta_get(key),
         }
     }
 
     fn kernel_meta_set(&mut self, key: &str, value: &str) -> Result<(), ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.kernel_meta_set(key, value),
             Backend::Process(c) => c.kernel_meta_set(key, value),
         }
     }
 
     fn insert_timer(&mut self, timer: &TimerRecord) -> Result<bool, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.insert_timer(timer),
             Backend::Process(c) => c.insert_timer(timer),
         }
     }
 
     fn timer(&self, timer_id: &str) -> Result<Option<TimerRecord>, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.timer(timer_id),
             Backend::Process(c) => c.timer(timer_id),
         }
     }
 
     fn due_timers(&self, now_unix_ms: u64) -> Result<Vec<TimerRecord>, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.due_timers(now_unix_ms),
             Backend::Process(c) => c.due_timers(now_unix_ms),
         }
     }
 
     fn mark_timer_fired(&mut self, timer_id: &str) -> Result<(), ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.mark_timer_fired(timer_id),
             Backend::Process(c) => c.mark_timer_fired(timer_id),
         }
@@ -551,81 +552,135 @@ impl LedgerApi for LedgerHandle {
         &mut self,
         execution_id: &ExecutionId,
     ) -> Result<u64, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.cancel_timers_for_execution(execution_id),
             Backend::Process(c) => c.cancel_timers_for_execution(execution_id),
         }
     }
 
     fn next_deadline(&self) -> Result<Option<u64>, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.next_deadline(),
             Backend::Process(c) => c.next_deadline(),
         }
     }
 
     fn upsert_directive(&mut self, directive: &DirectiveRow) -> Result<bool, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.upsert_directive(directive),
             Backend::Process(c) => c.upsert_directive(directive),
         }
     }
 
     fn directive(&self, directive_id: &str) -> Result<Option<DirectiveRow>, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.directive(directive_id),
             Backend::Process(c) => c.directive(directive_id),
         }
     }
 
     fn consume_dispatch_intent(&mut self, operation_id: &OperationId) -> Result<(), ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.consume_dispatch_intent(operation_id),
             Backend::Process(c) => c.consume_dispatch_intent(operation_id),
         }
     }
 
     fn record_control_receipt(&mut self, receipt: &ControlReceipt) -> Result<(), ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.record_control_receipt(receipt),
             Backend::Process(c) => c.record_control_receipt(receipt),
         }
     }
 
     fn control_receipts(&self) -> Result<Vec<ControlReceipt>, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.control_receipts(),
             Backend::Process(c) => c.control_receipts(),
         }
     }
 
     fn export_state(&self) -> Result<StateSnapshot, ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.export_state(),
             Backend::Process(c) => c.export_state(),
         }
     }
 
     fn import_state(&mut self, snapshot: &StateSnapshot) -> Result<(), ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.import_state(snapshot),
             Backend::Process(c) => c.import_state(snapshot),
+        }
+    }
+
+    fn component_read(&self, namespace: &str) -> Result<Option<ComponentStateRow>, ContractError> {
+        match &mut *self.lock() {
+            Backend::InProcess(l) => l.component_read(namespace),
+            Backend::Process(c) => c.component_read(namespace),
+        }
+    }
+
+    fn component_events(
+        &self,
+        namespace: &str,
+        after: u64,
+        limit: u32,
+    ) -> Result<Vec<ComponentEventRow>, ContractError> {
+        match &mut *self.lock() {
+            Backend::InProcess(l) => l.component_events(namespace, after, limit),
+            Backend::Process(c) => c.component_events(namespace, after, limit),
+        }
+    }
+
+    fn component_operation(
+        &self,
+        namespace: &str,
+        operation_id: &str,
+    ) -> Result<Option<ComponentOperationRow>, ContractError> {
+        match &mut *self.lock() {
+            Backend::InProcess(l) => l.component_operation(namespace, operation_id),
+            Backend::Process(c) => c.component_operation(namespace, operation_id),
+        }
+    }
+
+    fn component_commit(
+        &mut self,
+        commit: &ComponentCommit,
+    ) -> Result<ComponentCommitAnchor, ContractError> {
+        match &mut *self.lock() {
+            Backend::InProcess(l) => l.component_commit(commit),
+            Backend::Process(c) => c.component_commit(commit),
         }
     }
 }
 
 impl LedgerOps for LedgerHandle {
     fn export_snapshot_to(&self, path: &Path) -> Result<(), ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.export_snapshot_to(path),
             Backend::Process(c) => c.export_snapshot_to(path),
         }
     }
 
     fn import_snapshot_from(&mut self, path: &Path) -> Result<(), ContractError> {
-        match &mut *self.borrow() {
+        match &mut *self.lock() {
             Backend::InProcess(l) => l.import_snapshot_from(path),
             Backend::Process(c) => c.import_snapshot_from(path),
+        }
+    }
+
+    fn export_complete_state_to(&self, path: &Path) -> Result<(), ContractError> {
+        match &mut *self.lock() {
+            Backend::InProcess(l) => l.export_complete_state_to(path),
+            Backend::Process(c) => c.export_complete_state_to(path),
+        }
+    }
+
+    fn import_complete_state_from(&mut self, path: &Path) -> Result<(), ContractError> {
+        match &mut *self.lock() {
+            Backend::InProcess(l) => l.import_complete_state_from(path),
+            Backend::Process(c) => c.import_complete_state_from(path),
         }
     }
 }

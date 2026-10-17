@@ -20,10 +20,10 @@ use serde_json::Value;
 use crate::connect::{serve_wire, Wire};
 use crate::harness_client::{decode_params, encode_result};
 use crate::ledger_client::{
-    BindingParams, CommitParams, ControlReceiptParams, DecisionParams, DigestParams,
-    DirectiveIdCall, DirectiveParams, DueTimersParams, ExecutionCall, KeyCall, LatchParams,
-    LeaseCall, LedgerOps, MetaParams, OperationIdCall, OutcomeParams, PathParams, TimerIdCall,
-    TimerParams,
+    BindingParams, CommitParams, ComponentCommitParams, ComponentEventsCall,
+    ComponentOperationCall, ControlReceiptParams, DecisionParams, DigestParams, DirectiveIdCall,
+    DirectiveParams, DueTimersParams, ExecutionCall, KeyCall, LatchParams, LeaseCall, LedgerOps,
+    MetaParams, NamespaceCall, OperationIdCall, OutcomeParams, PathParams, TimerIdCall, TimerParams,
 };
 use crate::server::Server;
 
@@ -305,6 +305,56 @@ where
             encode_result(())
         });
     }
+    {
+        let shared = Arc::clone(&shared);
+        server.on("component_read", move |params: Value| {
+            let call: NamespaceCall = decode_params(params)?;
+            let result = lock(&shared).component_read(&call.namespace)?;
+            encode_result(result)
+        });
+    }
+    {
+        let shared = Arc::clone(&shared);
+        server.on("component_events", move |params: Value| {
+            let call: ComponentEventsCall = decode_params(params)?;
+            let result =
+                lock(&shared).component_events(&call.namespace, call.after, call.limit)?;
+            encode_result(result)
+        });
+    }
+    {
+        let shared = Arc::clone(&shared);
+        server.on("component_operation", move |params: Value| {
+            let call: ComponentOperationCall = decode_params(params)?;
+            let result =
+                lock(&shared).component_operation(&call.namespace, &call.operation_id)?;
+            encode_result(result)
+        });
+    }
+    {
+        let shared = Arc::clone(&shared);
+        server.on("component_commit", move |params: Value| {
+            let call: ComponentCommitParams = decode_params(params)?;
+            let result = lock(&shared).component_commit(&call.commit)?;
+            encode_result(result)
+        });
+    }
+    {
+        let shared = Arc::clone(&shared);
+        server.on("export_complete_state_to", move |params: Value| {
+            let call: PathParams = decode_params(params)?;
+            lock(&shared).export_complete_state_to(std::path::Path::new(&call.path))?;
+            encode_result(())
+        });
+    }
+    {
+        let shared = Arc::clone(&shared);
+        server.on("import_complete_state_from", move |params: Value| {
+            let call: PathParams = decode_params(params)?;
+            lock(&shared).import_complete_state_from(std::path::Path::new(&call.path))?;
+            encode_result(())
+        });
+    }
 }
 
 /// Lock the shared ledger, recovering a poisoned mutex into its inner value.
@@ -317,7 +367,7 @@ fn lock<S>(shared: &Arc<Mutex<S>>) -> std::sync::MutexGuard<'_, S> {
 /// `export_state`/`import_state` are client-side conveniences implemented over
 /// the two snapshot file primitives (`export_state_to`/`import_state_from`), so
 /// they are not separate wire methods.
-pub const LEDGER_METHODS: [&str; 33] = [
+pub const LEDGER_METHODS: [&str; 39] = [
     "commit",
     "execution",
     "executions",
@@ -351,6 +401,12 @@ pub const LEDGER_METHODS: [&str; 33] = [
     "control_receipts",
     "export_state_to",
     "import_state_from",
+    "component_read",
+    "component_events",
+    "component_operation",
+    "component_commit",
+    "export_complete_state_to",
+    "import_complete_state_from",
 ];
 
 /// Assert the server has a handler for every ledger operation.

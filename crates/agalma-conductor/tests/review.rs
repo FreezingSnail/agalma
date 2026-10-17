@@ -480,21 +480,29 @@ fn repeated_drift_exhausts_the_budget_and_escalates_to_a_human() {
 }
 
 #[test]
-fn record_start_on_land_records_the_head_once() {
+fn record_start_on_land_records_the_given_baseline_once() {
     let scratch = Scratch::new("start-sha");
     let epic = scratch.create_epic("Fresh epic");
     let child = scratch.create_closed_child(&epic, "child 0");
 
-    let first = scratch.commit("base");
-    record_start_on_land(&scratch.repo, &child).expect("record baseline");
+    // The baseline is the pre-integration base handed in, not live HEAD.
+    let base = scratch.commit("base");
+    record_start_on_land(&scratch.repo, &child, &base).expect("record baseline");
     let labels = scratch.epic_labels(&epic);
-    assert_eq!(review_start_sha(&labels).as_deref(), Some(first.as_str()));
+    assert_eq!(review_start_sha(&labels).as_deref(), Some(base.as_str()));
 
     // A later land must not move an existing baseline (first land wins).
-    let _second = scratch.commit("more");
-    record_start_on_land(&scratch.repo, &child).expect("second record is a no-op");
+    let second = scratch.commit("more");
+    record_start_on_land(&scratch.repo, &child, &second).expect("second record is a no-op");
     let labels = scratch.epic_labels(&epic);
-    assert_eq!(review_start_sha(&labels).as_deref(), Some(first.as_str()));
+    assert_eq!(review_start_sha(&labels).as_deref(), Some(base.as_str()));
+
+    // An empty pre-integration base refuses rather than recording a pin that
+    // cannot anchor a real diff.
+    let other = scratch.create_epic("Other epic");
+    let other_child = scratch.create_closed_child(&other, "child 0");
+    assert!(record_start_on_land(&scratch.repo, &other_child, "").is_err());
+    assert!(review_start_sha(&scratch.epic_labels(&other)).is_none());
 }
 
 #[test]

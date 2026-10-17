@@ -5,9 +5,11 @@
 //! the epic's own design/acceptance (design: `docs/planning-pipeline.md`
 //! §"Review gate"). This module is the conductor-side port of maduin-review:
 //!
-//! 1. **start SHA** — the origin `HEAD` is recorded on the epic
-//!    (`review-start:<sha>`) the first time one of its children lands
-//!    ([`record_start_on_land`]); it is the baseline for the review diff.
+//! 1. **start SHA** — the pre-integration base SHA the first child's candidate
+//!    was built from is recorded on the epic (`review-start:<sha>`) the first
+//!    time one of its children lands ([`record_start_on_land`]); it is the
+//!    baseline for the review diff. It is pinned from the durable frozen
+//!    execution input, never sampled from post-integration `HEAD`.
 //! 2. **review** — once every staged child is closed, one reviewer session runs
 //!    over `git diff <start>..HEAD` vs the epic design/acceptance (the
 //!    [`ReviewerSession`] seam; [`LiveReviewerSession`] is production).
@@ -28,7 +30,7 @@
 //! All review state lives on the epic so it survives restart, mirroring the
 //! CP.3 decomposition gate:
 //!
-//! - `review-start:<sha>` — the diff baseline (first child land);
+//! - `review-start:<sha>` — the diff baseline (first child land, pre-integration);
 //! - `review-attempts:<n>` — how many review attempts the epic has consumed,
 //!   reconciled with the number of `drift-fix` tasks;
 //! - `review-drift` — a drift hold is active (ordinary dispatch withheld);
@@ -233,21 +235,77 @@ pub fn review_start_sha(labels: &[String]) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Record the epic's review baseline (`review-start:<HEAD>`) the first time one
-/// of its children lands: a no-op once a baseline exists, and a no-op for a task
-/// with no parent epic.
-pub fn record_start_on_land(repo: &Path, task_id: &str) -> Result<(), ContractError> {
+/// The review-baseline reconcile status of `task_id`'s epic.
+///
+/// Recovery uses this to decide whether a landed execution still needs its first
+/// pin before its terminal projection may close it: closing an unpinned landed
+/// child would let a later child establish a masked, later baseline and truncate
+/// the review.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReviewBaselineStatus {
+    /// The task has no parent epic: there is no baseline to reconcile.
+    NoEpic,
+    /// The parent epic already carries a review baseline (first pin wins).
+    Pinned,
+    /// The parent epic exists and has no baseline yet; it must be pinned before
+    /// the landed child may be projected closed.
+    Unpinned { epic: String },
+}
+
+/// Classify `task_id`'s epic review-baseline status by reading the backlog only
+/// (no source/ledger access). A task with no parent epic, or a missing parent,
+/// is [`ReviewBaselineStatus::NoEpic`].
+pub fn review_baseline_status(
+    repo: &Path,
+    task_id: &str,
+) -> Result<ReviewBaselineStatus, ContractError> {
+    let Some(epic) = bd_parent(repo, task_id)? else {
+        return Ok(ReviewBaselineStatus::NoEpic);
+    };
+    let labels = BdTaskQueue::new(repo)
+        .projection(&TaskId::new(&epic))?
+        .labels;
+    Ok(if review_start_sha(&labels).is_some() {
+        ReviewBaselineStatus::Pinned
+    } else {
+        ReviewBaselineStatus::Unpinned { epic }
+    })
+}
+
+/// Record the epic's review baseline (`review-start:<sha>`) the first time one
+/// of its children lands.
+///
+/// `baseline_sha` is the **pre-integration** base the landed candidate was built
+/// from (the frozen execution input / receipt), never the live post-integration
+/// `HEAD`. Sampling `HEAD` after the effect would exclude the first integrated
+/// child change from the review diff (`base_sha == candidate_sha`, empty
+/// `diff.patch`) — the SF.10 production defect (`agalma-5fy.18`). A no-op once a
+/// baseline exists (first pin wins across retries/duplicate/restart), and a
+/// no-op for a task with no parent epic. An empty/unknown base refuses rather
+/// than recording a baseline that cannot anchor a real diff.
+pub fn record_start_on_land(
+    repo: &Path,
+    task_id: &str,
+    baseline_sha: &str,
+) -> Result<(), ContractError> {
     let Some(epic) = bd_parent(repo, task_id)? else {
         return Ok(());
     };
+    let baseline = baseline_sha.trim();
+    if baseline.is_empty() {
+        return Err(ContractError::KnownFailure(format!(
+            "refusing to record the review baseline for {task_id}: no pre-integration base SHA"
+        )));
+    }
     let mut queue = BdTaskQueue::new(repo);
     let labels = queue.projection(&TaskId::new(&epic))?.labels;
     if review_start_sha(&labels).is_some() {
         return Ok(());
     }
-    if let Some(head) = head_sha(repo)? {
-        queue.add_label(&TaskId::new(&epic), &format!("{REVIEW_START_PREFIX}{head}"))?;
-    }
+    queue.add_label(
+        &TaskId::new(&epic),
+        &format!("{REVIEW_START_PREFIX}{baseline}"),
+    )?;
     Ok(())
 }
 
@@ -427,6 +485,21 @@ pub fn review_epics_with_stop(
             )?;
             continue;
         };
+
+        // The recorded baseline must be a real, pre-candidate commit. An
+        // unknown, unrelated, or equal baseline yields an empty or truncated
+        // diff; deny (fail closed) instead of approving it — the SF.10 defect
+        // admitted `base_sha == candidate_sha` and an empty `diff.patch`
+        // (`agalma-5fy.18`).
+        if let Err(reason) = baseline_precedes(repo, &start, &head) {
+            eprintln!(
+                "agalma: review gate: epic {} baseline invalid: {reason}; holding",
+                epic.id
+            );
+            let attempt = next_attempt(&queue, &epic.id)?;
+            apply_error(&mut queue, &epic.id, attempt, &reason, &mut report)?;
+            continue;
+        }
 
         // Resolve (and durably record) the strongest route for the reviewer
         // under a `review:<epic>` scope. Fails closed when the planner route is
@@ -1203,6 +1276,37 @@ fn head_sha(repo: &Path) -> Result<Option<String>, ContractError> {
     }
     let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
     Ok(if sha.is_empty() { None } else { Some(sha) })
+}
+
+/// Whether a recorded review baseline is a real, pre-candidate commit.
+///
+/// The baseline must exist in `repo`, be a strict ancestor of `head`, and differ
+/// from it. An unknown, unrelated, or equal baseline yields an empty or
+/// truncated `git diff`, so the review refuses (fail closed) rather than
+/// approving it.
+fn baseline_precedes(repo: &Path, start: &str, head: &str) -> Result<(), String> {
+    if start == head {
+        return Err(format!(
+            "review baseline {start} equals the candidate; refusing an empty diff"
+        ));
+    }
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["merge-base", "--is-ancestor", start, head])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|e| format!("git merge-base --is-ancestor: {e}"))?;
+    match out.status.code() {
+        Some(0) => Ok(()),
+        Some(1) => Err(format!(
+            "review baseline {start} is not an ancestor of candidate {head}; refusing a \
+             truncated diff"
+        )),
+        _ => Err(format!(
+            "review baseline {start} is not a known commit in the repository"
+        )),
+    }
 }
 
 /// `git diff <start>..<head>` in `repo`.

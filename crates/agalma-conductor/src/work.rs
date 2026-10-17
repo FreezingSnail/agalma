@@ -361,17 +361,6 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
             Rc::clone(&stop),
         )?;
         processed += 1;
-        // CP.5: the first child of an epic to land records the epic's review
-        // baseline (`review-start:<HEAD>`) so the post-merge review has a diff
-        // anchor. Best-effort; a task with no parent epic is a no-op.
-        if matches!(terminal, Terminal::Done) {
-            if let Err(err) = crate::review::record_start_on_land(&repo, task.task_id.as_str()) {
-                eprintln!(
-                    "agalma: review baseline record for {}: {err}",
-                    task.task_id.as_str()
-                );
-            }
-        }
         last = Some(terminal);
         if args.once {
             break;
@@ -555,6 +544,24 @@ fn run_task(
         false,
         &*stop,
     )?;
+    // CP.5: pin the epic review baseline at the effect boundary. The candidate
+    // has already landed (the integrate phase committed it), but the execution is
+    // not yet projected closed nor its heavy scratch reaped. Recording here —
+    // *before* `finalize` — means a crash between the effect and closure cannot
+    // lose the first integrated change from the review; boot recovery also
+    // reconciles any landed-but-unpinned execution (see `recover_inflight`). The
+    // baseline is the pre-integration base frozen in the admitted package, never
+    // the live post-integration `HEAD`. A recording failure on a landed child is
+    // fatal (propagated), so a later child can never establish a masked, later
+    // baseline over a missing first pin.
+    if matches!(terminal, Terminal::Done) {
+        review_baseline_crash("after_integrate");
+        crate::review::record_start_on_land(
+            repo,
+            task.task_id.as_str(),
+            &package.repository.base_sha,
+        )?;
+    }
     finalize(
         state_dir,
         queue,
@@ -1018,6 +1025,55 @@ fn recover_inflight(
             ExecutionState::Completed | ExecutionState::Parked | ExecutionState::Failed
         ) || matches!(record.phase, ExecutionPhase::Done | ExecutionPhase::Parked);
         if terminal {
+            // Reconcile the epic review baseline for a *landed* execution whose
+            // fresh run died after the integrate effect but before the baseline
+            // was recorded (or between recording and closure). The frozen package
+            // — not the live post-merge HEAD and not bd — is the retained durable
+            // input; `record_start_on_land` is first-pin-wins and a no-op for a
+            // task with no parent epic, so re-running it every boot is safe. Fail
+            // closed: a landed child whose pin cannot be reconciled is an error,
+            // so `reconcile_projection` cannot close it into a truncated review.
+            let landed = matches!(record.state, ExecutionState::Completed)
+                || matches!(record.phase, ExecutionPhase::Done);
+            if landed {
+                // Only an *unpinned* epic needs reconciliation; a landed child of
+                // a task with no epic, or of an epic that already carries a valid
+                // first pin, is safe to project closed. A landed child whose epic
+                // has no pin yet must be pinned from the retained durable frozen
+                // package before closure; if that input is missing/corrupt, refuse
+                // (do not close and do not run ordinary work) so a later child can
+                // never mask the missing first pin.
+                match crate::review::review_baseline_status(repo, record.task_id.as_str())? {
+                    crate::review::ReviewBaselineStatus::NoEpic
+                    | crate::review::ReviewBaselineStatus::Pinned => {}
+                    crate::review::ReviewBaselineStatus::Unpinned { epic } => {
+                        let reference = admission_digest(ledger, &record.execution_id)?;
+                        match load_frozen_or_legacy(
+                            state_dir,
+                            reference.as_deref(),
+                            record.execution_id.as_str(),
+                        ) {
+                            Ok(package) => {
+                                verify_recovered_package_identity(&package, &record)?;
+                                crate::review::record_start_on_land(
+                                    repo,
+                                    record.task_id.as_str(),
+                                    &package.repository.base_sha,
+                                )?;
+                            }
+                            Err(err) => {
+                                return Err(ContractError::KnownFailure(format!(
+                                    "recovery refused: landed execution {} cannot pin the first \
+                                     review baseline for epic {epic} — no readable frozen package \
+                                     ({err}); refusing to close the task and refusing ordinary \
+                                     work until the missing first pin is reconciled",
+                                    record.execution_id
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
             continue;
         }
 
@@ -1122,6 +1178,23 @@ fn recover_inflight(
             &terminal,
             true,
         )?;
+        // CP.5 on recovery: a boot recovery that integrates a child's candidate
+        // pins the epic review baseline from the same durable pre-integration
+        // base (the frozen package's `repository.base_sha`), so a restart after a
+        // crash records the identical baseline a fresh run would have
+        // (`agalma-5fy.18`).
+        if matches!(terminal, Terminal::Done) {
+            if let Err(err) = crate::review::record_start_on_land(
+                repo,
+                record.task_id.as_str(),
+                &package.repository.base_sha,
+            ) {
+                eprintln!(
+                    "agalma: recovery review baseline for {}: {err}",
+                    record.task_id.as_str()
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -1289,6 +1362,19 @@ fn package_crash(point: &str) {
     }
 }
 
+/// Test-only crash injection for the review-baseline window
+/// (`agalma-5fy.18`): `after_integrate` fires after the candidate's integrate
+/// effect has landed but before the epic review baseline is durably recorded —
+/// the window a later child could otherwise mask.
+const REVIEW_BASELINE_CRASH_ENV: &str = "AGALMA_REVIEW_BASELINE_CRASH_AT";
+
+fn review_baseline_crash(point: &str) {
+    if std::env::var(REVIEW_BASELINE_CRASH_ENV).ok().as_deref() == Some(point) {
+        // SIGABRT: deliberately abnormal so nothing after this point executes.
+        std::process::abort();
+    }
+}
+
 /// Build and persist the frozen `TaskPackage/v1` for `task`, returning its
 /// reference and the package-admission event the caller commits with activation.
 ///
@@ -1388,6 +1474,35 @@ fn admission_digest(
                 .and_then(|value| value.as_str())
                 .map(str::to_string)
         }))
+}
+
+/// Verify a recovered frozen package's identity matches the execution record
+/// whose landed child is about to be reconciled.
+///
+/// Both the execution and task identities are required. A validly hashed but
+/// mismatched package/`task.package_admitted` reference must never be used to pin
+/// another execution's (or task's) source base to this task's epic — that would
+/// truncate the review (`agalma-5fy.18`). A mismatch is refused (fail closed)
+/// before any projection reconciliation.
+fn verify_recovered_package_identity(
+    package: &TaskPackage,
+    record: &ExecutionRecord,
+) -> Result<(), ContractError> {
+    if package.execution_id != record.execution_id.as_str() {
+        return Err(ContractError::KnownFailure(format!(
+            "frozen package execution {} does not match recovery record {}; refusing to pin a \
+             review baseline from a mismatched package",
+            package.execution_id, record.execution_id
+        )));
+    }
+    if package.task_id != record.task_id.as_str() {
+        return Err(ContractError::KnownFailure(format!(
+            "frozen package task {} does not match recovery record {}; refusing to pin a review \
+             baseline from a mismatched package",
+            package.task_id, record.task_id
+        )));
+    }
+    Ok(())
 }
 
 /// Park an execution that cannot be reconstructed, durably in the ledger, with a

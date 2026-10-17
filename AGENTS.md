@@ -5,7 +5,9 @@
 These working rules govern repository collaboration. They do not change the
 factory's runtime routing table, task-release authority, or promotion policy.
 
-- Sol owns architecture, planning, and review. Sol sessions must load the
+- Sol owns architecture and planning, and handles review for high-difficulty
+  tasks or when explicitly requested. Routine implementation review is assigned
+  to DeepSeek Flash in a separate review session. Sol sessions must load the
   [architect persona](agents/sol-architect.md) and follow the
   [development workflow](docs/development-workflow.md).
 - Sol may edit documentation, designs, agent instructions, and beads directly.
@@ -13,16 +15,18 @@ factory's runtime routing table, task-release authority, or promotion policy.
   review question.
 - All code implementation goes to GPT-6 Luna or DeepSeek Flash through OpenCode.
   This includes source, implementation tests, scripts, build configuration,
-  generated code, debugging helpers, and small fixes. Sol specifies the change
-  and reviews it; review findings return to the implementer for repair.
+  generated code, debugging helpers, and small fixes. Sol specifies the change;
+  DeepSeek Flash reviews routine implementation work, while Sol reviews
+  high-difficulty work. Review findings return to the implementer for repair.
 - An unavailable implementation model does not transfer code ownership to Sol.
   Keep the bounded handoff ready and report the unavailable route.
 - Discuss architecture, scope, and tradeoffs with the user before implementation.
   Carry accepted decisions forward without repeatedly asking for confirmation.
   Do not expand the agreed scope or introduce a new framework during repair.
 - Use this cycle: discuss -> Sol prepares a bounded bead -> Luna/Flash implements
-  and tests -> Sol reviews -> the implementer repairs findings -> close when the
-  agreed acceptance is satisfied.
+  and tests -> DeepSeek Flash reviews routine work (Sol reviews high-difficulty
+  work) -> the implementer repairs findings -> close when the agreed acceptance
+  is satisfied.
 - Implementation and repair take place in a named Git worktree on a task branch,
   with the bead ID in the worktree name: `target/worktrees/<bead>` on
   `task/<bead>`, with its redirected Cargo cache at
@@ -37,8 +41,9 @@ factory's runtime routing table, task-release authority, or promotion policy.
   refuses while Cargo is running. First confirm all test sources are delivered and
   preserve all run evidence outside the worktree. Preserve dirty or unmerged
   worktrees and report the remaining work; never force removal or discard changes.
-- After Sol approves acceptance, commit the completed task's reviewed changes
-  before marking delivery complete. Stage only that task's files or hunks;
+- After the assigned reviewer approves acceptance, commit the completed task's
+  reviewed changes before marking delivery complete. Stage only that task's files
+  or hunks;
   preserve unrelated and unreviewed work. A shared dirty workspace is not a
   reason to commit every pending file. Commit with an explicit pathspec
   (`git commit -- <paths>`) whenever the index may already hold another session's

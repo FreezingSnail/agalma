@@ -292,3 +292,244 @@ Note on paths: earlier sections reference the worktree
 `/Users/connorfranc/code/agalma/.worktrees/agalma-5fy.9`; the live, correct
 worktree is `/Users/connorfranc/code/agalma/target/worktrees/agalma-5fy.9`. The
 historical attempts are unchanged.
+
+# SF.10 fresh goal-to-closure pipeline proof (`agalma-5fy.10`)
+
+Appended 2026-10-16 by `opencode-go/deepseek-v4.1-flash`. This section is
+separate from and does not rewrite any SF.9 section above; those historical
+receipts/identities are unchanged.
+
+## Scope and identity
+
+- Status: **blocked** on production repair `agalma-5fy.18`, whose execution
+  approval gate is `agalma-my9`. SF.10 acceptance is not satisfied. The dirty
+  task worktree and redirected cache are retained; no changes are committed.
+- Bead: `agalma-5fy.10` (SF.10). Human-requested bounded verification
+  experiment (scripted local verification; **not** live-provider acceptance,
+  promotion, or SF epic completion).
+- Repository: Agalma; worktree
+  `/Users/connorfranc/code/agalma/target/worktrees/agalma-5fy.10`; task branch
+  `task/agalma-5fy.10`; base/HEAD `0ba04eee0a5de596a81d14742c8d64555d8b7ba2`.
+- Working files and their SHA-256 for the superseded initial run
+  (`20261016-sf10-focused-01/source.env`; untracked files included):
+  - `crates/agalma-conductor/tests/sf_pipeline_proof.rs` (new) —
+    `5977abd0ff60cbbf26c6cb5914cdbdf3e3e51ff98de457462e59a0abfbcfd87e`
+  - `fixtures/self-build/pipeline-goal.md` (new) —
+    `00cf6cbaf766559e309b85010c6a7710ae98e22fd5523c9e6316fb605e822b38`
+  - `docs/self-build-evidence.md` (historical document before this SF.10 append) —
+    `0291df3e21c7f943c6fcb8ef98f2d3e9f21716e4db07263c2d4181466b7cebaa`
+- Frozen pre-run source identity (HEAD, `git status --porcelain`, `git diff`,
+  SHA-256, and `git diff --no-index` byte copies of the untracked files) is under
+  `20261016-sf10-focused-01/source.env` and `20261016-sf10-focused-01/source-copies/`.
+  `build-inputs.txt` records only HEAD; the SHA-256 + no-index copies supplement
+  it honestly.
+- The failing required-assertion run freezes its own sources in
+  `20261016-sf10-baseline-defect-01/source.env` and `source-copies/`. Its test
+  source SHA-256 is
+  `c1ff81962cdaefa917e49ffd7fa94445af9924816c6614535d8041715e81ef49`;
+  the goal fixture is unchanged.
+- Environment: macOS (`darwin`), `cargo test --offline --locked`, isolated
+  `CARGO_TARGET_DIR=/Users/connorfranc/code/agalma/target/worktree-caches/agalma-5fy.10/target`,
+  `CARGO_INCREMENTAL=0` (runner default).
+- Persistent evidence root (outside the worktree):
+  `/Users/connorfranc/code/agalma/target/test-runs/agalma-5fy.10/`.
+
+## Experiment stages and observations
+
+`crates/agalma-conductor/tests/sf_pipeline_proof.rs` drives the **real
+production goal-to-closure control paths** over a fresh bounded scratch
+source-feature goal (`fixtures/self-build/pipeline-goal.md`) in an isolated
+scratch git origin + scratch `bd` store. Only the *model/harness responses* are
+scripted through the established seams: the `ConciergeSession`, `DesignerSession`
+and `ReviewerSession` injected traits. The output-contract parse, planner-route
+decision, `bd` epic/design verification, CP.1 decomposition gate, native
+human-gate reconciliation, `TaskPackage/v1` admission, protected behavioral
+verification, integration, prerequisite-aware review admission, closure recheck,
+and actual `bd` epic closure are all real.
+
+| Case | Intended check and observed coverage |
+|---|---|
+| `fresh_goal_reaches_staged_children_then_execution_review_and_epic_closure` | A fresh goal becomes a designed epic; the designer authors 8 open, approval-held `staged` children each pinned by exactly one well-formed **unresolved** native human gate; approval does not release them (no ready work, no execution); the human resolves each gate; every released child executes through `agalma work` (scripted activity mode), the immutable package + operator **protected baseline** independently judge behavior, and the candidate integrates exactly once. Then, in the same lineage, an open blocking prerequisite waits with **zero reviewer calls** and no drift hold; the completed prerequisite admits **exactly one** review; the epic is **actually closed** in `bd`. Repeat runs add no duplicate integration and no duplicate review. It also **requires** that the admitted review baseline precede the integrated candidate and that the reviewer's diff cover the actual first `src/lib.rs` feature change (`answer() 0 -> 42`) — the assertion that currently fails on `main` (see the missing-baseline defect below). |
+| `invalid_decomposition_cannot_close_the_epic` | A rule-violating decomposition is rejected, its children are `decomp-rejected`, exactly one `decomp-fix` rework task is filed, no child is approved, and the epic stays open. |
+| `missing_human_release_leaves_children_approval_held_and_the_epic_open` | Approved-but-unreleased children stay open and approval-held by their native gates; no execution is created, the origin never advances, and the epic never silently closes. |
+| `timeout_after_authoring_reconciles_the_committed_decomposition` | A designer that hits the turn bound **after authoring** still reconciles its committed decomposition in the same pass (both `timed_out` and `approved`); the epic stays open. |
+| `open_prerequisite_waits_with_zero_reviewer_calls_and_no_new_drift_hold` | An open blocking prerequisite yields `WaitingPrerequisite` with 0 reviewer dispatches, no `review-drift` label, no `drift-fix` task, and no global dispatch hold. |
+| `drift_withholds_epic_closure` | A `REVIEW: DRIFT` verdict withholds closure, applies the `review-drift` hold, and files one `drift-fix` rework task. |
+| `graph_or_design_edit_withholds_stale_closure` | A blocking-edge or design edit between reviewer dispatch and approval records a stale admission, denies closure, and leaves the epic open. |
+| `pipeline_gate_invariants_hold_over_generated_operation_sequences` | Despite its name, this property generates static child sets and defect intents, not operation sequences. With seed `0x5F10_9001_CAFE_0007` and 240 generated-input cases, it checks the composed decomposition-gate verdict against an independent model, rule-level details (`count-budget`, `schema-section`, `intake-block`), and approval association classifications (`Missing`/`Unresolved`/`Malformed`). Both accepted and rejected inputs are required. Human resolution is exercised by the concrete happy-path case. |
+
+### Superseded run `20261016-sf10-focused-01` (insufficient assertions — NOT a full proof)
+
+> Superseded by the required-assertion run below. Its 8/8 result reflected
+> assertions that accepted an **empty** reviewer diff; it did **not** prove
+> independent review of the integrated feature, so it is retained as
+> superseded evidence only, never as SF.10 acceptance.
+
+- `status=passed`, `passed=8 failed=0 ignored=0`, `peak_concurrency=1`, exit `0`
+  (`jobs/0.status` = `0`); total exec 177.25s.
+- Retained happy-path fixture `sf-pipeline-full-*`: origin history is
+  `seed`, `bd init: initialize beads issue tracking`, `candidate
+  candidate/exec-sfafull-<id>.1-1` (one verified candidate commit);
+  8 scope pins; 8 materialized protected `runner.sh` judges; the review attempt
+  snapshot (`admission.json`, `definition.json`, `design.txt`, `diff.patch`,
+  `prompt.md`) and `approved.json`; review admission
+  `decision=eligible`, `children=8`, `blocking_ids=[]`.
+- Route/allowance: **no live or paid inference**. The boot sweep/review paid
+  planner gate stays unavailable to the work CLI (only the *builder-scoped* free
+  selector is passed; the legacy global `--model` is never set), so no live
+  designer/reviewer session can slip through. A paid Flash builder selection is
+  refused, never substituted. Scripted transport records zero usage.
+
+### Missing review-baseline defect (production) — FAILED required experiment (`20261016-sf10-baseline-defect-01`)
+
+The happy trace now carries a **required** assertion: the admitted review
+baseline must precede the integrated candidate and the reviewer's diff must cover
+the actual first `src/lib.rs` feature change (seed `answer() == 0` -> candidate
+`answer() == 42`). It does **not** hand-set `review-start`, add a pre-landing
+commit, or vary sibling content; the production call ordering is the subject.
+
+On current `main` (`0ba04ee`) this assertion **fails**, exposing a production
+defect: `work.rs` calls `review::record_start_on_land` **after** `execute_task`
+returns `Terminal::Done` (after the first child integrates), and
+`review.rs` `record_start_on_land` samples the **current** `HEAD`. The first
+feature change is therefore excluded from the epic review baseline.
+
+- Run: `target/test-runs/agalma-5fy.10/20261016-sf10-baseline-defect-01/`
+  (`summary.json` `status=failed`, `passed=0 failed=1`, `jobs/0.status` = `101`).
+- Exact failure (`sf_pipeline_proof.rs:1111`):
+  `assertion left != right failed: the admitted review baseline must precede the
+  integrated candidate; production sampled it after the first feature landed,
+  excluding that change from the review` — `base_sha == candidate_sha`.
+- Retained fresh lineage (`fixtures/sf-pipeline-full-*`, epic `sfafull-kxp`):
+  - origin: `seed 8204864` -> `bd init 5164a7a` -> `candidate 14c9223`
+    (`candidate candidate/exec-sfafull-kxp.1-1`).
+  - admitted `base_sha = candidate_sha = 14c9223…`; reviewer `diff.patch` = **0
+    bytes**.
+  - the excluded change (`bd-init 5164a7a` -> `candidate 14c9223`, `src/lib.rs`)
+    is the actual feature (`answer() 0 -> 42`).
+- Minimal diagnostic + raw artifacts: `defect-diagnostic.md`,
+  `raw-admission-snapshot.json`, `raw-reviewer-diff.patch`, `raw-origin-log.txt`
+  under that run dir.
+- This is a **production defect outside SF.10 ownership** (production `work.rs` /
+  `review.rs`). Per the SF.10 stopping condition it is **reported, not repaired**:
+  no production source change, commit, closure, or sibling dispatch was made.
+  Repair bead `agalma-5fy.18` directly blocks SF.10; its native human execution
+  approval gate `agalma-my9` remains open. The repair has not been dispatched.
+
+## Known limitations
+
+- Everything here is **scripted transport**: the model/harness responses are
+  deterministic stand-ins. This is **not** a vendor/model performance
+  measurement and must not be described as a Flash inference win.
+- **The empty reviewer diff is a production defect, not a fixture property**
+  (see the missing-baseline defect above). Because production records the review
+  baseline after the first child integrates, the first feature change is excluded
+  from the review; a non-empty diff would only appear for later sibling changes
+  and would still omit the first change. Until the defect is repaired, the SF.10
+  happy trace fails its required assertion and SF.10 is **not** verified.
+- The stale graph/design negative cases use a distinct `landed_epic` setup
+  (a pre-landed closed `staged` child + recorded baseline), separate from the
+  fresh-goal lineage; they are disclosed as such and exercise only the review
+  recheck boundary.
+- This proof composes existing SF/SF.11 production surfaces; it adds no
+  production code. A defect found elsewhere is a sibling deviation, not an SF.10
+  change.
+
+## Commands, exit status, and raw logs
+
+Initial focused run (unified runner; `RUN_ID` set explicitly) — **superseded**
+by the required-assertion run (its assertions accepted an empty reviewer diff):
+
+```sh
+cd /Users/connorfranc/code/agalma/target/worktrees/agalma-5fy.10
+BEAD=agalma-5fy.10 RUN_ID=20261016-sf10-focused-01 \
+RUN_ROOT=/Users/connorfranc/code/agalma/target/test-runs \
+CARGO_TARGET_DIR=/Users/connorfranc/code/agalma/target/worktree-caches/agalma-5fy.10/target \
+AGALMA_TEST_RUN_ROOT=/Users/connorfranc/code/agalma/target/test-runs/agalma-5fy.10/20261016-sf10-focused-01/fixtures \
+AGALMA_TEST_RETAIN=1 \
+make test-focused SELECTION='-p agalma-conductor --test sf_pipeline_proof'
+```
+
+- Result: **exit 0**, `8 passed / 0 failed / 0 ignored` (superseded; not a full
+  proof).
+
+Required-assertion run (single happy-path filter) — **FAILED**, demonstrating the
+production defect:
+
+```sh
+cd /Users/connorfranc/code/agalma/target/worktrees/agalma-5fy.10
+BEAD=agalma-5fy.10 RUN_ID=20261016-sf10-baseline-defect-01 \
+RUN_ROOT=/Users/connorfranc/code/agalma/target/test-runs \
+CARGO_TARGET_DIR=/Users/connorfranc/code/agalma/target/worktree-caches/agalma-5fy.10/target \
+AGALMA_TEST_RUN_ROOT=/Users/connorfranc/code/agalma/target/test-runs/agalma-5fy.10/20261016-sf10-baseline-defect-01/fixtures \
+AGALMA_TEST_RETAIN=1 \
+make test-focused SELECTION='-p agalma-conductor --test sf_pipeline_proof fresh_goal_reaches_staged_children_then_execution_review_and_epic_closure'
+```
+
+- Result: **exit 2 / `status=failed`**, `passed=0 failed=1` (`jobs/0.status` = 101),
+  135.43s. Raw log `jobs/00-agalma-conductor::sf_pipeline_proof.log`; minimal
+  diagnostic `defect-diagnostic.md`; raw `raw-admission-snapshot.json`,
+  `raw-reviewer-diff.patch`, `raw-origin-log.txt`; pre-run `source.env` +
+  `source-copies/`.
+- Superseded initial run's raw log/status/env/fixtures:
+  `target/test-runs/agalma-5fy.10/20261016-sf10-focused-01/`
+  (`summary.json`, `summary.txt`, `run.env`,
+  `plan.txt`, `build-inputs.txt`, `jobs/00-agalma-conductor::sf_pipeline_proof.log`,
+  `jobs/0.status`, `source.env`, `source-copies/`, `fixtures/`, `build/`).
+
+For a rerun, choose a new `RUN_ID` and matching absolute fixture path; preserve
+these historical run directories. The commands above record the original runs.
+
+### Development iteration (`20261016-sf10-dev-01`) — non-authoritative
+
+- A raw-binary dev iteration was used while bringing the test up (superseded by
+  the authoritative runner run above). Its preserved fixtures are under
+  `target/test-runs/agalma-5fy.10/20261016-sf10-dev-01/fixtures/`; the exact
+  command, observed `8 passed / 0 failed`, exit `0` (231.43s), and the honest
+  note that **pre-run source identity was not captured** are recorded in
+  `20261016-sf10-dev-01/dev-invocation.md`. That identity is not reconstructed
+  from later-edited sources; use `20261016-sf10-focused-01/source.env`.
+
+## Review focus
+
+1. **Production defect (SF.10 result):** epic review baseline excludes the first
+   integrated feature change. `work.rs` records `review::record_start_on_land`
+   after the child lands and `review.rs` samples current `HEAD`, so
+   `base_sha == candidate_sha` and the reviewer `diff.patch` is empty. SF.10's
+   required assertion fails on `main` (`0ba04ee`); repair `agalma-5fy.18` blocks
+   SF.10. No production change was made here.
+2. SF.11's waiting -> prerequisite completion -> exactly one review/closure is
+   exercised **inside the same fresh goal-to-execution lineage** (the happy
+   path), in addition to the separate `landed_epic` negative fixtures. Those
+   other cases pass; they use a distinct `landed_epic` baseline setup (disclosed)
+   and do not mask the defect.
+3. Superseded run `20261016-sf10-focused-01` (8/8) accepted an empty reviewer
+   diff and is retained as superseded evidence only; it is not SF.10 proof.
+4. This is scripted verification only. No live/paid acceptance, promotion, or SF
+   epic closure is claimed.
+
+## SF.10 post-repair verification (2026-10-17)
+
+The preceding defect finding and failed assertion describe the pre-fix revision
+`0ba04eee0a5de596a81d14742c8d64555d8b7ba2`. The reviewed SF.18 repair was
+integrated as `c0f4eea42d6e41e3e359a4bc0b75f57ac3fa9d6f`; the retained SF.10
+checks now pass on that source. The historical failure and superseded empty-diff
+run above remain unchanged. Status and gate statements in the earlier SF.10
+appendix are also historical: SF.18 has been reviewed, merged, and its execution
+gate closed.
+
+- Happy-path regression: `20261017-sf10-post-fix-happy-01`, passed 1/1,
+  compile 4,294 ms, execution 184,014 ms. Its reviewer admission uses the
+  pre-integration base and its diff contains the first `src/lib.rs` feature
+  change.
+- Required SF.10 target: `20261017-sf10-post-fix-required-01`, passed 8/8,
+  compile 382 ms, execution 223,035 ms, 0 failed/ignored.
+- Both raw run records, exact commands/environment, logs and fixtures are under
+  `/Users/connorfranc/code/agalma/target/test-runs/agalma-5fy.10/` in the
+  corresponding run directories. Pre-run source identity is recorded in
+  `source-identity-post-sf18.txt` and `source-identity-post-sf18-full.txt`;
+  both identify HEAD `c0f4eea` and the same test/goal source hashes. The SF.10
+  working changes remain in `task/agalma-5fy.10` for Sol review.
+- This establishes the scripted local SF.10 acceptance against the reviewed
+  fix. It does not establish live-provider behavior, promotion, or SF epic
+  closure.

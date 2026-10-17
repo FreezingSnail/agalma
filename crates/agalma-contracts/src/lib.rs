@@ -22,6 +22,7 @@ pub mod execution;
 pub mod harness;
 pub mod ids;
 pub mod ledger;
+pub mod plugin;
 pub mod process;
 pub mod snapshot;
 pub mod task_package;
@@ -55,12 +56,36 @@ pub use harness::{
 };
 pub use ids::{ArtifactRef, AttemptId, BindingId, ExecutionId, OperationId, SessionId, TaskId};
 pub use ledger::{
-    CommitBatch, CommitReceipt, ControlReceipt, DigestRecord, DirectiveRow, DirectiveState,
-    DispatchIntent, ExecutionEvent, ExecutionRecord, LedgerApi, OperationReceipt, TimerRecord,
-    TimerState,
+    CommitBatch, CommitReceipt, ComponentCommit, ComponentCommitAnchor, ComponentEvent,
+    ComponentEventRow, ComponentOperation, ComponentOperationRow, ComponentReceipt,
+    ComponentReceiptRow, ComponentStateRow, ControlReceipt, DigestRecord, DirectiveRow,
+    DirectiveState, DispatchIntent, ExecutionEvent, ExecutionRecord, LedgerApi, OperationReceipt,
+    TimerRecord, TimerState, COMPONENT_COMMIT_FAMILY, COMPONENT_COMMIT_FORMAT,
+};
+/// The component-store operation lifecycle (distinct from
+/// [`harness::OperationState`], re-exported here under a component-qualified
+/// name to avoid a root-name collision).
+pub use ledger::OperationState as ComponentOperationState;
+pub use plugin::{
+    missing_approved_capabilities, ActionDescriptor, ActionIntent, ActionScope, Actor, DomainApi,
+    Durability, HealthState, ManifestEntrypoint, PluginCancelRequest, PluginHealth,
+    PluginInstallation, PluginManifest, PluginOperationStatus, PluginSnapshot,
+    PluginSnapshotEntry, ReportEnvelope, ReportPublication, ReportSchemaRef, StateCompatibility,
+    View, ViewKind, ACTION_INTENT_FAMILY, ACTION_INTENT_FORMAT, COMPONENT_CHECKPOINT_LIMIT_BYTES,
+    COMPONENT_COMMIT_MAX_ROWS, COMPONENT_STORE_CAPABILITY, MANIFEST_DOCUMENT_LIMIT_BYTES,
+    PLUGIN_CANCEL_REQUEST_FAMILY, PLUGIN_CANCEL_REQUEST_FORMAT, PLUGIN_HEALTH_FAMILY,
+    PLUGIN_HEALTH_FORMAT, PLUGIN_INSTALLATION_FAMILY, PLUGIN_INSTALLATION_FORMAT,
+    PLUGIN_MANIFEST_FAMILY, PLUGIN_MANIFEST_FORMAT, PLUGIN_OPERATION_STATUS_FAMILY,
+    PLUGIN_OPERATION_STATUS_FORMAT, PLUGIN_SNAPSHOT_FAMILY, PLUGIN_SNAPSHOT_FORMAT,
+    PLUGIN_SNAPSHOT_PAYLOAD_LIMIT_BYTES, PROTOCOL_MAJOR, REPORT_ENVELOPE_FAMILY,
+    REPORT_ENVELOPE_FORMAT, REPORT_PAYLOAD_LIMIT_BYTES, REPORT_PUBLICATION_FAMILY,
+    REPORT_PUBLICATION_FORMAT,
 };
 pub use process::{ProcessApi, ProcessChild, ProcessSpec};
-pub use snapshot::{StateSnapshot, SNAPSHOT_FORMAT};
+pub use snapshot::{
+    CompleteStateV2, SnapshotDecisionOutcomeRow, SnapshotDecisionRow, COMPLETE_STATE_FORMAT,
+    COMPLETE_STATE_SCHEMA_VERSION, StateSnapshot, SNAPSHOT_FORMAT,
+};
 pub use task_package::{
     Authorization, AuthorizationOrigin, BindingPin, Budget, ContextItem, ContextKind, Definition,
     DirectiveRef, PackageArtifactRef, RepositoryRef, Role, RolePin, Scope, TaskPackage, TextObject,

@@ -22,10 +22,11 @@
 use std::collections::BTreeMap;
 
 use agalma_contracts::{
-    ControlReceipt, ExecutionEvent, ExecutionId, ExecutionPhase, ExecutionRecord, ExecutionState,
-    LedgerApi,
+    Completeness, ControlReceipt, DigestRecord, ExecutionEvent, ExecutionPhase, ExecutionRecord,
+    ExecutionState, ExactAmount, LedgerApi, SourceState, UsageCost,
 };
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::digest::{cost_from_events, Digest};
 
@@ -37,7 +38,7 @@ pub const PARKED_KIND: &str = "parked";
 pub const CONTROL_KIND: &str = "control";
 
 /// Derived economics + timeline section of the read model.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct EconomicsSnapshot {
     /// One row per execution, in read-model (execution-id) order.
     pub rows: Vec<EconomicsRow>,
@@ -48,7 +49,7 @@ pub struct EconomicsSnapshot {
 }
 
 /// One execution's cost/budget row.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct EconomicsRow {
     pub execution_id: String,
     pub task_id: String,
@@ -175,28 +176,244 @@ pub struct Alert {
     pub reason: String,
 }
 
-/// Derive the economics section from the read model.
+/// One source-bound read: explicit availability so a failed read is never
+/// mistaken for a successful empty result (or a numeric zero).
+#[derive(Clone, Debug, PartialEq)]
+pub enum SourceRead<T> {
+    /// Read succeeded and holds data.
+    Available(T),
+    /// Read succeeded and holds no entries.
+    Empty,
+    /// The source does not exist.
+    Missing(String),
+    /// The source exists but could not be read.
+    Unreadable(String),
+}
+
+impl<T> SourceRead<T> {
+    /// The wire [`SourceState`] this read observation maps to.
+    pub fn state(&self) -> SourceState {
+        match self {
+            SourceRead::Available(_) => SourceState::Available,
+            SourceRead::Empty => SourceState::Empty,
+            SourceRead::Missing(_) => SourceState::Missing,
+            SourceRead::Unreadable(_) => SourceState::Unreadable,
+        }
+    }
+
+    /// A human-readable detail for the observation (`""` when self-evident).
+    pub fn detail(&self) -> &str {
+        match self {
+            SourceRead::Missing(detail) | SourceRead::Unreadable(detail) => detail,
+            SourceRead::Available(_) | SourceRead::Empty => "",
+        }
+    }
+
+    /// Whether the read completed (available or empty).
+    pub fn is_readable(&self) -> bool {
+        matches!(self, SourceRead::Available(_) | SourceRead::Empty)
+    }
+
+    /// The carried value, when the read succeeded with entries.
+    pub fn value(&self) -> Option<&T> {
+        match self {
+            SourceRead::Available(value) => Some(value),
+            _ => None,
+        }
+    }
+}
+
+/// Bound domain reads for the economics projection: every source is explicit
+/// [`SourceRead`], so a missing or unreadable ledger stays visible.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EconomicsInputs {
+    pub executions: SourceRead<Vec<ExecutionRecord>>,
+    pub events: BTreeMap<String, SourceRead<Vec<ExecutionEvent>>>,
+    pub digests: BTreeMap<String, SourceRead<Vec<DigestRecord>>>,
+    pub control_receipts: SourceRead<Vec<ControlReceipt>>,
+}
+
+impl EconomicsInputs {
+    /// Every source missing (no ledger bound).
+    pub fn missing(detail: impl Into<String>) -> Self {
+        let detail = detail.into();
+        EconomicsInputs {
+            executions: SourceRead::Missing(detail.clone()),
+            events: BTreeMap::new(),
+            digests: BTreeMap::new(),
+            control_receipts: SourceRead::Missing(detail),
+        }
+    }
+
+    /// Every source unreadable (a bound ledger read failed).
+    pub fn unreadable(detail: impl Into<String>) -> Self {
+        let detail = detail.into();
+        EconomicsInputs {
+            executions: SourceRead::Unreadable(detail.clone()),
+            events: BTreeMap::new(),
+            digests: BTreeMap::new(),
+            control_receipts: SourceRead::Unreadable(detail),
+        }
+    }
+}
+
+/// The derived economics snapshot plus each source's observed availability.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct EconomicsProjection {
+    pub snapshot: EconomicsSnapshot,
+    /// Availability of the execution list.
+    pub executions: SourceState,
+    /// Availability of the event read across observed executions.
+    pub events: SourceState,
+    /// Availability of the digest read across observed executions.
+    pub digests: SourceState,
+    /// Availability of the durable control receipts.
+    pub control_receipts: SourceState,
+    /// Completeness of the observed `usage` events: `Complete` only when every
+    /// usage event carried its usage fields, `Partial` when some fields were
+    /// absent, `Unknown` when the execution/event source failed.
+    pub usage: Completeness,
+}
+
+impl EconomicsProjection {
+    /// Whether usage and cost totals can be stated (no execution or event
+    /// source failed).
+    pub fn usage_is_known(&self) -> bool {
+        matches!(self.executions, SourceState::Available | SourceState::Empty)
+            && matches!(self.events, SourceState::Available | SourceState::Empty)
+    }
+
+    /// Known usage/cost/allowance totals. Any missing or unreadable source makes
+    /// the affected total `None` (unknown), never a numeric zero.
+    pub fn usage_cost(
+        &self,
+        observed_at_unix_ms: u64,
+    ) -> UsageCost {
+        let Some(rows) = self.known_rows() else {
+            return UsageCost {
+                completeness: Completeness::Unknown,
+                usage: None,
+                usage_unit: "tokens".to_string(),
+                cost: None,
+                allowance: None,
+                cost_unit: "usd".to_string(),
+                observed_at_unix_ms,
+            };
+        };
+        // Exact wider accumulation: per-row and aggregate token overflow is
+        // explicit Unknown, never a wrapped/saturated complete total.
+        let mut tokens_total: u128 = 0;
+        for row in rows {
+            tokens_total += row.tokens_in as u128 + row.tokens_out as u128;
+        }
+        let token_overflow = tokens_total > u64::MAX as u128;
+        let usd: f64 = rows.iter().map(|row| row.spend_usd).sum();
+        let allowance_known = !rows.is_empty() && rows.iter().all(|row| row.allowance_usd.is_some());
+        let allowance_usd: f64 = rows.iter().filter_map(|row| row.allowance_usd).sum();
+        // Unknown/malformed/overflowing usage never fabricates a numeric total.
+        let completeness = if token_overflow {
+            Completeness::Unknown
+        } else {
+            self.usage
+        };
+        let totals_known = completeness == Completeness::Complete;
+        UsageCost {
+            completeness,
+            usage: totals_known
+                .then(|| ExactAmount::parse(&tokens_total.to_string()).ok())
+                .flatten(),
+            usage_unit: "tokens".to_string(),
+            cost: totals_known.then(|| exact_amount(usd)).flatten(),
+            allowance: allowance_known.then(|| exact_amount(allowance_usd)).flatten(),
+            cost_unit: "usd".to_string(),
+            observed_at_unix_ms,
+        }
+    }
+
+    /// The rows usable for totals, or `None` when an input source failed.
+    fn known_rows(&self) -> Option<&[EconomicsRow]> {
+        self.usage_is_known().then_some(self.snapshot.rows.as_slice())
+    }
+}
+
+/// Format a finite, non-negative `f64` as an exact decimal amount, or `None`.
+fn exact_amount(value: f64) -> Option<ExactAmount> {
+    // Normalize the empty-sum `-0` to `0` so a known zero is a valid amount.
+    let value = if value == 0.0 { 0.0 } else { value };
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    ExactAmount::parse(&format!("{value:.6}")).ok()
+}
+
+/// Derive the economics section from bound domain inputs.
 ///
-/// `allowances` maps execution id → intake-fence `budget_usd`; absent entries are
-/// unknown. The derivation is read-only and never fails: a ledger read error for
-/// one execution degrades to an empty event list for that row.
-pub fn derive<L: LedgerApi + ?Sized>(
-    ledger: &L,
-    records: &[ExecutionRecord],
+/// Every source is explicit: a missing or unreadable execution/event/digest/
+/// receipt read never degrades into an empty successful section or a numeric
+/// zero total.
+pub fn derive_bound(
+    inputs: &EconomicsInputs,
     allowances: &BTreeMap<String, f64>,
-) -> EconomicsSnapshot {
+) -> EconomicsProjection {
+    let records: Vec<ExecutionRecord> = match &inputs.executions {
+        SourceRead::Available(records) => records.clone(),
+        _ => Vec::new(),
+    };
+
     let mut rows = Vec::new();
     let mut timeline = Vec::new();
     let mut alerts = Vec::new();
+    let mut events_failed = false;
+    let mut events_available = false;
+    let mut digests_failed = false;
+    let mut digests_available = false;
+    let mut usage = Completeness::Complete;
 
-    for record in records {
+    for record in &records {
         let execution_id = record.execution_id.as_str().to_string();
-        let events = ledger.events(&record.execution_id).unwrap_or_default();
-        let spend = cost_from_events(&events);
+        let events: &[ExecutionEvent] = match inputs.events.get(&execution_id) {
+            Some(SourceRead::Available(events)) => events,
+            Some(SourceRead::Empty) => &[],
+            _ => {
+                events_failed = true;
+                &[]
+            }
+        };
+        if !events.is_empty() {
+            events_available = true;
+        }
+        if inputs.events.get(&execution_id).map_or(true, |read| !read.is_readable()) {
+            usage = Completeness::Unknown;
+        } else {
+            usage = merge_usage_completeness(usage, usage_completeness(events));
+        }
+        let digest_rows: &[DigestRecord] = match inputs.digests.get(&execution_id) {
+            Some(SourceRead::Available(rows)) => rows,
+            Some(SourceRead::Empty) => &[],
+            _ => {
+                digests_failed = true;
+                &[]
+            }
+        };
+        if !digest_rows.is_empty() {
+            digests_available = true;
+        }
+        // Preflight the per-execution usage counters before the shared helper:
+        // `cost_from_events` adds inside `u64`, so any execution whose in/out
+        // total exceeds `u64::MAX` must be Unknown rather than overflow/wrap.
+        let counter_overflow = usage_counter_overflow(events);
+        let spend = if counter_overflow {
+            crate::digest::CostSummary::default()
+        } else {
+            cost_from_events(events)
+        };
+        if counter_overflow {
+            usage = Completeness::Unknown;
+        }
 
         let mut stalls = 0u32;
         let mut last_health_reason: Option<String> = None;
-        for event in &events {
+        for event in events {
             if event.kind != PROVIDER_HEALTH_KIND {
                 continue;
             }
@@ -206,7 +423,7 @@ pub fn derive<L: LedgerApi + ?Sized>(
             }
         }
 
-        let parked_reason = crate::status::parked_reason(ledger, record);
+        let parked_reason = parked_reason_from_events(events);
         let parked = matches!(record.state, ExecutionState::Parked)
             || matches!(record.phase, ExecutionPhase::Parked);
         let degraded = stalls > 0;
@@ -215,9 +432,9 @@ pub fn derive<L: LedgerApi + ?Sized>(
         let remaining_usd = allowance_usd.map(|allowance| allowance - spend.usd);
         let over_budget = remaining_usd.map(|r| r < 0.0).unwrap_or(false);
 
-        let digest = latest_digest(ledger, &record.execution_id);
+        let digest = digest_summary(digest_rows);
 
-        for event in &events {
+        for event in events {
             if let Some(summary) = summarize_event(event) {
                 timeline.push(TimelineEntry {
                     execution_id: execution_id.clone(),
@@ -229,10 +446,9 @@ pub fn derive<L: LedgerApi + ?Sized>(
             }
         }
         if let Some(digest_summary) = &digest {
-            let recorded_at = ledger
-                .digests_for_execution(&record.execution_id)
-                .ok()
-                .and_then(|rows| rows.last().map(|row| row.recorded_at_unix_ms))
+            let recorded_at = digest_rows
+                .last()
+                .map(|row| row.recorded_at_unix_ms)
                 .unwrap_or(0);
             timeline.push(TimelineEntry {
                 execution_id: execution_id.clone(),
@@ -284,11 +500,13 @@ pub fn derive<L: LedgerApi + ?Sized>(
         });
     }
 
-    // Durable control receipts (pause/resume/cancel, applied or denied) join
-    // the curated timeline (`docs/tui-design.md` L101); a ledger read error
-    // degrades to no receipt entries.
-    for receipt in ledger.control_receipts().unwrap_or_default() {
-        timeline.push(control_entry(&receipt));
+    let receipts: &[ControlReceipt] = match &inputs.control_receipts {
+        SourceRead::Available(receipts) => receipts,
+        SourceRead::Empty => &[],
+        _ => &[],
+    };
+    for receipt in receipts {
+        timeline.push(control_entry(receipt));
     }
 
     // Deterministic oldest-first order: timestamp, then execution, then the
@@ -300,11 +518,197 @@ pub fn derive<L: LedgerApi + ?Sized>(
             .then_with(|| a.sequence.cmp(&b.sequence))
     });
 
-    EconomicsSnapshot {
-        rows,
-        timeline,
-        alerts,
+    let executions_state = match &inputs.executions {
+        SourceRead::Available(records) if records.is_empty() => SourceState::Empty,
+        other => other.state(),
+    };
+    let executions_readable = matches!(
+        &inputs.executions,
+        SourceRead::Available(_) | SourceRead::Empty
+    );
+    // A missing/unreadable execution list means the dependent event and digest
+    // reads never happened: report the execution source state, not `Empty`.
+    let events_state = if !executions_readable {
+        executions_state
+    } else if events_failed {
+        SourceState::Unreadable
+    } else if records.is_empty() {
+        SourceState::Empty
+    } else if events_available {
+        SourceState::Available
+    } else {
+        SourceState::Empty
+    };
+    let digests_state = if !executions_readable {
+        executions_state
+    } else if digests_failed {
+        SourceState::Unreadable
+    } else if records.is_empty() {
+        SourceState::Empty
+    } else if digests_available {
+        SourceState::Available
+    } else {
+        SourceState::Empty
+    };
+    if !executions_readable {
+        usage = Completeness::Unknown;
     }
+
+    EconomicsProjection {
+        snapshot: EconomicsSnapshot {
+            rows,
+            timeline,
+            alerts,
+        },
+        executions: executions_state,
+        events: events_state,
+        digests: digests_state,
+        control_receipts: inputs.control_receipts.state(),
+        usage,
+    }
+}
+
+/// Whether any per-execution usage counter total exceeds `u64::MAX`.
+fn usage_counter_overflow(events: &[ExecutionEvent]) -> bool {
+    let mut tokens_in: u128 = 0;
+    let mut tokens_out: u128 = 0;
+    for event in events {
+        if event.kind != "usage" {
+            continue;
+        }
+        tokens_in += event
+            .payload
+            .get("tokens_in")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u128;
+        tokens_out += event
+            .payload
+            .get("tokens_out")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as u128;
+    }
+    tokens_in > u64::MAX as u128 || tokens_out > u64::MAX as u128
+}
+
+/// Completeness of the `usage` events in one execution's event list.
+///
+/// A recorded usage event with an absent `tokens_in`, `tokens_out`, or
+/// `cost_usd` field is `Partial` — a missing field is never silently read as a
+/// complete zero. No usage events is a known empty (`Complete`).
+fn usage_completeness(events: &[ExecutionEvent]) -> Completeness {
+    let mut seen_usage = false;
+    let mut observed = Completeness::Complete;
+    for event in events {
+        if event.kind != "usage" {
+            continue;
+        }
+        seen_usage = true;
+        // `null`/non-numeric fields are missing, not zeros: only well-typed
+        // fields make the usage observation complete.
+        let fields_complete = event
+            .payload
+            .get("tokens_in")
+            .and_then(Value::as_u64)
+            .is_some()
+            && event
+                .payload
+                .get("tokens_out")
+                .and_then(Value::as_u64)
+                .is_some()
+            && event
+                .payload
+                .get("cost_usd")
+                .and_then(Value::as_f64)
+                .is_some();
+        // Merge the producer's own declared completeness conservatively:
+        // Unknown stays Unknown, Partial stays Partial. A missing declaration
+        // with valid fields is treated as complete.
+        // Producers publish the canonical `Completeness::label()` values
+        // (`Complete`/`Partial`/`Unknown`); accept the exact labels plus their
+        // lowercase spelling, and fail closed to Unknown for anything else.
+        let producer = match event.payload.get("completeness").and_then(Value::as_str) {
+            None => Completeness::Complete,
+            Some(raw) => match raw {
+                "Complete" | "complete" => Completeness::Complete,
+                "Partial" | "partial" => Completeness::Partial,
+                "Unknown" | "unknown" => Completeness::Unknown,
+                _ => Completeness::Unknown,
+            },
+        };
+        let event_state = match (fields_complete, producer) {
+            (_, Completeness::Unknown) => Completeness::Unknown,
+            (false, _) | (_, Completeness::Partial) => Completeness::Partial,
+            (true, Completeness::Complete) => Completeness::Complete,
+        };
+        observed = merge_usage_completeness(observed, event_state);
+    }
+    if !seen_usage {
+        Completeness::Complete
+    } else {
+        observed
+    }
+}
+
+/// Combine per-execution usage completeness (worst case wins).
+fn merge_usage_completeness(current: Completeness, next: Completeness) -> Completeness {
+    match (current, next) {
+        (Completeness::Unknown, _) | (_, Completeness::Unknown) => Completeness::Unknown,
+        (Completeness::Partial, _) | (_, Completeness::Partial) => Completeness::Partial,
+        _ => Completeness::Complete,
+    }
+}
+
+/// Derive the economics section from the read model.
+///
+/// `allowances` maps execution id → intake-fence `budget_usd`; absent entries are
+/// unknown. The derivation is read-only: a ledger read error for one source is
+/// recorded explicitly in [`SourceRead`] rather than fabricated as empty data.
+pub fn derive<L: LedgerApi + ?Sized>(
+    ledger: &L,
+    records: &[ExecutionRecord],
+    allowances: &BTreeMap<String, f64>,
+) -> EconomicsSnapshot {
+    let mut events = BTreeMap::new();
+    let mut digests = BTreeMap::new();
+    for record in records {
+        let execution_id = record.execution_id.as_str().to_string();
+        events.insert(
+            execution_id.clone(),
+            match ledger.events(&record.execution_id) {
+                Ok(events) if events.is_empty() => SourceRead::Empty,
+                Ok(events) => SourceRead::Available(events),
+                Err(error) => SourceRead::Unreadable(error.to_string()),
+            },
+        );
+        digests.insert(
+            execution_id,
+            match ledger.digests_for_execution(&record.execution_id) {
+                Ok(rows) if rows.is_empty() => SourceRead::Empty,
+                Ok(rows) => SourceRead::Available(rows),
+                Err(error) => SourceRead::Unreadable(error.to_string()),
+            },
+        );
+    }
+    let control_receipts = match ledger.control_receipts() {
+        Ok(receipts) if receipts.is_empty() => SourceRead::Empty,
+        Ok(receipts) => SourceRead::Available(receipts),
+        Err(error) => SourceRead::Unreadable(error.to_string()),
+    };
+    let executions = if records.is_empty() {
+        SourceRead::Empty
+    } else {
+        SourceRead::Available(records.to_vec())
+    };
+    derive_bound(
+        &EconomicsInputs {
+            executions,
+            events,
+            digests,
+            control_receipts,
+        },
+        allowances,
+    )
+    .snapshot
 }
 
 /// Map one durable control receipt to a timeline entry (`pause applied by human`).
@@ -326,15 +730,22 @@ fn control_entry(receipt: &ControlReceipt) -> TimelineEntry {
     }
 }
 
-/// Latest recorded digest for `execution`, parsed back into the digest shape.
-fn latest_digest<L: LedgerApi + ?Sized>(
-    ledger: &L,
-    execution: &ExecutionId,
-) -> Option<DigestSummary> {
-    let rows = ledger.digests_for_execution(execution).ok()?;
+/// Latest recorded digest row, parsed back into the digest shape.
+fn digest_summary(rows: &[DigestRecord]) -> Option<DigestSummary> {
     let latest = rows.last()?;
     let digest = serde_json::from_value::<Digest>(latest.summary.clone()).ok()?;
     Some(DigestSummary::from(&digest))
+}
+
+/// The latest recorded `parked` reason from an already-loaded event list.
+fn parked_reason_from_events(events: &[ExecutionEvent]) -> Option<String> {
+    events
+        .iter()
+        .rev()
+        .find(|event| event.kind == PARKED_KIND)
+        .and_then(|event| event.payload.get("reason"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
 }
 
 /// Curated one-line summary for an event, or `None` when the kind is not part
@@ -390,7 +801,9 @@ fn op_attempt(label: &str, operation: Option<&str>, attempt: Option<u64>) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agalma_contracts::{CommitBatch, DigestRecord, ExecutionRecord, ExecutionState, TaskId};
+    use agalma_contracts::{
+        CommitBatch, DigestRecord, ExecutionId, ExecutionRecord, ExecutionState, TaskId,
+    };
     use agalma_ledger::SqliteLedger;
     use agalma_testkit::ScratchDir;
     use serde_json::json;

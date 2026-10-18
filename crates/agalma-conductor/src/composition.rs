@@ -603,6 +603,9 @@ pub struct PluginHost {
     /// driver so a restart's rotated grant replaces/revokes the stale one in the
     /// active service (HP.7 action-specific attachment).
     action_grants: Arc<Mutex<BTreeMap<String, LaunchGrant>>>,
+    /// WEB.2 live component projection cell (refreshed each supervise tick so a
+    /// crash is visible to `control-plane.read/v1` before freshness expiry).
+    pub read_live: Arc<Mutex<Vec<crate::control_plane_read::ProjectedComponent>>>,
 }
 
 /// What one supervise tick observed and did.
@@ -767,6 +770,7 @@ impl PluginHost {
             reports,
             action_sockets: Arc::new(Mutex::new(BTreeMap::new())),
             action_grants: Arc::new(Mutex::new(BTreeMap::new())),
+            read_live: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -820,8 +824,22 @@ impl PluginHost {
         )?;
         let reports = Arc::new(std::sync::Mutex::new(ingestor));
         host.router.router().install_reports(Arc::clone(&reports));
+        // WEB.2: register the hub-owned typed `control-plane.read/v1` read
+        // service once, over the same selected ledger and report projection the
+        // host already owns. Adding a reporting plugin needs no new handler.
+        let read_service = crate::control_plane_read::ControlPlaneReadService::production(
+            host.state_dir.clone(),
+            ledger.clone(),
+            Arc::clone(&reports),
+            Arc::clone(&clock),
+        )
+        .with_live_cell(Arc::clone(&host.read_live));
+        host.router.router().register_adapter(read_service);
         host.reports = Some(reports);
         host.ledger = Some(ledger);
+        // Initialize the live projection at assembly so a read before the first
+        // supervise tick already sees the current registry/health state.
+        host.refresh_read_live();
         Ok(host)
     }
 
@@ -844,6 +862,27 @@ impl PluginHost {
             }
         }
         out
+    }
+
+    /// Refresh the shared WEB.2 live component projection from the current
+    /// registry/health observation.
+    ///
+    /// Called from the production supervise path used by both the interactive
+    /// watch tick and the headless long-running loop, so `control-plane.read/v1`
+    /// sees a supervisor-observed child crash immediately in either mode.
+    pub fn refresh_read_live(&self) {
+        let live = {
+            let reports = self.reports.as_ref().map(|reports| {
+                reports
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            });
+            crate::control_plane_read::live_components(&self.registry, reports.as_deref())
+        };
+        *self
+            .read_live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = live;
     }
 
     /// The host's current generic registry/report-derived plugin components
@@ -1377,6 +1416,10 @@ impl PluginHost {
                 }
             }
         }
+        // Publish the live read projection here, inside the shared supervision
+        // path, so both the interactive watch tick and the headless loop see a
+        // supervisor-observed crash immediately with no callsite refresh.
+        self.refresh_read_live();
         Ok(SuperviseOutcome { crashed, restarted })
     }
 
@@ -1758,6 +1801,7 @@ pub async fn run_plugin_host(args: &PluginHostArgs) -> std::process::ExitCode {
                     eprintln!("agalma: plugin supervise tick failed: {err:?}");
                 }
                 host.refresh_action_sockets();
+                // WEB.2 live projection is published inside `supervise_tick`.
                 // HP.6 reopened addendum: hand the UI the host's current live
                 // registry/report-derived panel (including the current health
                 // observation) so the shipped watch view overlays it after this

@@ -43,7 +43,8 @@ use agalma_contracts::digest::{canonical_digest, FailureCode};
 use agalma_contracts::task_package::BindingPin;
 use agalma_contracts::{
     ComponentOperationState, ComponentReceipt, ContractError, HealthState, PluginHealth,
-    PluginOperationStatus, ReportEnvelope, ReportPublication, PLUGIN_OPERATION_STATUS_FORMAT,
+    PluginOperationStatus, ReportEnvelope, ReportPublication, CONTROL_PLANE_READ_CAPABILITY,
+    PLUGIN_OPERATION_STATUS_FORMAT,
 };
 use agalma_ipc::plugin_server::{
     self, HubHandler, METHOD_INVOKE_CAPABILITY, METHOD_PUBLISH_REPORT, METHOD_RECONCILE_CAPABILITY,
@@ -57,6 +58,8 @@ pub const GRANT_TOKEN_BYTES: usize = 32;
 /// Default maximum nested-capability depth (a spoke cannot recursively
 /// authorize the same operation chain without bound).
 pub const DEFAULT_MAX_DEPTH: u32 = 2;
+/// Maximum wall time admitted for one observation-only read (5 seconds).
+pub const READ_DEADLINE_MAX_MS: u64 = 5_000;
 
 /// The scope a per-launch grant authorizes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -377,6 +380,20 @@ pub trait CapabilityAdapter: Send {
     fn capability(&self) -> &str;
     /// Perform the capability for an authenticated caller `scope`.
     fn invoke(&mut self, scope: &GrantScope, input: &Value) -> Result<Value, ContractError>;
+
+    /// Perform the capability under a caller deadline (Unix milliseconds).
+    ///
+    /// Observation-only adapters override this to bound their source work at
+    /// phase boundaries; the default ignores the bound for effect adapters whose
+    /// deadline is enforced by the router before the call.
+    fn invoke_with_deadline(
+        &mut self,
+        scope: &GrantScope,
+        input: &Value,
+        _deadline_unix_ms: u64,
+    ) -> Result<Value, ContractError> {
+        self.invoke(scope, input)
+    }
 }
 
 impl CapabilityAdapter for Box<dyn CapabilityAdapter> {
@@ -386,6 +403,15 @@ impl CapabilityAdapter for Box<dyn CapabilityAdapter> {
 
     fn invoke(&mut self, scope: &GrantScope, input: &Value) -> Result<Value, ContractError> {
         (**self).invoke(scope, input)
+    }
+
+    fn invoke_with_deadline(
+        &mut self,
+        scope: &GrantScope,
+        input: &Value,
+        deadline_unix_ms: u64,
+    ) -> Result<Value, ContractError> {
+        (**self).invoke_with_deadline(scope, input, deadline_unix_ms)
     }
 }
 
@@ -591,6 +617,17 @@ impl CapabilityRouter {
             .insert(capability, Arc::new(Mutex::new(adapter)));
     }
 
+    /// The injected clock, for callers that must re-check a deadline after
+    /// releasing the router lock.
+    pub fn clock(&self) -> Arc<dyn Fn() -> u64 + Send + Sync> {
+        Arc::clone(&self.now)
+    }
+
+    /// Whether an adapter is registered for `capability` (diagnostics/tests).
+    pub fn has_adapter(&self, capability: &str) -> bool {
+        self.adapters.contains_key(capability)
+    }
+
     /// Install a per-launch grant; returns its stored fingerprint.
     pub fn install_grant(&mut self, grant: &LaunchGrant) -> String {
         self.grants.insert(grant)
@@ -621,9 +658,29 @@ impl CapabilityRouter {
         self.journal.entry(&operation_key(plugin_id, generation, operation_id))
     }
 
-    /// Validate and journal one capability request. **No effect** happens here:
-    /// on any refusal nothing is journaled and no adapter is consulted.
-    pub fn prepare(&mut self, call: &CapabilityCallRequest) -> Result<PreparedInvocation, ContractError> {
+    /// Whether `capability` is observation-only (`control-plane.read/v1`).
+    ///
+    /// Observation-only capabilities are read projections: they are admitted
+    /// while factory effect admission is stopped, are never journaled, and
+    /// return the adapter's typed result directly. Every other capability is an
+    /// effect and keeps the stop/journal/status path.
+    pub fn is_read_only_capability(capability: &str) -> bool {
+        capability == CONTROL_PLANE_READ_CAPABILITY
+    }
+
+    /// Authenticate and validate one capability request without an effect.
+    ///
+    /// `admit_effects` selects whether stop admission applies: effect requests
+    /// require [`StopDecision::Running`] (fail-closed), while observation-only
+    /// reads remain available while stopped. A missing, expired, unknown or
+    /// wrong-method/wrong-generation grant, an unknown method, an ungranted
+    /// capability, a missing adapter and an expired deadline each refuse before
+    /// any journal write or adapter call.
+    fn validate_call(
+        &self,
+        call: &CapabilityCallRequest,
+        admit_effects: bool,
+    ) -> Result<(GrantScope, Arc<Mutex<dyn CapabilityAdapter>>), ContractError> {
         if call.depth > self.max_depth {
             return Err(FailureCode::MissingCapability.failure(
                 &call.plugin_id,
@@ -702,17 +759,61 @@ impl CapabilityRouter {
                 ),
             ));
         }
-        // Stop admission: only Running permits an effect.
-        match self.stop.decision() {
-            StopDecision::Running => {}
-            StopDecision::Stopped(reason) => {
-                return Err(FailureCode::Stopped.failure(&scope.plugin_id, reason))
-            }
-            StopDecision::Unavailable(reason) => {
-                return Err(FailureCode::StateUnavailable.failure(&scope.plugin_id, reason))
+        if admit_effects {
+            // Stop admission: only Running permits an effect.
+            match self.stop.decision() {
+                StopDecision::Running => {}
+                StopDecision::Stopped(reason) => {
+                    return Err(FailureCode::Stopped.failure(&scope.plugin_id, reason))
+                }
+                StopDecision::Unavailable(reason) => {
+                    return Err(FailureCode::StateUnavailable.failure(&scope.plugin_id, reason))
+                }
             }
         }
+        Ok((scope, adapter))
+    }
 
+    /// Validate an observation-only read without journaling or stop admission.
+    ///
+    /// Returns the authenticated scope and the registered read adapter; `None`
+    /// effects are created. The caller runs the adapter outside the router lock.
+    pub fn prepare_read(
+        &self,
+        call: &CapabilityCallRequest,
+    ) -> Result<(GrantScope, Arc<Mutex<dyn CapabilityAdapter>>), ContractError> {
+        if !Self::is_read_only_capability(&call.capability) {
+            return Err(FailureCode::MissingCapability.failure(
+                &call.capability,
+                "capability is not an observation-only read",
+            ));
+        }
+        self.validate_call(call, false)
+    }
+
+    /// Execute an observation-only read and return the adapter's typed result.
+    ///
+    /// The deadline is enforced after the adapter lock is acquired, so a read
+    /// queued behind a busy adapter cannot start once its deadline has passed;
+    /// the adapter then runs under that same check.
+    pub fn invoke_read(&mut self, call: &CapabilityCallRequest) -> Result<Value, ContractError> {
+        let (scope, adapter) = self.prepare_read(call)?;
+        let mut adapter = adapter.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = (self.now)();
+        if call.deadline_unix_ms <= now {
+            return Err(FailureCode::DeadlineExceeded.failure(
+                &scope.plugin_id,
+                format!("read deadline {} passed while queued (now {now})", call.deadline_unix_ms),
+            ));
+        }
+        adapter.invoke(&scope, &call.input)
+    }
+
+    /// Validate and journal one capability request. **No effect** happens here:
+    /// on any refusal nothing is journaled and no adapter is consulted.
+    pub fn prepare(&mut self, call: &CapabilityCallRequest) -> Result<PreparedInvocation, ContractError> {
+        let (scope, adapter) = self.validate_call(call, true)?;
+        let now = (self.now)();
         let input_digest = canonical_digest(&call.input)?;
         let key = operation_key(&scope.plugin_id, scope.binding.generation, &call.operation_id);
         let claim = self.journal.begin(
@@ -859,19 +960,36 @@ impl CapabilityRouter {
 /// cannot deadlock.
 pub struct RouterService {
     router: Mutex<CapabilityRouter>,
+    /// The router's injected clock, readable without the router mutex so the
+    /// admitted read deadline is fixed at request entry.
+    clock: Arc<dyn Fn() -> u64 + Send + Sync>,
+}
+
+/// Admit a read deadline at request entry: the tighter of the caller deadline
+/// and the five-second platform cap, anchored at `now_ms`.
+pub fn admitted_read_deadline(now_ms: u64, requested_deadline_unix_ms: u64) -> u64 {
+    requested_deadline_unix_ms.min(now_ms.saturating_add(READ_DEADLINE_MAX_MS))
 }
 
 impl RouterService {
     /// Wrap a router in an RPC-facing service.
     pub fn new(router: CapabilityRouter) -> RouterService {
+        let clock = router.clock();
         RouterService {
             router: Mutex::new(router),
+            clock,
         }
     }
 
     /// Lock the underlying router (registration/testing).
     pub fn router(&self) -> std::sync::MutexGuard<'_, CapabilityRouter> {
         self.router.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Non-blocking attempt to lock the router (guards "lock released during a
+    /// read" in concurrency tests).
+    pub fn try_router(&self) -> Option<std::sync::MutexGuard<'_, CapabilityRouter>> {
+        self.router.try_lock().ok()
     }
 }
 
@@ -883,6 +1001,49 @@ impl HubHandler for RouterService {
                 format!("malformed capability call: {e}"),
             )
         })?;
+        // Observation-only reads are never journaled and stay available while
+        // factory effect admission is stopped; the adapter is handed back under
+        // the lock and then runs with the lock released.
+        if CapabilityRouter::is_read_only_capability(&call.capability) {
+            // Fix one deadline at request entry, before any lock acquisition.
+            let now = (self.clock)();
+            let admitted = admitted_read_deadline(now, call.deadline_unix_ms);
+            if admitted <= now {
+                return Err(FailureCode::DeadlineExceeded.failure(
+                    &call.plugin_id,
+                    format!("read deadline {} already passed (now {now})", call.deadline_unix_ms),
+                ));
+            }
+            // Bound acquisition of the global router mutex with the same budget;
+            // lock contention must not consume the caller's deadline.
+            let guard = loop {
+                match self.router.try_lock() {
+                    Ok(guard) => break guard,
+                    Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                        break poisoned.into_inner()
+                    }
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        let current = (self.clock)();
+                        if admitted <= current {
+                            return Err(FailureCode::DeadlineExceeded.failure(
+                                &call.plugin_id,
+                                format!(
+                                    "read deadline {admitted} passed while waiting for the hub router lock (now {current})"
+                                ),
+                            ));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                }
+            };
+            // Resolve the adapter under the lock, then release it before I/O.
+            let (scope, adapter) = {
+                let router = &*guard;
+                router.prepare_read(&call)?
+            };
+            drop(guard);
+            return bounded_read(adapter, scope, call.input.clone(), admitted, self.clock.clone());
+        }
         // Validate + journal under the lock, then release it.
         let (status, prepared) = {
             let mut router = self.router.lock().unwrap_or_else(PoisonError::into_inner);
@@ -940,6 +1101,69 @@ impl HubHandler for RouterService {
                 format!("encode report envelope: {e}"),
             )
         })
+    }
+}
+
+/// Run one observation-only read with a hard caller deadline.
+///
+/// Adapter acquisition uses a bounded `try_lock` loop and the call is awaited
+/// with `recv_timeout`, so the caller returns by the deadline even when the
+/// adapter lock is held or the source is slow. Reads have no effect; a late
+/// worker result is discarded, never returned or applied.
+fn bounded_read(
+    adapter: Arc<Mutex<dyn CapabilityAdapter>>,
+    scope: GrantScope,
+    input: Value,
+    deadline_unix_ms: u64,
+    clock: Arc<dyn Fn() -> u64 + Send + Sync>,
+) -> Result<Value, ContractError> {
+    let subject = scope.plugin_id.clone();
+    let worker_subject = subject.clone();
+    let expired = |now: u64| {
+        FailureCode::DeadlineExceeded.failure(
+            &subject,
+            format!("read deadline {deadline_unix_ms} passed (now {now})"),
+        )
+    };
+    if deadline_unix_ms != u64::MAX {
+        let now = clock();
+        if deadline_unix_ms <= now {
+            return Err(expired(now));
+        }
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let worker_clock = Arc::clone(&clock);
+    std::thread::spawn(move || {
+        let mut guard = loop {
+            match adapter.try_lock() {
+                Ok(guard) => break guard,
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    if deadline_unix_ms != u64::MAX && worker_clock() >= deadline_unix_ms {
+                        let _ = sender.send(Err(FailureCode::DeadlineExceeded.failure(
+                            &worker_subject,
+                            "read deadline passed while queued behind a busy adapter",
+                        )));
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        };
+        let _ = sender.send(guard.invoke_with_deadline(&scope, &input, deadline_unix_ms));
+    });
+    if deadline_unix_ms == u64::MAX {
+        return match receiver.recv() {
+            Ok(result) => result,
+            Err(_) => Err(ContractError::KnownFailure(
+                "read worker terminated without a result".to_string(),
+            )),
+        };
+    }
+    let remaining = deadline_unix_ms.saturating_sub(clock()).max(1);
+    match receiver.recv_timeout(std::time::Duration::from_millis(remaining)) {
+        Ok(result) => result,
+        Err(_) => Err(expired(clock())),
     }
 }
 

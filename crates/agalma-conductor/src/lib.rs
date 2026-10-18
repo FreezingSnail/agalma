@@ -14,6 +14,7 @@ pub mod composition;
 pub mod concierge;
 pub mod config;
 pub mod control;
+pub mod control_plane_read;
 pub mod designer;
 pub mod digest;
 pub mod economics;

@@ -148,6 +148,15 @@ pub trait DesiredStateStore {
     fn load(&mut self) -> Result<BTreeMap<String, DesiredState>, ContractError>;
     /// Record the desired state for one plugin.
     fn save(&mut self, plugin_id: &str, desired: DesiredState) -> Result<(), ContractError>;
+    /// The durable registry checkpoint when this store is backed by the
+    /// selected ledger (HP.5); `None` for in-memory doubles.
+    ///
+    /// The host reads it once at assembly to restore installed generations and
+    /// their monotonic ceiling **before** discovery can allocate any generation,
+    /// so a restart never reuses or redirects a binding identity.
+    fn checkpoint(&self) -> Option<&RegistryCheckpoint> {
+        None
+    }
 }
 
 /// The durable registry checkpoint held in the selected ledger's
@@ -236,6 +245,10 @@ impl LedgerDesiredStateStore {
 impl DesiredStateStore for LedgerDesiredStateStore {
     fn load(&mut self) -> Result<BTreeMap<String, DesiredState>, ContractError> {
         Ok(self.state.desired.clone())
+    }
+
+    fn checkpoint(&self) -> Option<&RegistryCheckpoint> {
+        Some(&self.state)
     }
 
     fn save(&mut self, plugin_id: &str, desired: DesiredState) -> Result<(), ContractError> {
@@ -403,62 +416,267 @@ impl HubInstallStore {
             )
         })?;
         copy_tree(&package.package_dir, &package_dir)?;
+        let installed =
+            seal_installed_generation(&package_dir, package, generation, installation)?;
+        // Persist the exact pinned installation beside the immutable copy (outside
+        // `package/`, so it is not part of the sealed inventory) so a restart
+        // restores this generation's own configuration ref, grants, launch
+        // profile and digest instead of re-deriving a replacement identity.
+        write_installation_pin(&dest, installation)?;
+        Ok(installed)
+    }
 
-        // The copied manifest must be byte-identical to the validated one.
-        let copied_manifest = fs::read(package_dir.join(PLUGIN_MANIFEST_FILE)).map_err(|err| {
-            FailureCode::IntegrityMismatch.failure(
-                id,
-                format!("installed copy is missing `{PLUGIN_MANIFEST_FILE}`: {err}"),
-            )
-        })?;
-        let manifest: PluginManifest = serde_json::from_slice(&copied_manifest).map_err(|err| {
-            FailureCode::IntegrityMismatch.failure(
-                id,
-                format!("installed manifest no longer parses: {err}"),
-            )
-        })?;
-        if manifest != package.manifest {
-            return Err(FailureCode::IntegrityMismatch.failure(
-                id,
-                "installed manifest differs from the validated discovery manifest",
-            ));
+    /// Enumerate the generation numbers present in hub-owned storage for
+    /// `plugin_id` (ascending, deduplicated). A missing plugin directory yields
+    /// an empty list.
+    ///
+    /// Used by the restart restore path to find every historical immutable
+    /// generation so a new discovery never reallocates a used generation number.
+    pub fn installed_generations(&self, plugin_id: &str) -> Result<Vec<u64>, ContractError> {
+        let dir = self.root.join(sanitized_dir_name(plugin_id));
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => {
+                return Err(FailureCode::StateUnavailable.failure(
+                    dir.display().to_string(),
+                    format!("cannot read installed generations: {err}"),
+                ))
+            }
+        };
+        let mut generations = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|err| {
+                FailureCode::StateUnavailable.failure(
+                    dir.display().to_string(),
+                    format!("cannot read installed generation entry: {err}"),
+                )
+            })?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let Some(rest) = name.strip_prefix('g') else { continue };
+            let Ok(generation) = rest.parse::<u64>() else { continue };
+            if generation == 0 {
+                continue;
+            }
+            let is_dir = entry
+                .file_type()
+                .map_err(|err| {
+                    FailureCode::StateUnavailable.failure(
+                        entry.path().display().to_string(),
+                        format!("cannot stat installed generation: {err}"),
+                    )
+                })?
+                .is_dir();
+            if is_dir {
+                generations.push(generation);
+            }
         }
-        let recomputed = package_inventory_digest(&package_dir, &manifest)?;
-        if recomputed != package.package_digest {
-            return Err(FailureCode::IntegrityMismatch.failure(
-                id,
+        generations.sort_unstable();
+        generations.dedup();
+        Ok(generations)
+    }
+
+    /// Load and rehash a hub-owned installed generation as a
+    /// [`DiscoveredPackage`], reconstructing the sealed package identity from the
+    /// immutable copy. `Ok(None)` when no such generation is stored.
+    ///
+    /// The manifest and sealed-inventory digest are re-verified against the
+    /// stored bytes, so a tampered generation fails with
+    /// [`FailureCode::IntegrityMismatch`] rather than being restored.
+    pub fn load_installed_package(
+        &self,
+        plugin_id: &str,
+        generation: u64,
+    ) -> Result<Option<DiscoveredPackage>, ContractError> {
+        let generation_dir = self.generation_dir(plugin_id, generation);
+        let package_dir = generation_dir.join("package");
+        if !package_dir.is_dir() {
+            return Ok(None);
+        }
+        let manifest_bytes = fs::read(package_dir.join(PLUGIN_MANIFEST_FILE)).map_err(|err| {
+            FailureCode::IntegrityMismatch.failure(
+                plugin_id,
                 format!(
-                    "installed copy digest {recomputed} does not match discovered {}",
-                    package.package_digest
+                    "installed generation {generation} is missing `{PLUGIN_MANIFEST_FILE}`: {err}"
+                ),
+            )
+        })?;
+        let manifest: PluginManifest = serde_json::from_slice(&manifest_bytes).map_err(|err| {
+            FailureCode::IntegrityMismatch.failure(
+                plugin_id,
+                format!("installed generation {generation} manifest no longer parses: {err}"),
+            )
+        })?;
+        // The stored manifest must name the same plugin as the directory and the
+        // durable checkpoint: a mismatched id would otherwise let a corrupted
+        // generation masquerade as another plugin's immutable copy.
+        if manifest.plugin_id != plugin_id {
+            return Err(FailureCode::IdentityConflict.failure(
+                plugin_id,
+                format!(
+                    "installed generation {generation} manifest is for `{}`, not `{plugin_id}`",
+                    manifest.plugin_id
                 ),
             ));
         }
-
-        // The pinned installation configuration must verify against the copied
-        // package bytes: the generation carries this frozen ref, not the
-        // manifest's default configuration.
-        verify_artifact_ref(&package_dir, id, "installation.configuration", &installation.configuration)?;
-
-        let entrypoint = resolve_inside(&package_dir, &manifest.entrypoint.path, id)?;
-        Ok(InstalledGeneration {
-            plugin_id: package.plugin_id.clone(),
-            generation,
-            package_version: package.package_version.clone(),
-            package_digest: package.package_digest.clone(),
-            protocol_major: package.protocol_major,
-            config_digest: installation.configuration.digest.clone(),
-            configuration: installation.configuration.clone(),
-            installation_digest: installation.installation_digest.clone(),
-            launch_profile: installation.launch_profile.clone(),
-            requested_capabilities: manifest.requested_capabilities.clone(),
-            approved_capabilities: installation.approved_capabilities.clone(),
-            required_services: manifest.required_services.clone(),
-            installed_dir: package_dir,
-            entrypoint,
-            argv: manifest.entrypoint.argv.clone(),
+        manifest.version_gate()?;
+        manifest.validate_package_digest_shape()?;
+        let recomputed = package_inventory_digest(&package_dir, &manifest)?;
+        if recomputed != manifest.package_digest {
+            return Err(FailureCode::IntegrityMismatch.failure(
+                plugin_id,
+                format!(
+                    "installed generation {generation} rehashes to {recomputed}, manifest pins {}",
+                    manifest.package_digest
+                ),
+            ));
+        }
+        let entrypoint_path = resolve_inside(&package_dir, &manifest.entrypoint.path, plugin_id)?;
+        Ok(Some(DiscoveredPackage {
+            plugin_id: plugin_id.to_string(),
+            package_version: manifest.package_version.clone(),
+            package_digest: manifest.package_digest.clone(),
+            protocol_major: manifest.protocol_major,
+            root: generation_dir,
+            package_dir,
+            entrypoint_path,
             manifest,
-        })
+        }))
     }
+
+    /// The exact pinned installation persisted for a hub-owned generation, when
+    /// one is present.
+    ///
+    /// The pin is stored beside the immutable package copy (not inside it), so it
+    /// survives a restart without perturbing the sealed inventory digest. A
+    /// missing pin is `Ok(None)`; an unreadable/corrupt file is a hard error
+    /// (never silently ignored).
+    pub fn load_installation(
+        &self,
+        plugin_id: &str,
+        generation: u64,
+    ) -> Result<Option<PluginInstallation>, ContractError> {
+        let path = self
+            .generation_dir(plugin_id, generation)
+            .join(INSTALLATION_PIN_FILE);
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => {
+                return Err(FailureCode::StateUnavailable.failure(
+                    path.display().to_string(),
+                    format!("cannot read installation pin: {err}"),
+                ))
+            }
+        };
+        let installation: PluginInstallation = serde_json::from_slice(&bytes).map_err(|err| {
+            FailureCode::InvalidRecord.failure(
+                plugin_id,
+                format!("installed generation {generation} installation pin no longer parses: {err}"),
+            )
+        })?;
+        Ok(Some(installation))
+    }
+}
+
+/// File name of the persisted pinned installation beside a hub-owned package
+/// copy (`<generation_dir>/installation.json`), outside the sealed `package/`
+/// inventory.
+pub const INSTALLATION_PIN_FILE: &str = "installation.json";
+
+/// Persist the exact pinned [`PluginInstallation`] for one hub-owned generation.
+fn write_installation_pin(
+    generation_dir: &Path,
+    installation: &PluginInstallation,
+) -> Result<(), ContractError> {
+    let path = generation_dir.join(INSTALLATION_PIN_FILE);
+    let bytes = serde_json::to_vec_pretty(installation).map_err(|err| {
+        FailureCode::InvalidRecord.failure(
+            &installation.plugin_id,
+            format!("cannot serialize installation pin: {err}"),
+        )
+    })?;
+    fs::write(&path, bytes).map_err(|err| {
+        FailureCode::StateUnavailable.failure(
+            path.display().to_string(),
+            format!("cannot persist installation pin: {err}"),
+        )
+    })
+}
+
+/// Build the immutable [`InstalledGeneration`] metadata for a hub-owned package
+/// copy at `package_dir`, re-verifying the manifest bytes, the sealed-inventory
+/// digest, the pinned configuration ref and the entrypoint.
+///
+/// Shared by [`HubInstallStore::install`] (fresh install) and the restart
+/// restore path in [`crate::composition`], so a reconstructed generation carries
+/// exactly the same verification as a freshly installed one.
+pub(crate) fn seal_installed_generation(
+    package_dir: &Path,
+    package: &DiscoveredPackage,
+    generation: u64,
+    installation: &PluginInstallation,
+) -> Result<InstalledGeneration, ContractError> {
+    let id = package.plugin_id.as_str();
+    let copied_manifest = fs::read(package_dir.join(PLUGIN_MANIFEST_FILE)).map_err(|err| {
+        FailureCode::IntegrityMismatch.failure(
+            id,
+            format!("installed copy is missing `{PLUGIN_MANIFEST_FILE}`: {err}"),
+        )
+    })?;
+    let manifest: PluginManifest = serde_json::from_slice(&copied_manifest).map_err(|err| {
+        FailureCode::IntegrityMismatch.failure(
+            id,
+            format!("installed manifest no longer parses: {err}"),
+        )
+    })?;
+    if manifest != package.manifest {
+        return Err(FailureCode::IntegrityMismatch.failure(
+            id,
+            "installed manifest differs from the validated discovery manifest",
+        ));
+    }
+    let recomputed = package_inventory_digest(package_dir, &manifest)?;
+    if recomputed != package.package_digest {
+        return Err(FailureCode::IntegrityMismatch.failure(
+            id,
+            format!(
+                "installed copy digest {recomputed} does not match discovered {}",
+                package.package_digest
+            ),
+        ));
+    }
+
+    // The pinned installation configuration must verify against the stored
+    // package bytes: the generation carries this frozen ref, not the manifest's
+    // default configuration.
+    verify_artifact_ref(
+        package_dir,
+        id,
+        "installation.configuration",
+        &installation.configuration,
+    )?;
+
+    let entrypoint = resolve_inside(package_dir, &manifest.entrypoint.path, id)?;
+    Ok(InstalledGeneration {
+        plugin_id: package.plugin_id.clone(),
+        generation,
+        package_version: package.package_version.clone(),
+        package_digest: package.package_digest.clone(),
+        protocol_major: package.protocol_major,
+        config_digest: installation.configuration.digest.clone(),
+        configuration: installation.configuration.clone(),
+        installation_digest: installation.installation_digest.clone(),
+        launch_profile: installation.launch_profile.clone(),
+        requested_capabilities: manifest.requested_capabilities.clone(),
+        approved_capabilities: installation.approved_capabilities.clone(),
+        required_services: manifest.required_services.clone(),
+        installed_dir: package_dir.to_path_buf(),
+        entrypoint,
+        argv: manifest.entrypoint.argv.clone(),
+        manifest,
+    })
 }
 
 /// Registry entry observed state plus pinned generations and unresolved pins.
@@ -575,6 +793,83 @@ impl PluginRegistry {
         entry.max_generation = generation;
         entry.generations.insert(generation, installed);
         Ok(generation)
+    }
+
+    /// Install `package`, or reuse the existing generation that already holds an
+    /// identical sealed package **and** pinned installation.
+    ///
+    /// Returns the generation and whether it was reused. A hub restart with the
+    /// same package/config/grants therefore keeps its prior binding generation,
+    /// while a changed package (or a changed pin) allocates `max_generation + 1`,
+    /// which is never reused. Identity of an existing generation is the sealed
+    /// package digest plus the pinned installation digest — the same data the
+    /// binding pin and action receipts are bound to.
+    pub fn install_or_reuse(
+        &mut self,
+        store: &HubInstallStore,
+        package: &DiscoveredPackage,
+        installation: &PluginInstallation,
+    ) -> Result<(u64, bool), ContractError> {
+        let entry = self
+            .entries
+            .entry(package.plugin_id.clone())
+            .or_insert_with(|| RegistryEntry::new(package.plugin_id.clone()));
+        entry.origin = ComponentOrigin::Discovered;
+        let reused = entry.generations.iter().find_map(|(generation, installed)| {
+            (installed.package_digest == package.package_digest
+                && installed.installation_digest == installation.installation_digest
+                && installed.config_digest == installation.configuration.digest
+                && installed.approved_capabilities == installation.approved_capabilities
+                && installed.launch_profile == installation.launch_profile)
+                .then_some(*generation)
+        });
+        if let Some(generation) = reused {
+            return Ok((generation, true));
+        }
+        let generation = entry.max_generation + 1;
+        let installed = store.install(package, generation, installation)?;
+        entry.max_generation = generation;
+        entry.generations.insert(generation, installed);
+        Ok((generation, false))
+    }
+
+    /// Ensure an entry exists for `plugin_id` and return it mutably (restart
+    /// restore path: a persisted plugin the configured roots no longer contain
+    /// must still be represented, and its generation must not be reused).
+    pub fn ensure_entry(&mut self, plugin_id: &str) -> &mut RegistryEntry {
+        self.entries
+            .entry(plugin_id.to_string())
+            .or_insert_with(|| RegistryEntry::new(plugin_id.to_string()))
+    }
+
+    /// Insert a reconstructed immutable generation during restart restore.
+    ///
+    /// Raises the entry's monotonic ceiling to the restored generation so a later
+    /// install can never reallocate it.
+    pub fn restore_generation(&mut self, installed: InstalledGeneration) {
+        let plugin_id = installed.plugin_id.clone();
+        let generation = installed.generation;
+        let entry = self.ensure_entry(&plugin_id);
+        entry.origin = ComponentOrigin::Discovered;
+        entry.max_generation = entry.max_generation.max(generation);
+        entry.generations.insert(generation, installed);
+    }
+
+    /// Apply the durable generation bounds for `plugin_id` after restoring its
+    /// generations.
+    ///
+    /// `max_generation` is the persisted monotonic ceiling (a new install
+    /// allocates strictly above it). `active` is restored only when that
+    /// generation was actually reconstructed, so a missing immutable copy never
+    /// produces a phantom active generation.
+    pub fn restore_bounds(&mut self, plugin_id: &str, max_generation: u64, active: Option<u64>) {
+        let entry = self.ensure_entry(plugin_id);
+        entry.max_generation = entry.max_generation.max(max_generation);
+        if let Some(generation) = active {
+            if entry.generations.contains_key(&generation) {
+                entry.active_generation = Some(generation);
+            }
+        }
     }
 
     /// Record `generation` as the candidate staged for activation.

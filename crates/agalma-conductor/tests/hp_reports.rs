@@ -51,6 +51,7 @@ use agalma_conductor::composition::{
 };
 use agalma_conductor::config::PluginHostConfig;
 use agalma_conductor::ledger_process::{LedgerHandle, LedgerTransport};
+use agalma_conductor::plugin_actions::{action_namespace, ActionRequest};
 use agalma_conductor::plugin_manifest::{
     discover_plugins, package_inventory_digest, PluginRoot, PLUGIN_MANIFEST_FILE,
 };
@@ -58,15 +59,19 @@ use agalma_conductor::plugin_reports::{
     report_namespace, seal_publication, seal_snapshot, snapshot_entry, ReportIngestor,
     ReportStore, DEFAULT_FAILED_AFTER_MS, DEFAULT_STALE_AFTER_MS, REGISTRY_NAMESPACE,
 };
-use agalma_conductor::plugin_registry::{DesiredState, RegistryCheckpoint};
+use agalma_conductor::plugin_registry::{
+    DesiredState, HubInstallStore, RegistryCheckpoint, INSTALLATION_PIN_FILE,
+};
 use agalma_conductor::plugin_router::PublishReportCall;
+use agalma_conductor::plugin_supervisor::HealthProbe;
 use agalma_contracts::digest::{failure_code, sha256_digest, FailureCode};
 use agalma_contracts::task_package::BindingPin;
 use agalma_contracts::{
-    ComponentCommit, ComponentEvent, ComponentOperation, ComponentOperationState, ComponentReceipt,
-    CompleteStateV2, ContractError, ControlReceipt, DecisionKind, DecisionOption, DecisionOutcome,
-    DecisionPin, DecisionRequest, DigestRecord, Durability, ExecutionId, LedgerApi, OperationId,
-    PluginInstallation, PluginManifest, ReportEnvelope, COMPONENT_COMMIT_FORMAT,
+    ActionScope, Actor, ComponentCommit, ComponentEvent, ComponentOperation,
+    ComponentOperationState, ComponentReceipt, CompleteStateV2, ContractError, ControlReceipt,
+    DecisionKind, DecisionOption, DecisionOutcome, DecisionPin, DecisionRequest, DigestRecord,
+    Durability, ExecutionId, LedgerApi, OperationId, PluginInstallation, PluginManifest,
+    ReportEnvelope, COMPONENT_COMMIT_FORMAT,
 };
 use agalma_ipc::{HubCallbackClient, LedgerOps};
 use agalma_ledger::server::SERVER_BIN;
@@ -77,6 +82,13 @@ use agalma_testkit::ScratchDir;
 const PROPERTY_SEED: u64 = 0x0bd3_5eed_0000_00a5;
 /// Recorded property-test case budget.
 const PROPERTY_CASES: u64 = 40;
+/// Recorded deterministic seed (xorshift64) for the install/replace/restart
+/// generation-identity property.
+const GENERATION_PROPERTY_SEED: u64 = 0x0bd3_5eed_0000_060d;
+/// Recorded case budget for the generation-identity property.
+const GENERATION_PROPERTY_CASES: u64 = 24;
+/// A far-future action deadline (the action service uses a real wall clock).
+const FAR_FUTURE_MS: u64 = 10_000_000_000_000;
 /// Start of the injected hub clock (milliseconds).
 const START_MS: u64 = 1_791_820_800_000;
 
@@ -411,6 +423,135 @@ fn package_fixture_caps(
     seal_package(&package_dir, &manifest, &live_child());
     let report = discover_plugins(&[PluginRoot::required(root)]).unwrap();
     report.package(PLUGIN_ID).unwrap().clone()
+}
+
+// --- generation-identity fixtures (restart/replacement repair) --------------
+
+/// The action this fixture advertises, requiring the report capability the
+/// auto-install allowlist grants.
+const ACTION_ID: &str = "example.reporter.refresh";
+
+/// A manifest variant that advertises one action requiring `report.publish` and
+/// carries a caller-chosen package version (so distinct versions seal to
+/// distinct package digests).
+fn action_manifest(plugin_id: &str, package_version: &str) -> Value {
+    let mut manifest = base_manifest(plugin_id);
+    manifest["package_version"] = json!(package_version);
+    manifest["actions"] = json!([{
+        "action_id": ACTION_ID,
+        "input_schema": "example.reporter.refresh.input/v1",
+        "required_capability": REPORT_CAPABILITY,
+        "effectful": true,
+        "human_confirmation": null,
+        "default_deadline_ms": 60_000
+    }]);
+    manifest
+}
+
+/// A READY child whose announced implementation identity is the plugin id (the
+/// supervisor's identity gate requires `impl == installed plugin`). Prints the
+/// READY line, then drains stdin for the process lifetime.
+fn generation_child() -> String {
+    format!(
+        "#!/bin/sh\nprintf 'READY {{\"api\":\"plugin\",\"api_version\":1,\"impl\":\"{PLUGIN_ID}\",\"impl_version\":\"1.2.3\",\"capabilities\":[\"{REPORT_CAPABILITY}\"]}}\n'\ncat >/dev/null\n"
+    )
+}
+
+/// Seal the action-declaring fixture (version `package_version`) into the
+/// configured root and discover it. Sealing the same version yields byte-identical
+/// bytes and therefore the same sealed package digest.
+fn action_package_fixture(
+    root: &Path,
+    package_version: &str,
+) -> agalma_conductor::plugin_manifest::DiscoveredPackage {
+    let package_dir = root.join("pkg");
+    seal_package(
+        &package_dir,
+        &action_manifest(PLUGIN_ID, package_version),
+        &generation_child(),
+    );
+    let report = discover_plugins(&[PluginRoot::required(root)]).unwrap();
+    report.package(PLUGIN_ID).unwrap().clone()
+}
+
+/// The second capability the auto-install allowlist grants, used to build a
+/// fixture whose non-default pin can approve a genuine subset of its request.
+const LEDGER_READ_CAPABILITY: &str = "ledger.read";
+
+/// A manifest requesting both allowlisted capabilities, so a valid non-default
+/// pin can approve a strict subset (differing from the auto-install default).
+fn dual_cap_manifest(plugin_id: &str, package_version: &str) -> Value {
+    let mut manifest = base_manifest(plugin_id);
+    manifest["package_version"] = json!(package_version);
+    manifest["requested_capabilities"] = json!([REPORT_CAPABILITY, LEDGER_READ_CAPABILITY]);
+    manifest
+}
+
+/// Seal a both-capability fixture (version `package_version`) whose child
+/// announces both capabilities.
+fn dual_cap_package_fixture(
+    root: &Path,
+    package_version: &str,
+) -> agalma_conductor::plugin_manifest::DiscoveredPackage {
+    let package_dir = root.join("pkg");
+    let script = format!(
+        "#!/bin/sh\nprintf 'READY {{\"api\":\"plugin\",\"api_version\":1,\"impl\":\"{PLUGIN_ID}\",\"impl_version\":\"1.2.3\",\"capabilities\":[\"{REPORT_CAPABILITY}\",\"{LEDGER_READ_CAPABILITY}\"]}}\n'\ncat >/dev/null\n"
+    );
+    seal_package(&package_dir, &dual_cap_manifest(PLUGIN_ID, package_version), &script);
+    let report = discover_plugins(&[PluginRoot::required(root)]).unwrap();
+    report.package(PLUGIN_ID).unwrap().clone()
+}
+
+/// A valid installation pin for `package` approving exactly `approved` (a
+/// subset of its requested capabilities).
+fn pin_for(
+    package: &agalma_conductor::plugin_manifest::DiscoveredPackage,
+    approved: &[&str],
+) -> PluginInstallation {
+    let mut installation = PluginInstallation {
+        format: "PluginInstallation/v1".to_string(),
+        plugin_id: PLUGIN_ID.to_string(),
+        package_digest: package.package_digest.clone(),
+        configuration: package.manifest.default_configuration.clone(),
+        launch_profile: package.manifest.entrypoint.launch_profile.clone(),
+        approved_capabilities: approved.iter().map(|c| c.to_string()).collect(),
+        installation_digest: String::new(),
+    };
+    installation.installation_digest = installation.recomputed_installation_digest().unwrap();
+    installation
+}
+
+/// A health gate that always passes: the fixture child announces `READY` on
+/// stdout, so the supervisor's spawn succeeds and the probe confirms readiness.
+struct AlwaysHealthy;
+
+impl HealthProbe for AlwaysHealthy {
+    fn probe(&mut self, _plugin_id: &str, _epoch: u64) -> Result<bool, ContractError> {
+        Ok(true)
+    }
+}
+
+fn hp_action_scope() -> ActionScope {
+    ActionScope {
+        directive_id: "directive/v0".to_string(),
+        directive_version: 1,
+        execution_id: None,
+    }
+}
+
+fn hp_action_request(token: String, generation: u64, operation_id: &str) -> ActionRequest {
+    ActionRequest {
+        grant: token,
+        plugin_id: PLUGIN_ID.to_string(),
+        generation,
+        action_id: ACTION_ID.to_string(),
+        operation_id: operation_id.to_string(),
+        input: json!({"n": 1}),
+        deadline_unix_ms: FAR_FUTURE_MS,
+        actor: Actor::Human,
+        confirmation: None,
+        scope: hp_action_scope(),
+    }
 }
 
 fn host_config(state_dir: &Path, root: &Path) -> PluginHostConfig {
@@ -1564,4 +1705,624 @@ fn property_auto_grants_never_exceed_requested_intersection_allowlist() {
     assert!(auto_approved_capabilities(&["ledger.write".to_string()]).is_empty());
     assert!(auto_approved_capabilities(&["".to_string(), "mystery".to_string()]).is_empty());
     assert!(auto_approved_capabilities(&[]).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Registry generation restore across a fresh production host assembly
+// ---------------------------------------------------------------------------
+
+/// A genuine new-host assembly (`PluginHost::assemble_with_ledger`, not an
+/// in-process child restart) over one selected ledger retains the prior binding
+/// generation and durable receipt for an unchanged package, advances the
+/// generation for a replacement, keeps the old immutable package addressable,
+/// and never reuses or redirects identity on a further restart.
+#[test]
+fn production_reassembly_restores_generation_and_advances_replacement_without_retarget() {
+    let scratch = fresh("hp5-gen-restore");
+    let state_dir = scratch.child("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let root = scratch.child("root");
+    let package_v1 = action_package_fixture(&root, "1.2.3");
+    let config = host_config(&state_dir, &root);
+    let clock = ManualClockFn::new(START_MS);
+    let ledger = LedgerHandle::in_process(&state_dir).unwrap();
+    let installations = InMemoryInstallations::new();
+    let receipt_namespace = action_namespace(PLUGIN_ID);
+
+    // --- assembly 1: auto-install generation 1, start it, journal a receipt.
+    let (generation_v1, digest_v1) = {
+        let mut host = PluginHost::assemble_with_ledger(
+            &config,
+            &installations,
+            ledger.clone(),
+            clock.clock(),
+        )
+        .expect("first assembly auto-installs the configured package");
+        assert!(host.ledger().is_some(), "selected ledger attached");
+        assert!(host.diagnostics.is_empty(), "{:?}", host.diagnostics);
+
+        let generation = *host.installed.get(PLUGIN_ID).expect("auto-installed");
+        let digest = host
+            .registry
+            .entry(PLUGIN_ID)
+            .unwrap()
+            .generations
+            .get(&generation)
+            .unwrap()
+            .package_digest
+            .clone();
+        assert_eq!(digest, package_v1.package_digest);
+
+        host.set_desired(PLUGIN_ID, DesiredState::Running).unwrap();
+        let mut probe = AlwaysHealthy;
+        let started = host.start_desired(&mut probe).unwrap();
+        assert_eq!(started.len(), 1, "the auto-installed generation starts");
+        assert_eq!(
+            host.registry.entry(PLUGIN_ID).unwrap().active_generation,
+            Some(generation)
+        );
+
+        let token = host.launch_grant(PLUGIN_ID).unwrap().token_hex();
+        let mut service = host.action_service_with_ledger(&ledger).unwrap();
+        let submit_err = service
+            .submit(&hp_action_request(token, generation, "op-hp5-1"))
+            .err();
+
+        let receipts = ledger
+            .component_events(&receipt_namespace, 0, 100)
+            .unwrap();
+        assert_eq!(
+            receipts.len(),
+            2,
+            "accepted + failed intent receipt (submit err {submit_err:?}): {receipts:?}"
+        );
+        assert!(
+            receipts
+                .iter()
+                .any(|row| row.event.event_id == format!("{generation}:op-hp5-1:accepted")),
+            "the durable receipt is bound to the pinned generation: {receipts:?}"
+        );
+
+        let _ = host.shutdown();
+        (generation, digest)
+    };
+
+    // --- assembly 2: same package, same selected ledger, fresh host.
+    let host2 = PluginHost::assemble_with_ledger(
+        &config,
+        &installations,
+        ledger.clone(),
+        clock.clock(),
+    )
+    .expect("second assembly restores from the selected ledger");
+    let generation_2 = *host2.installed.get(PLUGIN_ID).unwrap();
+    assert_eq!(
+        generation_2, generation_v1,
+        "same package retains its binding generation across a fresh host assembly"
+    );
+    let entry = host2.registry.entry(PLUGIN_ID).unwrap();
+    assert_eq!(
+        entry.active_generation.or(entry.pending_generation),
+        Some(generation_v1)
+    );
+    assert_eq!(
+        entry.generations.get(&generation_v1).unwrap().package_digest,
+        digest_v1
+    );
+    assert_eq!(
+        ledger
+            .component_events(&receipt_namespace, 0, 100)
+            .unwrap()
+            .len(),
+        2,
+        "the action receipt survives the fresh host assembly"
+    );
+    drop(host2);
+
+    // --- replace the package bytes in the configured root.
+    let package_v2 = action_package_fixture(&root, "1.2.4");
+    assert_ne!(package_v2.package_digest, digest_v1, "replacement seals new bytes");
+    let host3 = PluginHost::assemble_with_ledger(
+        &config,
+        &installations,
+        ledger.clone(),
+        clock.clock(),
+    )
+    .expect("replacement assembly advances the generation");
+    let generation_v2 = *host3.installed.get(PLUGIN_ID).unwrap();
+    assert!(
+        generation_v2 > generation_v1,
+        "a replacement gets a strictly higher generation ({generation_v2} > {generation_v1})"
+    );
+    let entry = host3.registry.entry(PLUGIN_ID).unwrap();
+    assert_eq!(
+        entry
+            .generations
+            .get(&generation_v1)
+            .expect("old pinned generation stays installed")
+            .package_digest,
+        digest_v1,
+        "old package remains addressable by its original digest"
+    );
+    assert_eq!(
+        entry.generations.get(&generation_v2).unwrap().package_digest,
+        package_v2.package_digest
+    );
+    drop(host3);
+
+    // --- restart again: generation reused, identity never redirected.
+    let mut host4 = PluginHost::assemble_with_ledger(
+        &config,
+        &installations,
+        ledger.clone(),
+        clock.clock(),
+    )
+    .expect("post-replacement restart");
+    let generation_4 = *host4.installed.get(PLUGIN_ID).unwrap();
+    assert_eq!(
+        generation_4, generation_v2,
+        "restart reuses the replacement generation rather than allocating a new one"
+    );
+    let entry = host4.registry.entry(PLUGIN_ID).unwrap();
+    assert_eq!(
+        entry.generations.get(&generation_v1).unwrap().package_digest,
+        digest_v1,
+        "the old generation survives the further restart"
+    );
+    assert_eq!(
+        entry.generations.get(&generation_v2).unwrap().package_digest,
+        package_v2.package_digest
+    );
+    let replacement_generations: Vec<u64> = entry
+        .generations
+        .iter()
+        .filter(|(_, installed)| installed.package_digest == package_v2.package_digest)
+        .map(|(generation, _)| *generation)
+        .collect();
+    assert_eq!(
+        replacement_generations,
+        vec![generation_v2],
+        "the replacement digest is bound to exactly one generation (no reuse)"
+    );
+    let receipts = ledger
+        .component_events(&receipt_namespace, 0, 100)
+        .unwrap();
+    assert_eq!(receipts.len(), 2, "the durable receipt is preserved");
+    assert!(
+        receipts
+            .iter()
+            .all(|row| row.event.event_id.starts_with(&format!("{generation_v1}:"))),
+        "no receipt is retargeted to the replacement: {receipts:?}"
+    );
+    let checkpoint: RegistryCheckpoint = serde_json::from_value(
+        ledger
+            .component_read(REGISTRY_NAMESPACE)
+            .unwrap()
+            .expect("registry checkpoint")
+            .checkpoint
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        checkpoint.max_generations.get(PLUGIN_ID).copied().unwrap_or(0) >= generation_v2,
+        "the durable ceiling advances with the replacement"
+    );
+    let _ = host4.shutdown();
+}
+
+/// Deterministic generated install/replace/restart sequences verify generation
+/// monotonicity and non-reuse against an **independent oracle** (generation =
+/// first appearance order of the sealed digest; a repeat keeps its generation).
+///
+/// The oracle is not derived from the implementation: it tracks only the
+/// digests the test seals and the order it first presented them. Boundary input:
+/// a changed file with a stale sealed digest must refuse discovery and allocate
+/// no generation.
+#[test]
+fn property_generation_identity_survives_install_replace_and_restart_sequences() {
+    const VERSIONS: [&str; 3] = ["1.0.0", "1.0.1", "1.0.2"];
+    let mut rng = XorShift64::new(GENERATION_PROPERTY_SEED);
+    for case in 0..GENERATION_PROPERTY_CASES {
+        let scratch = fresh(&format!("hp5-gen-prop-{case}"));
+        let state_dir = scratch.child("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let root = scratch.child("root");
+        let config = host_config(&state_dir, &root);
+        let clock = ManualClockFn::new(START_MS);
+        let ledger = LedgerHandle::in_process(&state_dir).unwrap();
+        let installations = InMemoryInstallations::new();
+
+        // Independent oracle: first-appearance order of the sealed digest.
+        let mut next_generation = 0u64;
+        let mut generation_of: BTreeMap<String, u64> = BTreeMap::new();
+        let mut version = VERSIONS[0];
+
+        let steps = 1 + rng.below(6);
+        for _ in 0..steps {
+            // A "restart" keeps the root; otherwise pick a (possibly repeated)
+            // replacement version.
+            if rng.below(2) == 1 {
+                version = VERSIONS[rng.below(VERSIONS.len() as u64) as usize];
+            }
+            let package = action_package_fixture(&root, version);
+            let expected = *generation_of
+                .entry(package.package_digest.clone())
+                .or_insert_with(|| {
+                    next_generation += 1;
+                    next_generation
+                });
+
+            let host = PluginHost::assemble_with_ledger(
+                &config,
+                &installations,
+                ledger.clone(),
+                clock.clock(),
+            )
+            .expect("assembly");
+            let got = *host.installed.get(PLUGIN_ID).expect("installed");
+            assert_eq!(
+                got, expected,
+                "case {case} version {version}: generation identity"
+            );
+
+            let entry = host.registry.entry(PLUGIN_ID).unwrap();
+            for (digest, generation) in &generation_of {
+                let installed = entry.generations.get(generation).unwrap_or_else(|| {
+                    panic!(
+                        "case {case}: digest {digest} generation {generation} missing after restart"
+                    )
+                });
+                assert_eq!(
+                    &installed.package_digest, digest,
+                    "case {case}: a digest stays bound to its own generation"
+                );
+            }
+            // Non-reuse: no digest is bound to more than one generation.
+            let mut bound: BTreeMap<&str, u64> = BTreeMap::new();
+            for (generation, installed) in &entry.generations {
+                if let Some(other) = bound.insert(installed.package_digest.as_str(), *generation) {
+                    assert_eq!(
+                        other, *generation,
+                        "case {case}: a package digest was reused at two generations"
+                    );
+                }
+            }
+            assert!(entry.max_generation >= expected, "case {case}: ceiling");
+        }
+
+        // Boundary: a changed file with a stale sealed digest refuses discovery.
+        std::fs::write(root.join("pkg/bin/plugin"), b"#!/bin/sh\nexit 9\n").unwrap();
+        assert!(
+            PluginHost::assemble_with_ledger(&config, &installations, ledger.clone(), clock.clock())
+                .is_err(),
+            "case {case}: sealed-inventory mismatch must refuse discovery"
+        );
+    }
+}
+
+/// The restore path fails closed when the checkpoint names an active generation
+/// whose immutable hub copy is missing or tampered: assembly refuses instead of
+/// silently dropping the active pointer (which would let the next discovery
+/// reallocate an identity that pinned work and receipts are bound to).
+#[test]
+fn missing_or_tampered_active_hub_copy_refuses_assembly_fail_closed() {
+    // Missing immutable copy of the active generation.
+    let scratch = fresh("hp5-active-missing");
+    let state_dir = scratch.child("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let root = scratch.child("root");
+    action_package_fixture(&root, "1.2.3");
+    let config = host_config(&state_dir, &root);
+    let clock = ManualClockFn::new(START_MS);
+    let ledger = LedgerHandle::in_process(&state_dir).unwrap();
+    let installations = InMemoryInstallations::new();
+    let store = HubInstallStore::new(&state_dir);
+
+    let host = PluginHost::assemble_with_ledger(&config, &installations, ledger.clone(), clock.clock())
+        .expect("first assembly auto-installs generation 1");
+    assert_eq!(*host.installed.get(PLUGIN_ID).unwrap(), 1);
+    drop(host);
+
+    std::fs::remove_dir_all(store.generation_dir(PLUGIN_ID, 1)).unwrap();
+    let err = PluginHost::assemble_with_ledger(&config, &installations, ledger.clone(), clock.clock())
+        .err()
+        .expect("an absent active immutable copy must refuse assembly");
+    assert!(
+        format!("{err:?}").contains("active generation 1"),
+        "the refusal names the missing active generation: {err:?}"
+    );
+
+    // Tampered immutable copy of the active generation.
+    let scratch = fresh("hp5-active-tampered");
+    let state_dir = scratch.child("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let root = scratch.child("root");
+    action_package_fixture(&root, "1.2.3");
+    let config = host_config(&state_dir, &root);
+    let clock = ManualClockFn::new(START_MS);
+    let ledger = LedgerHandle::in_process(&state_dir).unwrap();
+    let store = HubInstallStore::new(&state_dir);
+    let _host = PluginHost::assemble_with_ledger(&config, &installations, ledger.clone(), clock.clock())
+        .expect("first assembly auto-installs generation 1");
+    std::fs::write(
+        store.generation_dir(PLUGIN_ID, 1).join("package/bin/plugin"),
+        b"#!/bin/sh\nexit 9\n",
+    )
+    .unwrap();
+    let err = PluginHost::assemble_with_ledger(&config, &installations, ledger.clone(), clock.clock())
+        .err()
+        .expect("a tampered active immutable copy must refuse assembly");
+    assert_eq!(failure(&err), FailureCode::IntegrityMismatch);
+}
+
+/// A stored manifest naming a different plugin than its directory/checkpoint is
+/// refused (`IdentityConflict`): a corrupted generation may not masquerade as
+/// another plugin's immutable copy.
+#[test]
+fn stored_manifest_plugin_id_mismatch_refuses_assembly() {
+    let scratch = fresh("hp5-active-impostor");
+    let state_dir = scratch.child("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let root = scratch.child("root");
+    action_package_fixture(&root, "1.2.3");
+    let config = host_config(&state_dir, &root);
+    let clock = ManualClockFn::new(START_MS);
+    let ledger = LedgerHandle::in_process(&state_dir).unwrap();
+    let installations = InMemoryInstallations::new();
+    let store = HubInstallStore::new(&state_dir);
+
+    let _host = PluginHost::assemble_with_ledger(&config, &installations, ledger.clone(), clock.clock())
+        .expect("first assembly");
+
+    // Rewrite the stored manifest to a different plugin id and reseal so the
+    // inventory digest still matches (the mismatch is in identity, not bytes).
+    let package_dir = store.generation_dir(PLUGIN_ID, 1).join("package");
+    let manifest_path = package_dir.join(PLUGIN_MANIFEST_FILE);
+    let mut manifest: PluginManifest =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest.plugin_id = "example.impostor".to_string();
+    manifest.package_digest = package_inventory_digest(&package_dir, &manifest).unwrap();
+    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+
+    let err = PluginHost::assemble_with_ledger(&config, &installations, ledger.clone(), clock.clock())
+        .err()
+        .expect("a mismatched stored plugin id must refuse assembly");
+    assert_eq!(failure(&err), FailureCode::IdentityConflict);
+}
+
+/// A missing (non-active) immutable generation never lowers the monotonic
+/// ceiling: the next install allocates a strictly higher, never-reused
+/// generation instead of reallocating the missing one.
+#[test]
+fn missing_non_active_hub_copy_does_not_reuse_the_generation() {
+    let scratch = fresh("hp5-nonactive-missing");
+    let state_dir = scratch.child("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let root = scratch.child("root");
+    action_package_fixture(&root, "1.2.3");
+    let config = host_config(&state_dir, &root);
+    let clock = ManualClockFn::new(START_MS);
+    let ledger = LedgerHandle::in_process(&state_dir).unwrap();
+    let installations = InMemoryInstallations::new();
+    let store = HubInstallStore::new(&state_dir);
+
+    let host = PluginHost::assemble_with_ledger(&config, &installations, ledger.clone(), clock.clock())
+        .expect("generation 1");
+    assert_eq!(*host.installed.get(PLUGIN_ID).unwrap(), 1);
+    drop(host);
+    action_package_fixture(&root, "1.2.4");
+    let host = PluginHost::assemble_with_ledger(&config, &installations, ledger.clone(), clock.clock())
+        .expect("generation 2 (replacement)");
+    assert_eq!(*host.installed.get(PLUGIN_ID).unwrap(), 2);
+    drop(host);
+
+    // Remove the non-active generation 2 immutable copy, then reassemble with the
+    // same replacement package still configured.
+    std::fs::remove_dir_all(store.generation_dir(PLUGIN_ID, 2)).unwrap();
+    let host = PluginHost::assemble_with_ledger(&config, &installations, ledger.clone(), clock.clock())
+        .expect("assembly with a missing non-active generation");
+    let generation = *host.installed.get(PLUGIN_ID).unwrap();
+    assert!(
+        generation > 2,
+        "a missing generation is not reallocated (got {generation})"
+    );
+    let entry = host.registry.entry(PLUGIN_ID).unwrap();
+    assert!(
+        !entry.generations.contains_key(&2),
+        "the removed generation stays removed"
+    );
+    assert!(
+        entry.generations.contains_key(&1),
+        "the surviving old generation remains addressable"
+    );
+}
+
+/// A persisted installation pin that fails validation (unrequested grant, wrong
+/// plugin id) is refused by the restore path (`verify_installation`) instead of
+/// silently restoring a corrupt record and its authority.
+#[test]
+fn invalid_persisted_installation_pin_is_refused_by_restore() {
+    // A persisted pin granting an unrequested capability.
+    let scratch = fresh("hp5-bad-pin-grant");
+    let state_dir = scratch.child("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let root = scratch.child("root");
+    action_package_fixture(&root, "1.2.3");
+    let config = host_config(&state_dir, &root);
+    let clock = ManualClockFn::new(START_MS);
+    let ledger = LedgerHandle::in_process(&state_dir).unwrap();
+    let _host = PluginHost::assemble_with_ledger(
+        &config,
+        &InMemoryInstallations::new(),
+        ledger.clone(),
+        clock.clock(),
+    )
+    .unwrap();
+
+    let store = HubInstallStore::new(&state_dir);
+    let pin_path = store
+        .generation_dir(PLUGIN_ID, 1)
+        .join(INSTALLATION_PIN_FILE);
+    let mut corrupt: PluginInstallation =
+        serde_json::from_slice(&std::fs::read(&pin_path).unwrap()).unwrap();
+    corrupt.approved_capabilities = vec!["ledger.write".to_string()];
+    corrupt.installation_digest = corrupt.recomputed_installation_digest().unwrap();
+    std::fs::write(&pin_path, serde_json::to_vec_pretty(&corrupt).unwrap()).unwrap();
+
+    let err = PluginHost::assemble_with_ledger(
+        &config,
+        &InMemoryInstallations::new(),
+        ledger.clone(),
+        clock.clock(),
+    )
+    .err()
+    .expect("an invalid persisted pin must be refused by restore");
+    assert_eq!(failure(&err), FailureCode::ScopeDenied);
+
+    // A persisted pin for the wrong plugin id.
+    let scratch = fresh("hp5-bad-pin-id");
+    let state_dir = scratch.child("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let root = scratch.child("root");
+    action_package_fixture(&root, "1.2.3");
+    let config = host_config(&state_dir, &root);
+    let clock = ManualClockFn::new(START_MS);
+    let ledger = LedgerHandle::in_process(&state_dir).unwrap();
+    let _host = PluginHost::assemble_with_ledger(
+        &config,
+        &InMemoryInstallations::new(),
+        ledger.clone(),
+        clock.clock(),
+    )
+    .unwrap();
+
+    let store = HubInstallStore::new(&state_dir);
+    let pin_path = store
+        .generation_dir(PLUGIN_ID, 1)
+        .join(INSTALLATION_PIN_FILE);
+    let mut corrupt: PluginInstallation =
+        serde_json::from_slice(&std::fs::read(&pin_path).unwrap()).unwrap();
+    corrupt.plugin_id = "example.impostor".to_string();
+    corrupt.installation_digest = corrupt.recomputed_installation_digest().unwrap();
+    std::fs::write(&pin_path, serde_json::to_vec_pretty(&corrupt).unwrap()).unwrap();
+
+    let err = PluginHost::assemble_with_ledger(
+        &config,
+        &InMemoryInstallations::new(),
+        ledger.clone(),
+        clock.clock(),
+    )
+    .err()
+    .expect("a persisted pin for the wrong plugin must be refused");
+    assert_eq!(failure(&err), FailureCode::IdentityConflict);
+}
+
+/// A restart restores each generation's **own exact** persisted installation pin:
+/// its configuration ref, grant set, launch profile and installation digest. A
+/// replacement installed under a different pin must not alter the older
+/// generation's binding identity or authority.
+#[test]
+fn restart_preserves_each_generations_original_installation_pin() {
+    let scratch = fresh("hp5-pin-restore");
+    let state_dir = scratch.child("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let root = scratch.child("root");
+    let package_v1 = dual_cap_package_fixture(&root, "1.2.3");
+    let config = host_config(&state_dir, &root);
+    let clock = ManualClockFn::new(START_MS);
+    let ledger = LedgerHandle::in_process(&state_dir).unwrap();
+
+    // v1: a valid non-default pin approving a strict subset of the request.
+    let pin_v1 = pin_for(&package_v1, &[REPORT_CAPABILITY]);
+    assert_ne!(
+        pin_v1.approved_capabilities,
+        auto_approved_capabilities(&package_v1.manifest.requested_capabilities),
+        "the fixture pin is genuinely non-default"
+    );
+    let mut installations = InMemoryInstallations::new();
+    installations.insert(pin_v1.clone());
+    let host = PluginHost::assemble_with_ledger(
+        &config,
+        &installations,
+        ledger.clone(),
+        clock.clock(),
+    )
+    .unwrap();
+    let generation_v1 = *host.installed.get(PLUGIN_ID).unwrap();
+    assert_eq!(generation_v1, 1);
+    let installed = host
+        .registry
+        .entry(PLUGIN_ID)
+        .unwrap()
+        .generations
+        .get(&generation_v1)
+        .unwrap();
+    assert_eq!(installed.installation_digest, pin_v1.installation_digest);
+    assert_eq!(installed.config_digest, pin_v1.configuration.digest);
+    assert_eq!(
+        installed.approved_capabilities,
+        vec![REPORT_CAPABILITY.to_string()]
+    );
+    drop(host);
+
+    // Replace with v2 under a different valid non-default pin.
+    let package_v2 = dual_cap_package_fixture(&root, "1.2.4");
+    let pin_v2 = pin_for(&package_v2, &[LEDGER_READ_CAPABILITY]);
+    let mut installations = InMemoryInstallations::new();
+    installations.insert(pin_v2.clone());
+    let host = PluginHost::assemble_with_ledger(
+        &config,
+        &installations,
+        ledger.clone(),
+        clock.clock(),
+    )
+    .unwrap();
+    let generation_v2 = *host.installed.get(PLUGIN_ID).unwrap();
+    assert!(generation_v2 > generation_v1);
+    let installed = host
+        .registry
+        .entry(PLUGIN_ID)
+        .unwrap()
+        .generations
+        .get(&generation_v2)
+        .unwrap();
+    assert_eq!(installed.installation_digest, pin_v2.installation_digest);
+    assert_eq!(
+        installed.approved_capabilities,
+        vec![LEDGER_READ_CAPABILITY.to_string()]
+    );
+    drop(host);
+
+    // Restart: each generation keeps its own exact pin. v1's held capabilities
+    // must not be replaced by v2's, and its config/digest must be unchanged.
+    let host = PluginHost::assemble_with_ledger(
+        &config,
+        &installations,
+        ledger.clone(),
+        clock.clock(),
+    )
+    .unwrap();
+    let entry = host.registry.entry(PLUGIN_ID).unwrap();
+    let old = entry
+        .generations
+        .get(&generation_v1)
+        .expect("v1 generation still addressable after replacement + restart");
+    assert_eq!(
+        old.installation_digest, pin_v1.installation_digest,
+        "v1 retains its exact installation digest"
+    );
+    assert_eq!(old.config_digest, pin_v1.configuration.digest);
+    assert_eq!(old.configuration, pin_v1.configuration);
+    assert_eq!(old.launch_profile, pin_v1.launch_profile);
+    assert_eq!(
+        old.approved_capabilities,
+        vec![REPORT_CAPABILITY.to_string()],
+        "v1 retains its exact grant set, not the replacement's"
+    );
+    let new = entry.generations.get(&generation_v2).unwrap();
+    assert_eq!(new.installation_digest, pin_v2.installation_digest);
+    assert_eq!(
+        new.approved_capabilities,
+        vec![LEDGER_READ_CAPABILITY.to_string()]
+    );
 }

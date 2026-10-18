@@ -677,6 +677,23 @@ impl PluginHost {
         let store = HubInstallStore::new(&state_dir);
         let mut registry = PluginRegistry::new();
         let now = clock.now_ms();
+
+        // Restore the durable installed generations **before** discovery can
+        // install anything. A hub restart must not reallocate a generation for a
+        // package already installed under the selected ledger's registry
+        // checkpoint (that would redirect a prior binding pin or action receipt
+        // to a different executable). Reconstruction is bounded to the accepted
+        // configured-root auto-install policy: each historical generation is
+        // re-verified against the hub-owned immutable copy and pinned with either
+        // an operator installation whose package digest matches the stored bytes
+        // or the package's sealed default configuration with the fixed automatic
+        // grant intersection.
+        if auto_install {
+            if let Some(checkpoint) = desired.checkpoint().cloned() {
+                restore_installed_generations(&mut registry, &store, &checkpoint)?;
+            }
+        }
+
         for component in BUILTIN_COMPONENTS {
             registry.register_builtin(component, now);
         }
@@ -702,10 +719,13 @@ impl PluginHost {
                 }
             };
             verify_installation(package, &installation)?;
-            let generation = registry.install(&store, package, &installation)?;
-            // Stage the candidate; it becomes active only after it is Ready and
-            // activation is receipted (frozen contract). New work must not switch
-            // onto a candidate that has not passed startup/health gating.
+            // Reuse the persisted generation when this exact sealed package and
+            // pinned installation are already installed; otherwise allocate the
+            // next monotonic generation. Either way the discovered generation is
+            // staged: it becomes active only after it is Ready and activation is
+            // receipted (frozen contract), so new work never switches onto a
+            // candidate that has not passed startup/health gating.
+            let (generation, _reused) = registry.install_or_reuse(&store, package, &installation)?;
             registry.stage(&package.plugin_id, generation)?;
             installed.insert(package.plugin_id.clone(), generation);
         }
@@ -1288,6 +1308,108 @@ fn verify_installation(
         &installation.configuration,
     )?;
     Ok(())
+}
+
+/// Restore the durable installed generations for every plugin named by the
+/// selected ledger's [`RegistryCheckpoint`](crate::plugin_registry::RegistryCheckpoint).
+///
+/// Each generation present in the hub-owned immutable store is re-verified and
+/// reconstructed before discovery runs, so a restart keeps the prior binding
+/// generation for an unchanged package and never reallocates a used generation
+/// number. Reconstruction is bounded to the accepted configured-root
+/// auto-install policy: [`reconstruct_installation`] uses an operator pin whose
+/// package digest matches the stored bytes, or the package's sealed default
+/// configuration with the fixed automatic grant intersection. It never invents a
+/// broader configuration/grant policy.
+fn restore_installed_generations(
+    registry: &mut PluginRegistry,
+    store: &HubInstallStore,
+    checkpoint: &crate::plugin_registry::RegistryCheckpoint,
+) -> Result<(), ContractError> {
+    let mut plugin_ids: BTreeSet<&str> = BTreeSet::new();
+    plugin_ids.extend(checkpoint.active_generations.keys().map(String::as_str));
+    plugin_ids.extend(checkpoint.max_generations.keys().map(String::as_str));
+    for plugin_id in plugin_ids {
+        let checkpoint_max = checkpoint
+            .max_generations
+            .get(plugin_id)
+            .copied()
+            .unwrap_or(0);
+        let active = checkpoint
+            .active_generations
+            .get(plugin_id)
+            .copied()
+            .filter(|generation| *generation != 0);
+        let generations = store.installed_generations(plugin_id)?;
+        let mut ceiling = checkpoint_max.max(active.unwrap_or(0));
+        let mut reconstructed = Vec::new();
+        let mut active_reconstructed = false;
+        for generation in generations {
+            ceiling = ceiling.max(generation);
+            let Some(package) = store.load_installed_package(plugin_id, generation)? else {
+                continue;
+            };
+            let installation = reconstruct_installation(store, plugin_id, generation, &package)?;
+            reconstructed.push(crate::plugin_registry::seal_installed_generation(
+                &package.package_dir,
+                &package,
+                generation,
+                &installation,
+            )?);
+            if Some(generation) == active {
+                active_reconstructed = true;
+            }
+        }
+        // Fail closed: a checkpoint that names an active generation whose
+        // immutable hub copy is absent or cannot be reconstructed must refuse
+        // assembly, never silently drop the active pointer (which would let the
+        // next discovery reallocate the identity that pinned work and action
+        // receipts are bound to).
+        if let Some(generation) = active {
+            if !active_reconstructed {
+                return Err(FailureCode::StateUnavailable.failure(
+                    plugin_id,
+                    format!(
+                        "registry checkpoint names active generation {generation}, but its \
+                         immutable hub copy is absent or could not be reconstructed"
+                    ),
+                ));
+            }
+        }
+        for installed in reconstructed {
+            registry.restore_generation(installed);
+        }
+        registry.restore_bounds(plugin_id, ceiling, active);
+    }
+    Ok(())
+}
+
+/// Reconstruct the pinned [`PluginInstallation`] for a stored immutable
+/// generation from the pin persisted beside its hub-owned copy.
+///
+/// The **exact** original pin (configuration ref, grant set, launch profile and
+/// digest) is restored, not a re-derived default: a replacement package or a
+/// changed current `InstallationSource` must never silently change an older
+/// generation's binding identity or authority. The pin is re-validated with
+/// [`verify_installation`] against the stored bytes. A generation with no
+/// persisted pin is refused (fail closed) rather than fabricated.
+fn reconstruct_installation(
+    store: &HubInstallStore,
+    plugin_id: &str,
+    generation: u64,
+    package: &DiscoveredPackage,
+) -> Result<PluginInstallation, ContractError> {
+    let Some(pin) = store.load_installation(plugin_id, generation)? else {
+        return Err(FailureCode::StateUnavailable.failure(
+            plugin_id,
+            format!(
+                "installed generation {generation} has no persisted installation pin; \
+                 refusing to fabricate a replacement identity"
+            ),
+        ));
+    };
+    verify_installation(package, &pin)?;
+    Ok(pin)
 }
 
 /// Run the HP.3 production plugin host for one command invocation.

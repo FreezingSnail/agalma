@@ -15,14 +15,15 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use agalma_contracts::digest::{failure_code, FailureCode};
-use agalma_contracts::plugin::{HealthState, ReportEnvelope, View, ViewKind};
+use agalma_contracts::digest::{canonical_json, failure_code, FailureCode};
+use agalma_contracts::plugin::{Durability, HealthState, ReportEnvelope, View, ViewKind};
 use agalma_contracts::{
-    check_cursor, resolve_field_selector, ContractError, ExactAmount, ExactU64, FieldResolution,
-    Freshness, ListComponents, PackageArtifactRef, ReadArtifactChunk, ReadArtifactChunkRequest,
-    ReadComponent, ReadCursor, ReadMetadata, ReadOverview, ReadPageRequest, SourceState, UsageCost,
-    ARTIFACT_CHUNK_MAX_BYTES, ARTIFACT_TOTAL_MAX_BYTES, CONTROL_PLANE_READ_CAPABILITY,
-    CONTROL_PLANE_READ_FORMAT, READ_CURSOR_PREFIX, READ_PAGE_DEFAULT_LIMIT, READ_PAGE_MAX_ENTRIES,
+    check_cursor, resolve_field_selector, BindingPin, BrowserWire, Completeness, ComponentSummary,
+    ContractError, ExactAmount, ExactU64, FieldResolution, Freshness, ListComponents,
+    PackageArtifactRef, ReadArtifactChunk, ReadArtifactChunkRequest, ReadComponent, ReadCursor,
+    ReadMetadata, ReadOverview, ReadPageRequest, SourceState, UsageCost, ARTIFACT_CHUNK_MAX_BYTES,
+    ARTIFACT_TOTAL_MAX_BYTES, CONTROL_PLANE_READ_CAPABILITY, CONTROL_PLANE_READ_FORMAT,
+    READ_CURSOR_PREFIX, READ_PAGE_DEFAULT_LIMIT, READ_PAGE_MAX_BYTES, READ_PAGE_MAX_ENTRIES,
     READ_PAGE_MAX_LIMIT,
 };
 
@@ -45,6 +46,8 @@ const ARTIFACT_CHUNK_JSON: &str = fixture!("artifact-chunk.json");
 const ARTIFACT_CHUNK_MULTI_JSON: &str = fixture!("artifact-chunk-multi.json");
 const FIELD_SELECTORS_JSON: &str = fixture!("field-selectors.json");
 const INVALID_RECORDS_JSON: &str = fixture!("invalid-records.json");
+const WIRE_IDENTITIES_JSON: &str = fixture!("wire-identities.json");
+const WIRE_IDENTITIES_GOLDEN_JSON: &str = fixture!("wire-identities-golden.json");
 
 /// Count of executed required cases; the final test asserts it is nonzero.
 static CASES: AtomicUsize = AtomicUsize::new(0);
@@ -94,6 +97,36 @@ fn metadata_stub() -> ReadMetadata {
     }
 }
 
+/// A canonical binding pin for the browser-wire property tests.
+fn binding_stub(generation: u64) -> BindingPin {
+    BindingPin {
+        binding_id: "fixture.wire".to_string(),
+        api: "plugin".to_string(),
+        api_version: 1,
+        implementation_version: "fixture-wire-1".to_string(),
+        generation,
+        config_digest: digest_stub(),
+    }
+}
+
+/// A canonical report envelope for the browser-wire property tests.
+fn envelope_stub(generation: u64, sequence: u64) -> ReportEnvelope {
+    ReportEnvelope {
+        format: "ReportEnvelope/v1".to_string(),
+        plugin_id: "example.wire-reporter".to_string(),
+        binding: binding_stub(generation),
+        schema_namespace: "example.wire.status".to_string(),
+        schema_version: 1,
+        sequence,
+        reported_at_unix_ms: 1_791_820_800_000,
+        observed_at_unix_ms: 1_791_820_800_001,
+        execution_id: Some("exec:fixture:1".to_string()),
+        durability: Durability::Durable,
+        payload: json!({ "ready": true }),
+        payload_digest: digest_stub(),
+    }
+}
+
 fn assert_code(error: ContractError, expected: &str) {
     assert_eq!(
         failure_code(&error).map(FailureCode::as_str),
@@ -108,7 +141,10 @@ fn assert_code(error: ContractError, expected: &str) {
 fn golden_overview_round_trips_and_gates() {
     tick();
     let overview: ReadOverview = roundtrip(OVERVIEW_JSON);
-    overview.metadata.version_gate().expect("ControlPlaneRead/v1 gates");
+    overview
+        .metadata
+        .version_gate()
+        .expect("ControlPlaneRead/v1 gates");
     assert_eq!(overview.metadata.format, CONTROL_PLANE_READ_FORMAT);
 
     // Exact large identities survive as decimal strings.
@@ -123,7 +159,10 @@ fn golden_overview_round_trips_and_gates() {
 
     // Known usage is exact text; unknown cost is null, never zero.
     let economics: &UsageCost = &overview.economics;
-    assert_eq!(economics.usage.as_ref().unwrap().as_str(), "123456789012345.678901");
+    assert_eq!(
+        economics.usage.as_ref().unwrap().as_str(),
+        "123456789012345.678901"
+    );
     assert!(economics.allowance.is_some());
     assert_eq!(economics.cost, None);
 
@@ -182,7 +221,11 @@ fn golden_components_page_is_bounded_and_exact() {
     assert!(raw.starts_with(READ_CURSOR_PREFIX));
     let cursor = ReadCursor::decode(&raw).expect("cursor decodes");
     assert_eq!(cursor.collection, "components");
-    assert_eq!(cursor.encode().unwrap(), raw, "encode(decode(token)) == token");
+    assert_eq!(
+        cursor.encode().unwrap(),
+        raw,
+        "encode(decode(token)) == token"
+    );
     cursor
         .check_binding(&cursor.collection, &cursor.filter_digest)
         .expect("cursor binds to its own scope");
@@ -239,7 +282,9 @@ fn golden_multi_chunk_continuation_is_exact() {
     tick();
     let chunk: ReadArtifactChunk = roundtrip(ARTIFACT_CHUNK_MULTI_JSON);
     chunk.metadata.version_gate().expect("v1 gates");
-    chunk.check_bounds().expect("a continuing chunk is within bounds");
+    chunk
+        .check_bounds()
+        .expect("a continuing chunk is within bounds");
     assert_eq!(chunk.data_len().unwrap(), 2);
     assert_eq!(chunk.reference.bytes, 4);
     assert_eq!(
@@ -299,7 +344,11 @@ fn cursor_round_trips_and_rejects_stale_revision() {
         };
         let raw = cursor.encode().unwrap();
         assert!(raw.starts_with(READ_CURSOR_PREFIX));
-        assert_eq!(ReadCursor::decode(&raw).unwrap(), cursor, "cursor round trips");
+        assert_eq!(
+            ReadCursor::decode(&raw).unwrap(),
+            cursor,
+            "cursor round trips"
+        );
 
         let continued = check_cursor(Some(&raw), "components", &filter, &revision)
             .unwrap()
@@ -318,14 +367,25 @@ fn cursor_round_trips_and_rejects_stale_revision() {
         checked += 1;
     }
     assert!(checked >= 32, "the cursor sweep executed");
-    assert!(check_cursor(None, "components", &filter, &ExactU64::from(0))
-        .unwrap()
-        .is_none());
+    assert!(
+        check_cursor(None, "components", &filter, &ExactU64::from(0))
+            .unwrap()
+            .is_none()
+    );
     assert_code(ReadCursor::decode("garbage").unwrap_err(), "InvalidRecord");
 
     // A malformed revision is refused at decode (InvalidRecord), never accepted
     // and later misclassified as a stale-revision RevisionConflict.
-    for bad in ["not-a-number", "", "-1", "1.5", "0x10", " 1", "1 ", "18446744073709551616"] {
+    for bad in [
+        "not-a-number",
+        "",
+        "-1",
+        "1.5",
+        "0x10",
+        " 1",
+        "1 ",
+        "18446744073709551616",
+    ] {
         let token = format!(
             "cp1:{{\"after\":\"x\",\"collection\":\"components\",\"filter_digest\":\"{filter}\",\"revision\":\"{bad}\"}}"
         );
@@ -355,17 +415,29 @@ fn exact_u64_round_trips_large_values() {
         assert_eq!(exact.as_u64().unwrap(), value);
         assert_eq!(exact.as_str(), value.to_string());
         assert_eq!(ExactU64::parse(exact.as_str()).unwrap(), exact);
-        assert_eq!(serde_json::to_string(&exact).unwrap(), format!("\"{value}\""));
+        assert_eq!(
+            serde_json::to_string(&exact).unwrap(),
+            format!("\"{value}\"")
+        );
     }
     assert_code(ExactU64::parse("12x").unwrap_err(), "InvalidRecord");
     assert_code(ExactU64::parse("-1").unwrap_err(), "InvalidRecord");
     assert_code(ExactU64::parse("").unwrap_err(), "InvalidRecord");
     assert_code(ExactU64::parse(" 1").unwrap_err(), "InvalidRecord");
-    assert_code(ExactU64::parse("18446744073709551616").unwrap_err(), "InvalidRecord");
+    assert_code(
+        ExactU64::parse("18446744073709551616").unwrap_err(),
+        "InvalidRecord",
+    );
 
     // Deserialization validates too: a malformed decimal string cannot enter
     // through a nested record such as a cursor revision.
-    for bad in ["\"12x\"", "\"\"", "\"-1\"", "\"1.5\"", "\"18446744073709551616\""] {
+    for bad in [
+        "\"12x\"",
+        "\"\"",
+        "\"-1\"",
+        "\"1.5\"",
+        "\"18446744073709551616\"",
+    ] {
         assert!(
             serde_json::from_str::<ExactU64>(bad).is_err(),
             "ExactU64 must refuse {bad}"
@@ -384,9 +456,15 @@ fn exact_amount_grammar_is_exact() {
     tick();
     for raw in ["0", "5", "5.00", "123456789012345.678901", "000123", "10.0"] {
         let amount = ExactAmount::parse(raw).unwrap();
-        assert_eq!(amount.as_str(), raw, "text is preserved exactly, never rounded");
+        assert_eq!(
+            amount.as_str(),
+            raw,
+            "text is preserved exactly, never rounded"
+        );
     }
-    for raw in ["", ".", ".5", "1.", "1.2.3", "-1", "+1", "1e3", "1 000", "abc", "1,5"] {
+    for raw in [
+        "", ".", ".5", "1.", "1.2.3", "-1", "+1", "1e3", "1 000", "abc", "1,5",
+    ] {
         assert_code(ExactAmount::parse(raw).unwrap_err(), "InvalidRecord");
     }
 }
@@ -419,11 +497,15 @@ fn artifact_chunk_bounds_accept_limit_and_reject_over() {
         .check_bounds()
         .expect("exactly the chunk cap is allowed");
     assert_code(
-        chunk(over_cap, reference(total + 1), 0).check_bounds().unwrap_err(),
+        chunk(over_cap, reference(total + 1), 0)
+            .check_bounds()
+            .unwrap_err(),
         "InvalidRecord",
     );
     assert_code(
-        chunk("ab".to_string(), reference(0), 0).check_bounds().unwrap_err(),
+        chunk("ab".to_string(), reference(0), 0)
+            .check_bounds()
+            .unwrap_err(),
         "InvalidRecord",
     );
     assert_code(
@@ -446,7 +528,10 @@ fn artifact_chunk_bounds_accept_limit_and_reject_over() {
         offset: None,
         max_bytes: None,
     };
-    assert_eq!(default_request.effective_max_bytes().unwrap(), ARTIFACT_CHUNK_MAX_BYTES);
+    assert_eq!(
+        default_request.effective_max_bytes().unwrap(),
+        ARTIFACT_CHUNK_MAX_BYTES
+    );
 }
 
 #[test]
@@ -470,7 +555,10 @@ fn artifact_chunk_next_offset_is_exact() {
     chunk("ab", 2, 0, Some(1))
         .check_bounds()
         .expect("a continuing chunk with next_offset == end is allowed");
-    assert_code(chunk("ab", 2, 0, None).check_bounds().unwrap_err(), "InvalidRecord");
+    assert_code(
+        chunk("ab", 2, 0, None).check_bounds().unwrap_err(),
+        "InvalidRecord",
+    );
     assert_code(
         chunk("ab", 2, 0, Some(0)).check_bounds().unwrap_err(),
         "InvalidRecord",
@@ -500,9 +588,18 @@ fn artifact_chunk_next_offset_is_exact() {
 
     // A zero-length chunk before the artifact end makes no progress and is
     // refused whatever continuation it claims; it cannot be repeated forever.
-    assert_code(chunk("", 2, 0, Some(0)).check_bounds().unwrap_err(), "InvalidRecord");
-    assert_code(chunk("", 2, 0, Some(1)).check_bounds().unwrap_err(), "InvalidRecord");
-    assert_code(chunk("", 2, 0, None).check_bounds().unwrap_err(), "InvalidRecord");
+    assert_code(
+        chunk("", 2, 0, Some(0)).check_bounds().unwrap_err(),
+        "InvalidRecord",
+    );
+    assert_code(
+        chunk("", 2, 0, Some(1)).check_bounds().unwrap_err(),
+        "InvalidRecord",
+    );
+    assert_code(
+        chunk("", 2, 0, None).check_bounds().unwrap_err(),
+        "InvalidRecord",
+    );
     // A zero-length chunk exactly at the end is a legal empty final chunk.
     chunk("", 2, 2, None)
         .check_bounds()
@@ -559,9 +656,13 @@ fn artifact_chunk_next_offset_is_exact() {
             // (a) The exact continuation is accepted; at the end the required
             //     null is accepted.
             let valid = before_end.then_some(end);
-            chunk(&hex, total, offset, valid).check_bounds().unwrap_or_else(|e| {
-                panic!("case {case}: total={total} offset={offset} len={len} valid rejected: {e}")
-            });
+            chunk(&hex, total, offset, valid)
+                .check_bounds()
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "case {case}: total={total} offset={offset} len={len} valid rejected: {e}"
+                    )
+                });
 
             // (b/c) null is accepted exactly at the artifact end and refused as
             //       a premature truncation before it.
@@ -577,18 +678,24 @@ fn artifact_chunk_next_offset_is_exact() {
             // (d) A non-null value that is not exactly `end` is refused:
             //     one-byte overshoot, one-byte backward step, jump to `total`.
             assert_code(
-                chunk(&hex, total, offset, Some(end + 1)).check_bounds().unwrap_err(),
+                chunk(&hex, total, offset, Some(end + 1))
+                    .check_bounds()
+                    .unwrap_err(),
                 "InvalidRecord",
             );
             if end > 0 {
                 assert_code(
-                    chunk(&hex, total, offset, Some(end - 1)).check_bounds().unwrap_err(),
+                    chunk(&hex, total, offset, Some(end - 1))
+                        .check_bounds()
+                        .unwrap_err(),
                     "InvalidRecord",
                 );
             }
             if before_end {
                 assert_code(
-                    chunk(&hex, total, offset, Some(total)).check_bounds().unwrap_err(),
+                    chunk(&hex, total, offset, Some(total))
+                        .check_bounds()
+                        .unwrap_err(),
                     "InvalidRecord",
                 );
             }
@@ -596,14 +703,19 @@ fn artifact_chunk_next_offset_is_exact() {
             // (e) A non-null next_offset at the exact artifact end is refused.
             if !before_end {
                 assert_code(
-                    chunk(&hex, total, offset, Some(end)).check_bounds().unwrap_err(),
+                    chunk(&hex, total, offset, Some(end))
+                        .check_bounds()
+                        .unwrap_err(),
                     "InvalidRecord",
                 );
             }
         }
         checked += 1;
     }
-    assert_eq!(checked, CONTINUATION_BUDGET, "the full generated budget executed");
+    assert_eq!(
+        checked, CONTINUATION_BUDGET,
+        "the full generated budget executed"
+    );
     assert!(
         zero_progress_cases > 0,
         "the sweep exercised zero-length non-final chunks"
@@ -664,10 +776,17 @@ fn six_block_value_conventions_documented() {
     for block in blocks {
         let kind_text = block["kind"].as_str().unwrap();
         let view: View = serde_json::from_value(block["view"].clone()).expect("descriptor parses");
-        assert_eq!(format!("{:?}", view.kind), kind_text, "descriptor kind matches");
+        assert_eq!(
+            format!("{:?}", view.kind),
+            kind_text,
+            "descriptor kind matches"
+        );
         for field in &view.fields {
             assert!(
-                matches!(resolve_field_selector(&block["payload"], field), FieldResolution::Value(_)),
+                matches!(
+                    resolve_field_selector(&block["payload"], field),
+                    FieldResolution::Value(_)
+                ),
                 "block {kind_text} field {field} resolves against its payload"
             );
         }
@@ -684,7 +803,10 @@ fn six_block_value_conventions_documented() {
         ViewKind::Alert,
         ViewKind::ArtifactLink,
     ] {
-        assert!(kinds.contains(&kind), "the frozen ViewKind {kind:?} is covered");
+        assert!(
+            kinds.contains(&kind),
+            "the frozen ViewKind {kind:?} is covered"
+        );
     }
 }
 
@@ -700,7 +822,10 @@ fn malformed_records_report_documented_codes() {
 
     let case = invalid_case("report-envelope:payload_digest");
     let envelope: ReportEnvelope = serde_json::from_value(case.record).unwrap();
-    assert_code(envelope.verify_payload_digest().unwrap_err(), &case.expected_code);
+    assert_code(
+        envelope.verify_payload_digest().unwrap_err(),
+        &case.expected_code,
+    );
 
     let case = invalid_case("read-metadata:format-family");
     let metadata: ReadMetadata = serde_json::from_value(case.record).unwrap();
@@ -793,11 +918,19 @@ fn contracts_are_free_of_io_and_vendor_handles() {
         "reqwest",
         "Command::new",
     ] {
-        assert!(!source.contains(needle), "control_plane.rs must not contain {needle:?}");
+        assert!(
+            !source.contains(needle),
+            "control_plane.rs must not contain {needle:?}"
+        );
     }
     // Viewing grants no action authority: the read projection exposes no
     // mutation or ledger symbols.
-    for needle in ["LedgerApi", "ActionIntent", "ComponentCommit", "MutationApi"] {
+    for needle in [
+        "LedgerApi",
+        "ActionIntent",
+        "ComponentCommit",
+        "MutationApi",
+    ] {
         assert!(
             !source.contains(needle),
             "the read projection must not carry {needle:?}"
@@ -806,7 +939,448 @@ fn contracts_are_free_of_io_and_vendor_handles() {
     assert_eq!(CONTROL_PLANE_READ_CAPABILITY, "control-plane.read/v1");
 }
 
-// --- 14. required-case counter ---------------------------------------------
+// --- 14. browser wire golden identity fixture ------------------------------
+
+#[test]
+fn browser_wire_identity_fixture_projects_and_round_trips() {
+    tick();
+    let source: ReadComponent = serde_json::from_str(WIRE_IDENTITIES_JSON).expect("source parses");
+    let golden: Value = serde_json::from_str(WIRE_IDENTITIES_GOLDEN_JSON).expect("golden parses");
+
+    // The projection rewrites exactly the nested canonical identities; nothing
+    // else changes.
+    let wire = source.to_wire_value().expect("projects");
+    assert_eq!(
+        wire, golden,
+        "projection matches the hand-written golden wire"
+    );
+
+    // Exact parse back into the canonical record.
+    let reparsed = ReadComponent::from_wire_value(&golden).expect("golden parses back");
+    assert_eq!(reparsed, source, "wire -> canonical is exact");
+
+    // JSON text round-trips too.
+    let text = source.to_wire_json().expect("to_wire_json");
+    let from_text = ReadComponent::from_wire_str(&text).expect("from_wire_str");
+    assert_eq!(
+        from_text, source,
+        "to_wire_json -> from_wire_str round-trips"
+    );
+}
+
+// --- 15. browser wire identity path assertions -----------------------------
+
+#[test]
+fn browser_wire_identity_paths_are_exact_strings() {
+    tick();
+    let source: ReadComponent = serde_json::from_str(WIRE_IDENTITIES_JSON).expect("source parses");
+    let wire = source.to_wire_value().expect("projects");
+
+    // Nested canonical identities are decimal strings, equal to the exact text.
+    assert_eq!(wire["binding"]["generation"], json!("9007199254740993"));
+    assert_eq!(
+        wire["entries"][0]["binding"]["generation"],
+        json!("18446744073709551615")
+    );
+    assert_eq!(wire["entries"][0]["sequence"], json!("9007199254740993"));
+    assert_eq!(
+        wire["entries"][0]["reported_at_unix_ms"],
+        json!("9223372036854775807")
+    );
+    assert_eq!(
+        wire["entries"][0]["observed_at_unix_ms"],
+        json!("9223372036854775807")
+    );
+
+    // The exact string identity is preserved verbatim.
+    assert_eq!(
+        wire["entries"][0]["execution_id"],
+        json!("exec:fixture:9007199254740993")
+    );
+
+    // Non-identity u64s stay JSON numbers.
+    assert_eq!(wire["binding"]["api_version"], json!(1));
+    assert_eq!(wire["entries"][0]["schema_version"], json!(1));
+
+    // Plugin-private payload numbers stay numbers (never stringified).
+    assert!(
+        wire["entries"][0]["payload"]["count"].is_number(),
+        "a payload count above 2^53 stays a JSON number"
+    );
+    assert_eq!(
+        wire["entries"][0]["payload"]["count"],
+        json!(9007199254740993u64)
+    );
+    assert!(
+        wire["entries"][0]["payload"]["ratio"].is_number(),
+        "a payload float stays a JSON number"
+    );
+    assert_eq!(wire["entries"][0]["payload"]["ratio"], json!(1.5));
+    assert_eq!(wire["entries"][0]["payload"]["state"], json!("ready"));
+
+    // The second envelope's small identities are strings too.
+    assert_eq!(wire["entries"][1]["binding"]["generation"], json!("2"));
+    assert_eq!(wire["entries"][1]["sequence"], json!("2"));
+}
+
+// --- 16. list components wire coverage -------------------------------------
+
+#[test]
+fn list_components_wire_rewrites_binding_identity() {
+    tick();
+    let source: ListComponents =
+        serde_json::from_str(COMPONENTS_PAGE_JSON).expect("components page parses");
+    let wire = source.to_wire_value().expect("projects");
+
+    // The fixture carries binding.generation = 9007199254740993 as a JSON number;
+    // the wire projects it as the exact decimal string.
+    assert!(
+        wire["entries"][0]["binding"]["generation"].is_string(),
+        "binding generation is a string on the wire"
+    );
+    assert_eq!(
+        wire["entries"][0]["binding"]["generation"],
+        json!("9007199254740993")
+    );
+    // Untouched fields remain in place.
+    assert_eq!(
+        wire["entries"][0]["plugin_id"],
+        json!("example.unfamiliar-reporter")
+    );
+    assert_eq!(wire["entries"][0]["generation"], json!("9007199254740993"));
+    assert_eq!(wire["entries"][0]["binding"]["api_version"], json!(1));
+    assert_eq!(
+        wire["entries"][1]["binding"]["generation"],
+        json!("2"),
+        "small identities are strings too"
+    );
+
+    // Round-trip through the trait equals the source record.
+    let from_text =
+        ListComponents::from_wire_str(&source.to_wire_json().unwrap()).expect("reparses");
+    assert_eq!(from_text, source, "list components wire round-trips");
+}
+
+// --- 17. overview wire coverage --------------------------------------------
+
+#[test]
+fn overview_wire_matches_generic_and_round_trips() {
+    tick();
+    let source: ReadOverview = serde_json::from_str(OVERVIEW_JSON).expect("overview parses");
+    let wire = source.to_wire_value().expect("projects");
+
+    // The overview surface has no nested canonical identity, so the projection
+    // is the faithful generic value.
+    assert_eq!(wire, serde_json::to_value(&source).unwrap());
+
+    // Its ExactU64 fields stay exact decimal strings.
+    assert_eq!(
+        wire["executions"][0]["generation"],
+        json!("18446744073709551615")
+    );
+    assert_eq!(wire["executions"][0]["revision"], json!("9007199254740993"));
+
+    let from_text = ReadOverview::from_wire_str(&source.to_wire_json().unwrap()).expect("reparses");
+    assert_eq!(from_text, source, "overview wire round-trips");
+}
+
+// --- 18. artifact chunk wire round trip ------------------------------------
+
+#[test]
+fn artifact_chunk_wire_round_trips() {
+    tick();
+    let source: ReadArtifactChunk =
+        serde_json::from_str(ARTIFACT_CHUNK_JSON).expect("chunk parses");
+    let wire = source.to_wire_value().expect("projects");
+    // PackageArtifactRef.bytes is not identity-bearing: it stays a number.
+    assert!(wire["reference"]["bytes"].is_number());
+    let from_text =
+        ReadArtifactChunk::from_wire_str(&source.to_wire_json().unwrap()).expect("reparses");
+    assert_eq!(from_text, source, "artifact chunk wire round-trips");
+}
+
+// --- 19. browser wire identity property ------------------------------------
+
+#[test]
+fn browser_wire_property_round_trips_identity_u64() {
+    tick();
+    // Property (independent of the implementation): for every u64 `g` and `s`,
+    // projecting a ReadComponent whose top-level binding generation is `g` and
+    // whose single envelope has sequence `s` and binding generation `g` yields
+    // the exact decimal text; parsing it back recovers `g`/`s`; and the whole
+    // record round-trips.
+    //
+    // Generation scheme: xorshift64 seeded with WIRE_SEED; two values drawn per
+    // case. Budget: WIRE_BUDGET = 256 generated cases, plus an exhaustive
+    // boundary sample list. Reproducible; no RNG dependency.
+    const WIRE_SEED: u64 = 0x0123_4567_89AB_CDEF;
+    const WIRE_BUDGET: usize = 256;
+
+    let component = |g: u64, s: u64| ReadComponent {
+        metadata: metadata_stub(),
+        binding: binding_stub(g),
+        descriptors: Vec::new(),
+        entries: vec![envelope_stub(g, s)],
+        next_cursor: None,
+    };
+
+    let check = |g: u64, s: u64| {
+        let record = component(g, s);
+        let wire = record.to_wire_value().expect("projects");
+        assert_eq!(
+            wire["binding"]["generation"],
+            Value::String(g.to_string()),
+            "top-level generation is exact decimal text"
+        );
+        assert_eq!(
+            wire["entries"][0]["binding"]["generation"],
+            Value::String(g.to_string()),
+            "envelope binding generation is exact decimal text"
+        );
+        assert_eq!(
+            wire["entries"][0]["sequence"],
+            Value::String(s.to_string()),
+            "envelope sequence is exact decimal text"
+        );
+        assert_eq!(
+            wire["binding"]["generation"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap(),
+            g,
+            "parsing the wire string recovers g"
+        );
+        assert_eq!(
+            wire["entries"][0]["sequence"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap(),
+            s,
+            "parsing the wire string recovers s"
+        );
+        assert_eq!(
+            ReadComponent::from_wire_value(&wire).unwrap(),
+            record,
+            "from_wire_value(to_wire_value(x)) == x"
+        );
+    };
+
+    // Exhaustive boundary sample list.
+    let boundaries = [
+        0u64,
+        1,
+        255,
+        65_535,
+        (1u64 << 32) + 1,
+        1u64 << 53,
+        (1u64 << 53) + 1,
+        1u64 << 63,
+        u64::MAX - 1,
+        u64::MAX,
+    ];
+    for &value in &boundaries {
+        check(value, value);
+    }
+    // The spec-named pair cases, including a g != s cross.
+    check(0, 1);
+    check(1u64 << 53, (1u64 << 53) + 1);
+    check(u64::MAX, 1);
+
+    let mut state = WIRE_SEED;
+    let mut next = move || -> u64 {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let mut executed = 0usize;
+    for _ in 0..WIRE_BUDGET {
+        let g = next();
+        let s = next();
+        check(g, s);
+        executed += 1;
+    }
+    assert_eq!(executed, WIRE_BUDGET, "the full generated budget executed");
+}
+
+// --- 20. malformed wire identity refusal -----------------------------------
+
+#[test]
+fn browser_wire_refuses_malformed_identities() {
+    tick();
+    let source: ReadComponent = serde_json::from_str(WIRE_IDENTITIES_JSON).expect("source parses");
+    for bad in ["12x", "", "-1", "1.5", "0x10", " 1", "18446744073709551616"] {
+        let mut wire = source.to_wire_value().expect("projects");
+        wire["binding"]["generation"] = json!(bad);
+        assert_code(
+            ReadComponent::from_wire_value(&wire).unwrap_err(),
+            "InvalidRecord",
+        );
+    }
+}
+
+// --- 21. page bound measures the browser wire, not canonical-json -----------
+
+#[test]
+fn page_bound_measures_browser_wire_not_canonical() {
+    tick();
+    // Each pad character adds exactly one browser-wire byte (the plugin payload
+    // is copied verbatim), so a page can be sized precisely to cross the byte
+    // cap. Large identities force the decimal-string quotes the canonical form
+    // omits, so the canonical length stays under the cap while the wire length
+    // is one byte over: the old canonical measure would have wrongly passed.
+
+    let component = |pad: usize| {
+        let mut envelope = envelope_stub(u64::MAX, (1u64 << 53) + 1);
+        envelope.reported_at_unix_ms = u64::MAX;
+        envelope.observed_at_unix_ms = u64::MAX;
+        envelope.payload = json!({ "blob": "a".repeat(pad) });
+        ReadComponent {
+            metadata: metadata_stub(),
+            binding: binding_stub(u64::MAX),
+            descriptors: Vec::new(),
+            entries: vec![envelope],
+            next_cursor: None,
+        }
+    };
+
+    let base_len = component(0).to_wire_json().unwrap().len();
+    let pad = READ_PAGE_MAX_BYTES as usize + 1 - base_len;
+    let over = component(pad);
+    let over_wire = over.to_wire_json().unwrap();
+    assert_eq!(
+        over_wire.len() as u64,
+        READ_PAGE_MAX_BYTES + 1,
+        "the over page's wire length crosses the cap by one byte"
+    );
+    let over_canonical = canonical_json(&serde_json::to_value(&over).unwrap())
+        .expect("canonical-json accepts integer-only identities");
+    assert!(
+        over_canonical.len() as u64 <= READ_PAGE_MAX_BYTES,
+        "the canonical measure would have wrongly passed the over page"
+    );
+    assert!(
+        over_canonical.len() < over_wire.len(),
+        "identity quoting makes the canonical form strictly shorter"
+    );
+    assert_code(over.check_bounds().unwrap_err(), "InvalidRecord");
+
+    let under = component(pad - 1);
+    assert!(under.to_wire_json().unwrap().len() as u64 <= READ_PAGE_MAX_BYTES);
+    under
+        .check_bounds()
+        .expect("one byte under the cap passes the wire bound");
+
+    // The generic `ReadPage` bound (ListComponents) measures the wire form too.
+    let summary = |pad: usize| ComponentSummary {
+        plugin_id: "example.unfamiliar-reporter".to_string(),
+        name: "n".repeat(pad),
+        binding: binding_stub(u64::MAX),
+        generation: ExactU64::from(u64::MAX),
+        health: HealthState::Ready,
+        freshness: Freshness::Fresh,
+        completeness: Completeness::Complete,
+        available: true,
+        views: Vec::new(),
+    };
+    let page = |pad: usize| ListComponents {
+        metadata: metadata_stub(),
+        entries: vec![summary(pad)],
+        next_cursor: None,
+    };
+
+    let page_base_len = page(0).to_wire_json().unwrap().len();
+    let page_pad = READ_PAGE_MAX_BYTES as usize + 1 - page_base_len;
+    let page_over = page(page_pad);
+    let page_over_wire = page_over.to_wire_json().unwrap();
+    assert_eq!(page_over_wire.len() as u64, READ_PAGE_MAX_BYTES + 1);
+    let page_over_canonical = canonical_json(&serde_json::to_value(&page_over).unwrap()).unwrap();
+    assert!(
+        page_over_canonical.len() as u64 <= READ_PAGE_MAX_BYTES,
+        "the canonical measure would have wrongly passed the over page"
+    );
+    assert_code(page_over.check_bounds().unwrap_err(), "InvalidRecord");
+
+    let page_under = page(page_pad - 1);
+    assert!(page_under.to_wire_json().unwrap().len() as u64 <= READ_PAGE_MAX_BYTES);
+    page_under
+        .check_bounds()
+        .expect("one byte under the cap passes the wire bound");
+}
+
+// --- 22. float payload pages are valid and measured on the browser wire ----
+
+#[test]
+fn float_payload_page_is_valid_and_measured_on_browser_wire() {
+    tick();
+    // A plugin payload may carry floats; canonical-json/v1 rejects them, so the
+    // page bound must measure the float-compatible browser wire instead.
+    let record = ReadComponent {
+        metadata: metadata_stub(),
+        binding: binding_stub(u64::MAX),
+        descriptors: Vec::new(),
+        entries: vec![{
+            let mut envelope = envelope_stub(u64::MAX, (1u64 << 53) + 1);
+            envelope.payload = json!({ "ratio": 1.5, "count": 9007199254740993u64 });
+            envelope
+        }],
+        next_cursor: None,
+    };
+
+    record
+        .check_bounds()
+        .expect("a float-bearing payload page is within bounds");
+    let text = record.to_wire_json().expect("to_wire_json permits floats");
+    assert!(text.contains("\"ratio\":1.5"));
+
+    let wire = record.to_wire_value().expect("projects");
+    assert!(
+        wire["entries"][0]["payload"]["ratio"].is_number(),
+        "a payload float stays a JSON number on the wire"
+    );
+    assert_eq!(wire["entries"][0]["payload"]["ratio"], json!(1.5));
+    assert!(
+        wire["entries"][0]["payload"]["count"].is_number(),
+        "a payload integer stays a JSON number"
+    );
+    assert_eq!(
+        wire["entries"][0]["payload"]["count"],
+        json!(9007199254740993u64)
+    );
+    assert!(wire["binding"]["generation"].is_string());
+    assert!(wire["entries"][0]["sequence"].is_string());
+
+    // canonical-json/v1 refuses the float, proving the bound cannot use it.
+    assert!(
+        canonical_json(&serde_json::to_value(&record).unwrap()).is_err(),
+        "canonical-json/v1 rejects the payload float"
+    );
+
+    // Stronger case: a float-bearing page padded just over the cap is refused.
+    let padded = |pad: usize| ReadComponent {
+        metadata: metadata_stub(),
+        binding: binding_stub(u64::MAX),
+        descriptors: Vec::new(),
+        entries: vec![{
+            let mut envelope = envelope_stub(u64::MAX, (1u64 << 53) + 1);
+            envelope.payload = json!({ "ratio": 1.5, "blob": "a".repeat(pad) });
+            envelope
+        }],
+        next_cursor: None,
+    };
+    let base_len = padded(0).to_wire_json().unwrap().len();
+    let pad = READ_PAGE_MAX_BYTES as usize + 1 - base_len;
+    let over = padded(pad);
+    assert_eq!(
+        over.to_wire_json().unwrap().len() as u64,
+        READ_PAGE_MAX_BYTES + 1
+    );
+    assert_code(over.check_bounds().unwrap_err(), "InvalidRecord");
+}
+
+// --- 23. required-case counter ---------------------------------------------
 
 #[test]
 fn required_cases_executed_is_nonzero() {

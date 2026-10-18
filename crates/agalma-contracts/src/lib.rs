@@ -36,8 +36,8 @@ pub use budget::{
     ReservationState, SpendState, UsageObservation, NUSD_PER_USD, TOKENS_PER_PRICE_UNIT,
 };
 pub use control_plane::{
-    check_cursor, resolve_field_selector, ComponentSummary, ExactAmount, ExactU64, ExecutionSummary,
-    FactoryStop, FieldResolution, Freshness, ListComponents, ReadArtifactChunk,
+    check_cursor, resolve_field_selector, BrowserWire, ComponentSummary, ExactAmount, ExactU64,
+    ExecutionSummary, FactoryStop, FieldResolution, Freshness, ListComponents, ReadArtifactChunk,
     ReadArtifactChunkRequest, ReadComponent, ReadCursor, ReadMetadata, ReadOverview, ReadPage,
     ReadPageRequest, SourceAvailability, SourceState, TimelineEntry, UsageCost,
     ARTIFACT_CHUNK_MAX_BYTES, ARTIFACT_TOTAL_MAX_BYTES, CONTROL_PLANE_READ_CAPABILITY,

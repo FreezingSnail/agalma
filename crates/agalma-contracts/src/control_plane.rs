@@ -18,8 +18,8 @@
 //!   validated on deserialization; an unknown value is `null` (`None`), never a
 //!   numeric zero;
 //! - a page holds at most [`READ_PAGE_MAX_ENTRIES`] entries and at most
-//!   [`READ_PAGE_MAX_BYTES`] serialized bytes; the limit defaults to
-//!   [`READ_PAGE_DEFAULT_LIMIT`] and accepts `1..=100`;
+//!   [`READ_PAGE_MAX_BYTES`] bytes of its [`BrowserWire`] JSON; the limit
+//!   defaults to [`READ_PAGE_DEFAULT_LIMIT`] and accepts `1..=100`;
 //! - artifact chunks are at most [`ARTIFACT_CHUNK_MAX_BYTES`] and a whole
 //!   artifact is bounded by [`ARTIFACT_TOTAL_MAX_BYTES`];
 //! - opaque cursors pin the collection, filter, and projection revision; an
@@ -33,6 +33,19 @@
 //! [`ContractError`] taxonomy.
 //! Plugin-private report payloads stay namespaced, versioned JSON; this module
 //! never introduces plugin-specific hub types.
+//!
+//! # Browser wire projection
+//!
+//! The browser reads these records through the [`BrowserWire`] projection, not
+//! through generic `serde_json::to_value`. Identity-bearing nested canonical
+//! `u64`s that the frozen HP.1 types ([`BindingPin`], [`ReportEnvelope`]) carry
+//! as JSON numbers — `BindingPin.generation` and `ReportEnvelope.sequence`,
+//! `reported_at_unix_ms`, `observed_at_unix_ms` — become exact decimal strings on
+//! the browser wire so a JSON parser never rounds them through an IEEE-754
+//! double (values above 2^53 would otherwise lose precision). The read records'
+//! own [`ExactU64`]/[`ExactAmount`] fields are already decimal strings and stay
+//! untouched. Plugin-private `payload` values are copied verbatim: numbers stay
+//! numbers, floats stay floats.
 //!
 //! This module is pure: no I/O, no vendor types.
 
@@ -61,7 +74,12 @@ pub const READ_PAGE_MIN_LIMIT: u32 = 1;
 pub const READ_PAGE_MAX_LIMIT: u32 = 100;
 /// Hard cap on entries in one page (mirrors [`READ_PAGE_MAX_LIMIT`]).
 pub const READ_PAGE_MAX_ENTRIES: usize = 100;
-/// Hard cap on the canonical serialized size of one page (256 KiB).
+/// Hard cap on one page's [`BrowserWire`] JSON size (256 KiB).
+///
+/// Measured on the exact bytes the browser receives: identity-bearing nested
+/// `u64`s count their decimal-string quotes, and plugin payload floats are
+/// permitted. `canonical-json/v1` is unsuitable here because it rejects floats
+/// and does not reflect those quotes.
 pub const READ_PAGE_MAX_BYTES: u64 = 256 * 1024;
 /// Maximum bytes returned by one [`ReadArtifactChunk`] (64 KiB).
 pub const ARTIFACT_CHUNK_MAX_BYTES: u64 = 64 * 1024;
@@ -119,10 +137,7 @@ impl ExactU64 {
     /// Validate and wrap a decimal string.
     pub fn parse(raw: &str) -> Result<Self, ContractError> {
         raw.parse::<u64>().map_err(|_| {
-            FailureCode::InvalidRecord.failure(
-                raw,
-                "expected an unsigned decimal integer string",
-            )
+            FailureCode::InvalidRecord.failure(raw, "expected an unsigned decimal integer string")
         })?;
         Ok(Self(raw.to_string()))
     }
@@ -185,10 +200,8 @@ impl ExactAmount {
         if valid_amount(raw) {
             Ok(Self(raw.to_string()))
         } else {
-            Err(FailureCode::InvalidRecord.failure(
-                raw,
-                "expected a non-negative decimal amount string",
-            ))
+            Err(FailureCode::InvalidRecord
+                .failure(raw, "expected a non-negative decimal amount string"))
         }
     }
 
@@ -404,11 +417,12 @@ pub struct ReadPage<T> {
     pub next_cursor: Option<String>,
 }
 
-impl<T: Serialize> ReadPage<T> {
+impl<T: BrowserWire> ReadPage<T> {
     /// Refuse a page beyond [`READ_PAGE_MAX_ENTRIES`] or
-    /// [`READ_PAGE_MAX_BYTES`].
+    /// [`READ_PAGE_MAX_BYTES`], measured on the [`BrowserWire`] JSON the browser
+    /// receives.
     pub fn check_bounds(&self) -> Result<(), ContractError> {
-        check_page_bound("page", self.entries.len(), self)
+        check_wire_page_bound("page", self.entries.len(), self)
     }
 }
 
@@ -435,9 +449,10 @@ pub struct ReadComponent {
 
 impl ReadComponent {
     /// Refuse a page beyond [`READ_PAGE_MAX_ENTRIES`] or
-    /// [`READ_PAGE_MAX_BYTES`].
+    /// [`READ_PAGE_MAX_BYTES`], measured on the [`BrowserWire`] JSON the browser
+    /// receives (identity quotes counted, plugin payload floats permitted).
     pub fn check_bounds(&self) -> Result<(), ContractError> {
-        check_page_bound("page", self.entries.len(), self)
+        check_wire_page_bound("page", self.entries.len(), self)
     }
 }
 
@@ -509,9 +524,9 @@ impl ReadArtifactChunk {
             ));
         }
         let offset = self.offset.as_u64()?;
-        let end = offset
-            .checked_add(data_len)
-            .ok_or_else(|| FailureCode::InvalidRecord.failure(path, "artifact chunk offset overflow"))?;
+        let end = offset.checked_add(data_len).ok_or_else(|| {
+            FailureCode::InvalidRecord.failure(path, "artifact chunk offset overflow")
+        })?;
         if end > total {
             return Err(FailureCode::InvalidRecord.failure(
                 path,
@@ -575,7 +590,9 @@ impl ReadPageRequest {
     pub fn effective_limit(&self) -> Result<u32, ContractError> {
         match self.limit {
             None => Ok(READ_PAGE_DEFAULT_LIMIT),
-            Some(limit) if (READ_PAGE_MIN_LIMIT..=READ_PAGE_MAX_LIMIT).contains(&limit) => Ok(limit),
+            Some(limit) if (READ_PAGE_MIN_LIMIT..=READ_PAGE_MAX_LIMIT).contains(&limit) => {
+                Ok(limit)
+            }
             Some(limit) => Err(FailureCode::InvalidRecord.failure(
                 "limit",
                 format!(
@@ -619,10 +636,8 @@ impl ReadArtifactChunkRequest {
     pub fn effective_max_bytes(&self) -> Result<u64, ContractError> {
         match self.max_bytes {
             None => Ok(ARTIFACT_CHUNK_MAX_BYTES),
-            Some(0) => Err(FailureCode::InvalidRecord.failure(
-                "max_bytes",
-                "artifact chunk max_bytes must be >= 1",
-            )),
+            Some(0) => Err(FailureCode::InvalidRecord
+                .failure("max_bytes", "artifact chunk max_bytes must be >= 1")),
             Some(max) if max > ARTIFACT_CHUNK_MAX_BYTES => Err(FailureCode::InvalidRecord.failure(
                 "max_bytes",
                 format!("artifact chunk max_bytes {max} exceeds limit {ARTIFACT_CHUNK_MAX_BYTES}"),
@@ -652,7 +667,8 @@ impl ReadCursor {
     /// Encode this cursor as an opaque `cp1:`-prefixed token.
     pub fn encode(&self) -> Result<String, ContractError> {
         let value = serde_json::to_value(self).map_err(|e| {
-            FailureCode::InvalidRecord.failure(&self.collection, format!("cannot encode cursor: {e}"))
+            FailureCode::InvalidRecord
+                .failure(&self.collection, format!("cannot encode cursor: {e}"))
         })?;
         Ok(format!("{READ_CURSOR_PREFIX}{}", canonical_json(&value)?))
     }
@@ -662,14 +678,19 @@ impl ReadCursor {
         let body = raw.strip_prefix(READ_CURSOR_PREFIX).ok_or_else(|| {
             FailureCode::InvalidRecord.failure(raw, "cursor is not a `cp1:` token")
         })?;
-        let value: Value = serde_json::from_str(body)
-            .map_err(|e| FailureCode::InvalidRecord.failure(raw, format!("malformed cursor: {e}")))?;
+        let value: Value = serde_json::from_str(body).map_err(|e| {
+            FailureCode::InvalidRecord.failure(raw, format!("malformed cursor: {e}"))
+        })?;
         serde_json::from_value(value)
             .map_err(|e| FailureCode::InvalidRecord.failure(raw, format!("malformed cursor: {e}")))
     }
 
     /// Refuse a cursor issued for a different collection or filter.
-    pub fn check_binding(&self, collection: &str, filter_digest: &str) -> Result<(), ContractError> {
+    pub fn check_binding(
+        &self,
+        collection: &str,
+        filter_digest: &str,
+    ) -> Result<(), ContractError> {
         if self.collection != collection || self.filter_digest != filter_digest {
             return Err(FailureCode::InvalidRecord.failure(
                 &self.collection,
@@ -786,7 +807,13 @@ fn unescape_pointer_token(raw: &str) -> Option<String> {
 // --- shared helpers ---------------------------------------------------------
 
 /// Refuse a page beyond [`READ_PAGE_MAX_ENTRIES`] or [`READ_PAGE_MAX_BYTES`].
-fn check_page_bound<T: Serialize>(
+///
+/// The byte bound is measured on the [`BrowserWire`] JSON the browser actually
+/// receives (`record.to_wire_json()`), not on `canonical-json/v1`. The wire form
+/// quotes identity-bearing nested `u64`s (adding bytes) and preserves
+/// plugin-private payload floats (which `canonical-json/v1` refuses), so a
+/// canonical measurement would both under- and over-count real pages.
+fn check_wire_page_bound<T: BrowserWire>(
     subject: &str,
     entries: usize,
     record: &T,
@@ -797,10 +824,7 @@ fn check_page_bound<T: Serialize>(
             format!("page holds {entries} entries, exceeding limit {READ_PAGE_MAX_ENTRIES}"),
         ));
     }
-    let value = serde_json::to_value(record).map_err(|e| {
-        FailureCode::InvalidRecord.failure(subject, format!("cannot serialize page: {e}"))
-    })?;
-    let bytes = canonical_json(&value)?.len() as u64;
+    let bytes = record.to_wire_json()?.len() as u64;
     if bytes > READ_PAGE_MAX_BYTES {
         return Err(FailureCode::InvalidRecord.failure(
             subject,
@@ -808,4 +832,298 @@ fn check_page_bound<T: Serialize>(
         ));
     }
     Ok(())
+}
+
+// --- browser wire projection ------------------------------------------------
+
+/// Browser-facing serialization projection for the `ControlPlaneRead/v1`
+/// records.
+///
+/// Generic [`serde_json::to_value`] serializes the frozen HP.1 [`BindingPin`] and
+/// [`ReportEnvelope`] identity `u64` fields — `generation`, `sequence`,
+/// `reported_at_unix_ms`, `observed_at_unix_ms` — as JSON numbers. A browser
+/// parses JSON numbers as IEEE-754 doubles and loses precision above 2^53, which
+/// violates the exact decimal-string identity contract. This projection rewrites
+/// exactly those nested canonical identity fields as decimal strings and parses
+/// them back, while leaving every plugin-private `payload` value untouched
+/// (numbers stay numbers, floats stay floats).
+///
+/// Implemented for the four read results: [`ReadOverview`],
+/// [`ReadPage<ComponentSummary>`](ReadPage) (the `ListComponents` alias),
+/// [`ReadComponent`], and [`ReadArtifactChunk`]. The read records' own
+/// [`ExactU64`]/[`ExactAmount`] fields are already decimal strings and are not
+/// rewritten by the projection.
+pub trait BrowserWire: Serialize + serde::de::DeserializeOwned + Sized {
+    /// Project to browser wire JSON: nested canonical identity `u64` fields
+    /// become exact decimal strings; plugin-private `payload` values are copied
+    /// verbatim (JSON numbers stay numbers).
+    fn to_wire_value(&self) -> Result<Value, ContractError>;
+
+    /// Deterministic JSON text of [`Self::to_wire_value`].
+    ///
+    /// Uses [`serde_json::to_string`], not `canonical_json`, because a plugin
+    /// payload may contain floats that `canonical-json/v1` rejects.
+    fn to_wire_json(&self) -> Result<String, ContractError> {
+        let value = self.to_wire_value()?;
+        serde_json::to_string(&value).map_err(|e| {
+            FailureCode::InvalidRecord.failure(
+                "browser-wire",
+                format!("cannot serialize browser wire value: {e}"),
+            )
+        })
+    }
+
+    /// Parse browser wire JSON back into the canonical record, accepting the
+    /// decimal-string identities; malformed, overflowing, negative, or float
+    /// identities are refused with [`FailureCode::InvalidRecord`].
+    fn from_wire_value(value: &Value) -> Result<Self, ContractError>;
+
+    /// Parse a wire JSON string, then [`Self::from_wire_value`].
+    fn from_wire_str(text: &str) -> Result<Self, ContractError> {
+        let value: Value = serde_json::from_str(text).map_err(|e| {
+            FailureCode::InvalidRecord
+                .failure("browser-wire", format!("malformed browser wire JSON: {e}"))
+        })?;
+        Self::from_wire_value(&value)
+    }
+}
+
+/// Serialize a record to a JSON value, mapping any failure to `InvalidRecord`.
+fn serialize_to_wire_value<T: Serialize>(value: &T) -> Result<Value, ContractError> {
+    serde_json::to_value(value).map_err(|e| {
+        FailureCode::InvalidRecord.failure("browser-wire", format!("cannot project record: {e}"))
+    })
+}
+
+/// Deserialize a canonical record from a JSON value, mapping every error to
+/// `InvalidRecord`.
+fn deserialize_from_wire_value<T: serde::de::DeserializeOwned>(
+    value: &Value,
+) -> Result<T, ContractError> {
+    serde_json::from_value(value.clone()).map_err(|e| {
+        FailureCode::InvalidRecord.failure("browser-wire", format!("cannot decode wire value: {e}"))
+    })
+}
+
+/// Rewrite one identity field from a decimal string to a `u64` JSON number,
+/// refusing a non-decimal, negative, overflowing, empty, or float value.
+fn rewrite_identity_to_u64(field: &mut Value) -> Result<(), ContractError> {
+    let text = match field {
+        Value::String(text) => text.clone(),
+        other => {
+            return Err(FailureCode::InvalidRecord.failure(
+                "browser-wire-identity",
+                format!("expected a decimal identity string, found {other}"),
+            ))
+        }
+    };
+    let parsed = text.parse::<u64>().map_err(|_| {
+        FailureCode::InvalidRecord.failure(&text, "expected an unsigned decimal identity string")
+    })?;
+    *field = Value::Number(serde_json::Number::from(parsed));
+    Ok(())
+}
+
+/// Project a canonical [`BindingPin`] with `generation` as a decimal string.
+fn binding_pin_to_wire(pin: &BindingPin) -> Result<Value, ContractError> {
+    let mut value = serialize_to_wire_value(pin)?;
+    if let Value::Object(map) = &mut value {
+        map.insert(
+            "generation".to_string(),
+            Value::String(pin.generation.to_string()),
+        );
+    }
+    Ok(value)
+}
+
+/// Invert [`binding_pin_to_wire`] on an in-place wire value.
+fn binding_pin_from_wire(value: &mut Value) -> Result<(), ContractError> {
+    let map = value.as_object_mut().ok_or_else(|| {
+        FailureCode::InvalidRecord.failure("binding", "expected a binding pin object")
+    })?;
+    match map.get_mut("generation") {
+        Some(field) => rewrite_identity_to_u64(field),
+        None => Ok(()),
+    }
+}
+
+/// Project a canonical [`ReportEnvelope`], rewriting its identity `u64` fields
+/// as decimal strings and copying `payload` verbatim.
+fn report_envelope_to_wire(envelope: &ReportEnvelope) -> Result<Value, ContractError> {
+    let mut value = serialize_to_wire_value(envelope)?;
+    if let Value::Object(map) = &mut value {
+        map.insert(
+            "binding".to_string(),
+            binding_pin_to_wire(&envelope.binding)?,
+        );
+        map.insert(
+            "sequence".to_string(),
+            Value::String(envelope.sequence.to_string()),
+        );
+        map.insert(
+            "reported_at_unix_ms".to_string(),
+            Value::String(envelope.reported_at_unix_ms.to_string()),
+        );
+        map.insert(
+            "observed_at_unix_ms".to_string(),
+            Value::String(envelope.observed_at_unix_ms.to_string()),
+        );
+    }
+    Ok(value)
+}
+
+/// Invert [`report_envelope_to_wire`] on an in-place wire value.
+fn report_envelope_from_wire(value: &mut Value) -> Result<(), ContractError> {
+    let map = value.as_object_mut().ok_or_else(|| {
+        FailureCode::InvalidRecord.failure("report-envelope", "expected a report envelope object")
+    })?;
+    if let Some(binding) = map.get_mut("binding") {
+        binding_pin_from_wire(binding)?;
+    }
+    for key in ["sequence", "reported_at_unix_ms", "observed_at_unix_ms"] {
+        if let Some(field) = map.get_mut(key) {
+            rewrite_identity_to_u64(field)?;
+        }
+    }
+    Ok(())
+}
+
+/// Project a canonical [`ComponentSummary`] with its `binding` generation as a
+/// decimal string.
+fn component_summary_to_wire(summary: &ComponentSummary) -> Result<Value, ContractError> {
+    let mut value = serialize_to_wire_value(summary)?;
+    if let Value::Object(map) = &mut value {
+        map.insert(
+            "binding".to_string(),
+            binding_pin_to_wire(&summary.binding)?,
+        );
+    }
+    Ok(value)
+}
+
+/// Invert [`component_summary_to_wire`] on an in-place wire value.
+fn component_summary_from_wire(value: &mut Value) -> Result<(), ContractError> {
+    let map = value.as_object_mut().ok_or_else(|| {
+        FailureCode::InvalidRecord
+            .failure("component-summary", "expected a component summary object")
+    })?;
+    if let Some(binding) = map.get_mut("binding") {
+        binding_pin_from_wire(binding)?;
+    }
+    Ok(())
+}
+
+impl BrowserWire for ReadOverview {
+    fn to_wire_value(&self) -> Result<Value, ContractError> {
+        // No nested canonical identity needs rewriting; the faithful generic
+        // projection proves the codec is exact for the overview surface.
+        serialize_to_wire_value(self)
+    }
+
+    fn from_wire_value(value: &Value) -> Result<Self, ContractError> {
+        deserialize_from_wire_value(value)
+    }
+}
+
+impl BrowserWire for ReadArtifactChunk {
+    fn to_wire_value(&self) -> Result<Value, ContractError> {
+        // `PackageArtifactRef.bytes` is not identity-bearing and stays a number;
+        // the chunk's own `ExactU64` offsets are already decimal strings.
+        serialize_to_wire_value(self)
+    }
+
+    fn from_wire_value(value: &Value) -> Result<Self, ContractError> {
+        deserialize_from_wire_value(value)
+    }
+}
+
+impl BrowserWire for ReadComponent {
+    fn to_wire_value(&self) -> Result<Value, ContractError> {
+        let mut value = serialize_to_wire_value(self)?;
+        let map = value.as_object_mut().ok_or_else(|| {
+            FailureCode::InvalidRecord.failure("read-component", "expected a read component object")
+        })?;
+        map.insert("binding".to_string(), binding_pin_to_wire(&self.binding)?);
+        let entries = self
+            .entries
+            .iter()
+            .map(report_envelope_to_wire)
+            .collect::<Result<Vec<_>, _>>()?;
+        map.insert("entries".to_string(), Value::Array(entries));
+        Ok(value)
+    }
+
+    fn from_wire_value(value: &Value) -> Result<Self, ContractError> {
+        let mut value = value.clone();
+        let map = value.as_object_mut().ok_or_else(|| {
+            FailureCode::InvalidRecord.failure("read-component", "expected a read component object")
+        })?;
+        if let Some(binding) = map.get_mut("binding") {
+            binding_pin_from_wire(binding)?;
+        }
+        if let Some(Value::Array(entries)) = map.get_mut("entries") {
+            for entry in entries {
+                report_envelope_from_wire(entry)?;
+            }
+        }
+        deserialize_from_wire_value(&value)
+    }
+}
+
+impl BrowserWire for ComponentSummary {
+    fn to_wire_value(&self) -> Result<Value, ContractError> {
+        component_summary_to_wire(self)
+    }
+
+    fn from_wire_value(value: &Value) -> Result<Self, ContractError> {
+        let mut value = value.clone();
+        component_summary_from_wire(&mut value)?;
+        deserialize_from_wire_value(&value)
+    }
+}
+
+impl<T: BrowserWire> BrowserWire for ReadPage<T> {
+    fn to_wire_value(&self) -> Result<Value, ContractError> {
+        let mut value = serialize_to_wire_value(self)?;
+        let map = value.as_object_mut().ok_or_else(|| {
+            FailureCode::InvalidRecord.failure("read-page", "expected a page object")
+        })?;
+        let entries = self
+            .entries
+            .iter()
+            .map(BrowserWire::to_wire_value)
+            .collect::<Result<Vec<_>, _>>()?;
+        map.insert("entries".to_string(), Value::Array(entries));
+        Ok(value)
+    }
+
+    fn from_wire_value(value: &Value) -> Result<Self, ContractError> {
+        let map = value.as_object().ok_or_else(|| {
+            FailureCode::InvalidRecord.failure("read-page", "expected a page object")
+        })?;
+        // Without an `entries` array there is nothing to project; the generic
+        // decode reports the shape error.
+        let Some(entries) = map.get("entries").and_then(Value::as_array) else {
+            return deserialize_from_wire_value(value);
+        };
+        let parsed = entries
+            .iter()
+            .map(T::from_wire_value)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Rebuild a canonical page value whose entries are serialized
+        // canonically, so the deserialize step yields exactly the canonical
+        // record; then restore the entries parsed from the wire.
+        let mut canonical = value.clone();
+        let canonical_map = canonical.as_object_mut().expect("object checked above");
+        let canonical_entries = parsed
+            .iter()
+            .map(serialize_to_wire_value)
+            .collect::<Result<Vec<_>, _>>()?;
+        canonical_map.insert("entries".to_string(), Value::Array(canonical_entries));
+
+        let mut page: Self = deserialize_from_wire_value(&canonical)?;
+        page.entries = parsed;
+        Ok(page)
+    }
 }

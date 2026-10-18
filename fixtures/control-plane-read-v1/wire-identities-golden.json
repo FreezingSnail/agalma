@@ -1,0 +1,90 @@
+{
+  "metadata": {
+    "format": "ControlPlaneRead/v1",
+    "collected_at_unix_ms": 1791820800003,
+    "registry_revision": "9007199254740993",
+    "report_watermark": "18446744073709551615",
+    "sources": [
+      {
+        "source": "reports",
+        "state": "available",
+        "detail": "",
+        "observed_at_unix_ms": 1791820800003
+      }
+    ]
+  },
+  "binding": {
+    "binding_id": "fixture.wire",
+    "api": "plugin",
+    "api_version": 1,
+    "implementation_version": "fixture-wire-1",
+    "generation": "9007199254740993",
+    "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+  },
+  "descriptors": [
+    {
+      "view_id": "status",
+      "schema_namespace": "example.wire.status",
+      "kind": "Status",
+      "title": "Status",
+      "schema_version": 1,
+      "fields": ["ready"]
+    }
+  ],
+  "entries": [
+    {
+      "format": "ReportEnvelope/v1",
+      "plugin_id": "example.wire-reporter",
+      "binding": {
+        "binding_id": "fixture.wire",
+        "api": "plugin",
+        "api_version": 1,
+        "implementation_version": "fixture-wire-1",
+        "generation": "18446744073709551615",
+        "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "schema_namespace": "example.wire.status",
+      "schema_version": 1,
+      "sequence": "9007199254740993",
+      "reported_at_unix_ms": "9223372036854775807",
+      "observed_at_unix_ms": "9223372036854775807",
+      "execution_id": "exec:fixture:9007199254740993",
+      "durability": "durable",
+      "payload": {
+        "count": 9007199254740993,
+        "ratio": 1.5,
+        "state": "ready"
+      },
+      "payload_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "format": "ReportEnvelope/v1",
+      "plugin_id": "example.wire-reporter",
+      "binding": {
+        "binding_id": "fixture.wire",
+        "api": "plugin",
+        "api_version": 1,
+        "implementation_version": "fixture-wire-1",
+        "generation": "2",
+        "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "schema_namespace": "example.wire.rows",
+      "schema_version": 1,
+      "sequence": "2",
+      "reported_at_unix_ms": "1791820800000",
+      "observed_at_unix_ms": "1791820800001",
+      "execution_id": null,
+      "durability": "transient",
+      "payload": {
+        "rows": [
+          {
+            "count": "3",
+            "state": "ready"
+          }
+        ]
+      },
+      "payload_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    }
+  ],
+  "next_cursor": null
+}

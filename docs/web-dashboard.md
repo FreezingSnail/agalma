@@ -172,3 +172,136 @@ exists).
 Run artifacts are written under `target/test-runs/agalma-rwn.6/<run-id>/` and are
 never deleted. `browser_support/` is the shared harness; later WEB.5/7/8 readers
 consume it after a named ownership transfer rather than building a replacement.
+
+## M2: continuous automatic-queue operation and operator controls (WEB.13)
+
+M2 (`agalma-rwn.13`) joins the reviewed runtime, factory adapters, bounded HTTP
+controls and this cockpit package into one production local automatic-queue
+cockpit. The page is unchanged; the runtime and the control surface are wired
+end to end.
+
+### The one production command
+
+```sh
+# One repository/state directory, one continuous worker, one operator cockpit.
+agalma work --watch \
+  --repo <repo> \
+  --state-dir <state> \
+  --plugin-root <packages>
+```
+
+`--watch` is the continuous single-owner mode. It rejects `--once` and
+`--max-tasks`. The runtime holds the state-directory admission lock for the
+service lifetime; a second `agalma work` against the same state directory is
+refused. Ordinary batch/once/max-tasks behavior and exit codes are unchanged.
+
+Eligible-work behavior: the worker selects/claims already-eligible local tasks
+through the existing pipeline and consumes them serially. An empty successful
+queue is `Idle` with an interruptible five-second wait; a later eligible task is
+consumed automatically. A queue error is `Unavailable` with capped retry (5s
+initial, 30s maximum), never a successful empty state. Queue polling never
+creates, releases or re-approves a task.
+
+### URL discovery and control grant setup
+
+The supervised dashboard prints its actual loopback URL on stderr once the
+listener and read binding are ready, and reports the same URL in `plugin.Health`
+as `;url=`:
+
+```text
+DASHBOARD_URL http://127.0.0.1:<port>
+```
+
+Port `0` (default) selects a free port, so the printed value is authoritative.
+The dashboard is read-only until the operator-managed explicit installation pin
+approves `factory.read/v1` and `factory.control/v1` for the sealed package (in
+addition to `control-plane.read/v1`). The configured-root auto-install path
+grants only `report.publish`/`ledger.read`, so an unapproved install exposes no
+factory route and disabled controls. `factory.control/v1` is **not** in
+`SAFE_CAPABILITY_ALLOWLIST`; control authority is always an explicit operator
+decision.
+
+For the continuous `agalma work --watch` runtime, the operator names the single
+control surface explicitly:
+
+```sh
+agalma work --watch --repo <repo> --state-dir <state> \
+  --plugin-root <packages> --factory-control-plugin agalma.web-dashboard
+```
+
+Only the installed plugin with that exact id is considered. Its **current
+(newest installed) generation** pin is read from the existing durable hub
+installation store
+(`<state_dir>/plugins/<plugin_id>/<generation>/installation.json`) — the same
+pins the production read model already consumes. Only the current pin is
+consumed (no older-generation fallback), so a newer generation whose pin drops
+`factory.control/v1` revokes an older grant. The pin is accepted only when its
+frozen `package_digest` matches the discovered package bytes **and** it
+explicitly approves `factory.control/v1`; assembly then re-validates it
+(configuration artifact, launch profile and requested-capability subset).
+
+Absent `--factory-control-plugin` keeps the cockpit read-only, and any
+unselected plugin never receives control (its explicit control pin is ignored).
+An absent, changed, mismatched or non-granting current pin fails closed to the
+read-only safe-allowlist auto-install path; no selector, no plugin id in source,
+and no expansion of `SAFE_CAPABILITY_ALLOWLIST` is introduced. A selected plugin
+with a qualifying pin is also requested `Running`, so the runtime discovers,
+installs, launches and supervises it (its actual URL then appears on the
+runtime's stderr).
+
+Recording the pin is the operator's use of the existing install API
+(`HubInstallStore::install`) — there is no separate approval file, environment
+map or id-only allowlist, and no change to `SAFE_CAPABILITY_ALLOWLIST`.
+
+When approved, the launcher issues distinct per-capability grants and a generic
+private `PluginCapabilityBindings/v1` descriptor on the launch channel (never in
+a browser response, report or log). The dashboard then mounts:
+
+| Route | Behavior |
+|---|---|
+| `GET /api/v1/factory` | factory runtime snapshot; bootstraps the operator session |
+| `GET /api/v1/factory/actions/{action_id}` | authoritative receipt lookup |
+| `POST /api/v1/factory/pause` | operator pause |
+| `POST /api/v1/factory/resume` | confirmed resume (literal phrase `resume`) |
+
+POSTs require a same-origin `Origin`, the `agalma_operator` cookie and the
+`x-agalma-csrf` header from a same-origin `GET /api/v1/factory`. Reads, refresh,
+navigation, reload and reconnection never submit a control. The hub-side adapter
+is the single serialized control owner; it holds a state-scoped
+`factory-control.lock` for the service lifetime, and a competing owner disables
+controls (fail closed). Export a valid factory control grant to the dashboard
+through the supervisor's normal installed-package launch; there is no
+browser-supplied grant.
+
+### Pause versus shutdown
+
+`Pause` blocks new admission through the existing stop policy (the durable kill
+latch/sentinel); it is not a cancel and does not change in-flight phase-stop
+semantics. `Resume` requires the existing literal `resume` confirmation and a
+durable receipt; a Resume that cannot confirm STOP removal reports an
+unconfirmed outcome (`EffectUnconfirmed`), never a claimed success. Graceful
+shutdown (SIGINT/SIGTERM) is distinct: it stops admission, drains at the existing
+cooperative phase boundary, joins the host owner and releases the lock. A restart
+with an established STOP/latch starts `Paused` and exposes an explicit resume;
+fresh, missing, corrupt or incompatible established storage is never initialized
+or replaced under a stop.
+
+### Failure and restart
+
+Frozen-package recovery runs once at admitted startup before new claims; forced
+termination can leave durable nonterminal work, recovered on the next permitted
+startup from the frozen package. A fatal worker failure is explicit and requires
+a runtime restart; plugin-child restart never creates a second queue claimant.
+The durable control records are `factory-control.intent/<action_id>` and
+`factory-control.result/<action_id>`: an identical replay returns the frozen
+receipt, a conflicting reuse of an action id is refused (`409`), and an
+interrupted effect leaves `EffectUnconfirmed` (browser does not auto-retry).
+
+### Local-only limits
+
+Bind is `127.0.0.1` with port `0` by default; foreign addresses are refused.
+There is no remote access, account system, per-task dispatch button, task/backlog
+editing, generic plugin action or artifact route, and no new framework or
+dependency. The cockpit reports only what the bound APIs expose; unknown costs,
+worker state and source availability stay explicit, and a missing stop authority
+is never shown as a green Running indication.

@@ -1126,6 +1126,7 @@ fn watch_is_rejected_with_once_or_max_tasks() {
         model: None,
         builder_model: None,
         harness: None,
+        factory_control_plugin: None,
         plugin_roots: Default::default(),
     };
     args.watch = true;

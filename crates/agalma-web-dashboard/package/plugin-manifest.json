@@ -11,7 +11,9 @@
   },
   "domain_apis": [],
   "requested_capabilities": [
-    "control-plane.read/v1"
+    "control-plane.read/v1",
+    "factory.read/v1",
+    "factory.control/v1"
   ],
   "required_services": [],
   "optional_services": [],

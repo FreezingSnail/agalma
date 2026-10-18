@@ -21,7 +21,7 @@ use agalma_contracts::{
 use agalma_ipc::{PluginHandler, PluginIdentity, PLUGIN_API, PLUGIN_PROTOCOL_MAJOR};
 use serde_json::Value;
 
-use crate::{PACKAGE_VERSION, PLUGIN_ID, READ_CAPABILITY};
+use crate::{PACKAGE_VERSION, PLUGIN_ID};
 
 /// A point-in-time view of the two readiness facts.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -171,12 +171,20 @@ impl RuntimeStatus {
 /// The dashboard's common-plugin handler.
 pub struct DashboardHandler {
     status: Arc<RuntimeStatus>,
+    capabilities: Vec<String>,
 }
 
 impl DashboardHandler {
-    /// Wrap the shared runtime status.
-    pub fn new(status: Arc<RuntimeStatus>) -> Self {
-        Self { status }
+    /// Wrap the shared runtime status and the announced capability set.
+    ///
+    /// The announced set is the launcher-issued capability descriptor (or the
+    /// legacy single grant). It never contains a capability the hub did not
+    /// grant this launch.
+    pub fn new(status: Arc<RuntimeStatus>, capabilities: Vec<String>) -> Self {
+        Self {
+            status,
+            capabilities,
+        }
     }
 }
 
@@ -187,7 +195,7 @@ impl PluginHandler for DashboardHandler {
             protocol_major: PLUGIN_PROTOCOL_MAJOR,
             plugin_id: PLUGIN_ID.to_string(),
             implementation_version: PACKAGE_VERSION.to_string(),
-            capabilities: vec![READ_CAPABILITY.to_string()],
+            capabilities: self.capabilities.clone(),
         };
         serde_json::to_value(identity).map_err(|error| {
             FailureCode::InvalidRecord.failure(PLUGIN_ID, format!("describe encode: {error}"))

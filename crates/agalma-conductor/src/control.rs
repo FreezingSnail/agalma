@@ -27,6 +27,7 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use agalma_contracts::digest::FailureCode;
 use agalma_contracts::{
     ContractError, ControlReceipt, ExecutionApi, ExecutionId, ExecutionState, LedgerApi,
 };
@@ -340,6 +341,43 @@ fn is_terminal(state: ExecutionState) -> bool {
         state,
         ExecutionState::Completed | ExecutionState::Failed | ExecutionState::Parked
     )
+}
+
+/// The human-facing control-plane attachment for advertised plugin actions.
+///
+/// The TUI/CLI drives plugin actions through this adapter after the HP.6
+/// `watch.rs` handoff. It enforces the human-only actor guard (a worker/agent
+/// never gains action authority) and forwards to the validated
+/// [`crate::plugin_actions::ActionService`], which owns descriptor/grant/binding/
+/// input-hash/deadline validation and the declared human-confirmation
+/// requirement. It adds no authority the service does not already enforce.
+pub struct PluginActionControl<'a> {
+    service: &'a mut crate::plugin_actions::ActionService,
+}
+
+impl<'a> PluginActionControl<'a> {
+    /// Build the attachment over the hub's common action service.
+    pub fn new(service: &'a mut crate::plugin_actions::ActionService) -> Self {
+        PluginActionControl { service }
+    }
+
+    /// Dispatch a human action request. `Actor::Policy` (and any non-human
+    /// actor) is refused before the service is consulted (zero effects).
+    pub fn dispatch(
+        &mut self,
+        request: &crate::plugin_actions::ActionRequest,
+    ) -> Result<crate::plugin_actions::ActionOutcome, ContractError> {
+        // Human-only guard: the UI/CLI add no privilege a worker does not have.
+        // Uses the action-service actor type (`agalma_contracts::Actor`), not the
+        // receipt actor enum above.
+        if request.actor != agalma_contracts::Actor::Human {
+            return Err(FailureCode::AuthorityDenied.failure(
+                &request.operation_id,
+                "plugin actions are human-only through the control plane",
+            ));
+        }
+        self.service.submit(request)
+    }
 }
 
 fn now_ms() -> u64 {

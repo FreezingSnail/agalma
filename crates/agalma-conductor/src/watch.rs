@@ -27,11 +27,12 @@
 //! single frame rendered through [`ratatui::backend::TestBackend`] (no TTY) and
 //! printed verbatim. Render-level tests assert against `TestBackend` frames.
 
+use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -47,15 +48,21 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::{Frame, Terminal};
 
-use agalma_contracts::{ContractError, ExecutionId};
+use agalma_contracts::digest::FailureCode;
+use agalma_contracts::{ActionScope, ContractError, ExecutionId};
 use agalma_execution::{Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
 use agalma_ledger::SqliteLedger;
 
 use crate::cli::WatchArgs;
-use crate::components::{ComponentSnapshot, ComponentView, PluginComponent, Transports, ViewBlock};
+use crate::components::{
+    ActionView, ComponentSnapshot, ComponentView, PluginComponent, Transports, ViewBlock,
+};
 use crate::control::{
     new_action_id, Actor, ControlAction, ControlOutcome, ControlPlane, ControlRequest,
+    PluginActionControl,
 };
+use crate::plugin_actions::{ActionOutcome, ActionRequest, ActionService};
+use crate::plugin_router::LaunchGrant;
 use crate::status::Snapshot;
 
 /// The four composition panes, in focus order.
@@ -168,6 +175,262 @@ impl ControlDriver for LedgerControlDriver {
     }
 }
 
+/// One validated plugin-action invocation requested from the UI.
+///
+/// The UI carries no plugin authority of its own: the plugin id, pinned
+/// generation, advertised action id, typed input, and (for a
+/// confirmation-required action) the typed phrase are all it supplies. The
+/// common action service performs every grant/capability/binding/deadline and
+/// human-confirmation check.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActionInvocation {
+    pub plugin_id: String,
+    pub generation: u64,
+    pub action_id: String,
+    pub input: serde_json::Value,
+    pub confirmation: Option<String>,
+}
+
+/// Applies one plugin-action invocation (production: the hub's common action
+/// service; tests: a recording double), parallel to [`ControlDriver`].
+pub trait ActionDriver {
+    fn dispatch(&mut self, invocation: &ActionInvocation) -> Result<ActionOutcome, ContractError>;
+}
+
+/// Default [`ActionDriver`]: no plugin action service is attached. Every
+/// invocation is refused with [`ContractError::UnsupportedCapability`] — the UI
+/// never invents action authority. Production grant issuance and the pinned
+/// plugin RPC executor are attached by the host (HP.8).
+pub struct UnavailableActionDriver;
+
+impl ActionDriver for UnavailableActionDriver {
+    fn dispatch(&mut self, _invocation: &ActionInvocation) -> Result<ActionOutcome, ContractError> {
+        Err(ContractError::UnsupportedCapability(
+            "no plugin action service is attached".to_string(),
+        ))
+    }
+}
+
+/// The production [`ActionDriver`]: routes a UI invocation through the hub's
+/// common validated [`ActionService`] via [`PluginActionControl`].
+///
+/// The UI never mints authority: the host supplies the parent-issued
+/// [`LaunchGrant`] per plugin through a shared grant source, and the driver
+/// re-reads it before **every** dispatch. On a host restart the launch grant
+/// rotates; [`Self::sync_grants`] installs the current grant and revokes the
+/// stale fingerprint from the active service, so a stale token is denied and the
+/// new launch grant works. A missing grant is an [`FailureCode::AuthorityDenied`]
+/// with zero effects. Every request carries a fresh, restart-unique
+/// `ui:{action_id}:{now_ms}:{n}` operation id, a deadline derived from the
+/// injected clock, and an [`ActionScope`] pinned to this driver's directive id.
+pub struct ServiceActionDriver {
+    service: ActionService,
+    /// Host-owned current grants, re-read before every dispatch.
+    grants: Arc<Mutex<BTreeMap<String, LaunchGrant>>>,
+    /// Fingerprint currently installed in the service per plugin (to revoke a
+    /// stale one when the host rotates the launch grant).
+    installed: BTreeMap<String, String>,
+    now: Arc<dyn Fn() -> u64 + Send + Sync>,
+    next_op: u64,
+    directive_id: String,
+    default_deadline_ms: u64,
+}
+
+impl ServiceActionDriver {
+    /// Build the driver over the hub's common action service with a private,
+    /// empty grant source. Defaults: a system clock, a 60 s deadline, and
+    /// directive `directive/ui`.
+    pub fn new(service: ActionService) -> Self {
+        Self::with_grants(service, Arc::new(Mutex::new(BTreeMap::new())))
+    }
+
+    /// Build the driver over the hub's common action service and a host-shared
+    /// grant source (re-read before every dispatch, so a restart's rotated grant
+    /// replaces/revokes the stale one in the active service).
+    pub fn with_grants(
+        service: ActionService,
+        grants: Arc<Mutex<BTreeMap<String, LaunchGrant>>>,
+    ) -> Self {
+        ServiceActionDriver {
+            service,
+            grants,
+            installed: BTreeMap::new(),
+            now: Arc::new(system_now_ms),
+            next_op: 0,
+            directive_id: "directive/ui".to_string(),
+            default_deadline_ms: 60_000,
+        }
+    }
+
+    /// Install (or replace) a parent-issued per-launch grant for its plugin in
+    /// the shared grant source. A plugin with no installed grant is refused with
+    /// zero effects; the service table is synced on the next dispatch.
+    pub fn install_grant(&mut self, grant: &LaunchGrant) {
+        self.grants
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(grant.scope().plugin_id.clone(), grant.clone());
+    }
+
+    /// Sync the active service's grant table to the shared current grants:
+    /// install each current grant and revoke a previously-installed fingerprint
+    /// that has rotated. Returns the revoked fingerprints. Called before every
+    /// dispatch so a stale launch grant can never authorize a further action.
+    pub fn sync_grants(&mut self) -> Vec<String> {
+        let current: BTreeMap<String, LaunchGrant> = self
+            .grants
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let mut revoked = Vec::new();
+        for (plugin_id, grant) in &current {
+            let fingerprint = grant.fingerprint();
+            if let Some(previous) = self.installed.get(plugin_id) {
+                if *previous != fingerprint {
+                    self.service.revoke_grant(previous);
+                    revoked.push(previous.clone());
+                }
+            }
+            self.service.install_grant(grant);
+            self.installed.insert(plugin_id.clone(), fingerprint);
+        }
+        revoked
+    }
+
+    /// Override the clock (deterministic tests).
+    pub fn with_clock(mut self, now: Arc<dyn Fn() -> u64 + Send + Sync>) -> Self {
+        self.now = now;
+        self
+    }
+
+    /// Override the default action deadline (milliseconds).
+    pub fn with_deadline_ms(mut self, default_deadline_ms: u64) -> Self {
+        self.default_deadline_ms = default_deadline_ms;
+        self
+    }
+
+    /// The active validated service (host/test seam): the exact table a dispatch
+    /// uses, so a host caller/test can observe grant revocation directly.
+    pub fn service_mut(&mut self) -> &mut ActionService {
+        &mut self.service
+    }
+}
+
+impl ActionDriver for ServiceActionDriver {
+    fn dispatch(&mut self, invocation: &ActionInvocation) -> Result<ActionOutcome, ContractError> {
+        // Re-read the host's current grants and revoke any rotated one before
+        // presenting a token.
+        self.sync_grants();
+        let grant = self
+            .grants
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&invocation.plugin_id)
+            .map(|grant| grant.token_hex());
+        let Some(grant) = grant else {
+            return Err(FailureCode::AuthorityDenied.failure(
+                &invocation.plugin_id,
+                "no parent-issued grant is installed for this plugin",
+            ));
+        };
+        self.next_op += 1;
+        let now = (self.now)();
+        // Restart-unique: the injected clock plus a per-session counter, so a
+        // fresh UI session never collides with (and silently dedupes) an earlier
+        // session's operation.
+        let operation_id = format!("ui:{}:{}:{}", invocation.action_id, now, self.next_op);
+        let request = ActionRequest {
+            grant,
+            plugin_id: invocation.plugin_id.clone(),
+            generation: invocation.generation,
+            action_id: invocation.action_id.clone(),
+            operation_id,
+            input: invocation.input.clone(),
+            deadline_unix_ms: now + self.default_deadline_ms,
+            actor: agalma_contracts::Actor::Human,
+            confirmation: invocation.confirmation.clone(),
+            scope: ActionScope {
+                directive_id: self.directive_id.clone(),
+                directive_version: 1,
+                execution_id: None,
+            },
+        };
+        let mut control = PluginActionControl::new(&mut self.service);
+        control.dispatch(&request)
+    }
+}
+
+/// Build the production [`ActionDriver`] from the hub's common [`ActionService`]
+/// and the parent-issued grants the host installed.
+///
+/// This is the seam the production host uses to attach real plugin actions to
+/// the interactive view: it owns grant issuance and the pinned-plugin RPC
+/// `ActionExecutor`, builds the service, and passes the grants here. Each grant
+/// is registered hub-side (so the service authenticates the presented token) and
+/// supplies the presented token. The returned box is `Send`, so the host can move
+/// it into [`run_with_actions`].
+pub fn service_action_driver(
+    service: ActionService,
+    grants: &[LaunchGrant],
+) -> Box<dyn ActionDriver + Send> {
+    service_action_driver_with_clock(service, grants, Arc::new(system_now_ms))
+}
+
+/// [`service_action_driver`] with an injected clock (deterministic tests); the
+/// production host uses the system-clock default.
+pub fn service_action_driver_with_clock(
+    service: ActionService,
+    grants: &[LaunchGrant],
+    now: Arc<dyn Fn() -> u64 + Send + Sync>,
+) -> Box<dyn ActionDriver + Send> {
+    let mut driver = ServiceActionDriver::new(service).with_clock(now);
+    for grant in grants {
+        driver.install_grant(grant);
+    }
+    Box::new(driver)
+}
+
+/// [`service_action_driver`] over a host-**shared** grant source that the host
+/// refreshes on every launch/restart tick. The driver re-reads it before each
+/// dispatch and revokes a rotated grant from the active service, so a stale
+/// launch grant is denied and the new one works.
+pub fn service_action_driver_shared(
+    service: ActionService,
+    grants: Arc<Mutex<BTreeMap<String, LaunchGrant>>>,
+) -> Box<dyn ActionDriver + Send> {
+    Box::new(ServiceActionDriver::with_grants(service, grants))
+}
+
+/// Resolve the interactive loop's plugin-action driver: the host-injected
+/// production driver when present, else the fail-closed default
+/// ([`UnavailableActionDriver`]). The loop binds exactly this driver, so a
+/// missing service can never invent action authority.
+pub fn bind_action_driver(injected: Option<Box<dyn ActionDriver + Send>>) -> Box<dyn ActionDriver> {
+    match injected {
+        Some(driver) => driver,
+        None => Box::new(UnavailableActionDriver),
+    }
+}
+
+/// System clock in Unix milliseconds (the default driver clock).
+fn system_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// A plugin action awaiting its typed human-confirmation phrase.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingAction {
+    /// The invocation to dispatch once confirmed (its `confirmation` is `None`).
+    pub invocation: ActionInvocation,
+    /// The required phrase.
+    pub phrase: String,
+    /// The phrase typed so far.
+    pub input: String,
+}
+
 /// The full-screen TUI state: the read-model snapshot plus focus, selection,
 /// interaction mode, and the last control/notice line.
 #[derive(Debug, Clone)]
@@ -193,6 +456,12 @@ pub struct App {
     /// Set by the refresh keybinding or by a control action; the loop rebuilds
     /// the snapshot before the next draw.
     pub refresh_requested: bool,
+    /// Selected plugin row (index into `snapshot.plugins`).
+    pub plugin_selection: usize,
+    /// Selected action row of the selected plugin.
+    pub action_selection: usize,
+    /// Set while a plugin action awaits its typed confirmation phrase.
+    pub pending_action: Option<PendingAction>,
 }
 
 impl App {
@@ -209,6 +478,9 @@ impl App {
             status: None,
             quit: false,
             refresh_requested: false,
+            plugin_selection: 0,
+            action_selection: 0,
+            pending_action: None,
         };
         app.clamp_selection();
         app
@@ -222,7 +494,7 @@ impl App {
         Ok(())
     }
 
-    /// Keep the selection inside the current execution list.
+    /// Keep the execution, plugin, and action selections inside the current lists.
     fn clamp_selection(&mut self) {
         let len = self.snapshot.executions.len();
         if len == 0 {
@@ -230,6 +502,30 @@ impl App {
         } else if self.selection >= len {
             self.selection = len - 1;
         }
+        self.clamp_plugin_selection();
+    }
+
+    /// The number of advertised actions on the selected plugin.
+    fn selected_action_count(&self) -> usize {
+        self.selected_plugin()
+            .map(|plugin| plugin.actions.len())
+            .unwrap_or(0)
+    }
+
+    /// Keep the plugin and action selections inside the current lists.
+    fn clamp_plugin_selection(&mut self) {
+        let plugins = self.snapshot.plugins.len();
+        self.plugin_selection = if plugins == 0 {
+            0
+        } else {
+            self.plugin_selection.min(plugins - 1)
+        };
+        let actions = self.selected_action_count();
+        self.action_selection = if actions == 0 {
+            0
+        } else {
+            self.action_selection.min(actions - 1)
+        };
     }
 
     /// The execution the cursor currently selects, if any.
@@ -262,14 +558,77 @@ impl App {
         self.components_offset = next.clamp(0, total as isize - 1) as usize;
     }
 
+    /// The plugin the cursor currently selects, if any.
+    pub fn selected_plugin(&self) -> Option<&PluginComponent> {
+        self.snapshot.plugins.get(self.plugin_selection)
+    }
+
+    /// The action the cursor currently selects on the selected plugin, if any.
+    pub fn selected_action(&self) -> Option<&ActionView> {
+        self.selected_plugin()
+            .and_then(|plugin| plugin.actions.get(self.action_selection))
+    }
+
+    /// Move the plugin selection by `delta`, saturating at the ends and
+    /// re-clamping the action selection to the newly selected plugin.
+    pub fn move_plugin_selection(&mut self, delta: isize) {
+        let plugins = self.snapshot.plugins.len();
+        if plugins == 0 {
+            self.plugin_selection = 0;
+            self.action_selection = 0;
+            return;
+        }
+        let next = self.plugin_selection as isize + delta;
+        self.plugin_selection = next.clamp(0, plugins as isize - 1) as usize;
+        let actions = self.selected_action_count();
+        self.action_selection = if actions == 0 {
+            0
+        } else {
+            self.action_selection.min(actions - 1)
+        };
+    }
+
+    /// Move the action selection by `delta`, saturating at the ends.
+    pub fn move_action_selection(&mut self, delta: isize) {
+        let actions = self.selected_action_count();
+        if actions == 0 {
+            self.action_selection = 0;
+            return;
+        }
+        let next = self.action_selection as isize + delta;
+        self.action_selection = next.clamp(0, actions as isize - 1) as usize;
+    }
+
     /// Handle one key event. Destructive actions collect a typed confirmation
-    /// before they are applied through `driver`.
+    /// before they are applied through `driver`. Plugin actions are refused: no
+    /// action service is bound (the interactive loop uses [`Self::handle_key_with`]).
     pub fn handle_key(&mut self, key: KeyEvent, driver: &mut dyn ControlDriver) {
+        let mut actions = UnavailableActionDriver;
+        self.handle_key_with(key, driver, &mut actions);
+    }
+
+    /// Handle one key event with a bound plugin-action driver. Destructive
+    /// control actions collect a typed confirmation before they are applied
+    /// through `driver`; a selected plugin action is invoked through `actions`
+    /// (which routes through the common validated action service — never a
+    /// bypass).
+    pub fn handle_key_with(
+        &mut self,
+        key: KeyEvent,
+        driver: &mut dyn ControlDriver,
+        actions: &mut dyn ActionDriver,
+    ) {
         // Ctrl-C always quits (raw mode delivers it as a key, not a signal).
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
         {
             self.quit = true;
+            return;
+        }
+
+        // A pending plugin action consumes keys like `Mode::Confirm` does.
+        if self.pending_action.is_some() {
+            self.handle_pending_action_key(key, actions);
             return;
         }
 
@@ -307,6 +666,13 @@ impl App {
             KeyCode::Char('4') => self.focus = Pane::Timeline,
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                let delta = if key.code == KeyCode::Char('N') { -1 } else { 1 };
+                self.move_plugin_selection(delta);
+            }
+            KeyCode::Char(',') => self.move_action_selection(1),
+            KeyCode::Char('.') => self.move_action_selection(-1),
+            KeyCode::Char('a') => self.begin_action(actions),
             KeyCode::Char('[') => self.scroll_components(-1),
             KeyCode::Char(']') => self.scroll_components(1),
             KeyCode::PageUp => self.scroll_components(-10),
@@ -322,6 +688,116 @@ impl App {
                 None => self.status = Some("no execution selected to cancel".to_string()),
             },
             _ => {}
+        }
+    }
+
+    /// Begin invoking the selected plugin action. A declared human confirmation
+    /// arms a pending prompt (nothing dispatched yet); otherwise the action is
+    /// dispatched immediately through `actions`.
+    fn begin_action(&mut self, actions: &mut dyn ActionDriver) {
+        let Some(action) = self.selected_action() else {
+            self.status = Some("no action selected".to_string());
+            return;
+        };
+        let action_id = action.action_id.clone();
+        let human_confirmation = action.human_confirmation.clone();
+        let Some(plugin) = self.selected_plugin() else {
+            self.status = Some("no action selected".to_string());
+            return;
+        };
+        let Some(generation) = plugin.generation else {
+            // Without a pinned generation there is no invocable action.
+            self.status = Some("no action selected".to_string());
+            return;
+        };
+        let invocation = ActionInvocation {
+            plugin_id: plugin.plugin_id.clone(),
+            generation,
+            action_id,
+            input: serde_json::json!({}),
+            confirmation: None,
+        };
+        match human_confirmation {
+            Some(phrase) => {
+                self.status = Some(format!("confirm: type \"{phrase}\" then Enter"));
+                self.pending_action = Some(PendingAction {
+                    invocation,
+                    phrase,
+                    input: String::new(),
+                });
+            }
+            None => self.dispatch_action(invocation, actions),
+        }
+    }
+
+    /// Consume a key while a plugin action awaits its typed confirmation phrase
+    /// (Esc cancels, Backspace edits, Char appends, Enter validates).
+    fn handle_pending_action_key(&mut self, key: KeyEvent, actions: &mut dyn ActionDriver) {
+        let Some(pending) = self.pending_action.take() else {
+            return;
+        };
+        let PendingAction {
+            invocation,
+            phrase,
+            mut input,
+        } = pending;
+        match key.code {
+            KeyCode::Esc => {
+                self.status = Some("confirmation cancelled".to_string());
+            }
+            KeyCode::Backspace => {
+                input.pop();
+                self.pending_action = Some(PendingAction {
+                    invocation,
+                    phrase,
+                    input,
+                });
+            }
+            KeyCode::Enter => {
+                if input.trim() == phrase.as_str() {
+                    let mut invocation = invocation;
+                    invocation.confirmation = Some(phrase);
+                    self.dispatch_action(invocation, actions);
+                } else {
+                    self.status = Some(format!("confirmation mismatch: type \"{phrase}\""));
+                    self.pending_action = Some(PendingAction {
+                        invocation,
+                        phrase,
+                        input,
+                    });
+                }
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                input.push(c);
+                self.pending_action = Some(PendingAction {
+                    invocation,
+                    phrase,
+                    input,
+                });
+            }
+            _ => {
+                self.pending_action = Some(PendingAction {
+                    invocation,
+                    phrase,
+                    input,
+                });
+            }
+        }
+    }
+
+    /// Dispatch one plugin action through `actions` and reflect the outcome in
+    /// the footer. A terminal/delivered outcome refreshes the view; a refusal is
+    /// surfaced verbatim.
+    fn dispatch_action(&mut self, invocation: ActionInvocation, actions: &mut dyn ActionDriver) {
+        let action_id = invocation.action_id.clone();
+        match actions.dispatch(&invocation) {
+            Ok(outcome) => {
+                self.status = Some(format!("{action_id}: {:?}", outcome.state));
+                self.refresh_requested = true;
+            }
+            Err(err) => {
+                self.status = Some(format!("{action_id}: error: {err}"));
+            }
         }
     }
 
@@ -394,6 +870,22 @@ fn control_status(request: &ControlRequest, outcome: &ControlOutcome) -> String 
 /// SIGTERM, or a fatal I/O error. Otherwise a single `TestBackend` frame is
 /// printed and the command exits 0 (absent ledger included).
 pub async fn run(args: &WatchArgs) -> ExitCode {
+    run_with_actions(args, None).await
+}
+
+/// Production entry path with a host-injected plugin-action driver.
+///
+/// The production host builds the driver over the hub's common [`ActionService`]
+/// (catalog + durable ledger journal + pinned-plugin RPC executor + stop
+/// admission) with [`service_action_driver`], installing the parent-issued
+/// grants, then calls this entry. The interactive loop binds exactly the driver
+/// passed here; `None` keeps the `a` binding fail-closed
+/// ([`UnavailableActionDriver`]) so the UI never mints action authority. The
+/// `--once`/non-TTY path is unaffected (it never dispatches an action).
+pub async fn run_with_actions(
+    args: &WatchArgs,
+    actions: Option<Box<dyn ActionDriver + Send>>,
+) -> ExitCode {
     let state_dir = match crate::config::resolve_state_dir(args.state_dir.as_deref()) {
         Ok(dir) => dir,
         Err(err) => {
@@ -421,7 +913,11 @@ pub async fn run(args: &WatchArgs) -> ExitCode {
     let stop = Arc::new(AtomicBool::new(false));
     spawn_signal_watch(stop.clone());
     let interval = args.interval_ms;
-    match tokio::task::spawn_blocking(move || run_interactive(&state_dir, interval, stop)).await {
+    match tokio::task::spawn_blocking(move || {
+        run_interactive(&state_dir, interval, stop, actions)
+    })
+    .await
+    {
         Ok(code) => code,
         Err(err) => {
             eprintln!("agalma watch: view task failed: {err}");
@@ -431,7 +927,10 @@ pub async fn run(args: &WatchArgs) -> ExitCode {
 }
 
 /// Flip `stop` on SIGINT/SIGTERM so the blocking view can exit cleanly.
-fn spawn_signal_watch(stop: Arc<AtomicBool>) {
+///
+/// Public so the in-process plugin host can drive the same interactive loop with
+/// the same clean-exit semantics.
+pub fn spawn_signal_watch(stop: Arc<AtomicBool>) {
     use tokio::signal::unix::{signal, SignalKind};
     tokio::spawn(async move {
         let mut sigint = match signal(SignalKind::interrupt()) {
@@ -479,7 +978,31 @@ pub fn render_to_string(app: &App, width: u16, height: u16) -> String {
 
 /// The interactive view loop: raw mode + alternate screen, crossterm events,
 /// periodic refresh, and the control actions. Blocking; restores on all exits.
-fn run_interactive(state_dir: &Path, interval_ms: u64, stop: Arc<AtomicBool>) -> ExitCode {
+fn run_interactive(
+    state_dir: &Path,
+    interval_ms: u64,
+    stop: Arc<AtomicBool>,
+    actions: Option<Box<dyn ActionDriver + Send>>,
+) -> ExitCode {
+    run_interactive_with(state_dir, interval_ms, stop, actions, || {})
+}
+
+/// The interactive view loop with a host tick callback and an injected
+/// plugin-action driver (HP.7 production host attachment).
+///
+/// `on_tick` runs once per loop iteration before the draw; the in-process plugin
+/// host uses it to advance supervision (`supervise_tick`) and refresh its live
+/// child-socket map while the operator drives actions through `actions`. The
+/// driver is bound exactly as [`bind_action_driver`] specifies: the injected
+/// production driver when present, else the fail-closed default. Blocking;
+/// restores the terminal on all exits.
+pub fn run_interactive_with(
+    state_dir: &Path,
+    interval_ms: u64,
+    stop: Arc<AtomicBool>,
+    actions: Option<Box<dyn ActionDriver + Send>>,
+    mut on_tick: impl FnMut(),
+) -> ExitCode {
     // The guard owns restoration: on normal return, early error return, or panic
     // unwinding. Installed first so even a later failure leaves a clean terminal.
     let _guard = match ModeGuard::enter(CrosstermMode) {
@@ -509,6 +1032,10 @@ fn run_interactive(state_dir: &Path, interval_ms: u64, stop: Arc<AtomicBool>) ->
         }
     };
     let mut driver = LedgerControlDriver::new(state_dir);
+    // Bind the host-injected production driver when present (the plugin host
+    // attaches it through `run_with_actions`/`run_interactive_with`); otherwise
+    // the fail-closed default, so `a` never invents authority.
+    let mut actions = bind_action_driver(actions);
 
     let interval = Duration::from_millis(interval_ms.max(1));
     let mut last_refresh = Instant::now();
@@ -521,6 +1048,8 @@ fn run_interactive(state_dir: &Path, interval_ms: u64, stop: Arc<AtomicBool>) ->
             app.refresh_requested = false;
             last_refresh = Instant::now();
         }
+        // Advance the host (supervision + live sockets) before the draw.
+        on_tick();
 
         if let Err(err) = terminal.draw(|frame| draw(frame, &app)) {
             eprintln!("agalma watch: draw failed: {err}");
@@ -538,7 +1067,7 @@ fn run_interactive(state_dir: &Path, interval_ms: u64, stop: Arc<AtomicBool>) ->
                 Ok(Event::Key(key))
                     if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
                 {
-                    app.handle_key(key, &mut driver);
+                    app.handle_key_with(key, &mut driver, &mut *actions);
                 }
                 // Resize: the next draw re-reads the backend size.
                 Ok(_) => {}
@@ -874,8 +1403,14 @@ fn component_lines(app: &App) -> Vec<Line<'static>> {
     for component in &app.snapshot.components {
         push_boundary_component(&mut lines, component);
     }
-    for component in &app.snapshot.plugins {
-        push_plugin_component(&mut lines, component);
+    for (index, component) in app.snapshot.plugins.iter().enumerate() {
+        let selected = index == app.plugin_selection;
+        let selected_action = if selected {
+            Some(app.action_selection)
+        } else {
+            None
+        };
+        push_plugin_component(&mut lines, component, selected, selected_action);
     }
     lines
 }
@@ -921,7 +1456,15 @@ fn push_boundary_component(lines: &mut Vec<Line<'static>>, component: &Component
 }
 
 /// One registry/report driven plugin component and its declarative views.
-fn push_plugin_component(lines: &mut Vec<Line<'static>>, component: &PluginComponent) {
+///
+/// The selected plugin row is prefixed `> ` and its selected action is marked in
+/// the action list; non-selected rows keep HP.6's read-only rendering.
+fn push_plugin_component(
+    lines: &mut Vec<Line<'static>>,
+    component: &PluginComponent,
+    selected: bool,
+    selected_action: Option<usize>,
+) {
     let generation = component
         .generation
         .map(|gen| gen.to_string())
@@ -932,15 +1475,22 @@ fn push_plugin_component(lines: &mut Vec<Line<'static>>, component: &PluginCompo
         "unavailable" => Style::new().fg(Color::Red),
         _ => Style::new().fg(Color::DarkGray),
     };
-    let mut spans = vec![
-        Span::styled(
-            format!("{:<18}", component.plugin_id),
-            Style::new().fg(Color::Cyan),
-        ),
+    let marker = if selected { "> " } else { "" };
+    let plugin_style = if selected {
+        Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(Color::Cyan)
+    };
+    let mut spans = vec![Span::styled(
+        marker.to_string(),
+        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+    )];
+    spans.extend([
+        Span::styled(format!("{:<18}", component.plugin_id), plugin_style),
         Span::raw(format!("{:<10} ", component.origin)),
         Span::raw(format!("gen{generation} {:<10} ", component.lifecycle)),
         Span::styled(component.freshness.clone(), freshness_style),
-    ];
+    ]);
     if component.stale {
         spans.push(Span::styled(
             " STALE",
@@ -971,16 +1521,31 @@ fn push_plugin_component(lines: &mut Vec<Line<'static>>, component: &PluginCompo
         )));
     }
     if !component.actions.is_empty() {
-        let actions = component
-            .actions
-            .iter()
-            .map(|action| action.action_id.clone())
-            .collect::<Vec<_>>()
-            .join(", ");
-        lines.push(Line::from(Span::styled(
-            format!("    actions: {actions}"),
+        let mut spans = vec![Span::styled(
+            "    actions: ".to_string(),
             Style::new().fg(Color::Gray),
-        )));
+        )];
+        for (index, action) in component.actions.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::styled(
+                    ", ".to_string(),
+                    Style::new().fg(Color::Gray),
+                ));
+            }
+            let is_selected = selected_action == Some(index);
+            let text = if is_selected {
+                format!("> {}", action.action_id)
+            } else {
+                action.action_id.clone()
+            };
+            let style = if is_selected {
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(Color::Gray)
+            };
+            spans.push(Span::styled(text, style));
+        }
+        lines.push(Line::from(spans));
     }
     if component.views.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -1201,36 +1766,49 @@ fn draw_timeline(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 /// Footer: keybindings on one line, the current mode/status on the next.
 fn draw_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let keys = "q quit   r refresh   Tab/1-4 focus   j/k select   [ ] scroll   p pause   R resume   c cancel";
+    let keys = "q quit   r refresh   Tab/1-4 focus   j/k select   n/N plugin   ,/. action   a invoke   [ ] scroll   p pause   R resume   c cancel";
     let mut lines = vec![Line::from(Span::styled(keys, Style::new().fg(Color::Gray)))];
 
-    match &app.mode {
-        Mode::Confirm { action, input } => {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!(
-                        "confirm {}: type \"{}\" then Enter (Esc cancels) > ",
-                        action.name(),
-                        action.name()
-                    ),
-                    Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+    if let Some(pending) = &app.pending_action {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(
+                    "confirm {}: type \"{}\" then Enter (Esc cancels) > ",
+                    pending.invocation.action_id, pending.phrase
                 ),
-                Span::raw(input.clone()),
-            ]));
-        }
-        Mode::Normal => {
-            let mut spans = Vec::new();
-            if let Some(status) = &app.status {
-                spans.push(Span::styled(status.clone(), Style::new().fg(Color::Cyan)));
-                spans.push(Span::raw("   "));
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(pending.input.clone()),
+        ]));
+    } else {
+        match &app.mode {
+            Mode::Confirm { action, input } => {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!(
+                            "confirm {}: type \"{}\" then Enter (Esc cancels) > ",
+                            action.name(),
+                            action.name()
+                        ),
+                        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(input.clone()),
+                ]));
             }
-            if let Some(selected) = app.snapshot.executions.get(app.selection) {
-                spans.push(Span::styled(
-                    format!("sel {}", selected.execution_id),
-                    Style::new().fg(Color::DarkGray),
-                ));
+            Mode::Normal => {
+                let mut spans = Vec::new();
+                if let Some(status) = &app.status {
+                    spans.push(Span::styled(status.clone(), Style::new().fg(Color::Cyan)));
+                    spans.push(Span::raw("   "));
+                }
+                if let Some(selected) = app.snapshot.executions.get(app.selection) {
+                    spans.push(Span::styled(
+                        format!("sel {}", selected.execution_id),
+                        Style::new().fg(Color::DarkGray),
+                    ));
+                }
+                lines.push(Line::from(spans));
             }
-            lines.push(Line::from(spans));
         }
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
@@ -1567,6 +2145,207 @@ mod tests {
             self.calls.push(request.clone());
             Ok(self.outcome.clone())
         }
+    }
+
+    /// Records every plugin-action invocation and returns a fixed refusal. The
+    /// selection/dispatch semantics are what these unit tests exercise; the real
+    /// service outcome path is covered by `tests/hp_actions.rs`.
+    #[derive(Default)]
+    struct RecordingActionDriver {
+        calls: Vec<ActionInvocation>,
+    }
+
+    impl ActionDriver for RecordingActionDriver {
+        fn dispatch(
+            &mut self,
+            invocation: &ActionInvocation,
+        ) -> Result<ActionOutcome, ContractError> {
+            self.calls.push(invocation.clone());
+            Err(ContractError::UnsupportedCapability(
+                "recording action driver".to_string(),
+            ))
+        }
+    }
+
+    /// One advertised action view.
+    fn action_view(action_id: &str, confirmation: Option<&str>) -> ActionView {
+        ActionView {
+            action_id: action_id.to_string(),
+            required_capability: "example.control".to_string(),
+            effectful: true,
+            human_confirmation: confirmation.map(str::to_string),
+        }
+    }
+
+    /// One plugin component carrying the given advertised actions.
+    fn plugin_component(
+        plugin_id: &str,
+        generation: Option<u64>,
+        actions: Vec<ActionView>,
+    ) -> PluginComponent {
+        PluginComponent {
+            plugin_id: plugin_id.to_string(),
+            origin: "discovered".to_string(),
+            desired: "running".to_string(),
+            lifecycle: "ready".to_string(),
+            generation,
+            freshness: "fresh".to_string(),
+            stale: false,
+            disconnected: false,
+            incomplete: false,
+            last_error: None,
+            health: None,
+            actions,
+            views: Vec::new(),
+        }
+    }
+
+    /// Two plugins: `example.a` with a direct and a confirmation-required action,
+    /// and `example.b` with one direct action.
+    fn plugins_snapshot() -> Snapshot {
+        let mut snapshot = present();
+        snapshot.plugins = vec![
+            plugin_component(
+                "example.a",
+                Some(1),
+                vec![
+                    action_view("a.refresh", None),
+                    action_view("a.reset", Some("confirm-reset")),
+                ],
+            ),
+            plugin_component("example.b", Some(2), vec![action_view("b.sync", None)]),
+        ];
+        snapshot
+    }
+
+    #[test]
+    fn action_key_dispatches_selected_non_confirmation_action() {
+        let mut app = app(plugins_snapshot());
+        let mut driver = RecordingDriver::applied();
+        let mut actions = RecordingActionDriver::default();
+
+        assert_eq!(app.selected_plugin().map(|p| p.plugin_id.as_str()), Some("example.a"));
+        app.handle_key_with(press(KeyCode::Char('a')), &mut driver, &mut actions);
+
+        assert_eq!(actions.calls.len(), 1, "exactly one dispatch");
+        let call = &actions.calls[0];
+        assert_eq!(call.plugin_id, "example.a");
+        assert_eq!(call.generation, 1);
+        assert_eq!(call.action_id, "a.refresh");
+        assert!(call.confirmation.is_none(), "no confirmation required");
+        assert!(app.pending_action.is_none());
+    }
+
+    #[test]
+    fn confirmation_action_arms_then_dispatches_on_exact_phrase() {
+        let mut app = app(plugins_snapshot());
+        let mut driver = RecordingDriver::applied();
+        let mut actions = RecordingActionDriver::default();
+
+        // Move to the confirmation-required action (index 1).
+        app.handle_key_with(press(KeyCode::Char(',')), &mut driver, &mut actions);
+        assert_eq!(app.action_selection, 1);
+
+        app.handle_key_with(press(KeyCode::Char('a')), &mut driver, &mut actions);
+        assert!(actions.calls.is_empty(), "nothing dispatched before confirmation");
+        assert!(app.pending_action.is_some());
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap_or("")
+            .contains("confirm: type \"confirm-reset\""));
+
+        // Wrong phrase + Enter dispatches nothing and keeps the prompt.
+        for c in "wrong".chars() {
+            app.handle_key_with(press(KeyCode::Char(c)), &mut driver, &mut actions);
+        }
+        app.handle_key_with(press(KeyCode::Enter), &mut driver, &mut actions);
+        assert!(actions.calls.is_empty(), "a mismatch dispatches nothing");
+        assert!(app.pending_action.is_some(), "the prompt stays");
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap_or("")
+            .contains("confirmation mismatch"));
+
+        // Clear and type the exact phrase; Enter dispatches once with it.
+        for _ in 0.."wrong".len() {
+            app.handle_key_with(press(KeyCode::Backspace), &mut driver, &mut actions);
+        }
+        for c in "confirm-reset".chars() {
+            app.handle_key_with(press(KeyCode::Char(c)), &mut driver, &mut actions);
+        }
+        app.handle_key_with(press(KeyCode::Enter), &mut driver, &mut actions);
+        assert_eq!(actions.calls.len(), 1, "the confirmed action dispatches once");
+        assert_eq!(actions.calls[0].action_id, "a.reset");
+        assert_eq!(
+            actions.calls[0].confirmation.as_deref(),
+            Some("confirm-reset")
+        );
+        assert!(app.pending_action.is_none());
+    }
+
+    #[test]
+    fn pending_action_esc_cancels_without_dispatch() {
+        let mut app = app(plugins_snapshot());
+        let mut driver = RecordingDriver::applied();
+        let mut actions = RecordingActionDriver::default();
+
+        app.handle_key_with(press(KeyCode::Char(',')), &mut driver, &mut actions);
+        app.handle_key_with(press(KeyCode::Char('a')), &mut driver, &mut actions);
+        assert!(app.pending_action.is_some());
+
+        app.handle_key_with(press(KeyCode::Esc), &mut driver, &mut actions);
+        assert!(app.pending_action.is_none());
+        assert!(actions.calls.is_empty());
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap_or("")
+            .contains("confirmation cancelled"));
+    }
+
+    #[test]
+    fn n_and_comma_move_plugin_and_action_selection() {
+        let mut app = app(plugins_snapshot());
+        let mut driver = RecordingDriver::applied();
+        let mut actions = RecordingActionDriver::default();
+
+        assert_eq!(app.plugin_selection, 0);
+        assert_eq!(app.action_selection, 0);
+
+        app.handle_key_with(press(KeyCode::Char('n')), &mut driver, &mut actions);
+        assert_eq!(app.plugin_selection, 1);
+        app.handle_key_with(press(KeyCode::Char('N')), &mut driver, &mut actions);
+        assert_eq!(app.plugin_selection, 0);
+        // Saturates at the first plugin.
+        app.handle_key_with(press(KeyCode::Char('N')), &mut driver, &mut actions);
+        assert_eq!(app.plugin_selection, 0);
+
+        // Plugin 0 has two actions: ',' advances, '.' retreats, both saturate.
+        app.handle_key_with(press(KeyCode::Char(',')), &mut driver, &mut actions);
+        assert_eq!(app.action_selection, 1);
+        app.handle_key_with(press(KeyCode::Char(',')), &mut driver, &mut actions);
+        assert_eq!(app.action_selection, 1, "saturates at last action");
+        app.handle_key_with(press(KeyCode::Char('.')), &mut driver, &mut actions);
+        assert_eq!(app.action_selection, 0);
+        app.handle_key_with(press(KeyCode::Char('.')), &mut driver, &mut actions);
+        assert_eq!(app.action_selection, 0, "saturates at first action");
+    }
+
+    #[test]
+    fn action_selection_reclamps_when_plugin_changes() {
+        let mut app = app(plugins_snapshot());
+        let mut driver = RecordingDriver::applied();
+        let mut actions = RecordingActionDriver::default();
+
+        // Move to plugin 0's second action, then to plugin 1 (only one action).
+        app.handle_key_with(press(KeyCode::Char(',')), &mut driver, &mut actions);
+        assert_eq!(app.action_selection, 1);
+        app.handle_key_with(press(KeyCode::Char('n')), &mut driver, &mut actions);
+        assert_eq!(app.plugin_selection, 1);
+        assert_eq!(app.action_selection, 0, "re-clamped to plugin 1's single action");
+        assert_eq!(app.selected_action().map(|a| a.action_id.as_str()), Some("b.sync"));
     }
 
     #[test]

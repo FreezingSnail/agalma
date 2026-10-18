@@ -1013,7 +1013,10 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 /// Decode exactly [`GRANT_TOKEN_BYTES`] from a lowercase/uppercase hex string.
-fn hex_decode_32(value: &str) -> Result<[u8; GRANT_TOKEN_BYTES], ContractError> {
+///
+/// Shared with the HP.7 action service ([`crate::plugin_actions`]) so grant
+/// presentation has one decoder; behavior is unchanged.
+pub(crate) fn hex_decode_32(value: &str) -> Result<[u8; GRANT_TOKEN_BYTES], ContractError> {
     if value.len() != GRANT_TOKEN_BYTES * 2 {
         return Err(FailureCode::AuthorityDenied.failure(
             "grant",

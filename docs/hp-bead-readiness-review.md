@@ -16,7 +16,7 @@ remain deferred; review preparation grants no implementation or spending release
 | HP.4 | Real Connect adapters, concurrent dispatch, authenticated capability routing and production host RPC attachment |
 | HP.5 | Selected LedgerApi component store, durable registry persistence, report ingestion and production host attachment; complete-state migration/restore |
 | HP.6 | Shared registry/report read model, status and declarative rendering; first ownership of watch.rs |
-| HP.7 | Action service, hub action routing and control-plane attachment; watch.rs action hookup after HP.6 hands it over |
+| HP.7 | Action service, hub action routing, control-plane attachment and action-specific production host composition; watch.rs action hookup after HP.6 hands it over |
 | HP.8 | Independent executable package build and proof against the production host/UI/action paths; no substitute test-only hub |
 
 HP.2 additionally owns conductor `src/cli.rs` and `src/config.rs` for common root
@@ -27,6 +27,17 @@ Do not introduce a second scheduler, paid inference default, per-plugin selector
 or new configuration framework. A configured reporting plugin must be operable
 without claiming a paid factory task. HP.3 owns the common host entry and
 documents its exact invocation. HP.8 uses that invocation.
+
+### HP.7 production action attachment addendum (2026-10-17)
+
+With explicit user approval, HP.7 additionally owns action-specific additions
+to `src/composition.rs`: construct the registry-derived action catalog and
+pinned-generation executor from the running `PluginHost`, attach durable action
+storage to the selected ledger, supply each active plugin's launch grant, and
+pass the validated service-backed driver to the interactive UI. The ordinary
+UI path remains fail-closed when no host service is supplied. This ownership
+does not transfer unrelated host lifecycle, CLI configuration, or ledger
+ownership, and HP.8 remains proof-only for production implementation files.
 
 HP.3 tests its injected seams and identifies their production attachments as
 pending. HP.4 attaches real RPC; HP.5 attaches durable selected-ledger storage and
@@ -71,7 +82,9 @@ directory after installation and prove an existing binding is unaffected.
 - HP.6: report-rendering tests include control-character escaping and bounded
   rows/text; viewing and refresh remain read-only.
 - HP.7: service tests can proceed while HP.6 owns watch.rs. UI dispatch integration
-  waits for an explicit file handoff. Unknown outcomes retain the original plugin
+  waits for an explicit file handoff. The production host passes a service-backed
+  driver, registry-derived action descriptors, per-launch grants and pinned
+  executor to the interactive UI. Unknown outcomes retain the original plugin
   generation; cancellation evidence cannot be inferred from a request alone.
 - HP.8: build the hub once, then independently build/install plugin generations;
   exercise the actual host, selected ledger, generic UI and authorized action
@@ -85,7 +98,9 @@ Shared conductor `lib.rs`, `cli.rs`, `config.rs`, `composition.rs`, `work.rs`,
 registry/supervisor and IPC files transfer only after the earlier owner finishes.
 SF owns overlapping files until its accepted integration is complete.
 HP.6 owns `watch.rs` first; HP.7 develops its service and tests concurrently, then
-receives `watch.rs` for action hookup. Both acceptances must complete before HP.8.
+receives `watch.rs` for action hookup. HP.3's host composition becomes available
+for HP.7's action-specific production attachment after HP.3 lifecycle acceptance.
+Both acceptances must complete before HP.8.
 
 ## Independent plugin fixture and checks
 

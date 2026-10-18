@@ -23,6 +23,7 @@ pub mod harness_process;
 pub mod ledger_process;
 pub mod phases;
 pub mod plan_check;
+pub mod plugin_actions;
 pub mod plugin_manifest;
 pub mod plugin_registry;
 pub mod plugin_reports;
@@ -644,6 +645,12 @@ fn status_command(args: &StatusArgs) -> ExitCode {
 /// Delegates to [`crate::watch::run`]: `--once` (or a non-TTY stdout) renders a
 /// single frame; otherwise an alternate-screen loop refreshes until `q` +
 /// Enter, Ctrl-C/SIGTERM, or stdin EOF. Never writes.
+///
+/// The interactive plugin-action binding is fail-closed here (`run` =
+/// [`crate::watch::run_with_actions`] with no driver). The production host
+/// attaches real plugin actions by building a driver over the hub's common
+/// `ActionService` + parent-issued grants and calling
+/// `watch::run_with_actions(args, Some(driver))`.
 async fn watch_command(args: &WatchArgs) -> ExitCode {
     crate::watch::run(args).await
 }

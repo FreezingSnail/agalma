@@ -10,11 +10,14 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agalma_contracts::harness::StopEvidence;
-use agalma_contracts::{ContractError, ExecutionApi, ExecutionPhase, FailureCode, LedgerApi, PluginInstallation};
+use agalma_contracts::{
+    BindingPin, ContractError, ExecutionApi, ExecutionPhase, FailureCode, LedgerApi,
+    PluginInstallation,
+};
 use agalma_execution::{Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
 use agalma_process::LocalLauncher;
 
@@ -24,6 +27,10 @@ use crate::harness_binding::{harness_handle, HarnessChoice};
 use crate::harness_process::READY_TIMEOUT;
 use crate::ledger_process::{LedgerHandle, LedgerTransport};
 use crate::phases::{activities, PhaseDeps, RunState};
+use crate::plugin_actions::{
+    catalog_key, ActionCatalog, ActionExecutor, ActionService, AdvertisedAction,
+    PluginRpcActionExecutor,
+};
 use crate::plugin_manifest::{DiscoveryDiagnostic, DiscoveredPackage};
 use crate::plugin_registry::{
     plugin_socket_path, DesiredState, DesiredStateStore, HubInstallStore, InMemoryDesiredStateStore,
@@ -40,6 +47,7 @@ use crate::plugin_supervisor::{
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
 use crate::stop::{BoundStopControl, StopControl};
 use crate::task::{self, TaskDescriptor};
+use crate::watch::{service_action_driver_shared, ActionDriver};
 use crate::workspace_process::{WorkspaceHandle, WorkspaceTransport};
 
 /// Repository-mode builder prompt shipped with the conductor. It is the base
@@ -526,6 +534,16 @@ pub struct PluginHost {
     ledger: Option<LedgerHandle>,
     /// The durable report ingestor attached by [`PluginHost::assemble_with_ledger`].
     pub reports: Option<Arc<std::sync::Mutex<crate::plugin_reports::ReportIngestor>>>,
+    /// Live child Connect socket per `(plugin_id, pinned generation)`, refreshed
+    /// from the supervisor on each launch tick (HP.7 action-specific attachment).
+    /// The action executor resolves the pinned generation's socket here; a pinned
+    /// generation with no live launch is refused and a replacement generation is
+    /// never contacted.
+    action_sockets: Arc<Mutex<BTreeMap<(String, u64), PathBuf>>>,
+    /// The host's current per-launch action grants, shared with the live action
+    /// driver so a restart's rotated grant replaces/revokes the stale one in the
+    /// active service (HP.7 action-specific attachment).
+    action_grants: Arc<Mutex<BTreeMap<String, LaunchGrant>>>,
 }
 
 /// What one supervise tick observed and did.
@@ -643,6 +661,8 @@ impl PluginHost {
             desired,
             ledger: None,
             reports,
+            action_sockets: Arc::new(Mutex::new(BTreeMap::new())),
+            action_grants: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -900,6 +920,160 @@ impl PluginHost {
         &self.grants
     }
 
+    /// The host's current per-launch action grants, shared with the live action
+    /// driver (so a restart's rotation reaches the active service). Refreshed by
+    /// [`Self::refresh_action_sockets`].
+    pub fn action_grants(&self) -> Arc<Mutex<BTreeMap<String, LaunchGrant>>> {
+        Arc::clone(&self.action_grants)
+    }
+
+    /// Refresh the live `(plugin_id, generation)` child-socket map and the shared
+    /// per-launch action grants from the supervisor/registry (HP.7 action
+    /// attachment). The host calls this on each supervise/UI tick so a restart's
+    /// new launch epoch and rotated grant are visible to the action executor and
+    /// driver, and a replaced generation's socket is dropped (never reused).
+    pub fn refresh_action_sockets(&self) {
+        {
+            let mut sockets = self
+                .action_sockets
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            sockets.clear();
+            for plugin_id in self.registry.plugin_ids() {
+                let Some(entry) = self.registry.entry(plugin_id) else {
+                    continue;
+                };
+                // Only the currently-launched generation is reachable; a replaced
+                // generation has no entry, so its pinned operations stay
+                // unreconciled rather than being sent to the replacement.
+                let Some(generation) = entry
+                    .active_generation
+                    .or(entry.pending_generation)
+                else {
+                    continue;
+                };
+                let Some(epoch) = self.supervisor.epoch(plugin_id) else {
+                    continue;
+                };
+                sockets.insert(
+                    (plugin_id.to_string(), generation),
+                    plugin_socket_path(&self.state_dir, plugin_id, epoch),
+                );
+            }
+        }
+        let mut grants = self
+            .action_grants
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        grants.clear();
+        for (plugin_id, grant) in &self.grants {
+            grants.insert(plugin_id.clone(), grant.clone());
+        }
+    }
+
+    /// The registry-derived action catalog: each plugin's advertised
+    /// `ActionDescriptor`s bound to its **active** pinned generation. A staged or
+    /// pending generation advertises nothing until it is active.
+    fn action_catalog(&self) -> BTreeMap<(String, u64, String), AdvertisedAction> {
+        let mut catalog = BTreeMap::new();
+        for plugin_id in self.registry.plugin_ids() {
+            let Some(entry) = self.registry.entry(plugin_id) else {
+                continue;
+            };
+            let Some(generation) = entry.active_generation else {
+                continue;
+            };
+            let Some(installed) = entry.generations.get(&generation) else {
+                continue;
+            };
+            let binding = BindingPin {
+                binding_id: plugin_id.to_string(),
+                api: "plugin".to_string(),
+                api_version: 1,
+                implementation_version: installed.package_version.clone(),
+                generation,
+                config_digest: installed.config_digest.clone(),
+            };
+            for descriptor in &installed.manifest.actions {
+                catalog.insert(
+                    catalog_key(plugin_id, generation, &descriptor.action_id),
+                    AdvertisedAction {
+                        descriptor: descriptor.clone(),
+                        binding: binding.clone(),
+                    },
+                );
+            }
+        }
+        catalog
+    }
+
+    /// Build the service-backed UI action driver from this running host: the
+    /// registry-derived catalog, the selected-ledger durable action store, the
+    /// pinned-generation child-RPC executor, the shared stop admission and each
+    /// active plugin's per-launch grant (HP.7 action-specific production
+    /// attachment).
+    ///
+    /// Returns `Ok(None)` — fail-closed — when the host has no selected ledger to
+    /// journal into; the interactive UI then refuses every action with zero
+    /// effects. When the host was assembled with a ledger, prefer
+    /// [`Self::action_driver`]; otherwise pass the selected ledger explicitly
+    /// with [`Self::action_driver_with_ledger`].
+    pub fn action_driver(&self) -> Result<Option<Box<dyn ActionDriver + Send>>, ContractError> {
+        match self.ledger() {
+            Some(ledger) => Ok(Some(self.action_driver_with_ledger(ledger)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Build the service-backed UI action driver over the **selected ledger**,
+    /// without changing the host's desired-state/lifecycle wiring. The ledger is
+    /// the durable `component-store/v1` backing for the action journal.
+    pub fn action_driver_with_ledger(
+        &self,
+        ledger: &LedgerHandle,
+    ) -> Result<Box<dyn ActionDriver + Send>, ContractError> {
+        let service = self.action_service_with_ledger(ledger)?;
+        // Share the host's current per-launch grants so a restart's rotation
+        // replaces/revokes the stale grant in the active service before further
+        // actions.
+        Ok(service_action_driver_shared(
+            service,
+            Arc::clone(&self.action_grants),
+        ))
+    }
+
+    /// Build the common validated [`ActionService`] from this running host over
+    /// the selected ledger: the registry-derived catalog (active pinned
+    /// generation), the durable `component-store/v1` action store, the
+    /// pinned-generation child-RPC executor, the shared SF stop admission and
+    /// each active plugin's per-launch grant. The host caller/test seam behind
+    /// [`Self::action_driver_with_ledger`].
+    pub fn action_service_with_ledger(
+        &self,
+        ledger: &LedgerHandle,
+    ) -> Result<ActionService, ContractError> {
+        self.refresh_action_sockets();
+        let catalog = self.action_catalog();
+        let store: Box<dyn crate::plugin_actions::ActionStore> =
+            Box::new(Mutex::new(ledger.clone()));
+        let executor: Box<dyn ActionExecutor> =
+            Box::new(PluginRpcActionExecutor::new(Arc::clone(&self.action_sockets))?);
+        // The shared SF stop admission: an explicit stop or an unreadable stop
+        // state denies new effects (fail-closed).
+        let stop: Arc<dyn StopAdmission> =
+            Arc::new(BoundStopControl::new(&self.state_dir, ledger.clone()));
+        let mut service = ActionService::new(
+            Box::new(catalog) as Box<dyn ActionCatalog>,
+            store,
+            executor,
+            stop,
+        );
+        for grant in self.grants.values() {
+            service.install_grant(grant);
+        }
+        Ok(service)
+    }
+
     /// Advance the production supervise loop one tick.
     ///
     /// Observes owned child exits (scheduling their backoff restart) and then
@@ -1093,6 +1267,45 @@ pub async fn run_plugin_host(args: &PluginHostArgs) -> std::process::ExitCode {
             );
         }
         return std::process::ExitCode::SUCCESS;
+    }
+
+    // HP.7 action-specific production attachment: on an interactive terminal run
+    // the generic watch UI with this host's validated action service attached.
+    // The host keeps supervising its children on each UI tick. A non-interactive
+    // (piped/daemon) invocation keeps the headless supervise loop below, and a
+    // host with no selected ledger stays fail-closed.
+    if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        let actions =
+            match LedgerHandle::from_transport(&host.state_dir, LedgerTransport::from_env()) {
+                Ok(ledger) => match host.action_driver_with_ledger(&ledger) {
+                    Ok(driver) => Some(driver),
+                    Err(err) => {
+                        eprintln!("agalma: action service unavailable (fail-closed): {err:?}");
+                        None
+                    }
+                },
+                Err(err) => {
+                    eprintln!("agalma: action ledger unavailable (fail-closed): {err:?}");
+                    None
+                }
+            };
+        let ui_state_dir = host.state_dir.clone();
+        let ui_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        crate::watch::spawn_signal_watch(Arc::clone(&ui_stop));
+        let code = crate::watch::run_interactive_with(
+            &ui_state_dir,
+            1000,
+            ui_stop,
+            actions,
+            || {
+                if let Err(err) = host.supervise_tick(&mut probe) {
+                    eprintln!("agalma: plugin supervise tick failed: {err:?}");
+                }
+                host.refresh_action_sockets();
+            },
+        );
+        host.shutdown();
+        return code;
     }
 
     // Long-running supervise loop: observe child exits, restart under backoff,

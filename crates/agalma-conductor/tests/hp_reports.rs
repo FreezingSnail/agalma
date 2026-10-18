@@ -28,7 +28,11 @@
 //!   durable receipt (both transports);
 //! * the assembled production host persists/reconstructs registry desired state
 //!   through the selected LedgerApi, routes `hub.PublishReport` to its attached
-//!   ingestor, and stores the observation durably.
+//!   ingestor, and stores the observation durably;
+//! * configured, user-controlled plugin roots auto-install from each package's
+//!   immutable default configuration (no separate approval record), and the
+//!   automatic grant is exactly `requested ∩ {report.publish, ledger.read}` —
+//!   `ledger.write` and unknown capabilities stay denied.
 //!
 //! The v4 fixture is built privately by this test from the existing `rusqlite`
 //! dev-dependency; it does not require (or expose) a production fixture API.
@@ -42,7 +46,8 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 
 use agalma_conductor::composition::{
-    InMemoryInstallations, PluginHost, PLUGIN_REPORT_GRANT_ENV,
+    auto_approved_capabilities, default_installation, InMemoryInstallations, PluginHost,
+    PLUGIN_REPORT_GRANT_ENV, SAFE_CAPABILITY_ALLOWLIST,
 };
 use agalma_conductor::config::PluginHostConfig;
 use agalma_conductor::ledger_process::{LedgerHandle, LedgerTransport};
@@ -389,6 +394,21 @@ fn live_child() -> String {
 fn package_fixture(root: &Path) -> agalma_conductor::plugin_manifest::DiscoveredPackage {
     let package_dir = root.join("pkg");
     seal_package(&package_dir, &base_manifest(PLUGIN_ID), &live_child());
+    let report = discover_plugins(&[PluginRoot::required(root)]).unwrap();
+    report.package(PLUGIN_ID).unwrap().clone()
+}
+
+/// A sealed package fixture whose manifest requests exactly `caps` (configured
+/// simply as a plugin id must be registered before the report). Used to exercise
+/// auto-install of arbitrary capability sets, including denied ones.
+fn package_fixture_caps(
+    root: &Path,
+    caps: &[&str],
+) -> agalma_conductor::plugin_manifest::DiscoveredPackage {
+    let package_dir = root.join("pkg");
+    let mut manifest = base_manifest(PLUGIN_ID);
+    manifest["requested_capabilities"] = json!(caps);
+    seal_package(&package_dir, &manifest, &live_child());
     let report = discover_plugins(&[PluginRoot::required(root)]).unwrap();
     report.package(PLUGIN_ID).unwrap().clone()
 }
@@ -1165,6 +1185,230 @@ async fn production_publish_report_refuses_an_unauthorized_token_with_zero_effec
 }
 
 // ---------------------------------------------------------------------------
+// Configured-root auto-install (agalma-jmr.5 repair)
+// ---------------------------------------------------------------------------
+
+/// A configured, user-controlled plugin root alone authorizes installation: the
+/// package auto-installs from its immutable default configuration (no separate
+/// approval record), and the pinned generation, desired state and ingested
+/// report all survive a restart through the **selected** LedgerApi.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn configured_root_auto_installs_defaults_and_resumes_through_selected_ledger() {
+    let scratch = fresh("hp5-auto-install");
+    let state_dir = scratch.child("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let root = scratch.child("root");
+    let package = package_fixture(&root);
+    let config = host_config(&state_dir, &root);
+    let clock = ManualClockFn::new(START_MS);
+    let ledger = LedgerHandle::in_process(&state_dir).unwrap();
+
+    // No installation source is supplied: the configured root is the operator's
+    // allowlist, so the package auto-installs from its declared defaults.
+    let installations = InMemoryInstallations::new();
+
+    let (generation, install_digest) = {
+        let mut host = PluginHost::assemble_with_ledger(
+            &config,
+            &installations,
+            ledger.clone(),
+            clock.clock(),
+        )
+        .expect("auto-installed production host");
+        assert!(
+            host.diagnostics.is_empty(),
+            "configured root auto-installs with no diagnostic: {:?}",
+            host.diagnostics
+        );
+        assert!(host.reports.is_some(), "report ingestor attached to the host");
+
+        let generation = *host
+            .installed
+            .get(PLUGIN_ID)
+            .expect("configured root auto-installs a generation");
+        let gen = host
+            .registry
+            .entry(PLUGIN_ID)
+            .unwrap()
+            .generations
+            .get(&generation)
+            .unwrap();
+        // Package defaults are pinned: the frozen configuration ref, its digest
+        // and the launch profile all come from the sealed manifest.
+        assert_eq!(gen.configuration, package.manifest.default_configuration);
+        assert_eq!(gen.config_digest, package.manifest.default_configuration.digest);
+        assert_eq!(gen.launch_profile, package.manifest.entrypoint.launch_profile);
+        assert_eq!(
+            gen.approved_capabilities,
+            vec![REPORT_CAPABILITY.to_string()],
+            "automatic grant is requested ∩ the fixed safe allowlist"
+        );
+        let install_digest = gen.installation_digest.clone();
+
+        host.set_desired(PLUGIN_ID, DesiredState::Running).unwrap();
+        let _launch = host
+            .launch_request(PLUGIN_ID)
+            .expect("launch issues report credentials");
+        let auth = host
+            .report_grant(PLUGIN_ID)
+            .expect("auto-installed report grant")
+            .scope()
+            .binding
+            .clone();
+        // Publish one durable observation through the host's selected-ledger
+        // ingestor.
+        let sealed = seal_publication(
+            PLUGIN_ID,
+            auth.clone(),
+            SCHEMA_NAMESPACE,
+            SCHEMA_VERSION,
+            1,
+            START_MS,
+            Durability::Durable,
+            json!({"ready": true}),
+        )
+        .unwrap();
+        {
+            let reports = host.reports.clone().unwrap();
+            let mut ingestor = reports.lock().unwrap();
+            ingestor.publish(PLUGIN_ID, &auth, &sealed).unwrap();
+        }
+        (generation, install_digest)
+    };
+
+    // Restart through the same selected ledger: the desired state, the registry
+    // checkpoint, the pinned generation identity and the ingested report are all
+    // reconstructed with no private-storage fallback.
+    let mut restarted = PluginHost::assemble_with_ledger(
+        &config,
+        &installations,
+        ledger.clone(),
+        clock.clock(),
+    )
+    .expect("restarted auto-installed host");
+    assert_eq!(
+        restarted.registry.desired(PLUGIN_ID),
+        DesiredState::Running,
+        "desired state reconstructed from the selected ledger"
+    );
+    let restarted_generation = *restarted.installed.get(PLUGIN_ID).unwrap();
+    let gen = restarted
+        .registry
+        .entry(PLUGIN_ID)
+        .unwrap()
+        .generations
+        .get(&restarted_generation)
+        .unwrap();
+    assert_eq!(
+        gen.installation_digest, install_digest,
+        "the synthesized pin reconstructs with a stable identity across restart"
+    );
+    assert_eq!(restarted_generation, generation);
+
+    // The report rehydrates from the selected ledger and its durable event is
+    // still present.
+    {
+        let ingestor = restarted.reports.clone().unwrap();
+        let ingestor = ingestor.lock().unwrap();
+        assert_eq!(
+            ingestor
+                .view(PLUGIN_ID)
+                .unwrap()
+                .entries
+                .get(SCHEMA_NAMESPACE)
+                .unwrap()
+                .payload,
+            json!({"ready": true})
+        );
+        assert_eq!(events(ingestor.store(), PLUGIN_ID).len(), 1);
+    }
+
+    // The durable registry checkpoint carries the desired state and generation.
+    let registry = ledger
+        .component_read(REGISTRY_NAMESPACE)
+        .unwrap()
+        .expect("registry checkpoint");
+    let checkpoint: RegistryCheckpoint =
+        serde_json::from_value(registry.checkpoint.unwrap()).unwrap();
+    assert_eq!(
+        checkpoint.desired.get(PLUGIN_ID),
+        Some(&DesiredState::Running)
+    );
+    assert!(checkpoint.active_generations.contains_key(PLUGIN_ID));
+
+    let _ = restarted.shutdown();
+}
+
+/// Auto-install grants are exactly `requested ∩ {report.publish, ledger.read}`:
+/// `ledger.write` and any unknown capability the package requests are denied,
+/// while the immutable package default is pinned and reconstructible.
+#[test]
+fn auto_install_denies_ledger_write_and_unknown_capabilities_and_pins_defaults() {
+    let scratch = fresh("hp5-auto-deny");
+    let state_dir = scratch.child("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let root = scratch.child("root");
+    let package = package_fixture_caps(
+        &root,
+        &[REPORT_CAPABILITY, "ledger.write", "mystery.widgets"],
+    );
+    let config = host_config(&state_dir, &root);
+    let clock = ManualClockFn::new(START_MS);
+    let ledger = LedgerHandle::in_process(&state_dir).unwrap();
+
+    let host = PluginHost::assemble_with_ledger(
+        &config,
+        &InMemoryInstallations::new(),
+        ledger,
+        clock.clock(),
+    )
+    .expect("auto-installed production host");
+    let generation = *host.installed.get(PLUGIN_ID).expect("auto-installed");
+    let gen = host
+        .registry
+        .entry(PLUGIN_ID)
+        .unwrap()
+        .generations
+        .get(&generation)
+        .unwrap();
+    assert_eq!(
+        gen.requested_capabilities,
+        vec![
+            REPORT_CAPABILITY.to_string(),
+            "ledger.write".to_string(),
+            "mystery.widgets".to_string(),
+        ],
+        "the package still requests the denied capabilities"
+    );
+    assert_eq!(
+        gen.approved_capabilities,
+        vec![REPORT_CAPABILITY.to_string()],
+        "only the allowlisted capability is granted"
+    );
+    assert!(!gen.approved_capabilities.iter().any(|c| c == "ledger.write"));
+    assert!(!gen.approved_capabilities.iter().any(|c| c == "mystery.widgets"));
+
+    // Package defaults are pinned in the installed generation.
+    assert_eq!(gen.configuration, package.manifest.default_configuration);
+    assert_eq!(gen.config_digest, package.manifest.default_configuration.digest);
+
+    // The synthesized pin is a deterministic, reconstructible function of the
+    // sealed package.
+    let first = default_installation(&package).unwrap();
+    let second = default_installation(&package).unwrap();
+    assert_eq!(first, second, "default pin is deterministic");
+    assert_eq!(
+        first.installation_digest, gen.installation_digest,
+        "the installed generation carries the synthesized pin digest"
+    );
+    assert_eq!(first.format, "PluginInstallation/v1".to_string());
+    assert_eq!(
+        first.approved_capabilities,
+        vec![REPORT_CAPABILITY.to_string()]
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Deterministic property test
 // ---------------------------------------------------------------------------
 
@@ -1241,4 +1485,83 @@ fn property_report_sequences_preserve_replay_gap_and_restart_invariants() {
             }
         }
     }
+}
+
+/// The automatic grant is exactly `requested ∩ {report.publish, ledger.read}`,
+/// over deterministic generated capability sets that include duplicates, the
+/// empty string, unknown capabilities and the explicitly denied `ledger.write`.
+///
+/// The oracle is defined independently of the implementation: for each generated
+/// request it recomputes the deduplicated intersection with the fixed safe
+/// allowlist and asserts equality, containment and denial.
+#[test]
+fn property_auto_grants_never_exceed_requested_intersection_allowlist() {
+    const ALLOW: [&str; 2] = ["report.publish", "ledger.read"];
+    const ALPHABET: [&str; 8] = [
+        "report.publish",
+        "ledger.read",
+        "ledger.write",
+        "",
+        "mystery.widgets",
+        "report.write",
+        "ledger.admin",
+        "report.publish",
+    ];
+    // The fixed allowlist the implementation must honor (spec, not oracle).
+    assert_eq!(SAFE_CAPABILITY_ALLOWLIST, &ALLOW[..]);
+
+    let mut rng = XorShift64::new(PROPERTY_SEED ^ 0x00c0_ffee);
+    for case in 0..PROPERTY_CASES {
+        let len = rng.below(10) as usize;
+        let mut requested: Vec<String> = Vec::with_capacity(len);
+        for _ in 0..len {
+            requested.push(ALPHABET[rng.below(ALPHABET.len() as u64) as usize].to_string());
+        }
+        let approved = auto_approved_capabilities(&requested);
+
+        // Independent oracle: first-occurrence dedup intersection with ALLOW.
+        let mut expected: Vec<String> = Vec::new();
+        for capability in &requested {
+            if !ALLOW.contains(&capability.as_str()) {
+                continue;
+            }
+            if expected.iter().any(|seen| seen == capability) {
+                continue;
+            }
+            expected.push(capability.clone());
+        }
+        assert_eq!(
+            approved, expected,
+            "case {case}: grants == requested ∩ allowlist"
+        );
+
+        // Grants never exceed requested ∩ allowlist and never leak a denial.
+        assert!(approved.len() <= requested.len());
+        let mut deduped = approved.clone();
+        deduped.sort();
+        deduped.dedup();
+        assert_eq!(deduped.len(), approved.len(), "case {case}: duplicate-free");
+        for granted in &approved {
+            assert!(
+                requested.iter().any(|r| r == granted),
+                "case {case}: granted {granted:?} was not requested"
+            );
+            assert!(
+                ALLOW.contains(&granted.as_str()),
+                "case {case}: granted {granted:?} outside the safe allowlist"
+            );
+            assert_ne!(granted, "ledger.write", "case {case}: ledger.write denied");
+            assert!(!granted.is_empty(), "case {case}: empty capability denied");
+        }
+    }
+
+    // Concrete denial regression: `ledger.write` is requested but never granted;
+    // unknown capabilities and the empty string are never granted either.
+    assert_eq!(
+        auto_approved_capabilities(&["ledger.write".to_string(), "report.publish".to_string()]),
+        vec!["report.publish".to_string()]
+    );
+    assert!(auto_approved_capabilities(&["ledger.write".to_string()]).is_empty());
+    assert!(auto_approved_capabilities(&["".to_string(), "mystery".to_string()]).is_empty());
+    assert!(auto_approved_capabilities(&[]).is_empty());
 }

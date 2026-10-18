@@ -171,7 +171,7 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
     // desired plugins. Best-effort and a no-op with no configured roots; the
     // host is held for the loop's lifetime and shut down when `work` returns.
     let _plugin_host =
-        crate::composition::attach_work_plugin_host(&state_dir, &args.plugin_roots);
+        crate::composition::attach_work_plugin_host(&state_dir, &args.plugin_roots, &ledger);
 
     let mode = ActivityMode::from_env();
     let proxy = if mode == ActivityMode::Live {

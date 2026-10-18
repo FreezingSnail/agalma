@@ -33,8 +33,7 @@ use crate::plugin_actions::{
 };
 use crate::plugin_manifest::{DiscoveryDiagnostic, DiscoveredPackage};
 use crate::plugin_registry::{
-    plugin_socket_path, DesiredState, DesiredStateStore, HubInstallStore, InMemoryDesiredStateStore,
-    PluginRegistry,
+    plugin_socket_path, DesiredState, DesiredStateStore, HubInstallStore, PluginRegistry,
 };
 use crate::plugin_router::{
     CapabilityAdapter, CapabilityRouter, LaunchGrant, OperationJournal, RouterService,
@@ -442,6 +441,66 @@ fn report_capability(
         .cloned()
 }
 
+/// The fixed hub capability allowlist for automatic (configured-root) grants.
+///
+/// A configured, user-controlled plugin root is the operator-managed allowlist:
+/// a discovered package auto-installs without a separate approval record, but its
+/// automatic grant is the exact intersection of the manifest's requested
+/// capabilities and this fixed safe set. `ledger.write` and any unknown or
+/// plugin-invented capability are never auto-granted.
+pub const SAFE_CAPABILITY_ALLOWLIST: &[&str] = &["report.publish", "ledger.read"];
+
+/// The automatic hub grant for a package: the exact intersection of its
+/// requested capabilities and [`SAFE_CAPABILITY_ALLOWLIST`].
+///
+/// Order follows the request; the result is duplicate-free and never contains an
+/// empty, `ledger.write` or unknown capability. It depends only on the request
+/// set, so it is a deterministic function the host re-derives identically on
+/// every restart.
+pub fn auto_approved_capabilities(requested: &[String]) -> Vec<String> {
+    let mut approved: Vec<String> = Vec::new();
+    for capability in requested {
+        if !SAFE_CAPABILITY_ALLOWLIST.contains(&capability.as_str()) {
+            continue;
+        }
+        if approved.iter().any(|seen| seen == capability) {
+            continue;
+        }
+        approved.push(capability.clone());
+    }
+    approved
+}
+
+/// Synthesize the immutable default `PluginInstallation/v1` pin for a discovered
+/// package in a configured root (configured-root auto-install).
+///
+/// The pin is a pure function of the sealed package bytes — its package digest,
+/// the manifest's declared **default configuration** reference, its launch
+/// profile and the automatic capability intersection
+/// ([`auto_approved_capabilities`]) — so it reconstructs with a stable identity
+/// on every restart. No separate operator approval record is required for a
+/// configured root; an injected [`InstallationSource`] remains the durable
+/// operator override, and this default is used only when none is supplied.
+/// Validation stays authoritative in [`verify_installation`] and
+/// [`PluginRegistry::install`].
+pub fn default_installation(
+    package: &DiscoveredPackage,
+) -> Result<PluginInstallation, ContractError> {
+    let mut installation = PluginInstallation {
+        format: agalma_contracts::PLUGIN_INSTALLATION_FORMAT.to_string(),
+        plugin_id: package.plugin_id.clone(),
+        package_digest: package.package_digest.clone(),
+        configuration: package.manifest.default_configuration.clone(),
+        launch_profile: package.manifest.entrypoint.launch_profile.clone(),
+        approved_capabilities: auto_approved_capabilities(
+            &package.manifest.requested_capabilities,
+        ),
+        installation_digest: String::new(),
+    };
+    installation.installation_digest = installation.recomputed_installation_digest()?;
+    Ok(installation)
+}
+
 /// Injected source of pinned [`PluginInstallation`] records.
 ///
 /// HP.5 attaches the durable selected-ledger implementation. A package with no
@@ -578,13 +637,31 @@ impl PluginHost {
     /// from the injected journal/stop/adapters and a per-launch scoped grant is
     /// issued for each installed plugin, carried to the child through the private
     /// launch channel ([`LaunchRequest::env`]). Persistence stays injected until
-    /// HP.5.
+    /// HP.5. A package with no supplied installation is discovered but not
+    /// started; the configured-root auto-install path is
+    /// [`PluginHost::assemble_with_ledger`].
     pub fn assemble_with_hub(
         config: &PluginHostConfig,
         installations: &dyn InstallationSource,
         desired: Box<dyn DesiredStateStore>,
         clock: Rc<dyn Clock>,
         services: HubServices,
+    ) -> Result<PluginHost, ContractError> {
+        PluginHost::assemble_inner(config, installations, desired, clock, services, false)
+    }
+
+    /// Shared assembly behind [`PluginHost::assemble_with_hub`] (explicit
+    /// installation source only) and [`PluginHost::assemble_with_ledger`]
+    /// (configured-root auto-install). `auto_install` selects whether a
+    /// discovered package with no supplied installation pin is auto-installed
+    /// from its immutable defaults or reported as an unapproved diagnostic.
+    fn assemble_inner(
+        config: &PluginHostConfig,
+        installations: &dyn InstallationSource,
+        desired: Box<dyn DesiredStateStore>,
+        clock: Rc<dyn Clock>,
+        services: HubServices,
+        auto_install: bool,
     ) -> Result<PluginHost, ContractError> {
         std::fs::create_dir_all(&config.state_dir).map_err(|err| {
             FailureCode::StateUnavailable.failure(
@@ -607,15 +684,22 @@ impl PluginHost {
         let mut diagnostics = report.diagnostics.clone();
         let mut installed = BTreeMap::new();
         for package in &report.packages {
-            let Some(installation) = installations.installation(&package.plugin_id) else {
-                diagnostics.push(DiscoveryDiagnostic {
-                    root: package.root.clone(),
-                    message: format!(
-                        "plugin `{}` has no approved installation; discovered but not started",
-                        package.plugin_id
-                    ),
-                });
-                continue;
+            let installation = match installations.installation(&package.plugin_id) {
+                Some(installation) => installation,
+                // Configured-root auto-install: no separate approval record is
+                // required, so synthesize the immutable default pin (pinned
+                // package digest + default configuration + intersected grant).
+                None if auto_install => default_installation(package)?,
+                None => {
+                    diagnostics.push(DiscoveryDiagnostic {
+                        root: package.root.clone(),
+                        message: format!(
+                            "plugin `{}` has no approved installation; discovered but not started",
+                            package.plugin_id
+                        ),
+                    });
+                    continue;
+                }
             };
             verify_installation(package, &installation)?;
             let generation = registry.install(&store, package, &installation)?;
@@ -675,6 +759,14 @@ impl PluginHost {
     /// host keeps the attached ledger so report ingestion uses the same
     /// `LedgerApi`, and it records the registry's active/max generations in the
     /// durable registry checkpoint.
+    ///
+    /// Configured, user-controlled plugin roots auto-install: a discovered
+    /// package with no supplied [`InstallationSource`] pin is installed from its
+    /// immutable default configuration with an automatic grant that is exactly
+    /// its requested capabilities intersected with
+    /// [`SAFE_CAPABILITY_ALLOWLIST`] ([`default_installation`]). The synthesized
+    /// pin is a pure function of the sealed package bytes, so it reconstructs
+    /// identically across restarts.
     pub fn assemble_with_ledger(
         config: &PluginHostConfig,
         installations: &dyn InstallationSource,
@@ -684,12 +776,13 @@ impl PluginHost {
         let desired = Box::new(crate::plugin_registry::LedgerDesiredStateStore::open(
             ledger.clone(),
         )?);
-        let mut host = PluginHost::assemble_with_hub(
+        let mut host = PluginHost::assemble_inner(
             config,
             installations,
             desired,
             Rc::new(FnClock(Arc::clone(&clock))),
             HubServices::default(),
+            true,
         )?;
         let mut ledger = ledger;
         crate::plugin_registry::persist_registry_generations(&mut ledger, &host.registry)?;
@@ -1217,12 +1310,22 @@ pub async fn run_plugin_host(args: &PluginHostArgs) -> std::process::ExitCode {
         );
         return std::process::ExitCode::FAILURE;
     }
-    let clock: Rc<dyn Clock> = Rc::new(SystemClock);
-    // HP.5 replaces this in-memory installation source and desired-state store
-    // with the durable selected-ledger stores.
+    // HP.5: configured, user-controlled plugin roots auto-install from each
+    // package's declared default configuration through the selected LedgerApi
+    // (durable desired state, registry checkpoint and report ingestion); there is
+    // no private-storage fallback. No separate installation approval record is
+    // required — the configured root is the operator-managed allowlist.
     let installations = InMemoryInstallations::new();
-    let desired: Box<dyn DesiredStateStore> = Box::new(InMemoryDesiredStateStore::new());
-    let mut host = match PluginHost::assemble(&config, &installations, desired, clock.clone()) {
+    let ledger = match LedgerHandle::from_transport(&config.state_dir, LedgerTransport::from_env())
+    {
+        Ok(ledger) => ledger,
+        Err(err) => {
+            eprintln!("agalma: plugin ledger unavailable: {err:?}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let clock: Arc<dyn Fn() -> u64 + Send + Sync> = Arc::new(|| SystemClock.now_ms());
+    let mut host = match PluginHost::assemble_with_ledger(&config, &installations, ledger, clock) {
         Ok(host) => host,
         Err(err) => {
             eprintln!("agalma: plugin host assembly failed: {err:?}");
@@ -1275,20 +1378,15 @@ pub async fn run_plugin_host(args: &PluginHostArgs) -> std::process::ExitCode {
     // (piped/daemon) invocation keeps the headless supervise loop below, and a
     // host with no selected ledger stays fail-closed.
     if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-        let actions =
-            match LedgerHandle::from_transport(&host.state_dir, LedgerTransport::from_env()) {
-                Ok(ledger) => match host.action_driver_with_ledger(&ledger) {
-                    Ok(driver) => Some(driver),
-                    Err(err) => {
-                        eprintln!("agalma: action service unavailable (fail-closed): {err:?}");
-                        None
-                    }
-                },
-                Err(err) => {
-                    eprintln!("agalma: action ledger unavailable (fail-closed): {err:?}");
-                    None
-                }
-            };
+        // Reuse the ledger already attached at assembly; opening another handle
+        // would spawn a second connection to the selected ledger.
+        let actions = match host.action_driver() {
+            Ok(driver) => driver,
+            Err(err) => {
+                eprintln!("agalma: action service unavailable (fail-closed): {err:?}");
+                None
+            }
+        };
         let ui_state_dir = host.state_dir.clone();
         let ui_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         crate::watch::spawn_signal_watch(Arc::clone(&ui_stop));
@@ -1337,27 +1435,30 @@ pub async fn run_plugin_host(args: &PluginHostArgs) -> std::process::ExitCode {
 /// Best-effort: a host-assembly or start failure is reported but never blocks
 /// factory work. No configured roots yields an empty host (a no-op). The
 /// returned host must be held for the loop's lifetime; dropping it shuts the
-/// owned plugin group down. HP.5 replaces the in-memory installation and
-/// desired-state stores with the durable selected-ledger stores.
+/// owned plugin group down. HP.5 attaches the host to the work loop's **selected
+/// ledger** so configured-root auto-install, durable desired state, the registry
+/// checkpoint and report ingestion share the one `LedgerHandle` already opened
+/// by the loop (no second connection, no private-storage fallback).
 pub fn attach_work_plugin_host(
     state_dir: &Path,
     roots: &crate::cli::PluginRootArgs,
+    ledger: &LedgerHandle,
 ) -> Option<PluginHost> {
     let config = PluginHostConfig {
         state_dir: state_dir.to_path_buf(),
         plugin_roots: crate::config::resolve_plugin_roots(roots),
         once: true,
     };
-    let clock: Rc<dyn Clock> = Rc::new(SystemClock);
+    let clock: Arc<dyn Fn() -> u64 + Send + Sync> = Arc::new(|| SystemClock.now_ms());
     let installations = InMemoryInstallations::new();
-    let desired: Box<dyn DesiredStateStore> = Box::new(InMemoryDesiredStateStore::new());
-    let mut host = match PluginHost::assemble(&config, &installations, desired, clock) {
-        Ok(host) => host,
-        Err(err) => {
-            eprintln!("agalma: plugin host assembly failed: {err:?}");
-            return None;
-        }
-    };
+    let mut host =
+        match PluginHost::assemble_with_ledger(&config, &installations, ledger.clone(), clock) {
+            Ok(host) => host,
+            Err(err) => {
+                eprintln!("agalma: plugin host assembly failed: {err:?}");
+                return None;
+            }
+        };
     let mut probe = RpcHealthProbe::new(host.state_dir.clone());
     if let Err(err) = host.start_desired(&mut probe) {
         eprintln!("agalma: plugin host start failed: {err:?}");

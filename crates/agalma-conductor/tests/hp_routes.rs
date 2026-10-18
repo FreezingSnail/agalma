@@ -39,31 +39,39 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use agalma_conductor::components::{derive_plugin_components, HealthView};
 use agalma_conductor::composition::{
     HubServices, InMemoryInstallations, PluginHost, HUB_SOCKET_ENV, PLUGIN_GRANT_ENV,
 };
 use agalma_conductor::config::PluginHostConfig;
+use agalma_conductor::ledger_process::LedgerHandle;
 use agalma_conductor::plugin_manifest::{
-    discover_plugins, package_inventory_digest, PluginRoot, PLUGIN_MANIFEST_FILE,
+    discover_plugins, package_inventory_digest, DiscoveredPackage, PluginRoot, PLUGIN_MANIFEST_FILE,
 };
-use agalma_conductor::plugin_registry::InMemoryDesiredStateStore;
+use agalma_conductor::plugin_registry::{
+    plugin_socket_path, InMemoryDesiredStateStore, LifecycleState,
+};
+use agalma_conductor::plugin_reports::ReportIngestor;
 use agalma_conductor::plugin_router::{
     CapabilityAdapter, CapabilityCallRequest, CapabilityRouter, GrantScope, InMemoryOperationJournal,
     LaunchGrant, RouterService, RpcHealthProbe, RunningStop, StopAdmission, DEFAULT_MAX_DEPTH,
 };
-use agalma_conductor::plugin_supervisor::{Clock, HealthProbe, ManualClock};
+use agalma_conductor::plugin_supervisor::{
+    Clock, HealthProbe, HealthProbeResult, ManualClock,
+};
 use agalma_conductor::stop::{StopControl, StopDecision};
 use agalma_contracts::digest::failure_code;
 use agalma_contracts::task_package::BindingPin;
 use agalma_contracts::{
-    ComponentOperationState, ContractError, FailureCode, PackageArtifactRef, PluginInstallation,
-    PluginManifest,
+    ComponentOperationState, ContractError, FailureCode, HealthState, PackageArtifactRef,
+    PluginHealth, PluginInstallation, PluginManifest, PLUGIN_HEALTH_FORMAT,
 };
 use agalma_ipc::plugin_server::{
     plugin_server_info, register_hub, register_plugin, HubHandler, PluginHandler,
     METHOD_INVOKE_CAPABILITY,
 };
 use agalma_ipc::{ConnectClient, HubCallbackClient, PluginClient, Server, Wire};
+use agalma_ledger::SqliteLedger;
 use agalma_testkit::ScratchDir;
 
 /// Recorded deterministic property-test seed (xorshift64).
@@ -581,7 +589,23 @@ fn spawn_connect_server(
 ) -> PathBuf {
     // Use the production SUN_LEN-safe socket path: a deep evidence scratch root
     // exceeds macOS `sun_path`, so this falls back to a short per-user path.
-    let socket = agalma_conductor::plugin_registry::plugin_socket_path(scratch.path(), name, 0);
+    spawn_connect_server_at(
+        plugin_socket_path(scratch.path(), name, 0),
+        info,
+        configure,
+    )
+}
+
+/// Spawn a Connect server bound at an exact socket path and wait until bound.
+///
+/// Used by the production-host health regression: the child is served at the
+/// supervisor's real launch socket (`plugin_socket_path(state_dir, plugin_id,
+/// epoch)`) rather than the scratch-derived default.
+fn spawn_connect_server_at(
+    socket: PathBuf,
+    info: agalma_ipc::ServerInfo,
+    configure: impl FnOnce(&mut Server) + Send + 'static,
+) -> PathBuf {
     if let Some(parent) = socket.parent() {
         std::fs::create_dir_all(parent).expect("create socket dir");
     }
@@ -595,10 +619,63 @@ fn spawn_connect_server(
     socket
 }
 
-/// A plugin handler with a fixed Describe/Health and a caller-supplied Invoke.
+/// A plugin handler with a fixed Describe and a caller-supplied `plugin.Health`
+/// record + Invoke.
 struct FakePlugin {
     plugin_id: String,
+    health: Value,
     invoke: Box<dyn Fn(Value) -> Result<Value, ContractError> + Send + Sync>,
+}
+
+impl FakePlugin {
+    /// A plugin whose `plugin.Health` returns a well-formed `ready`
+    /// `PluginHealth/v1` for `plugin_id`/`generation`.
+    fn ready(plugin_id: &str, generation: u64) -> Self {
+        FakePlugin {
+            plugin_id: plugin_id.to_string(),
+            health: plugin_health_value(
+                plugin_id,
+                &binding(plugin_id, generation),
+                HealthState::Ready,
+                "serving",
+            ),
+            invoke: Box::new(|_| Ok(Value::Null)),
+        }
+    }
+
+    /// Override the exact `plugin.Health` JSON the peer returns (including a
+    /// deliberately malformed record).
+    fn with_health(mut self, health: Value) -> Self {
+        self.health = health;
+        self
+    }
+
+    /// Override the `plugin.Invoke` behavior.
+    fn with_invoke(
+        mut self,
+        invoke: Box<dyn Fn(Value) -> Result<Value, ContractError> + Send + Sync>,
+    ) -> Self {
+        self.invoke = invoke;
+        self
+    }
+}
+
+/// One serialized `PluginHealth/v1` record.
+fn plugin_health_value(
+    plugin_id: &str,
+    binding: &BindingPin,
+    state: HealthState,
+    detail: &str,
+) -> Value {
+    serde_json::to_value(PluginHealth {
+        format: PLUGIN_HEALTH_FORMAT.to_string(),
+        plugin_id: plugin_id.to_string(),
+        binding: binding.clone(),
+        state,
+        detail: detail.to_string(),
+        checked_at_unix_ms: 0,
+    })
+    .expect("PluginHealth serializes")
 }
 
 impl PluginHandler for FakePlugin {
@@ -613,7 +690,7 @@ impl PluginHandler for FakePlugin {
     }
 
     fn health(&self) -> Result<Value, ContractError> {
-        Ok(json!({ "state": "ready" }))
+        Ok(self.health.clone())
     }
 
     fn snapshot(&self) -> Result<Value, ContractError> {
@@ -645,10 +722,7 @@ async fn connect_protocol_agreement_is_enforced() {
             move |server| {
                 register_plugin(
                     server,
-                    Arc::new(FakePlugin {
-                        plugin_id: plugin_id.clone(),
-                        invoke: Box::new(|_| Ok(Value::Null)),
-                    }),
+                    Arc::new(FakePlugin::ready(&plugin_id, 1)),
                 );
             },
         )
@@ -800,9 +874,8 @@ async fn real_connect_callback_starts_before_completion_within_deadline() {
             move |server| {
                 register_plugin(
                     server,
-                    Arc::new(FakePlugin {
-                        plugin_id: plugin_id.clone(),
-                        invoke: Box::new(move |_req: Value| {
+                    Arc::new(FakePlugin::ready(&plugin_id, 1).with_invoke(Box::new(
+                        move |_req: Value| {
                             events.lock().unwrap().push("plugin-entered");
                             let hub_socket = hub_socket.clone();
                             let _ = blocking_call(move |runtime| {
@@ -815,8 +888,8 @@ async fn real_connect_callback_starts_before_completion_within_deadline() {
                             })??;
                             events.lock().unwrap().push("plugin-exit");
                             Ok(json!({ "done": true }))
-                        }),
-                    }),
+                        },
+                    ))),
                 );
             },
         )
@@ -1032,6 +1105,16 @@ fn seal_production_package(
     root: &Path,
     plugin_id: &str,
 ) -> agalma_conductor::plugin_manifest::DiscoveredPackage {
+    seal_production_package_version(root, plugin_id, "1.2.3")
+}
+
+/// Seal a production plugin package with an explicit `package_version` so a
+/// replacement seals distinct bytes (and therefore a distinct generation).
+fn seal_production_package_version(
+    root: &Path,
+    plugin_id: &str,
+    package_version: &str,
+) -> agalma_conductor::plugin_manifest::DiscoveredPackage {
     let package_dir = root.join("pkg");
     let write = |relative: &str, bytes: &[u8]| {
         let path = package_dir.join(relative);
@@ -1041,7 +1124,12 @@ fn seal_production_package(
     write("objects/config-schema.json", PROD_CONFIG_SCHEMA);
     write("objects/default-config.json", PROD_DEFAULT_CONFIG);
     write("objects/report-schema.json", PROD_REPORT_SCHEMA);
-    write("bin/plugin", b"#!/bin/sh\nexit 0\n");
+    // A real child: announces the identity/protocol/capabilities the supervisor's
+    // READY gate requires, then drains stdin for the process lifetime.
+    let child = format!(
+        "#!/bin/sh\nprintf 'READY {{\"api\":\"plugin\",\"api_version\":1,\"impl\":\"{plugin_id}\",\"impl_version\":\"1.2.3\",\"capabilities\":[\"{CAPABILITY}\"]}}\n'\ncat >/dev/null\n"
+    );
+    write("bin/plugin", child.as_bytes());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1054,7 +1142,7 @@ fn seal_production_package(
     let mut manifest = json!({
         "format": "PluginManifest/v1",
         "plugin_id": plugin_id,
-        "package_version": "1.2.3",
+        "package_version": package_version,
         "package_digest": format!("sha256:{}", "0".repeat(64)),
         "protocol_major": 1,
         "entrypoint": {"path": "bin/plugin", "argv": ["--serve"], "launch_profile": "prod/v1"},
@@ -1291,13 +1379,7 @@ async fn rpc_health_probe_survives_async_host_entry_drop() {
         {
             let ready_id = ready_id.to_string();
             move |server| {
-                register_plugin(
-                    server,
-                    Arc::new(FakePlugin {
-                        plugin_id: ready_id.clone(),
-                        invoke: Box::new(|_| Ok(Value::Null)),
-                    }),
-                );
+                register_plugin(server, Arc::new(FakePlugin::ready(&ready_id, 0)));
             }
         },
     );
@@ -1346,13 +1428,7 @@ async fn property_probe_drop_is_async_safe_and_readiness_is_exact() {
             {
                 let id = id.to_string();
                 move |server| {
-                    register_plugin(
-                        server,
-                        Arc::new(FakePlugin {
-                            plugin_id: id.clone(),
-                            invoke: Box::new(|_| Ok(Value::Null)),
-                        }),
-                    );
+                    register_plugin(server, Arc::new(FakePlugin::ready(&id, 0)));
                 }
             },
         );
@@ -1405,4 +1481,748 @@ async fn property_probe_drop_is_async_safe_and_readiness_is_exact() {
         not_ready_cycles > 0,
         "property exercised at least one not-ready read"
     );
+}
+
+// ---------------------------------------------------------------------------
+// HP.4 reopen: production plugin.Health → host pin → transient read model
+// (`agalma-jmr.4` reopen acceptance)
+// ---------------------------------------------------------------------------
+//
+// These cases drive the **real production path**: `PluginHost::assemble_with_ledger`
+// (auto-install from the configured root, durable desired state, registry
+// checkpoint and the selected-ledger [`ReportIngestor`]), the real supervisor
+// spawn, the real [`RpcHealthProbe`] over Connect, the host-pinned `BindingPin`
+// identity check, the transient `ReportIngestor::record_health` observation and
+// the generic [`derive_plugin_components`] read model the UI renders. The only
+// fixture is the child process: it is served at the supervisor's real launch
+// socket by an in-process Connect peer, exactly as HP.8 proved is possible.
+
+/// Recorded deterministic seed for the health-gate generated cases (replayable).
+const HEALTH_PROPERTY_SEED: u64 = 0x0bd3_5eed_0000_0044;
+/// Recorded case budget for the health-gate generated cases.
+const HEALTH_PROPERTY_CASES: u64 = 48;
+
+/// Assemble the real production plugin host over a selected in-process ledger.
+///
+/// `assemble_with_ledger` auto-installs the configured package, attaches the
+/// durable [`ReportIngestor`] and records the registry generations. Returns the
+/// host and its attached read-model ingestor.
+fn assemble_ledger_host(scratch: &ScratchDir) -> (PluginHost, Arc<Mutex<ReportIngestor>>) {
+    let state_dir = scratch.child("state");
+    fs::create_dir_all(&state_dir).unwrap();
+    let root = scratch.child("root");
+    fs::create_dir_all(&root).unwrap();
+    seal_production_package(&root, PROD_PLUGIN_ID);
+    let config = PluginHostConfig {
+        state_dir: state_dir.clone(),
+        plugin_roots: vec![PluginRoot::required(&root)],
+        once: true,
+    };
+    let ledger = LedgerHandle::in_process(&state_dir).expect("in-process selected ledger");
+    let clock: Arc<dyn Fn() -> u64 + Send + Sync> = Arc::new(|| 1_000_000u64);
+    let host = PluginHost::assemble_with_ledger(&config, &InMemoryInstallations::new(), ledger, clock)
+        .expect("production host assembles over the selected ledger");
+    let reports = host.reports.clone().expect("report ingestor attached");
+    (host, reports)
+}
+
+/// Launch the auto-installed generation through the real supervisor (child
+/// process + READY identity gate) and return the socket it must serve.
+fn spawn_production_child(host: &mut PluginHost) -> PathBuf {
+    let request = host.launch_request(PROD_PLUGIN_ID).expect("launch request");
+    let socket = request.socket.clone();
+    let spawned = host
+        .supervisor
+        .spawn(&mut host.registry, &request)
+        .expect("real child spawns and passes the READY identity gate");
+    assert_eq!(spawned.plugin_id, PROD_PLUGIN_ID);
+    socket
+}
+
+/// Serve `socket` with a real Connect plugin peer whose `plugin.Health` returns
+/// `health` (the child the supervisor's READY gate launched).
+fn serve_child_health(socket: PathBuf, health: Value) {
+    spawn_connect_server_at(
+        socket,
+        plugin_server_info(PROD_PLUGIN_ID, "1.2.3", [CAPABILITY.to_string()]),
+        move |server| {
+            register_plugin(
+                server,
+                Arc::new(FakePlugin::ready(PROD_PLUGIN_ID, 0).with_health(health)),
+            );
+        },
+    );
+}
+
+/// The generic read-model health detail for `PROD_PLUGIN_ID`.
+fn read_model_health(host: &PluginHost) -> Option<HealthView> {
+    let reports = host.reports.as_ref().expect("report ingestor attached");
+    let guard = reports.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    derive_plugin_components(&host.registry, Some(&guard))
+        .into_iter()
+        .find(|component| component.plugin_id == PROD_PLUGIN_ID)
+        .and_then(|component| component.health)
+}
+
+/// One fail-closed production case: spawn the real child, optionally serve a
+/// Connect peer, run the production health gate, and report the outcome plus the
+/// generic read-model health state. The lifecycle must never become `Ready`.
+fn run_health_case(
+    label: &str,
+    served: bool,
+    build: impl FnOnce(&BindingPin) -> Value,
+) -> (bool, String) {
+    let scratch = ScratchDir::new(&format!("hp4-health-{label}"));
+    let (mut host, _reports) = assemble_ledger_host(&scratch);
+    let pinned = host.pinned_binding(PROD_PLUGIN_ID).expect("host pin");
+    let socket = spawn_production_child(&mut host);
+    if served {
+        serve_child_health(socket, build(&pinned));
+    }
+    let mut probe = RpcHealthProbe::new(host.state_dir.clone());
+    let ready = host
+        .confirm_ready_health(PROD_PLUGIN_ID, &mut probe)
+        .unwrap_or_else(|e| panic!("{label}: health gate errored: {e:?}"));
+    assert_ne!(
+        host.registry.entry(PROD_PLUGIN_ID).unwrap().observed,
+        LifecycleState::Ready,
+        "{label}: a non-pinned/failed probe must never mark the plugin Ready"
+    );
+    let state = read_model_health(&host)
+        .unwrap_or_else(|| panic!("{label}: the generic read model shows a health observation"))
+        .state;
+    let _ = host.shutdown();
+    (ready, state)
+}
+
+/// The reopen acceptance: a **running** plugin's real `plugin.Health` result is
+/// identity-checked against the host-pinned `BindingPin` and appears as `ready`
+/// health detail in the generic read model the UI renders.
+#[test]
+fn production_host_records_validated_health_in_generic_read_model() {
+    let scratch = ScratchDir::new("hp4-health-ready");
+    let (mut host, _reports) = assemble_ledger_host(&scratch);
+    let pinned = host.pinned_binding(PROD_PLUGIN_ID).expect("host pin");
+    let socket = spawn_production_child(&mut host);
+    serve_child_health(
+        socket,
+        plugin_health_value(PROD_PLUGIN_ID, &pinned, HealthState::Ready, "serving"),
+    );
+
+    let mut probe = RpcHealthProbe::new(host.state_dir.clone());
+    assert!(
+        host.confirm_ready_health(PROD_PLUGIN_ID, &mut probe)
+            .expect("production health gate runs"),
+        "a validated ready observation confirms readiness"
+    );
+    assert_eq!(
+        host.registry.entry(PROD_PLUGIN_ID).unwrap().observed,
+        LifecycleState::Ready,
+        "readiness is recorded only after the health gate passed"
+    );
+
+    let health = read_model_health(&host).expect("generic read model shows health detail");
+    assert_eq!(health.state, "ready");
+    assert_eq!(health.detail, "serving");
+    assert_eq!(health.observed_at_unix_ms, 1_000_000, "hub observation time");
+
+    let _ = host.shutdown();
+}
+
+/// Fail-closed: malformed, wrong-plugin, wrong-generation, stale-binding and
+/// transport-failed probes never display `ready`; a truthfully degraded peer is
+/// shown `degraded` and is not Ready.
+#[test]
+fn production_host_health_fails_closed_for_mismatched_or_failed_probes() {
+    // Wrong generation: the pin's generation does not match the peer's record.
+    let (ready, state) = run_health_case("wrong-generation", true, |pin| {
+        let mut wrong = pin.clone();
+        wrong.generation += 1;
+        plugin_health_value(PROD_PLUGIN_ID, &wrong, HealthState::Ready, "forged")
+    });
+    assert!(!ready, "wrong-generation probe is never ready");
+    assert_eq!(state, "unavailable");
+
+    // Wrong plugin: the peer names another plugin id.
+    let (ready, state) = run_health_case("wrong-plugin", true, |pin| {
+        plugin_health_value("example.other", pin, HealthState::Ready, "forged")
+    });
+    assert!(!ready, "wrong-plugin probe is never ready");
+    assert_eq!(state, "unavailable");
+
+    // Stale binding: same plugin/generation but a changed configuration digest.
+    let (ready, state) = run_health_case("stale-binding", true, |pin| {
+        let mut stale = pin.clone();
+        stale.config_digest = format!("sha256:{}", "b".repeat(64));
+        plugin_health_value(PROD_PLUGIN_ID, &stale, HealthState::Ready, "forged")
+    });
+    assert!(!ready, "stale-binding probe is never ready");
+    assert_eq!(state, "unavailable");
+
+    // Malformed: not a well-formed `PluginHealth/v1` at all.
+    let (ready, state) = run_health_case("malformed", true, |_pin| json!({ "state": "ready" }));
+    assert!(!ready, "malformed probe is never ready");
+    assert_eq!(state, "unavailable");
+
+    // Transport failure: no peer serves the socket.
+    let (ready, state) = run_health_case("transport", false, |_pin| Value::Null);
+    assert!(!ready, "transport-failed probe is never ready");
+    assert_eq!(state, "unavailable");
+
+    // Correct identity, genuinely degraded: shown truthfully, never ready.
+    let (ready, state) = run_health_case("degraded", true, |pin| {
+        plugin_health_value(PROD_PLUGIN_ID, pin, HealthState::Degraded, "impaired")
+    });
+    assert!(!ready, "a degraded peer is not Ready");
+    assert_eq!(state, "degraded");
+}
+
+/// A scripted probe returning one preset result per call (the generated cases
+/// drive the production host gate without a socket).
+struct ScriptedHealthProbe {
+    result: HealthProbeResult,
+}
+
+impl HealthProbe for ScriptedHealthProbe {
+    fn probe(&mut self, _plugin_id: &str, _epoch: u64) -> Result<bool, ContractError> {
+        Ok(self.result.ready)
+    }
+
+    fn probe_health(
+        &mut self,
+        _plugin_id: &str,
+        _epoch: u64,
+    ) -> Result<HealthProbeResult, ContractError> {
+        Ok(self.result.clone())
+    }
+}
+
+/// Property: over a deterministic, seeded sequence of generated
+/// `plugin.Health` identity/state cases (valid and invalid), the production host
+/// records `ready` in the generic read model **exactly** for a well-formed
+/// `ready` observation of the host-pinned plugin/id/generation/config digest,
+/// and never otherwise.
+#[test]
+fn property_health_gate_records_ready_exactly_for_the_pinned_identity() {
+    let scratch = ScratchDir::new("hp4-health-prop");
+    let (mut host, _reports) = assemble_ledger_host(&scratch);
+    let pinned = host.pinned_binding(PROD_PLUGIN_ID).expect("host pin");
+    let _socket = spawn_production_child(&mut host);
+
+    let identities = [PROD_PLUGIN_ID, "example.other"];
+    let states = [HealthState::Ready, HealthState::Degraded, HealthState::Unavailable];
+    let mut rng = XorShift64::new(HEALTH_PROPERTY_SEED);
+    let mut ready_cases: u64 = 0;
+    let mut not_ready_cases: u64 = 0;
+
+    for case in 0..HEALTH_PROPERTY_CASES {
+        let id = identities[rng.below(identities.len() as u64) as usize];
+        let generation = if rng.below(2) == 0 {
+            pinned.generation
+        } else {
+            pinned.generation + 1
+        };
+        let config_digest = if rng.below(2) == 0 {
+            pinned.config_digest.clone()
+        } else {
+            format!("sha256:{}", "c".repeat(64))
+        };
+        let state = states[rng.below(states.len() as u64) as usize];
+        let malformed = rng.below(5) == 0;
+
+        let mut binding = pinned.clone();
+        binding.generation = generation;
+        binding.config_digest = config_digest;
+        let expected_ready =
+            !malformed && id == PROD_PLUGIN_ID && binding == pinned && state == HealthState::Ready;
+
+        let result = if malformed {
+            // A malformed wire record yields no observation and no readiness.
+            HealthProbeResult {
+                ready: false,
+                observation: None,
+                detail: "malformed plugin.Health".to_string(),
+            }
+        } else {
+            HealthProbeResult {
+                ready: state == HealthState::Ready,
+                observation: Some(PluginHealth {
+                    format: PLUGIN_HEALTH_FORMAT.to_string(),
+                    plugin_id: id.to_string(),
+                    binding,
+                    state,
+                    detail: "probe".to_string(),
+                    checked_at_unix_ms: 0,
+                }),
+                detail: "probe".to_string(),
+            }
+        };
+
+        let mut probe = ScriptedHealthProbe { result };
+        let ready = host
+            .confirm_ready_health(PROD_PLUGIN_ID, &mut probe)
+            .unwrap_or_else(|e| panic!("case {case}: gate errored: {e:?}"));
+        assert_eq!(
+            ready, expected_ready,
+            "case {case}: readiness follows the host-pinned identity exactly"
+        );
+        let health = read_model_health(&host).expect("case: read model shows health");
+        if expected_ready {
+            assert_eq!(health.state, "ready", "case {case}");
+            ready_cases += 1;
+        } else {
+            assert_ne!(
+                health.state, "ready",
+                "case {case}: only the pinned identity/state may ever display ready"
+            );
+            not_ready_cases += 1;
+        }
+    }
+
+    assert!(ready_cases > 0, "generated at least one pinned ready case");
+    assert!(
+        not_ready_cases > 0,
+        "generated at least one refused case"
+    );
+    let _ = host.shutdown();
+}
+
+/// Stale launch epoch: a health observation from a superseded epoch is fenced
+/// and never establishes readiness, while the live epoch's observation applies.
+#[test]
+fn stale_launch_epoch_health_observation_never_marks_ready() {
+    let scratch = ScratchDir::new("hp4-health-epoch");
+    let (mut host, _reports) = assemble_ledger_host(&scratch);
+    let generation = host.pinned_binding(PROD_PLUGIN_ID).expect("pin").generation;
+
+    // Launch (epoch 1) then simulate a restart's new launch epoch (epoch 2).
+    let first_epoch = host
+        .registry
+        .mark_starting(PROD_PLUGIN_ID, generation, 1_000_000)
+        .expect("first launch epoch");
+    host.registry
+        .mark_failed(PROD_PLUGIN_ID, "crashed", 1_000_000)
+        .expect("record crash");
+    let live_epoch = host
+        .registry
+        .mark_starting(PROD_PLUGIN_ID, generation, 2_000_000)
+        .expect("restart launch epoch");
+    assert!(live_epoch > first_epoch, "restart advances the launch epoch");
+
+    // A stale-epoch observation is fenced: it never establishes readiness.
+    assert!(
+        !host
+            .supervisor
+            .observe_health(
+                &mut host.registry,
+                PROD_PLUGIN_ID,
+                first_epoch,
+                true,
+                "stale process reported ready"
+            )
+            .expect("fenced observation applies no state"),
+        "a superseded launch epoch's observation is refused"
+    );
+    assert_ne!(
+        host.registry.entry(PROD_PLUGIN_ID).unwrap().observed,
+        LifecycleState::Ready,
+        "a stale-epoch observation never marks the plugin Ready"
+    );
+
+    // The live epoch's observation applies and marks it Ready.
+    assert!(
+        host.supervisor
+            .observe_health(
+                &mut host.registry,
+                PROD_PLUGIN_ID,
+                live_epoch,
+                true,
+                "live process reported ready"
+            )
+            .expect("live observation applies"),
+        "the live launch epoch's observation applies"
+    );
+    assert_eq!(
+        host.registry.entry(PROD_PLUGIN_ID).unwrap().observed,
+        LifecycleState::Ready
+    );
+}
+
+// ---------------------------------------------------------------------------
+// HP.4 reopen repair (review findings): owned-launch identity pin, staged
+// candidate preservation, and ingestion-refusal fail-closed
+// ---------------------------------------------------------------------------
+
+/// Recorded deterministic seed for the owned-launch health-gate property.
+const HEALTH_LAUNCH_PROPERTY_SEED: u64 = 0x0bd3_5eed_0000_0045;
+
+/// The frozen pin for one installed generation (mirrors the host's construction:
+/// `plugin_binding` in `composition.rs`).
+fn installed_binding(host: &PluginHost, plugin_id: &str, generation: u64) -> BindingPin {
+    let installed = host
+        .registry
+        .entry(plugin_id)
+        .expect("registry entry")
+        .generations
+        .get(&generation)
+        .expect("installed generation");
+    BindingPin {
+        binding_id: plugin_id.to_string(),
+        api: "plugin".to_string(),
+        api_version: 1,
+        implementation_version: installed.package_version.clone(),
+        generation,
+        config_digest: installed.config_digest.clone(),
+    }
+}
+
+/// A valid `PluginInstallation/v1` pin over `package`'s sealed default config.
+fn default_pin(package: &DiscoveredPackage) -> PluginInstallation {
+    let mut installation = PluginInstallation {
+        format: "PluginInstallation/v1".to_string(),
+        plugin_id: package.plugin_id.clone(),
+        package_digest: package.package_digest.clone(),
+        configuration: package.manifest.default_configuration.clone(),
+        launch_profile: package.manifest.entrypoint.launch_profile.clone(),
+        approved_capabilities: package.manifest.requested_capabilities.clone(),
+        installation_digest: String::new(),
+    };
+    installation.installation_digest = installation.recomputed_installation_digest().unwrap();
+    installation
+}
+
+/// Install and stage a newer candidate generation for the running plugin.
+fn stage_new_candidate(host: &mut PluginHost, scratch: &ScratchDir, version: &str) -> u64 {
+    let root = scratch.child(&format!("candidate-{version}"));
+    fs::create_dir_all(&root).unwrap();
+    let package = seal_production_package_version(&root, PROD_PLUGIN_ID, version);
+    let pin = default_pin(&package);
+    let generation = host
+        .registry
+        .install(&host.install_store, &package, &pin)
+        .expect("install candidate generation");
+    host.registry
+        .stage(PROD_PLUGIN_ID, generation)
+        .expect("stage candidate generation");
+    generation
+}
+
+/// Finding 1: a newer candidate staged while the running generation is healthy
+/// must not reject the running generation, must not accept the running
+/// generation claiming the candidate, and must preserve the staged candidate.
+#[test]
+fn health_gate_uses_owned_launch_pin_and_preserves_staged_candidate() {
+    let scratch = ScratchDir::new("hp4-health-staged");
+    let (mut host, _reports) = assemble_ledger_host(&scratch);
+    let g1 = host.pinned_binding(PROD_PLUGIN_ID).expect("pin").generation;
+    let socket = spawn_production_child(&mut host);
+
+    // A newer candidate is staged while g1 runs.
+    let g2 = stage_new_candidate(&mut host, &scratch, "1.2.4");
+    assert_ne!(g2, g1, "a replacement seals a distinct generation");
+    {
+        let entry = host.registry.entry(PROD_PLUGIN_ID).unwrap();
+        assert_eq!(entry.active_generation, None, "g1 activates only after health");
+        assert_eq!(entry.pending_generation, Some(g2), "g2 is the staged candidate");
+    }
+
+    // The running child reports g1's own pin: confirmed against the owned launch,
+    // not the staged candidate.
+    let g1_pin = installed_binding(&host, PROD_PLUGIN_ID, g1);
+    serve_child_health(
+        socket,
+        plugin_health_value(PROD_PLUGIN_ID, &g1_pin, HealthState::Ready, "serving"),
+    );
+    let mut probe = RpcHealthProbe::new(host.state_dir.clone());
+    assert!(
+        host.confirm_ready_health(PROD_PLUGIN_ID, &mut probe)
+            .expect("owned-launch gate runs"),
+        "a healthy running generation is confirmed against its own launch pin"
+    );
+
+    let entry = host.registry.entry(PROD_PLUGIN_ID).unwrap();
+    assert_eq!(entry.active_generation, Some(g1), "the running generation activates");
+    assert_eq!(
+        entry.pending_generation,
+        Some(g2),
+        "the unrelated staged candidate is preserved, not cleared"
+    );
+    assert_eq!(entry.observed, LifecycleState::Ready);
+    let health = read_model_health(&host).expect("health visible");
+    assert_eq!(health.state, "ready");
+    let _ = host.shutdown();
+}
+
+/// Finding 1: the running launch claiming the staged candidate's identity is
+/// refused (never accepted, never activated), and the candidate is preserved.
+#[test]
+fn health_gate_refuses_a_launch_claiming_the_staged_candidate() {
+    let scratch = ScratchDir::new("hp4-health-claim-candidate");
+    let (mut host, _reports) = assemble_ledger_host(&scratch);
+    let socket = spawn_production_child(&mut host);
+    let g2 = stage_new_candidate(&mut host, &scratch, "1.2.4");
+
+    // The owned launch is g1, but the peer claims g2.
+    let g2_pin = installed_binding(&host, PROD_PLUGIN_ID, g2);
+    serve_child_health(
+        socket,
+        plugin_health_value(PROD_PLUGIN_ID, &g2_pin, HealthState::Ready, "forged"),
+    );
+    let mut probe = RpcHealthProbe::new(host.state_dir.clone());
+    assert!(
+        !host
+            .confirm_ready_health(PROD_PLUGIN_ID, &mut probe)
+            .expect("gate runs"),
+        "a peer claiming a generation other than the owned launch is refused"
+    );
+
+    let entry = host.registry.entry(PROD_PLUGIN_ID).unwrap();
+    assert_eq!(entry.active_generation, None, "the running generation is not activated");
+    assert_eq!(entry.pending_generation, Some(g2), "the staged candidate is preserved");
+    assert_ne!(entry.observed, LifecycleState::Ready);
+    assert_eq!(read_model_health(&host).expect("health visible").state, "unavailable");
+    let _ = host.shutdown();
+}
+
+/// Finding 1: a superseded launch epoch is refused before activation (the owned
+/// child is no longer the registry's current launch).
+#[test]
+fn health_gate_refuses_a_superseded_launch_epoch() {
+    let scratch = ScratchDir::new("hp4-health-superseded-epoch");
+    let (mut host, _reports) = assemble_ledger_host(&scratch);
+    let pinned = host.pinned_binding(PROD_PLUGIN_ID).expect("pin");
+    let socket = spawn_production_child(&mut host);
+
+    // The registry advances to a new launch epoch (a restart the supervisor does
+    // not own): the owned child is superseded.
+    host.registry
+        .mark_starting(PROD_PLUGIN_ID, pinned.generation, 2_000_000)
+        .expect("advance the launch epoch");
+
+    serve_child_health(
+        socket,
+        plugin_health_value(PROD_PLUGIN_ID, &pinned, HealthState::Ready, "serving"),
+    );
+    let mut probe = RpcHealthProbe::new(host.state_dir.clone());
+    let err = host
+        .confirm_ready_health(PROD_PLUGIN_ID, &mut probe)
+        .expect_err("a superseded launch epoch refuses before activation");
+    assert_eq!(failure_code(&err), Some(FailureCode::StaleGeneration));
+    assert_ne!(
+        host.registry.entry(PROD_PLUGIN_ID).unwrap().observed,
+        LifecycleState::Ready
+    );
+    let _ = host.shutdown();
+}
+
+/// Finding 2: a refused report ingestion fails the gate before lifecycle
+/// activation — a rejected observation can never establish Ready.
+#[test]
+fn health_gate_refuses_activation_when_ingestion_is_rejected() {
+    let scratch = ScratchDir::new("hp4-health-ingest-reject");
+    let mut host = assemble_production_host(&scratch, Arc::new(Mutex::new(Vec::new())));
+
+    // Attach an ingestor with **no view** for this plugin: `record_health`
+    // refuses the observation (the plugin is not registered in the read model).
+    let ledger = SqliteLedger::open(scratch.path().join("reports.sqlite")).expect("open store");
+    let clock: Arc<dyn Fn() -> u64 + Send + Sync> = Arc::new(|| 1_000_000u64);
+    let ingestor = ReportIngestor::open(
+        Box::new(Mutex::new(ledger)),
+        clock,
+        BTreeMap::new(),
+        std::collections::BTreeSet::new(),
+    )
+    .expect("open ingestor");
+    let reports = Arc::new(Mutex::new(ingestor));
+    host.router.router().install_reports(Arc::clone(&reports));
+    host.reports = Some(reports);
+
+    let pin = host.pinned_binding(PROD_PLUGIN_ID).expect("pin");
+    let socket = spawn_production_child(&mut host);
+    serve_child_health(
+        socket,
+        plugin_health_value(PROD_PLUGIN_ID, &pin, HealthState::Ready, "serving"),
+    );
+
+    let mut probe = RpcHealthProbe::new(host.state_dir.clone());
+    let err = host
+        .confirm_ready_health(PROD_PLUGIN_ID, &mut probe)
+        .expect_err("a refused ingestion refuses activation");
+    assert_eq!(
+        failure_code(&err),
+        Some(FailureCode::InvalidRecord),
+        "the refused ingestion is propagated as a typed failure"
+    );
+    let entry = host.registry.entry(PROD_PLUGIN_ID).unwrap();
+    assert_ne!(
+        entry.observed,
+        LifecycleState::Ready,
+        "a rejected ingestion cannot establish Ready"
+    );
+    assert_eq!(entry.active_generation, None, "no activation on rejected ingestion");
+    let _ = host.shutdown();
+}
+
+/// Property: over a deterministic, seeded sequence of generated identity/state
+/// cases against a running launch `g1` with an unrelated candidate `g2` staged,
+/// the production gate is Ready **exactly** for a well-formed `ready` record of
+/// the owned launch pin `g1`, and the staged candidate `g2` is always preserved.
+#[test]
+fn property_health_gate_is_pinned_to_the_owned_launch_and_preserves_candidates() {
+    let scratch = ScratchDir::new("hp4-health-launch-prop");
+    let (mut host, _reports) = assemble_ledger_host(&scratch);
+    let g1 = host.pinned_binding(PROD_PLUGIN_ID).expect("pin").generation;
+    let _socket = spawn_production_child(&mut host);
+    let g2 = stage_new_candidate(&mut host, &scratch, "1.2.4");
+    let g1_pin = installed_binding(&host, PROD_PLUGIN_ID, g1);
+    let g2_pin = installed_binding(&host, PROD_PLUGIN_ID, g2);
+
+    let states = [HealthState::Ready, HealthState::Degraded, HealthState::Unavailable];
+    let mut rng = XorShift64::new(HEALTH_LAUNCH_PROPERTY_SEED);
+    let mut ready_cases: u64 = 0;
+    let mut refused_cases: u64 = 0;
+
+    for case in 0..HEALTH_PROPERTY_CASES {
+        // Keep the unrelated candidate staged for every case.
+        host.registry.stage(PROD_PLUGIN_ID, g2).expect("re-stage candidate");
+
+        let claims_launch = rng.below(2) == 0;
+        let id = if rng.below(4) == 0 { "example.other" } else { PROD_PLUGIN_ID };
+        let state = states[rng.below(states.len() as u64) as usize];
+        let malformed = rng.below(5) == 0;
+        let binding = if claims_launch { g1_pin.clone() } else { g2_pin.clone() };
+        let expected_ready =
+            !malformed && id == PROD_PLUGIN_ID && claims_launch && state == HealthState::Ready;
+
+        let result = if malformed {
+            HealthProbeResult {
+                ready: false,
+                observation: None,
+                detail: "malformed plugin.Health".to_string(),
+            }
+        } else {
+            HealthProbeResult {
+                ready: state == HealthState::Ready,
+                observation: Some(PluginHealth {
+                    format: PLUGIN_HEALTH_FORMAT.to_string(),
+                    plugin_id: id.to_string(),
+                    binding,
+                    state,
+                    detail: "probe".to_string(),
+                    checked_at_unix_ms: 0,
+                }),
+                detail: "probe".to_string(),
+            }
+        };
+
+        let mut probe = ScriptedHealthProbe { result };
+        let ready = host
+            .confirm_ready_health(PROD_PLUGIN_ID, &mut probe)
+            .unwrap_or_else(|e| panic!("case {case}: gate errored: {e:?}"));
+        assert_eq!(
+            ready, expected_ready,
+            "case {case}: readiness is pinned to the owned launch g1"
+        );
+        let entry = host.registry.entry(PROD_PLUGIN_ID).unwrap();
+        assert_eq!(
+            entry.pending_generation,
+            Some(g2),
+            "case {case}: the unrelated staged candidate is preserved"
+        );
+        if expected_ready {
+            assert_eq!(entry.active_generation, Some(g1), "case {case}");
+            ready_cases += 1;
+        } else {
+            refused_cases += 1;
+        }
+    }
+
+    assert!(ready_cases > 0, "generated at least one owned-launch ready case");
+    assert!(refused_cases > 0, "generated at least one refused case");
+    let _ = host.shutdown();
+}
+
+/// Review defect: readying the running generation `g1` must preserve a staged
+/// candidate `g2` **without revalidating its package bytes**. `PluginRegistry::mark_ready`
+/// is authoritative and touches no package I/O, so a candidate whose sealed
+/// bytes were damaged after staging is preserved rather than discarded (or the
+/// transition failing) after `g1` became Ready.
+#[test]
+fn ready_transition_preserves_a_damaged_staged_candidate_without_revalidation() {
+    let scratch = ScratchDir::new("hp4-health-damaged-candidate");
+    let (mut host, _reports) = assemble_ledger_host(&scratch);
+    let g1 = host.pinned_binding(PROD_PLUGIN_ID).expect("pin").generation;
+    let socket = spawn_production_child(&mut host);
+    let g2 = stage_new_candidate(&mut host, &scratch, "1.2.4");
+
+    // Damage g2's sealed bytes after staging: `stage`/rehash on g2 would now
+    // fail, so no correct repair may depend on re-staging it.
+    let candidate_dir = host
+        .registry
+        .entry(PROD_PLUGIN_ID)
+        .expect("entry")
+        .generations
+        .get(&g2)
+        .expect("installed candidate")
+        .installed_dir
+        .clone();
+    let entrypoint = candidate_dir.join("bin/plugin");
+    let mut damaged = fs::read(&entrypoint).expect("read candidate entrypoint");
+    damaged.extend_from_slice(b"\n# damaged after staging\n");
+    fs::write(&entrypoint, damaged).expect("damage candidate bytes");
+
+    // The running g1 is healthy: confirming it must activate g1 without touching
+    // the damaged candidate.
+    let g1_pin = installed_binding(&host, PROD_PLUGIN_ID, g1);
+    serve_child_health(
+        socket,
+        plugin_health_value(PROD_PLUGIN_ID, &g1_pin, HealthState::Ready, "serving"),
+    );
+    let mut probe = RpcHealthProbe::new(host.state_dir.clone());
+    assert!(
+        host.confirm_ready_health(PROD_PLUGIN_ID, &mut probe)
+            .expect("readying g1 cannot fail on the damaged candidate"),
+        "a healthy running generation is confirmed"
+    );
+
+    let entry = host.registry.entry(PROD_PLUGIN_ID).unwrap();
+    assert_eq!(entry.active_generation, Some(g1), "g1 is active");
+    assert_eq!(entry.observed, LifecycleState::Ready, "g1 is Ready");
+    assert_eq!(
+        entry.pending_generation,
+        Some(g2),
+        "the damaged staged candidate is preserved (no revalidation I/O)"
+    );
+    let _ = host.shutdown();
+}
+
+/// The Ready transition clears only the candidate that is itself becoming
+/// active; a different pending generation is preserved.
+#[test]
+fn ready_transition_clears_only_the_activated_candidate() {
+    let scratch = ScratchDir::new("hp4-registry-ready-pending");
+    let (mut host, _reports) = assemble_ledger_host(&scratch);
+    let g1 = host.pinned_binding(PROD_PLUGIN_ID).expect("pin").generation;
+    let g2 = stage_new_candidate(&mut host, &scratch, "1.2.4");
+
+    // Activating g2 clears its own staged candidate.
+    host.registry
+        .mark_ready(PROD_PLUGIN_ID, g2, 5_000_000)
+        .expect("activate g2");
+    {
+        let entry = host.registry.entry(PROD_PLUGIN_ID).unwrap();
+        assert_eq!(entry.active_generation, Some(g2));
+        assert_eq!(entry.pending_generation, None, "the activated candidate is cleared");
+    }
+
+    // Ready-staging g1 (now the candidate) clears it too, because it is the
+    // generation becoming active.
+    host.registry.stage(PROD_PLUGIN_ID, g1).expect("stage g1");
+    host.registry
+        .mark_ready(PROD_PLUGIN_ID, g1, 6_000_000)
+        .expect("activate g1");
+    let entry = host.registry.entry(PROD_PLUGIN_ID).unwrap();
+    assert_eq!(entry.active_generation, Some(g1));
+    assert_eq!(entry.pending_generation, None, "the activated candidate itself is cleared");
+    let _ = host.shutdown();
 }

@@ -42,14 +42,14 @@ use serde_json::Value;
 use agalma_contracts::digest::{canonical_digest, FailureCode};
 use agalma_contracts::task_package::BindingPin;
 use agalma_contracts::{
-    ComponentOperationState, ComponentReceipt, ContractError, PluginOperationStatus,
-    ReportEnvelope, ReportPublication, PLUGIN_OPERATION_STATUS_FORMAT,
+    ComponentOperationState, ComponentReceipt, ContractError, HealthState, PluginHealth,
+    PluginOperationStatus, ReportEnvelope, ReportPublication, PLUGIN_OPERATION_STATUS_FORMAT,
 };
 use agalma_ipc::plugin_server::{
     self, HubHandler, METHOD_INVOKE_CAPABILITY, METHOD_PUBLISH_REPORT, METHOD_RECONCILE_CAPABILITY,
 };
 
-use crate::plugin_supervisor::HealthProbe;
+use crate::plugin_supervisor::{HealthProbe, HealthProbeResult};
 use crate::stop::{StopControl, StopDecision};
 
 /// Bytes in a per-launch grant token.
@@ -1045,9 +1045,13 @@ pub(crate) fn hex_decode_32(value: &str) -> Result<[u8; GRANT_TOKEN_BYTES], Cont
 /// it connects to the child's deterministic socket
 /// ([`crate::plugin_registry::plugin_socket_path`]), performs the common plugin
 /// protocol handshake (identity + protocol-major agreement) and reads
-/// `plugin.Health`, reporting Ready only for a `ready` observation. Any transport
-/// or handshake failure is "not Ready" (the entry stays `Starting`), never a
-/// silent Ready.
+/// `plugin.Health`. The parsed `PluginHealth/v1` record is returned through
+/// [`HealthProbe::probe_health`] so the production host can identity-check it
+/// against the host-pinned `BindingPin` and record the transient observation.
+///
+/// Fail-closed: a transport, handshake or decode failure returns no observation
+/// (never a fabricated `ready`); a record that is not a well-formed
+/// `PluginHealth/v1` naming the probed plugin is refused the same way.
 pub struct RpcHealthProbe {
     state_dir: PathBuf,
     /// The owned probe runtime. `Option` so [`Drop`] can take it and shut it
@@ -1103,6 +1107,14 @@ impl Drop for RpcHealthProbe {
 
 impl HealthProbe for RpcHealthProbe {
     fn probe(&mut self, plugin_id: &str, epoch: u64) -> Result<bool, ContractError> {
+        Ok(self.probe_health(plugin_id, epoch)?.ready)
+    }
+
+    fn probe_health(
+        &mut self,
+        plugin_id: &str,
+        epoch: u64,
+    ) -> Result<HealthProbeResult, ContractError> {
         let socket = self.socket(plugin_id, epoch);
         let probe = async {
             let mut client = agalma_ipc::PluginClient::connect(&socket)
@@ -1128,14 +1140,52 @@ impl HealthProbe for RpcHealthProbe {
         };
         let health = block_on_runtime(self.runtime(), probe);
         match health {
-            Ok(record) => Ok(
-                record.get("state").and_then(Value::as_str) == Some("ready"),
-            ),
-            // A failed probe means "not Ready yet" (the entry stays Starting);
-            // it never fabricates readiness.
-            Err(_) => Ok(false),
+            // A well-formed observation is returned for the host to pin-check.
+            // Only a `ready` state is readiness; `degraded`/`unavailable` are a
+            // truthful not-ready result (the entry never becomes Ready).
+            Ok(value) => match decode_plugin_health(plugin_id, value) {
+                Ok(observation) => {
+                    let ready = observation.state == HealthState::Ready;
+                    Ok(HealthProbeResult {
+                        ready,
+                        detail: observation.detail.clone(),
+                        observation: Some(observation),
+                    })
+                }
+                Err(detail) => Ok(HealthProbeResult {
+                    ready: false,
+                    observation: None,
+                    detail,
+                }),
+            },
+            // A failed probe means "not Ready" (the entry stays Starting); it
+            // never fabricates readiness and carries no observation.
+            Err(error) => Ok(HealthProbeResult {
+                ready: false,
+                observation: None,
+                detail: error.to_string(),
+            }),
         }
     }
+}
+
+/// Decode a `plugin.Health` reply into a validated `PluginHealth/v1`.
+///
+/// A record that is not a well-formed `PluginHealth/v1` naming exactly
+/// `plugin_id` is refused (fail-closed) and never reported ready.
+fn decode_plugin_health(plugin_id: &str, value: Value) -> Result<PluginHealth, String> {
+    let health: PluginHealth = serde_json::from_value(value)
+        .map_err(|e| format!("malformed plugin.Health record: {e}"))?;
+    health
+        .version_gate()
+        .map_err(|e| format!("plugin.Health version refused: {e:?}"))?;
+    if health.plugin_id != plugin_id {
+        return Err(format!(
+            "plugin.Health identity `{}` does not match probed plugin `{plugin_id}`",
+            health.plugin_id
+        ));
+    }
+    Ok(health)
 }
 
 /// Drive `future` to completion on `runtime`, stepping aside if already inside

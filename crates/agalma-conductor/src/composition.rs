@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use agalma_contracts::harness::StopEvidence;
 use agalma_contracts::{
-    BindingPin, ContractError, ExecutionApi, ExecutionPhase, FailureCode, LedgerApi,
-    PluginInstallation,
+    BindingPin, ContractError, ExecutionApi, ExecutionPhase, FailureCode, HealthState, LedgerApi,
+    PluginHealth, PluginInstallation, PLUGIN_HEALTH_FORMAT,
 };
 use agalma_execution::{Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
 use agalma_process::LocalLauncher;
@@ -40,8 +40,8 @@ use crate::plugin_router::{
     RpcHealthProbe, RunningStop, StopAdmission,
 };
 use crate::plugin_supervisor::{
-    BackoffPolicy, Clock, HealthProbe, LaunchRequest, PluginSupervisor, RestartPlan, Spawned,
-    SystemClock,
+    BackoffPolicy, Clock, HealthProbe, HealthProbeResult, LaunchRequest, PluginSupervisor,
+    RestartPlan, Spawned, SystemClock,
 };
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
 use crate::stop::{BoundStopControl, StopControl};
@@ -895,7 +895,7 @@ impl PluginHost {
             };
             match self.supervisor.spawn(&mut self.registry, &request) {
                 Ok(spawned) => {
-                    if self.supervisor.confirm_ready(&mut self.registry, &id, probe)? {
+                    if self.confirm_ready_health(&id, probe)? {
                         started.push(spawned);
                     }
                 }
@@ -920,7 +920,7 @@ impl PluginHost {
     /// capability) is unchanged. The token travels only through the private
     /// launch channel ([`LaunchRequest::env`]).
     pub fn launch_request(&mut self, plugin_id: &str) -> Result<LaunchRequest, ContractError> {
-        let (generation, installed) = {
+        let (_generation, installed) = {
             let entry = self.registry.entry(plugin_id).ok_or_else(|| {
                 FailureCode::InvalidRecord.failure(plugin_id, "plugin is not registered")
             })?;
@@ -952,14 +952,7 @@ impl PluginHost {
 
         // Rotate the per-launch grants: revoke the prior tokens, then issue
         // fresh tokens for the identical immutable binding scope.
-        let binding = agalma_contracts::BindingPin {
-            binding_id: plugin_id.to_string(),
-            api: "plugin".to_string(),
-            api_version: 1,
-            implementation_version: installed.package_version.clone(),
-            generation,
-            config_digest: installed.config_digest.clone(),
-        };
+        let binding = plugin_binding(plugin_id, &installed);
         let expiry =
             crate::plugin_router::wall_clock_now_ms().saturating_add(LAUNCH_GRANT_TTL_MS);
         if let Some(capability) = installed.approved_capabilities.first().cloned() {
@@ -1026,6 +1019,148 @@ impl PluginHost {
     /// plugin declares a report capability (private launch channel).
     pub fn report_grant(&self, plugin_id: &str) -> Option<&LaunchGrant> {
         self.report_grants.get(plugin_id)
+    }
+
+    /// The host-pinned `BindingPin` for `plugin_id`'s staged candidate or active
+    /// generation (`agalma-jmr.4` reopen).
+    ///
+    /// This is the identity every `plugin.Health` observation is checked
+    /// against: a probe whose plugin id or binding (generation, config digest,
+    /// implementation version) does not match this exact pin is never ready.
+    pub fn pinned_binding(&self, plugin_id: &str) -> Option<BindingPin> {
+        let entry = self.registry.entry(plugin_id)?;
+        let generation = entry.pending_generation.or(entry.active_generation)?;
+        let installed = entry.generations.get(&generation)?;
+        Some(plugin_binding(plugin_id, installed))
+    }
+
+    /// Probe `plugin_id`'s owned child, identity-check the observation against
+    /// the **owned launch's** host pin, record the transient health observation
+    /// in the report read model, and mark the plugin `Ready` only on a validated
+    /// `ready` result.
+    ///
+    /// The pin is derived from the supervisor's owned `(epoch, generation)` —
+    /// never from the registry's candidate pointer — so a healthy running
+    /// generation is not rejected because a newer candidate was staged, and a
+    /// staged candidate is preserved. The owned epoch must still be the
+    /// registry's current launch epoch (a superseded launch is refused).
+    ///
+    /// Fail-closed for the production `plugin.Health` RPC path: a typed
+    /// observation whose plugin id or binding does not match the launch pin is
+    /// refused and recorded as `unavailable`, and the typed probe returns
+    /// `ready == false` (no observation) for a transport, handshake or malformed
+    /// failure, which likewise records `unavailable`. An ingestion refusal is
+    /// propagated **before** any lifecycle activation, so a rejected
+    /// observation can never establish Ready.
+    pub fn confirm_ready_health(
+        &mut self,
+        plugin_id: &str,
+        probe: &mut dyn HealthProbe,
+    ) -> Result<bool, ContractError> {
+        let result = self.supervisor.probe_health(plugin_id, probe)?;
+        let (epoch, generation) = self.supervisor.running_launch(plugin_id)?;
+        let pinned = self.launch_pin(plugin_id, epoch, generation)?;
+        if self.record_probe_health(plugin_id, &pinned, &result)? {
+            self.supervisor.mark_ready(&mut self.registry, plugin_id)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// The identity pin for the **owned launch** `(epoch, generation)`.
+    ///
+    /// Validates that the owned child is the registry's current launch epoch and
+    /// that its generation is installed, then builds the frozen pin. A
+    /// superseded epoch or an uninstalled generation is refused (fail closed)
+    /// rather than being attributed to whatever candidate the registry
+    /// currently points at.
+    fn launch_pin(
+        &self,
+        plugin_id: &str,
+        epoch: u64,
+        generation: u64,
+    ) -> Result<BindingPin, ContractError> {
+        let entry = self.registry.entry(plugin_id).ok_or_else(|| {
+            FailureCode::InvalidRecord.failure(plugin_id, "plugin is not registered")
+        })?;
+        if entry.launch_epoch != epoch {
+            return Err(FailureCode::StaleGeneration.failure(
+                plugin_id,
+                format!(
+                    "owned launch epoch {epoch} is not the registry's current launch epoch {}",
+                    entry.launch_epoch
+                ),
+            ));
+        }
+        let installed = entry.generations.get(&generation).ok_or_else(|| {
+            FailureCode::StaleGeneration.failure(
+                plugin_id,
+                format!("owned launch generation {generation} is not installed for this plugin"),
+            )
+        })?;
+        Ok(plugin_binding(plugin_id, installed))
+    }
+
+    /// Identity-check `result` against the owned launch `pinned` and record the
+    /// transient observation. Returns whether the plugin may be marked Ready.
+    ///
+    /// A **present** observation is trusted only when it is a well-formed
+    /// `PluginHealth/v1` naming exactly the launch plugin id and binding;
+    /// otherwise it is refused and the read model records `unavailable`. When
+    /// the probe carries no observation (a transport/handshake/malformed
+    /// failure), the read model records `unavailable` and the plugin is not
+    /// Ready. A readiness-only legacy bool probe (no wire record — never the
+    /// production RPC path) synthesizes a hub-observed ready detail. A rejected
+    /// ingestion is propagated, so the caller refuses activation.
+    fn record_probe_health(
+        &self,
+        plugin_id: &str,
+        pinned: &BindingPin,
+        result: &HealthProbeResult,
+    ) -> Result<bool, ContractError> {
+        let now = self.supervisor.now_ms();
+        // Only the default legacy bool probe can reach the readiness-only `None`
+        // arm; the typed production `RpcHealthProbe` always returns an
+        // observation on success and `ready == false` for a
+        // transport/handshake/malformed failure, so a malformed production
+        // response never displays ready.
+        let (health, ready) = match &result.observation {
+            Some(observed) if health_observation_matches(observed, plugin_id, pinned) => (
+                observed.clone(),
+                result.ready && observed.state == HealthState::Ready,
+            ),
+            Some(_) => (
+                unavailable_health(plugin_id, pinned, now, probe_failure_detail(result)),
+                false,
+            ),
+            // Legacy readiness-only probe: synthesize a hub-observed ready detail
+            // for the pinned identity (it carries no wire record to check).
+            None if result.ready => (
+                hub_observed_health(
+                    plugin_id,
+                    pinned,
+                    HealthState::Ready,
+                    now,
+                    result.detail.clone(),
+                ),
+                true,
+            ),
+            None => (
+                unavailable_health(plugin_id, pinned, now, probe_failure_detail(result)),
+                false,
+            ),
+        };
+        if let Some(reports) = &self.reports {
+            let mut ingestor = reports
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // A refused ingestion fails the gate before any lifecycle
+            // activation: the plugin is never marked Ready on an observation the
+            // hub could not record.
+            ingestor.record_health(plugin_id, pinned, &health)?;
+        }
+        Ok(ready)
     }
 
     /// Every issued per-launch grant, keyed by plugin id (diagnostics/tests).
@@ -1211,7 +1346,7 @@ impl PluginHost {
             };
             match self.supervisor.spawn(&mut self.registry, &request) {
                 Ok(spawned) => {
-                    if self.supervisor.confirm_ready(&mut self.registry, &id, probe)? {
+                    if self.confirm_ready_health(&id, probe)? {
                         restarted.push(spawned);
                     }
                 }
@@ -1227,6 +1362,85 @@ impl PluginHost {
     pub fn shutdown(&mut self) -> Vec<(String, StopEvidence)> {
         self.supervisor.stop_all()
     }
+}
+
+/// The frozen plugin `BindingPin` for one hub-owned installed generation.
+///
+/// Shared by [`PluginHost::launch_request`] (the per-launch grant scope) and the
+/// health gate, so a probe is always checked against the exact pin the launch
+/// issued.
+fn plugin_binding(
+    plugin_id: &str,
+    installed: &crate::plugin_registry::InstalledGeneration,
+) -> BindingPin {
+    BindingPin {
+        binding_id: plugin_id.to_string(),
+        api: "plugin".to_string(),
+        api_version: 1,
+        implementation_version: installed.package_version.clone(),
+        generation: installed.generation,
+        config_digest: installed.config_digest.clone(),
+    }
+}
+
+/// Whether a probed observation names exactly the host-pinned identity.
+///
+/// Requires a well-formed `PluginHealth/v1` whose plugin id and full binding pin
+/// match; the observed state is checked separately.
+fn health_observation_matches(
+    observed: &PluginHealth,
+    plugin_id: &str,
+    pinned: &BindingPin,
+) -> bool {
+    observed.version_gate().is_ok()
+        && observed.plugin_id == plugin_id
+        && observed.binding == *pinned
+}
+
+/// The fail-closed detail recorded when a probe produced no trustworthy
+/// observation.
+fn probe_failure_detail(result: &HealthProbeResult) -> String {
+    match &result.observation {
+        Some(observed) => format!(
+            "health identity mismatch: peer reported plugin `{}` generation {} (state {:?}); refused",
+            observed.plugin_id, observed.binding.generation, observed.state
+        ),
+        None => format!("health probe failed: {}", result.detail),
+    }
+}
+
+/// A hub-observed health record for the host-pinned identity.
+///
+/// The hub records its own observation time; the identity is always the host
+/// pin, never a peer-supplied value.
+fn hub_observed_health(
+    plugin_id: &str,
+    pinned: &BindingPin,
+    state: HealthState,
+    now_ms: u64,
+    detail: String,
+) -> PluginHealth {
+    PluginHealth {
+        format: PLUGIN_HEALTH_FORMAT.to_string(),
+        plugin_id: plugin_id.to_string(),
+        binding: pinned.clone(),
+        state,
+        detail,
+        checked_at_unix_ms: now_ms,
+    }
+}
+
+/// A hub-observed `unavailable` health record for the host-pinned identity.
+///
+/// This is the hub's fail-closed view of a probe that never produced a
+/// trustworthy `ready`, never a fabricated peer record.
+fn unavailable_health(
+    plugin_id: &str,
+    pinned: &BindingPin,
+    now_ms: u64,
+    detail: String,
+) -> PluginHealth {
+    hub_observed_health(plugin_id, pinned, HealthState::Unavailable, now_ms, detail)
 }
 
 /// Verify an approved `PluginInstallation/v1` pins this package.

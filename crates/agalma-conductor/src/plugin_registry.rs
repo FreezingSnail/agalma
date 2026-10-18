@@ -974,7 +974,11 @@ impl PluginRegistry {
     /// Mark readiness after the supervisor's READY/Describe/Health gates pass.
     ///
     /// This is the pending-to-active transition: the Ready candidate becomes the
-    /// active generation and any staged candidate is cleared.
+    /// active generation and its own staged candidate is cleared. A **different**
+    /// pending generation — a newer candidate staged while this generation was
+    /// running — is preserved, so readying the running generation neither
+    /// discards the newer candidate nor revalidates its package bytes
+    /// (`agalma-jmr.4` repair).
     pub fn mark_ready(
         &mut self,
         plugin_id: &str,
@@ -984,7 +988,9 @@ impl PluginRegistry {
         let entry = self.require(plugin_id)?;
         entry.observed = LifecycleState::Ready;
         entry.active_generation = Some(generation);
-        entry.pending_generation = None;
+        if entry.pending_generation == Some(generation) {
+            entry.pending_generation = None;
+        }
         entry.observed_at_ms = now_ms;
         entry.last_error = None;
         Ok(())

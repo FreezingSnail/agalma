@@ -16,7 +16,10 @@
 //! * Readiness is **health-gated**: an identity-compatible `READY` moves the
 //!   entry to `Starting`; only a successful [`HealthProbe`] transitions it to
 //!   `Ready`. The real RPC probe is an HP.4 seam; the injected fake proves the
-//!   gate deterministically.
+//!   gate deterministically. [`HealthProbe::probe_health`] additionally hands
+//!   the host the peer's raw `PluginHealth/v1` observation so the production
+//!   host can identity-check it against the host-pinned `BindingPin` and record
+//!   it transiently (the reopen acceptance for `agalma-jmr.4`).
 //! * Time is injected through [`Clock`] so backoff and the drain deadline are
 //!   testable without sleeping; the launch epoch is allocated by the registry
 //!   and fences stale observations.
@@ -34,7 +37,9 @@ use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use agalma_contracts::harness::StopEvidence;
-use agalma_contracts::{ContractError, FailureCode, PackageArtifactRef, PluginManifest};
+use agalma_contracts::{
+    ContractError, FailureCode, PackageArtifactRef, PluginHealth, PluginManifest,
+};
 use agalma_ipc::{CommandSpec, ServerInfo};
 
 use crate::harness_process::{spawn_supervised, stop_supervised};
@@ -135,6 +140,43 @@ impl BackoffPolicy {
 pub trait HealthProbe {
     /// `Ok(true)` when the child behind `epoch` is healthy.
     fn probe(&mut self, plugin_id: &str, epoch: u64) -> Result<bool, ContractError>;
+
+    /// Probe `plugin_id`/`epoch` and return the peer's **raw** `plugin.Health`
+    /// observation alongside readiness.
+    ///
+    /// The default delegates to [`Self::probe`], so a scripted test double
+    /// carries readiness but no wire record. The production
+    /// [`crate::plugin_router::RpcHealthProbe`] overrides this to hand the parsed
+    /// `PluginHealth/v1` to the host, which identity-checks it against the
+    /// host-pinned `BindingPin` before the transient read model records it.
+    fn probe_health(
+        &mut self,
+        plugin_id: &str,
+        epoch: u64,
+    ) -> Result<HealthProbeResult, ContractError> {
+        let ready = self.probe(plugin_id, epoch)?;
+        Ok(HealthProbeResult {
+            ready,
+            observation: None,
+            detail: if ready { "ready".to_string() } else { "not ready".to_string() },
+        })
+    }
+}
+
+/// One health probe result: readiness plus the peer's raw `plugin.Health`.
+///
+/// `observation` is `Some` only when the peer returned a well-formed
+/// `PluginHealth/v1` record. A transport, handshake or decode failure leaves it
+/// `None`, so the host records the fail-closed `unavailable` state instead of a
+/// fabricated `ready`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HealthProbeResult {
+    /// `true` only when the peer reported a well-formed `ready` observation.
+    pub ready: bool,
+    /// The parsed `PluginHealth/v1` record, when the peer returned one.
+    pub observation: Option<PluginHealth>,
+    /// Detail for a not-ready result (transport, handshake, malformed refusal).
+    pub detail: String,
 }
 
 /// Everything needed to launch one installed plugin generation.
@@ -390,20 +432,60 @@ impl PluginSupervisor {
         plugin_id: &str,
         probe: &mut dyn HealthProbe,
     ) -> Result<bool, ContractError> {
-        let (epoch, generation) = {
-            let child = self.running.get(plugin_id).ok_or_else(|| {
-                FailureCode::InvalidRecord.failure(plugin_id, "no child is owned for this plugin")
-            })?;
-            (child.epoch, child.generation)
-        };
-        if !probe.probe(plugin_id, epoch)? {
+        let result = self.probe_health(plugin_id, probe)?;
+        if !result.ready {
             return Ok(false);
         }
+        self.mark_ready(registry, plugin_id)?;
+        Ok(true)
+    }
+
+    /// The owned child's launch `(epoch, generation)`.
+    ///
+    /// The epoch is the supervisor's launch-epoch fence: it is reissued on every
+    /// restart while the logical generation is preserved.
+    pub fn running_launch(&self, plugin_id: &str) -> Result<(u64, u64), ContractError> {
+        let child = self.running.get(plugin_id).ok_or_else(|| {
+            FailureCode::InvalidRecord.failure(plugin_id, "no child is owned for this plugin")
+        })?;
+        Ok((child.epoch, child.generation))
+    }
+
+    /// Probe the owned child's health for its **current** launch epoch, without
+    /// changing lifecycle.
+    ///
+    /// The caller (the production host) identity-checks the returned observation
+    /// against the host-pinned `BindingPin` before treating it as ready.
+    pub fn probe_health(
+        &mut self,
+        plugin_id: &str,
+        probe: &mut dyn HealthProbe,
+    ) -> Result<HealthProbeResult, ContractError> {
+        let (epoch, _generation) = self.running_launch(plugin_id)?;
+        probe.probe_health(plugin_id, epoch)
+    }
+
+    /// Mark the owned child's pinned generation `Ready` and clear its backoff.
+    ///
+    /// The caller must already have health-validated the child against its host
+    /// pin; this method only applies the lifecycle transition. A superseded
+    /// epoch never reaches here because [`Self::running_launch`] reads the
+    /// currently owned child.
+    ///
+    /// `PluginRegistry::mark_ready` itself preserves an unrelated staged
+    /// candidate (a newer generation staged while this one runs), so no package
+    /// revalidation or re-staging is needed here.
+    pub fn mark_ready(
+        &mut self,
+        registry: &mut PluginRegistry,
+        plugin_id: &str,
+    ) -> Result<(), ContractError> {
+        let (_epoch, generation) = self.running_launch(plugin_id)?;
         let now = self.clock.now_ms();
         registry.mark_ready(plugin_id, generation, now)?;
         self.attempts.remove(plugin_id);
         self.restart_due.remove(plugin_id);
-        Ok(true)
+        Ok(())
     }
 
     /// Record an explicit health observation for `epoch` through the registry.

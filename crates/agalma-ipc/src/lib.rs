@@ -36,6 +36,7 @@ pub mod error;
 pub mod execution_client;
 pub mod execution_handler;
 pub mod execution_server;
+pub mod factory_client;
 pub mod frame;
 pub mod harness_client;
 pub mod harness_server;
@@ -86,6 +87,11 @@ pub use connect::{serve_wire, ConnectClient, IpcDispatcher, Wire, PARENT_DEATH_S
 pub use control_plane_client::{
     ControlPlaneReadClient, CONNECT_TIMEOUT, CONTROL_PLANE_READ_API,
 };
+pub use factory_client::{
+    capability_bindings_from_env, parse_capability_bindings, register_factory_routes,
+    CapabilityBinding, CapabilityBindings, FactoryRuntimeClient, SharedFactoryClient,
+    BINDING_GRANT_HEX_CHARS, BINDING_SOCKET_MAX_BYTES, PLUGIN_CAPABILITY_BINDINGS_ENV,
+};
 pub use envelope::{Request, Response, ResponseError, PROTOCOL_VERSION};
 pub use error::{IpcError, CODE_PROTOCOL, CODE_UNAVAILABLE};
 pub use execution_client::{
@@ -124,9 +130,10 @@ pub use taskqueue_client::{
 };
 pub use taskqueue_server::{register_taskqueue, TASKQUEUE_METHODS};
 pub use web_http::{
-    Asset, AssetInventory, ListenerConfig, LoopbackListener, Router, WebApp, WebAppBuilder,
-    WebHandler, WebHttpError, WebRequest, WebResponse, DEFAULT_HOST, MAX_OUTSTANDING_READS,
-    READ_DEADLINE,
+    decode_query_value, Asset, AssetInventory, ControlAuthority, ListenerConfig, LoopbackListener,
+    OperatorSession, RevocableControl, Router, WebApp, WebAppBuilder, WebHandler, WebHttpError,
+    WebRequest, WebResponse, CSRF_HEADER, DEFAULT_HOST, MAX_OUTSTANDING_READS, OPERATOR_COOKIE,
+    POST_BODY_MAX_BYTES, READ_DEADLINE,
 };
 pub use workspace_client::{
     CheckoutCall, IntegrateOriginParams, IntegrateParams, OriginReceiptParams, PrepareParams,

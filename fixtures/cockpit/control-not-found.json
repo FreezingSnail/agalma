@@ -1,0 +1,6 @@
+{
+  "format": "FactoryControl/v1",
+  "result": "not_found",
+  "action_id": "ui-fixture",
+  "observed_stop": { "stopped": true, "reason": "operator pause", "observed_at_unix_ms": "1791820805002" }
+}

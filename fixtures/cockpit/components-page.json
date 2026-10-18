@@ -1,0 +1,53 @@
+{
+  "metadata": {
+    "format": "ControlPlaneRead/v1",
+    "collected_at_unix_ms": 1791820800001,
+    "registry_revision": "9007199254740993",
+    "report_watermark": "9007199254740995",
+    "sources": [
+      { "source": "registry", "state": "available", "detail": "", "observed_at_unix_ms": 1791820800001 },
+      { "source": "reports", "state": "empty", "detail": "no durable reports yet", "observed_at_unix_ms": 1791820800001 }
+    ]
+  },
+  "entries": [
+    {
+      "plugin_id": "example.unfamiliar-reporter",
+      "name": "Unfamiliar Reporter",
+      "binding": {
+        "binding_id": "fixture.reporter",
+        "api": "plugin",
+        "api_version": 1,
+        "implementation_version": "fixture-1",
+        "generation": 9007199254740993,
+        "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "generation": "9007199254740993",
+      "health": "ready",
+      "freshness": "fresh",
+      "completeness": "Complete",
+      "available": true,
+      "views": [
+        { "view_id": "status", "schema_namespace": "example.reporter.status", "kind": "Status", "title": "Status", "schema_version": 1, "fields": ["ready"] }
+      ]
+    },
+    {
+      "plugin_id": "example.stopped-writer",
+      "name": "Stopped Writer",
+      "binding": {
+        "binding_id": "fixture.stopped",
+        "api": "plugin",
+        "api_version": 1,
+        "implementation_version": "fixture-2",
+        "generation": 2,
+        "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "generation": "2",
+      "health": "unavailable",
+      "freshness": "stale",
+      "completeness": "Unknown",
+      "available": false,
+      "views": []
+    }
+  ],
+  "next_cursor": "cp1:more"
+}

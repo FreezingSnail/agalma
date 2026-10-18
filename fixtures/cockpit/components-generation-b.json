@@ -1,0 +1,32 @@
+{
+  "metadata": {
+    "format": "ControlPlaneRead/v1",
+    "collected_at_unix_ms": 1791820800011,
+    "registry_revision": "18446744073709551615",
+    "report_watermark": null,
+    "sources": [
+      { "source": "registry", "state": "available", "detail": "", "observed_at_unix_ms": 1791820800011 }
+    ]
+  },
+  "entries": [
+    {
+      "plugin_id": "example.generation-swap",
+      "name": "Generation B",
+      "binding": {
+        "binding_id": "fixture.generation",
+        "api": "plugin",
+        "api_version": 1,
+        "implementation_version": "gen-b",
+        "generation": 200,
+        "config_digest": "sha256:6c1c3a1e51c1b0d9a1b4d0c0f5d4e2a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3"
+      },
+      "generation": "200",
+      "health": "ready",
+      "freshness": "fresh",
+      "completeness": "Complete",
+      "available": true,
+      "views": []
+    }
+  ],
+  "next_cursor": null
+}

@@ -1,0 +1,44 @@
+{
+  "metadata": {
+    "format": "ControlPlaneRead/v1",
+    "collected_at_unix_ms": 1791820800999,
+    "registry_revision": "9007199254740993",
+    "report_watermark": null,
+    "sources": [
+      { "source": "ledger", "state": "unreadable", "detail": "ledger busy", "observed_at_unix_ms": 1791820800999 },
+      { "source": "registry", "state": "missing", "detail": "no registry file", "observed_at_unix_ms": 1791820800999 },
+      { "source": "reports", "state": "empty", "detail": "", "observed_at_unix_ms": 1791820800999 },
+      { "source": "budget", "state": "unknown", "detail": "", "observed_at_unix_ms": 1791820800999 }
+    ]
+  },
+  "factory": { "stopped": false, "reason": null, "observed_at_unix_ms": 1791820800999 },
+  "executions": [
+    {
+      "execution_id": "exec:tick-9007199254740993:1",
+      "task_id": "tick-9007199254740993",
+      "generation": "9007199254740993",
+      "phase": "Build",
+      "state": "Running",
+      "attempt": "1",
+      "revision": "9007199254740995",
+      "updated_at_unix_ms": 1791820800999
+    }
+  ],
+  "economics": {
+    "completeness": "Complete",
+    "usage": "9007199254740993",
+    "usage_unit": "tokens",
+    "cost": "0.000000000000000001",
+    "allowance": "18446744073709551615.99",
+    "cost_unit": "usd",
+    "observed_at_unix_ms": 1791820800999
+  },
+  "timeline": [
+    {
+      "at_unix_ms": 1791820800999,
+      "kind": "note",
+      "title": "<script>alert('injected')</script>",
+      "detail": "harmless text: <img src=x onerror=alert(1)> & \"quotes\""
+    }
+  ]
+}

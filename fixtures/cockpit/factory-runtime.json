@@ -1,0 +1,28 @@
+{
+  "format": "FactoryRuntime/v1",
+  "repository_id": "example-repo",
+  "state_id": "example-state",
+  "runtime_instance_id": "rt-fixture-1",
+  "observed_at_unix_ms": "1791820803000",
+  "status": "Running",
+  "reason": null,
+  "sources": [
+    { "source": "runtime", "state": "available", "detail": null, "observed_at_unix_ms": "1791820803000" },
+    { "source": "worker", "state": "available", "detail": null, "observed_at_unix_ms": "1791820803000" },
+    { "source": "queue", "state": "available", "detail": null, "observed_at_unix_ms": "1791820803000" },
+    { "source": "execution", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820803000" },
+    { "source": "stop", "state": "missing", "detail": "no stop latch record", "observed_at_unix_ms": null }
+  ],
+  "stop": null,
+  "current_execution": null,
+  "eligible": {
+    "entries": [
+      { "task_id": "alpha", "title": "Alpha task", "priority": "normal", "family": "feature" },
+      { "task_id": "beta", "title": "Beta task", "priority": "high", "family": "bug" }
+    ],
+    "revision": "rev-7",
+    "total": "2",
+    "next_cursor": null
+  },
+  "permissions": { "pause": true, "resume": true }
+}

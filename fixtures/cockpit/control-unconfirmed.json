@@ -1,0 +1,10 @@
+{
+  "format": "FactoryControl/v1",
+  "result": "unconfirmed",
+  "action_id": "ui-fixture",
+  "request": { "format": "FactoryControl/v1", "operation": "pause", "action_id": "ui-fixture", "confirmation": null },
+  "request_digest": "sha256:d43c81acdc6009c1b97dcaa415a011ba0cee744a36b8f88748e63570372a40e2",
+  "code": "EffectUnconfirmed",
+  "reason": "durable intent recorded; effect not confirmed",
+  "observed_stop": null
+}

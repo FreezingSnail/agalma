@@ -154,6 +154,20 @@ name = "agalma-testkit"
 version = "0.1.0"
 
 [[package]]
+name = "agalma-web-dashboard"
+version = "0.1.0"
+dependencies = [
+ "agalma-conductor",
+ "agalma-contracts",
+ "agalma-ipc",
+ "agalma-testkit",
+ "http",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "agalma-workspace"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agalma dashboard package</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: Canvas;
+        color: CanvasText;
+      }
+      main {
+        max-width: 42rem;
+        padding: 2rem;
+        line-height: 1.5;
+      }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <main id="agalma-dashboard-health">
+      <h1>Agalma dashboard package</h1>
+      <p>
+        The independent <code>agalma-web-dashboard</code> process is installed
+        and serving its compiled assets. Its live listener, hub-read binding and
+        loopback URL are reported through the common plugin
+        <code>plugin.Health</code> observation, not this static page.
+      </p>
+      <p>
+        Browser pages, registry navigation and refresh behavior are delivered by
+        the later cockpit tasks; this page is the package-level health
+        foundation.
+      </p>
+      <p>
+        Reads are observational. This process opens no ledger database, exposes
+        no mutation route, and requests no factory control authority.
+      </p>
+    </main>
+  </body>
+</html>

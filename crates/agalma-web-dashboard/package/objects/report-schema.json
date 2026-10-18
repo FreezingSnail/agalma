@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ReportSchema/algalma.web-dashboard.status/v1",
+  "title": "DashboardStatus/v1",
+  "description": "Declared self-status report namespace. WEB.4 does not publish reports; the frozen PluginManifest/v1 requires at least one schema declaration.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "listener": {
+      "type": "string",
+      "enum": ["ready", "unavailable"]
+    },
+    "binding": {
+      "type": "string",
+      "enum": ["ready", "unavailable"]
+    },
+    "url": {
+      "type": ["string", "null"]
+    }
+  }
+}

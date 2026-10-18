@@ -1,0 +1,61 @@
+{
+  "format": "PluginManifest/v1",
+  "plugin_id": "agalma.web-dashboard",
+  "package_version": "0.1.0",
+  "package_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "protocol_major": 1,
+  "entrypoint": {
+    "path": "bin/agalma-web-dashboard",
+    "argv": [],
+    "launch_profile": "dashboard-read-only/v1"
+  },
+  "domain_apis": [],
+  "requested_capabilities": [
+    "control-plane.read/v1"
+  ],
+  "required_services": [],
+  "optional_services": [],
+  "config_schema": {
+    "path": "objects/config-schema.json",
+    "digest": "sha256:7696efd9fdf3a99220b465bc59ea5da9984d9d02713e08541515e34dd59d6d3c",
+    "bytes": 907,
+    "media_type": "application/json"
+  },
+  "default_configuration": {
+    "path": "objects/default-config.json",
+    "digest": "sha256:4cb2277f8291867c15f991fedce8a6e6d3499a0148f0bec7fef7b31ecc3f1d34",
+    "bytes": 59,
+    "media_type": "application/json"
+  },
+  "report_schemas": [
+    {
+      "namespace": "agalma.web-dashboard.status",
+      "version": 1,
+      "schema": {
+        "path": "objects/report-schema.json",
+        "digest": "sha256:9003ffd8d28dfebe46dce0eb4c88232fa5f420d6613c2ea7280abd87fc4e97da",
+        "bytes": 619,
+        "media_type": "application/json"
+      }
+    }
+  ],
+  "views": [
+    {
+      "view_id": "status",
+      "schema_namespace": "agalma.web-dashboard.status",
+      "kind": "Status",
+      "title": "Dashboard readiness",
+      "schema_version": 1,
+      "fields": [
+        "listener",
+        "binding",
+        "url"
+      ]
+    }
+  ],
+  "actions": [],
+  "state_compatibility": {
+    "reads": [],
+    "writes": "web-dashboard-state/v1"
+  }
+}

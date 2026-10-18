@@ -1,0 +1,31 @@
+[package]
+name = "agalma-web-dashboard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Independently installed local browser dashboard plugin (WEB.4 foundation)."
+publish = false
+
+[[bin]]
+name = "agalma-web-dashboard"
+path = "src/main.rs"
+
+[lib]
+name = "agalma_web_dashboard"
+path = "src/lib.rs"
+
+[dependencies]
+agalma-contracts = { path = "../agalma-contracts" }
+agalma-ipc = { path = "../agalma-ipc" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+# Status codes for the WEB.3 transport response API. `http` is an already
+# locked workspace dependency; no new download or version change.
+http = { workspace = true }
+
+[dev-dependencies]
+# Test-only: production package discovery/digest and the HP supervisor. The
+# executable and library above never import the conductor.
+agalma-conductor = { path = "../agalma-conductor" }
+agalma-testkit = { path = "../agalma-testkit" }

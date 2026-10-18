@@ -64,7 +64,8 @@ use agalma_contracts::digest::failure_code;
 use agalma_contracts::task_package::BindingPin;
 use agalma_contracts::{
     ComponentOperationState, ContractError, FailureCode, HealthState, PackageArtifactRef,
-    PluginHealth, PluginInstallation, PluginManifest, PLUGIN_HEALTH_FORMAT,
+    PluginHealth, PluginInstallation, PluginManifest, FACTORY_CONTROL_CAPABILITY,
+    FACTORY_READ_CAPABILITY, PLUGIN_HEALTH_FORMAT,
 };
 use agalma_ipc::plugin_server::{
     plugin_server_info, register_hub, register_plugin, HubHandler, PluginHandler,
@@ -2226,3 +2227,88 @@ fn ready_transition_clears_only_the_activated_candidate() {
     assert_eq!(entry.pending_generation, None, "the activated candidate itself is cleared");
     let _ = host.shutdown();
 }
+
+/// WEB.11 (`agalma-rwn.11`): `factory.read/v1` and `factory.control/v1` are
+/// validated and invoked directly under a stopped factory, while an ordinary
+/// effect capability keeps the fail-closed stop refusal and is neither
+/// journaled nor invoked.
+#[test]
+fn factory_capabilities_are_direct_and_stop_exempt() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let read_grant = invoke_grant(PLUGIN_A, 1, FACTORY_READ_CAPABILITY, FAR_FUTURE_MS);
+    let control_grant = invoke_grant(PLUGIN_A, 1, FACTORY_CONTROL_CAPABILITY, FAR_FUTURE_MS);
+    let normal_grant = invoke_grant(PLUGIN_A, 1, CAPABILITY, FAR_FUTURE_MS);
+
+    let mut router = CapabilityRouter::new(
+        Box::new(InMemoryOperationJournal::new()),
+        Arc::new(FakeStop(StopDecision::Stopped("latch".to_string()))) as Arc<dyn StopAdmission>,
+    );
+    for capability in [FACTORY_READ_CAPABILITY, FACTORY_CONTROL_CAPABILITY, CAPABILITY] {
+        router.register_adapter(RecordingAdapter {
+            capability: capability.to_string(),
+            calls: calls.clone(),
+            response: json!({ "ok": true }),
+        });
+    }
+    router.install_grant(&read_grant);
+    router.install_grant(&control_grant);
+    router.install_grant(&normal_grant);
+    let service = RouterService::new(router);
+
+    let read_call = call(
+        &read_grant,
+        PLUGIN_A,
+        1,
+        FACTORY_READ_CAPABILITY,
+        "fd-read",
+        json!({ "format": "FactoryRuntime/v1", "operation": "snapshot" }),
+        FAR_FUTURE_MS,
+    );
+    service
+        .invoke_capability(serde_json::to_value(&read_call).unwrap())
+        .expect("factory.read is admitted while the factory is stopped");
+
+    let control_call = call(
+        &control_grant,
+        PLUGIN_A,
+        1,
+        FACTORY_CONTROL_CAPABILITY,
+        "fd-control",
+        json!({
+            "format": "FactoryControl/v1",
+            "operation": "pause",
+            "action_id": "op-fd-1",
+            "confirmation": null,
+        }),
+        FAR_FUTURE_MS,
+    );
+    service
+        .invoke_capability(serde_json::to_value(&control_call).unwrap())
+        .expect("factory.control is admitted while the factory is stopped");
+
+    let normal_call = call(
+        &normal_grant,
+        PLUGIN_A,
+        1,
+        CAPABILITY,
+        "fd-normal",
+        json!({ "k": 1 }),
+        FAR_FUTURE_MS,
+    );
+    let error = service
+        .invoke_capability(serde_json::to_value(&normal_call).unwrap())
+        .expect_err("an ordinary effect is still refused while stopped");
+    assert_eq!(failure_code(&error), Some(FailureCode::Stopped));
+
+    assert_eq!(
+        call_count(&calls),
+        2,
+        "only the direct factory capabilities were invoked"
+    );
+    assert_eq!(
+        service.router().journaled_operations(),
+        0,
+        "the factory direct path never touches the effect journal"
+    );
+}
+

@@ -42,8 +42,9 @@ use serde_json::Value;
 use agalma_contracts::digest::{canonical_digest, FailureCode};
 use agalma_contracts::task_package::BindingPin;
 use agalma_contracts::{
-    ComponentOperationState, ComponentReceipt, ContractError, HealthState, PluginHealth,
-    PluginOperationStatus, ReportEnvelope, ReportPublication, CONTROL_PLANE_READ_CAPABILITY,
+    ComponentOperationState, ComponentReceipt, ContractError, FactoryControlRequest, HealthState,
+    PluginHealth, PluginOperationStatus, ReportEnvelope, ReportPublication,
+    CONTROL_PLANE_READ_CAPABILITY, FACTORY_CONTROL_CAPABILITY, FACTORY_READ_CAPABILITY,
     PLUGIN_OPERATION_STATUS_FORMAT,
 };
 use agalma_ipc::plugin_server::{
@@ -668,6 +669,27 @@ impl CapabilityRouter {
         capability == CONTROL_PLANE_READ_CAPABILITY
     }
 
+    /// Whether `capability` is a factory capability admitted under the narrow
+    /// WEB.11 stop exception (`agalma-rwn.11`).
+    ///
+    /// This covers the read-only runtime snapshot/lookup (`factory.read/v1`) and
+    /// pause/resume (`factory.control/v1`). It does **not** disable ordinary
+    /// effect stop policy: factory capabilities are still authenticated
+    /// (grant/method/pinned generation/capability/deadline) and the adapter
+    /// itself enforces the exclusive-owner/live-binding authority before any
+    /// effect.
+    pub fn is_factory_capability(capability: &str) -> bool {
+        capability == FACTORY_READ_CAPABILITY || capability == FACTORY_CONTROL_CAPABILITY
+    }
+
+    /// Whether `capability` is validated and invoked directly, without the
+    /// effect journal or ordinary stop admission: observation-only reads plus
+    /// the narrow factory exception. Every other capability keeps the
+    /// stop/journal/status path.
+    pub fn is_direct_capability(capability: &str) -> bool {
+        Self::is_read_only_capability(capability) || Self::is_factory_capability(capability)
+    }
+
     /// Authenticate and validate one capability request without an effect.
     ///
     /// `admit_effects` selects whether stop admission applies: effect requests
@@ -807,6 +829,40 @@ impl CapabilityRouter {
             ));
         }
         adapter.invoke(&scope, &call.input)
+    }
+
+    /// Validate a direct-invocation capability without journaling or stop
+    /// admission (observation reads and the narrow factory exception).
+    pub fn prepare_direct(
+        &self,
+        call: &CapabilityCallRequest,
+    ) -> Result<(GrantScope, Arc<Mutex<dyn CapabilityAdapter>>), ContractError> {
+        if !Self::is_direct_capability(&call.capability) {
+            return Err(FailureCode::MissingCapability.failure(
+                &call.capability,
+                "capability is not a direct-invocation capability",
+            ));
+        }
+        self.validate_call(call, false)
+    }
+
+    /// Execute a direct-invocation capability, enforcing the caller deadline
+    /// after the adapter lock is acquired. Used by the RPC path and by tests;
+    /// the router's RPC entry releases the router lock before this runs.
+    pub fn invoke_direct(&mut self, call: &CapabilityCallRequest) -> Result<Value, ContractError> {
+        let (scope, adapter) = self.prepare_direct(call)?;
+        let mut adapter = adapter.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = (self.now)();
+        if call.deadline_unix_ms <= now {
+            return Err(FailureCode::DeadlineExceeded.failure(
+                &scope.plugin_id,
+                format!(
+                    "direct-invocation deadline {} passed while queued (now {now})",
+                    call.deadline_unix_ms
+                ),
+            ));
+        }
+        adapter.invoke_with_deadline(&scope, &call.input, call.deadline_unix_ms)
     }
 
     /// Validate and journal one capability request. **No effect** happens here:
@@ -1001,10 +1057,11 @@ impl HubHandler for RouterService {
                 format!("malformed capability call: {e}"),
             )
         })?;
-        // Observation-only reads are never journaled and stay available while
+        // Direct-invocation capabilities (observation reads plus the narrow
+        // factory stop exception) are never journaled and stay available while
         // factory effect admission is stopped; the adapter is handed back under
         // the lock and then runs with the lock released.
-        if CapabilityRouter::is_read_only_capability(&call.capability) {
+        if CapabilityRouter::is_direct_capability(&call.capability) {
             // Fix one deadline at request entry, before any lock acquisition.
             let now = (self.clock)();
             let admitted = admitted_read_deadline(now, call.deadline_unix_ms);
@@ -1039,9 +1096,15 @@ impl HubHandler for RouterService {
             // Resolve the adapter under the lock, then release it before I/O.
             let (scope, adapter) = {
                 let router = &*guard;
-                router.prepare_read(&call)?
+                router.prepare_direct(&call)?
             };
             drop(guard);
+            // Effectful factory controls get a distinct timeout: once the
+            // adapter may have begun an effect, a deadline expiry is unknown,
+            // not a cancellation. Observation reads keep the read path.
+            if call.capability == FACTORY_CONTROL_CAPABILITY {
+                return bounded_control(adapter, scope, call.input.clone(), admitted, self.clock.clone());
+            }
             return bounded_read(adapter, scope, call.input.clone(), admitted, self.clock.clone());
         }
         // Validate + journal under the lock, then release it.
@@ -1165,6 +1228,119 @@ fn bounded_read(
         Ok(result) => result,
         Err(_) => Err(expired(clock())),
     }
+}
+
+/// Run one effectful factory control with a hard caller deadline and honest
+/// uncertainty semantics (`agalma-rwn.11`).
+///
+/// Unlike [`bounded_read`], a timeout after the adapter may have begun an effect
+/// must not be reported as a cancellation. Admission is decided atomically with
+/// the deadline check: a timeout observed while the worker is still queued (or
+/// before it commits to invoking) is a plain deadline refusal; a timeout after
+/// the worker committed to invoking returns a typed `EffectUnconfirmed` bound to
+/// the original action id/request/digest, and the caller retains the id for
+/// lookup. The late adapter result is discarded, never applied a second time.
+fn bounded_control(
+    adapter: Arc<Mutex<dyn CapabilityAdapter>>,
+    scope: GrantScope,
+    input: Value,
+    deadline_unix_ms: u64,
+    clock: Arc<dyn Fn() -> u64 + Send + Sync>,
+) -> Result<Value, ContractError> {
+    let subject = scope.plugin_id.clone();
+    // Only a well-formed action can produce uncertainty; anything else (a
+    // lookup, or malformed input) is left to the adapter to refuse and cannot
+    // start an effect.
+    match FactoryControlRequest::from_value(input.clone()) {
+        Ok(FactoryControlRequest::Action(_)) => {}
+        _ => return bounded_read(adapter, scope, input, deadline_unix_ms, clock),
+    }    if deadline_unix_ms != u64::MAX {
+        let now = clock();
+        if deadline_unix_ms <= now {
+            return Err(FailureCode::DeadlineExceeded.failure(
+                &subject,
+                format!("control deadline {deadline_unix_ms} passed (now {now})"),
+            ));
+        }
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let phase = Arc::new(Mutex::new(ControlWorkerPhase::Queued));
+    let worker_phase = Arc::clone(&phase);
+    let worker_clock = Arc::clone(&clock);
+    let worker_subject = subject.clone();
+    let worker_scope = scope.clone();
+    let worker_input = input.clone();
+    std::thread::spawn(move || {
+        let mut guard = loop {
+            match adapter.try_lock() {
+                Ok(guard) => break guard,
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    if deadline_unix_ms != u64::MAX && worker_clock() >= deadline_unix_ms {
+                        let _ = sender.send(Err(FailureCode::DeadlineExceeded.failure(
+                            &worker_subject,
+                            "control deadline passed while queued behind a busy adapter",
+                        )));
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        };
+        // Decide admission atomically with the final deadline check so the
+        // caller observes either a pre-admission refusal or post-admission
+        // uncertainty, never a false "no effect".
+        {
+            let mut phase = worker_phase.lock().unwrap_or_else(PoisonError::into_inner);
+            if deadline_unix_ms != u64::MAX && worker_clock() >= deadline_unix_ms {
+                let _ = sender.send(Err(FailureCode::DeadlineExceeded.failure(
+                    &worker_subject,
+                    "control deadline passed before admission",
+                )));
+                return;
+            }
+            *phase = ControlWorkerPhase::Invoking;
+        }
+        let _ = sender.send(guard.invoke_with_deadline(&worker_scope, &worker_input, deadline_unix_ms));
+    });
+    if deadline_unix_ms == u64::MAX {
+        return match receiver.recv() {
+            Ok(result) => result,
+            Err(_) => Err(ContractError::KnownFailure(
+                "control worker terminated without a result".to_string(),
+            )),
+        };
+    }
+    let remaining = deadline_unix_ms.saturating_sub(clock()).max(1);
+    match receiver.recv_timeout(std::time::Duration::from_millis(remaining)) {
+        Ok(result) => result,
+        Err(_) => {
+            let invoking = matches!(
+                *phase.lock().unwrap_or_else(PoisonError::into_inner),
+                ControlWorkerPhase::Invoking
+            );
+            if invoking {
+                crate::factory_control::timeout_unconfirmed(
+                    &input,
+                    "control effect outcome is unknown after the deadline; retain the action id and look it up",
+                )
+            } else {
+                Err(FailureCode::DeadlineExceeded.failure(
+                    &subject,
+                    format!("control deadline {deadline_unix_ms} passed (now {})", clock()),
+                ))
+            }
+        }
+    }
+}
+
+/// The worker's admission phase for [`bounded_control`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ControlWorkerPhase {
+    /// The adapter lock has not been acquired; no effect can begin.
+    Queued,
+    /// The worker committed to invoking the adapter; an effect may begin.
+    Invoking,
 }
 
 /// Serialize a status record into the RPC result.

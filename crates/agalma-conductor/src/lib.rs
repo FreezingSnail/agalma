@@ -19,6 +19,7 @@ pub mod designer;
 pub mod digest;
 pub mod economics;
 pub mod execution_process;
+pub mod factory_control;
 pub mod harness_binding;
 pub mod harness_process;
 pub mod ledger_process;

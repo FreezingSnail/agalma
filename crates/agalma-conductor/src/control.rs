@@ -343,6 +343,135 @@ fn is_terminal(state: ExecutionState) -> bool {
     )
 }
 
+/// The narrow latch + durable-receipt surface the WEB.11 authenticated control
+/// API drives (`agalma-rwn.11`).
+///
+/// This is deliberately smaller than [`LedgerApi`]: production binds the
+/// selected ledger (any [`LedgerApi`] implementation satisfies it through the
+/// blanket impl below) while the tests inject boundary faults without
+/// reimplementing the whole ledger contract. It reuses the existing declared
+/// `control_receipts` storage; no SQL and no parallel journal.
+pub trait FactoryControlLedger: Send + Sync {
+    /// Whether the durable kill latch is set.
+    fn kill_latch(&self) -> Result<bool, ContractError>;
+    /// Set or clear the durable kill latch.
+    fn set_kill_latch(&mut self, latched: bool) -> Result<(), ContractError>;
+    /// Record a durable control receipt.
+    fn put_control_receipt(&mut self, receipt: &ControlReceipt) -> Result<(), ContractError>;
+    /// All recorded control receipts, ordered as the ledger records them.
+    fn control_receipts(&self) -> Result<Vec<ControlReceipt>, ContractError>;
+}
+
+impl<L: LedgerApi + Send + Sync> FactoryControlLedger for L {
+    fn kill_latch(&self) -> Result<bool, ContractError> {
+        LedgerApi::kill_latch(self)
+    }
+
+    fn set_kill_latch(&mut self, latched: bool) -> Result<(), ContractError> {
+        LedgerApi::set_kill_latch(self, latched)
+    }
+
+    fn put_control_receipt(&mut self, receipt: &ControlReceipt) -> Result<(), ContractError> {
+        LedgerApi::record_control_receipt(self, receipt)
+    }
+
+    fn control_receipts(&self) -> Result<Vec<ControlReceipt>, ContractError> {
+        LedgerApi::control_receipts(self)
+    }
+}
+
+/// Checked pause/resume for the WEB.11 authenticated API path.
+///
+/// This is a **narrow additive helper** that preserves the legacy
+/// [`ControlPlane::apply`]/CLI/TUI behavior unchanged. It reuses the exact
+/// human-only and typed-confirmation guards of `apply`, performs only
+/// pause/resume (never cancel), and verifies the resulting stop observation so a
+/// Resume cannot report success while the `STOP` sentinel or kill latch remain.
+/// It writes **no** receipt: the WEB.11 adapter persists its own deterministic
+/// intent/result records. A filesystem/state fault after a partial mutation is
+/// an error (uncertainty), never a successful `Applied`.
+pub fn apply_checked_latch(
+    ledger: &mut dyn FactoryControlLedger,
+    state_dir: &Path,
+    request: &ControlRequest,
+) -> Result<ControlOutcome, ContractError> {
+    if request.actor != Actor::Human {
+        return Ok(ControlOutcome::Denied {
+            reason: format!(
+                "control actions are human-only (actor={})",
+                request.actor.as_str()
+            ),
+        });
+    }
+    if !confirmed(&request.action, request.confirmation.as_deref()) {
+        return Ok(ControlOutcome::Denied {
+            reason: format!(
+                "typed confirmation required: type \"{}\"",
+                request.action.name()
+            ),
+        });
+    }
+    match &request.action {
+        ControlAction::Pause => {
+            if ledger.kill_latch()? {
+                return Ok(ControlOutcome::Denied {
+                    reason: "already paused (kill latch set)".to_string(),
+                });
+            }
+            ledger.set_kill_latch(true)?;
+            // Confirm the effect: never report applied while the latch is clear.
+            match ledger.kill_latch() {
+                Ok(true) => Ok(ControlOutcome::Applied),
+                // The mutation may have partially applied (a second connection,
+                // a racing writer, or a read that observes a different value):
+                // this is uncertainty, NOT a terminal "nothing changed" denial.
+                // The caller retains its unresolved intent and reports unknown.
+                Ok(false) => Err(FailureCode::StateUnavailable.failure(
+                    "pause",
+                    "kill latch could not be confirmed set after the write; effect outcome unconfirmed",
+                )),
+                Err(err) => Err(FailureCode::StateUnavailable.failure(
+                    "pause",
+                    format!("cannot confirm the kill latch: {err}"),
+                )),
+            }
+        }
+        ControlAction::Resume => {
+            let sentinel = FileStopControl::new(state_dir).sentinel_present();
+            if !ledger.kill_latch()? && !sentinel {
+                return Ok(ControlOutcome::Denied {
+                    reason: "not stopped: kill latch clear and no STOP sentinel".to_string(),
+                });
+            }
+            ledger.set_kill_latch(false)?;
+            // Truthful STOP removal: a genuine NotFound is already clear; any
+            // other error is uncertainty, never a claimed success.
+            if let Err(err) = std::fs::remove_file(state_dir.join("STOP")) {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    return Err(FailureCode::StateUnavailable.failure(
+                        "resume",
+                        format!("STOP removal failed: {err}"),
+                    ));
+                }
+            }
+            let latch_clear = matches!(ledger.kill_latch(), Ok(false));
+            let sentinel_gone = !FileStopControl::new(state_dir).sentinel_present();
+            if latch_clear && sentinel_gone {
+                Ok(ControlOutcome::Applied)
+            } else {
+                Err(FailureCode::StateUnavailable.failure(
+                    "resume",
+                    "STOP removal/observation could not be confirmed",
+                ))
+            }
+        }
+        // The API advertises pause/resume only.
+        ControlAction::Cancel { execution } => Err(ContractError::UnsupportedCapability(format!(
+            "factory-control API does not cancel {execution}"
+        ))),
+    }
+}
+
 /// The human-facing control-plane attachment for advertised plugin actions.
 ///
 /// The TUI/CLI drives plugin actions through this adapter after the HP.6
@@ -623,6 +752,192 @@ mod tests {
         let receipts = plane_ledger.control_receipts().expect("receipts");
         assert_eq!(receipts.len(), 3, "each denied attempt receipted");
         assert!(receipts.iter().all(|r| r.request["outcome"] == "denied"));
+    }
+
+    /// A deterministic in-memory [`FactoryControlLedger`] with injectable
+    /// latch/receipt boundary faults (WEB.11 checked-helper unit tests).
+    #[derive(Default)]
+    struct CheckedLedger {
+        latch: bool,
+        receipts: Vec<ControlReceipt>,
+        fail_kill_latch: bool,
+        fail_set_latch: bool,
+        /// When set, `kill_latch` reads `false` even after a successful write:
+        /// a mutation whose readback cannot confirm it.
+        latch_readback_clear: bool,
+    }
+
+    impl FactoryControlLedger for CheckedLedger {
+        fn kill_latch(&self) -> Result<bool, ContractError> {
+            if self.fail_kill_latch {
+                Err(FailureCode::StateUnavailable.failure(
+                    "latch",
+                    "injected latch read fault",
+                ))
+            } else if self.latch_readback_clear {
+                Ok(false)
+            } else {
+                Ok(self.latch)
+            }
+        }
+
+        fn set_kill_latch(&mut self, latched: bool) -> Result<(), ContractError> {
+            if self.fail_set_latch {
+                return Err(FailureCode::StateUnavailable.failure(
+                    "latch",
+                    "injected latch write fault",
+                ));
+            }
+            self.latch = latched;
+            Ok(())
+        }
+
+        fn put_control_receipt(
+            &mut self,
+            receipt: &ControlReceipt,
+        ) -> Result<(), ContractError> {
+            self.receipts.push(receipt.clone());
+            Ok(())
+        }
+
+        fn control_receipts(&self) -> Result<Vec<ControlReceipt>, ContractError> {
+            Ok(self.receipts.clone())
+        }
+    }
+
+    // The new API checked helper performs the latch effect and verifies it,
+    // writing no legacy receipt (the WEB.11 adapter persists its own records).
+    #[test]
+    fn checked_pause_sets_the_latch_without_a_legacy_receipt() {
+        let dir = scratch("checked-pause");
+        let mut ledger = CheckedLedger::default();
+        let request = ControlRequest::new("a-pause", ControlAction::Pause, Actor::Human);
+        let outcome =
+            apply_checked_latch(&mut ledger, &dir, &request).expect("checked pause");
+        assert_eq!(outcome, ControlOutcome::Applied);
+        assert!(ledger.latch, "kill latch set");
+        assert!(ledger.receipts.is_empty(), "no legacy receipt written");
+    }
+
+    // Resume needs the typed confirmation and truthfully clears both the latch
+    // and the STOP sentinel; without it nothing changes.
+    #[test]
+    fn checked_resume_requires_confirmation_and_clears_stop() {
+        let dir = scratch("checked-resume");
+        std::fs::write(dir.join("STOP"), b"stop").expect("write STOP");
+        let mut ledger = CheckedLedger {
+            latch: true,
+            ..CheckedLedger::default()
+        };
+
+        let unconfirmed =
+            ControlRequest::new("a-resume-1", ControlAction::Resume, Actor::Human);
+        let denied = apply_checked_latch(&mut ledger, &dir, &unconfirmed).expect("resume");
+        assert!(!denied.is_applied(), "resume without confirmation denied");
+        assert!(ledger.latch, "latch untouched");
+        assert!(dir.join("STOP").exists(), "STOP retained");
+
+        let confirmed = ControlRequest::new("a-resume-2", ControlAction::Resume, Actor::Human)
+            .with_confirmation("resume");
+        let applied = apply_checked_latch(&mut ledger, &dir, &confirmed).expect("resume");
+        assert_eq!(applied, ControlOutcome::Applied);
+        assert!(!ledger.latch, "latch cleared");
+        assert!(!dir.join("STOP").exists(), "STOP removed");
+    }
+
+    // Repeated pause and resume-with-nothing-stopped are normal denied outcomes.
+    #[test]
+    fn checked_latch_policy_denials_do_not_change_state() {
+        let dir = scratch("checked-policy");
+        let mut paused = CheckedLedger {
+            latch: true,
+            ..CheckedLedger::default()
+        };
+        let already =
+            ControlRequest::new("a-pause-2", ControlAction::Pause, Actor::Human);
+        let denied = apply_checked_latch(&mut paused, &dir, &already).expect("pause");
+        assert!(!denied.is_applied(), "already paused denied");
+        assert!(paused.latch, "latch unchanged");
+
+        let mut running = CheckedLedger::default();
+        let nothing =
+            ControlRequest::new("a-resume-3", ControlAction::Resume, Actor::Human)
+                .with_confirmation("resume");
+        let denied = apply_checked_latch(&mut running, &dir, &nothing).expect("resume");
+        assert!(!denied.is_applied(), "not stopped denied");
+        assert!(!running.latch, "latch unchanged");
+    }
+
+    // A latch-write fault is uncertainty, never a claimed applied effect; the
+    // state is left as observed.
+    #[test]
+    fn checked_latch_io_faults_are_uncertain_not_applied() {
+        let dir = scratch("checked-fault");
+        let pause = ControlRequest::new("a-pause-fault", ControlAction::Pause, Actor::Human);
+
+        let mut read_fault = CheckedLedger {
+            fail_kill_latch: true,
+            ..CheckedLedger::default()
+        };
+        let error = apply_checked_latch(&mut read_fault, &dir, &pause).expect_err("read fault");
+        assert_eq!(
+            agalma_contracts::digest::failure_code(&error),
+            Some(FailureCode::StateUnavailable),
+            "read fault is uncertainty: {error}"
+        );
+
+        let mut write_fault = CheckedLedger {
+            fail_set_latch: true,
+            ..CheckedLedger::default()
+        };
+        let error = apply_checked_latch(&mut write_fault, &dir, &pause).expect_err("write fault");
+        assert!(!write_fault.latch, "latch not changed on write fault");
+        assert_eq!(
+            agalma_contracts::digest::failure_code(&error),
+            Some(FailureCode::StateUnavailable),
+            "write fault is uncertainty: {error}"
+        );
+    }
+
+    // A pause whose write succeeds but whose readback cannot confirm the latch
+    // is uncertain mutation, NOT a terminal denial: the caller must not treat
+    // "denied" as proof that nothing changed.
+    #[test]
+    fn checked_pause_unconfirmed_readback_is_uncertain_not_denied() {
+        let dir = scratch("checked-readback");
+        let mut ledger = CheckedLedger {
+            latch_readback_clear: true,
+            ..CheckedLedger::default()
+        };
+        let pause = ControlRequest::new("a-pause-readback", ControlAction::Pause, Actor::Human);
+        let error =
+            apply_checked_latch(&mut ledger, &dir, &pause).expect_err("readback uncertainty");
+        assert_eq!(
+            agalma_contracts::digest::failure_code(&error),
+            Some(FailureCode::StateUnavailable),
+            "an unconfirmed pause readback is uncertainty, not Denied: {error}"
+        );
+        assert!(ledger.latch, "the write still happened");
+    }
+
+    // A STOP entry that cannot be removed (here a directory) is a truthful
+    // uncertainty, never a claimed resume.
+    #[test]
+    fn checked_resume_reports_stop_removal_failure() {
+        let dir = scratch("checked-stop-fault");
+        std::fs::create_dir(dir.join("STOP")).expect("directory at STOP path");
+        let mut ledger = CheckedLedger {
+            latch: true,
+            ..CheckedLedger::default()
+        };
+        let resume = ControlRequest::new("a-resume-fault", ControlAction::Resume, Actor::Human)
+            .with_confirmation("resume");
+        let error = apply_checked_latch(&mut ledger, &dir, &resume).expect_err("stop removal fault");
+        assert_eq!(
+            agalma_contracts::digest::failure_code(&error),
+            Some(FailureCode::StateUnavailable),
+            "STOP removal failure is uncertainty: {error}"
+        );
     }
 
     /// A deterministic cancellation double backed by an explicit state map:

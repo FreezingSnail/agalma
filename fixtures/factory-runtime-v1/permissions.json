@@ -1,0 +1,42 @@
+{
+  "allowed": {
+    "format": "FactoryRuntime/v1",
+    "repository_id": "agalma",
+    "state_id": "state-perm-allowed",
+    "runtime_instance_id": "rt-fixture-4",
+    "observed_at_unix_ms": "1791820803000",
+    "status": "Running",
+    "reason": null,
+    "sources": [
+      { "source": "runtime", "state": "available", "detail": null, "observed_at_unix_ms": "1791820803000" },
+      { "source": "worker", "state": "available", "detail": null, "observed_at_unix_ms": "1791820803000" },
+      { "source": "queue", "state": "available", "detail": null, "observed_at_unix_ms": "1791820803000" },
+      { "source": "execution", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820803000" },
+      { "source": "stop", "state": "missing", "detail": "no stop latch record", "observed_at_unix_ms": null }
+    ],
+    "stop": null,
+    "current_execution": null,
+    "eligible": { "entries": [], "revision": "rev-5", "total": "0", "next_cursor": null },
+    "permissions": { "pause": true, "resume": true }
+  },
+  "disabled": {
+    "format": "FactoryRuntime/v1",
+    "repository_id": "agalma",
+    "state_id": "state-perm-disabled",
+    "runtime_instance_id": "rt-fixture-4",
+    "observed_at_unix_ms": "1791820803000",
+    "status": "Running",
+    "reason": null,
+    "sources": [
+      { "source": "runtime", "state": "available", "detail": null, "observed_at_unix_ms": "1791820803000" },
+      { "source": "worker", "state": "available", "detail": null, "observed_at_unix_ms": "1791820803000" },
+      { "source": "queue", "state": "available", "detail": null, "observed_at_unix_ms": "1791820803000" },
+      { "source": "execution", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820803000" },
+      { "source": "stop", "state": "unknown", "detail": null, "observed_at_unix_ms": null }
+    ],
+    "stop": null,
+    "current_execution": null,
+    "eligible": { "entries": [], "revision": "rev-5", "total": "0", "next_cursor": null },
+    "permissions": { "pause": false, "resume": false }
+  }
+}

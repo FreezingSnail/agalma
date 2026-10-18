@@ -1,0 +1,29 @@
+{
+  "cursor": {
+    "format": "FactoryQueueCursor/v1",
+    "repository_id": "agalma",
+    "state_id": "state-fixture-running",
+    "runtime_instance_id": "rt-fixture-4",
+    "revision": "rev-fixture-43",
+    "after": "mutate-core"
+  },
+  "encoded": "{\"after\":\"mutate-core\",\"format\":\"FactoryQueueCursor/v1\",\"repository_id\":\"agalma\",\"revision\":\"rev-fixture-43\",\"runtime_instance_id\":\"rt-fixture-4\",\"state_id\":\"state-fixture-running\"}",
+  "bound": {
+    "repository_id": "agalma",
+    "state_id": "state-fixture-running",
+    "revision": "rev-fixture-43",
+    "runtime_instance_id": "rt-fixture-4"
+  },
+  "stale_revision": {
+    "repository_id": "agalma",
+    "state_id": "state-fixture-running",
+    "revision": "rev-fixture-99",
+    "runtime_instance_id": "rt-fixture-4"
+  },
+  "wrong_scope": {
+    "repository_id": "other-repo",
+    "state_id": "state-fixture-running",
+    "revision": "rev-fixture-43",
+    "runtime_instance_id": "rt-fixture-4"
+  }
+}

@@ -20,6 +20,7 @@ pub mod decision;
 pub mod digest;
 pub mod error;
 pub mod execution;
+pub mod factory;
 pub mod harness;
 pub mod ids;
 pub mod ledger;
@@ -57,6 +58,23 @@ pub use error::ContractError;
 pub use execution::{
     CancellationSettlement, CancellationState, ExecutionApi, ExecutionPhase, ExecutionState,
     ExecutionStatus, StepOutcome,
+};
+pub use factory::{
+    check_factory_cursor, FactoryActionRequest, FactoryControlActor,
+    FactoryControlNotFoundResponse, FactoryControlOutcome, FactoryControlReceiptBody,
+    FactoryControlReceiptResponse, FactoryControlRequest, FactoryControlResponse,
+    FactoryControlResult, FactoryControlUnconfirmedResponse, FactoryEligibleEntry,
+    FactoryEligiblePage, FactoryExecutionObservation, FactoryLookupRequest, FactoryQueueCursor,
+    FactoryRuntime, FactoryRuntimePermissions, FactoryRuntimeRequest, FactoryRuntimeSource,
+    FactoryRuntimeStatus, FactorySourceName, FactoryStopObservation, FactoryUnconfirmedCode,
+    RuntimeObservationSource, FACTORY_ACTION_ID_MAX_BYTES, FACTORY_ACTION_ID_MIN_BYTES,
+    FACTORY_CONFIRMATION_MAX_BYTES, FACTORY_CONTROL_CAPABILITY, FACTORY_CONTROL_FAMILY,
+    FACTORY_CONTROL_FORMAT, FACTORY_CURSOR_MAX_BYTES, FACTORY_ID_MAX_BYTES,
+    FACTORY_OPAQUE_ID_MAX_BYTES, FACTORY_PAGE_MAX_ENTRIES, FACTORY_QUEUE_CURSOR_FAMILY,
+    FACTORY_QUEUE_CURSOR_FORMAT, FACTORY_READ_CAPABILITY, FACTORY_REASON_MAX_BYTES,
+    FACTORY_RESPONSE_MAX_BYTES, FACTORY_REVISION_MAX_BYTES, FACTORY_RUNTIME_FAMILY,
+    FACTORY_RUNTIME_FORMAT, FACTORY_RUNTIME_INSTANCE_ID_MAX_BYTES, FACTORY_SNAPSHOT_DEFAULT_LIMIT,
+    FACTORY_SNAPSHOT_MAX_LIMIT, FACTORY_SNAPSHOT_MIN_LIMIT, FACTORY_TITLE_MAX_BYTES,
 };
 pub use harness::{
     mvp_baseline_required, optional_capabilities, AttemptHandle, CancelAck, Completeness,

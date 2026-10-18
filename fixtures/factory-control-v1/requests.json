@@ -1,0 +1,23 @@
+{
+  "lookup": {
+    "format": "FactoryControl/v1",
+    "operation": "lookup",
+    "action_id": "action-fixture-2"
+  },
+  "pause": {
+    "format": "FactoryControl/v1",
+    "operation": "pause",
+    "action_id": "action-fixture-2",
+    "confirmation": "yes"
+  },
+  "resume": {
+    "format": "FactoryControl/v1",
+    "operation": "resume",
+    "action_id": "action-fixture-3",
+    "confirmation": null
+  },
+  "digests": {
+    "pause": "sha256:b1e24a1454ae226e1682459cc17bb5cb85f41022e68677af8d0d0f0403c016f1",
+    "resume": "sha256:a2ebdb5c4f2988b584f5a7ff28a413a5b4564e126d58b6c060babc44a4e212cd"
+  }
+}

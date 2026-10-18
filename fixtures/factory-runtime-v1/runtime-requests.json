@@ -1,0 +1,17 @@
+{
+  "valid": [
+    { "name": "default", "request": { "format": "FactoryRuntime/v1", "operation": "snapshot" } },
+    { "name": "limit-1", "request": { "format": "FactoryRuntime/v1", "operation": "snapshot", "limit": 1, "cursor": null } },
+    { "name": "limit-100", "request": { "format": "FactoryRuntime/v1", "operation": "snapshot", "limit": 100, "cursor": null } }
+  ],
+  "invalid": [
+    { "name": "limit-0", "expected_code": "InvalidRecord", "request": { "format": "FactoryRuntime/v1", "operation": "snapshot", "limit": 0, "cursor": null } },
+    { "name": "limit-101", "expected_code": "InvalidRecord", "request": { "format": "FactoryRuntime/v1", "operation": "snapshot", "limit": 101, "cursor": null } },
+    { "name": "format-version", "expected_code": "UnsupportedVersion", "request": { "format": "FactoryRuntime/v2", "operation": "snapshot" } },
+    { "name": "format-family", "expected_code": "UnsupportedSchema", "request": { "format": "FactoryRuntimeV1", "operation": "snapshot" } },
+    { "name": "operation-unknown", "expected_code": "InvalidRecord", "request": { "format": "FactoryRuntime/v1", "operation": "watch" } },
+    { "name": "missing-operation", "expected_code": "InvalidRecord", "request": { "format": "FactoryRuntime/v1" } },
+    { "name": "unknown-field", "expected_code": "InvalidRecord", "request": { "format": "FactoryRuntime/v1", "operation": "snapshot", "extra": 1 } },
+    { "name": "cursor-overlimit", "expected_code": "InvalidRecord", "request": { "format": "FactoryRuntime/v1", "operation": "snapshot", "cursor": { "fill": "c", "len": 4097 } } }
+  ]
+}

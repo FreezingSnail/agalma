@@ -1,0 +1,101 @@
+{
+  "request_base": {
+    "format": "FactoryControl/v1",
+    "operation": "pause",
+    "action_id": "action-fixture-2",
+    "confirmation": "yes"
+  },
+  "request_cases": [
+    { "name": "format-version", "expected_code": "UnsupportedVersion", "set": { "format": "FactoryControl/v2" } },
+    { "name": "format-family", "expected_code": "UnsupportedSchema", "set": { "format": "FactoryControl" } },
+    { "name": "operation-unknown", "expected_code": "InvalidRecord", "set": { "operation": "cancel" } },
+    { "name": "action-id-empty", "expected_code": "InvalidRecord", "set": { "action_id": "" } },
+    { "name": "action-id-charset", "expected_code": "InvalidRecord", "set": { "action_id": "bad id" } },
+    { "name": "action-id-overlimit", "expected_code": "InvalidRecord", "set": { "action_id": { "fill": "a", "len": 129 } } },
+    { "name": "confirmation-overlimit", "expected_code": "InvalidRecord", "set": { "confirmation": { "fill": "c", "len": 65 } } },
+    { "name": "confirmation-missing", "expected_code": "InvalidRecord", "remove": ["confirmation"] },
+    { "name": "confirmation-number", "expected_code": "InvalidRecord", "set": { "confirmation": 5 } },
+    { "name": "unknown-field", "expected_code": "InvalidRecord", "set": { "extra": 1 } }
+  ],
+  "lookup_base": {
+    "format": "FactoryControl/v1",
+    "operation": "lookup",
+    "action_id": "action-fixture-2"
+  },
+  "lookup_cases": [
+    { "name": "lookup-extra-confirmation", "expected_code": "InvalidRecord", "set": { "confirmation": null } },
+    { "name": "lookup-unknown-field", "expected_code": "InvalidRecord", "set": { "extra": 1 } },
+    { "name": "lookup-action-id-charset", "expected_code": "InvalidRecord", "set": { "action_id": "no/slash" } }
+  ],
+  "response_bases": {
+    "receipt": {
+      "format": "FactoryControl/v1",
+      "result": "receipt",
+      "receipt": {
+        "action_id": "action-fixture-2",
+        "request": {
+          "format": "FactoryControl/v1",
+          "operation": "pause",
+          "action_id": "action-fixture-2",
+          "confirmation": "yes"
+        },
+        "request_digest": "sha256:b1e24a1454ae226e1682459cc17bb5cb85f41022e68677af8d0d0f0403c016f1",
+        "outcome": "applied",
+        "reason": null,
+        "ledger_action_id": "ledger:action-fixture-2",
+        "actor": "human",
+        "recorded_at_unix_ms": "1791820805000"
+      },
+      "observed_stop": null
+    },
+    "unconfirmed": {
+      "format": "FactoryControl/v1",
+      "result": "unconfirmed",
+      "action_id": "action-fixture-1",
+      "request": {
+        "format": "FactoryControl/v1",
+        "operation": "pause",
+        "action_id": "action-fixture-1",
+        "confirmation": null
+      },
+      "request_digest": "sha256:d43c81acdc6009c1b97dcaa415a011ba0cee744a36b8f88748e63570372a40e2",
+      "code": "EffectUnconfirmed",
+      "reason": "durable intent recorded; effect not confirmed",
+      "observed_stop": null
+    },
+    "not_found": {
+      "format": "FactoryControl/v1",
+      "result": "not_found",
+      "action_id": "action-fixture-404",
+      "observed_stop": null
+    }
+  },
+  "response_cases": [
+    { "variant": "receipt", "name": "result-unknown", "expected_code": "InvalidRecord", "set": { "result": "maybe" } },
+    { "variant": "receipt", "name": "receipt-digest-shape", "expected_code": "InvalidRecord", "set": { "receipt.request_digest": "md5:abc" } },
+    { "variant": "receipt", "name": "receipt-digest-mismatch", "expected_code": "IdentityConflict", "set": { "receipt.request_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" } },
+    { "variant": "receipt", "name": "receipt-request-digest-mismatch", "expected_code": "IdentityConflict", "set": { "receipt.request.confirmation": "different" } },
+    { "variant": "receipt", "name": "receipt-request-action-id-mismatch", "expected_code": "InvalidRecord", "set": { "receipt.request.action_id": "action-other" } },
+    { "variant": "receipt", "name": "receipt-request-operation-lookup", "expected_code": "InvalidRecord", "set": { "receipt.request.operation": "lookup" } },
+    { "variant": "receipt", "name": "receipt-request-operation-cancel", "expected_code": "InvalidRecord", "set": { "receipt.request.operation": "cancel" } },
+    { "variant": "receipt", "name": "receipt-request-extra-field", "expected_code": "InvalidRecord", "set": { "receipt.request.extra": 1 } },
+    { "variant": "receipt", "name": "receipt-request-confirmation-missing", "expected_code": "InvalidRecord", "remove": ["receipt.request.confirmation"] },
+    { "variant": "unconfirmed", "name": "unconfirmed-request-operation-lookup", "expected_code": "InvalidRecord", "set": { "request.operation": "lookup" } },
+    { "variant": "unconfirmed", "name": "unconfirmed-request-action-id-mismatch", "expected_code": "InvalidRecord", "set": { "request.action_id": "action-other" } },
+    { "variant": "receipt", "name": "receipt-reason-overlimit", "expected_code": "InvalidRecord", "set": { "receipt.reason": { "fill": "r", "len": 2049 } } },
+    { "variant": "receipt", "name": "receipt-actor-unknown", "expected_code": "InvalidRecord", "set": { "receipt.actor": "policy" } },
+    { "variant": "receipt", "name": "receipt-outcome-unknown", "expected_code": "InvalidRecord", "set": { "receipt.outcome": "maybe" } },
+    { "variant": "receipt", "name": "receipt-observed-stop-overlimit", "expected_code": "InvalidRecord", "set": { "observed_stop": { "stopped": true, "reason": { "fill": "r", "len": 2049 }, "observed_at_unix_ms": "1" } } },
+    { "variant": "receipt", "name": "response-overlimit", "expected_code": "InvalidRecord", "set": { "receipt.request": { "blob": { "fill": "a", "len": 300000 } } } },
+    { "variant": "unconfirmed", "name": "unconfirmed-terminal-looking", "expected_code": "InvalidRecord", "set": { "receipt": { "action_id": "action-fixture-1", "outcome": "applied" } } },
+    { "variant": "unconfirmed", "name": "unconfirmed-reason-empty", "expected_code": "InvalidRecord", "set": { "reason": "" } },
+    { "variant": "unconfirmed", "name": "unconfirmed-code-wrong", "expected_code": "InvalidRecord", "set": { "code": "Applied" } },
+    { "variant": "unconfirmed", "name": "unconfirmed-digest-mismatch", "expected_code": "IdentityConflict", "set": { "request_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000" } },
+    { "variant": "not_found", "name": "not-found-extra-request", "expected_code": "InvalidRecord", "set": { "request": { "a": 1 } } },
+    { "variant": "not_found", "name": "not-found-action-id-charset", "expected_code": "InvalidRecord", "set": { "action_id": "bad id" } },
+    { "variant": "receipt", "name": "receipt-remove-reason", "expected_code": "InvalidRecord", "remove": ["receipt.reason"] },
+    { "variant": "receipt", "name": "receipt-remove-observed-stop", "expected_code": "InvalidRecord", "remove": ["observed_stop"] },
+    { "variant": "unconfirmed", "name": "unconfirmed-remove-observed-stop", "expected_code": "InvalidRecord", "remove": ["observed_stop"] },
+    { "variant": "not_found", "name": "not-found-remove-observed-stop", "expected_code": "InvalidRecord", "remove": ["observed_stop"] }
+  ]
+}

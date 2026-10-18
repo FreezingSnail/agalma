@@ -1,0 +1,71 @@
+{
+  "applied": {
+    "format": "FactoryControl/v1",
+    "result": "receipt",
+    "receipt": {
+      "action_id": "action-fixture-2",
+      "request": {
+        "format": "FactoryControl/v1",
+        "operation": "pause",
+        "action_id": "action-fixture-2",
+        "confirmation": "yes"
+      },
+      "request_digest": "sha256:b1e24a1454ae226e1682459cc17bb5cb85f41022e68677af8d0d0f0403c016f1",
+      "outcome": "applied",
+      "reason": null,
+      "ledger_action_id": "ledger:action-fixture-2",
+      "actor": "human",
+      "recorded_at_unix_ms": "1791820805000"
+    },
+    "observed_stop": null
+  },
+  "denied": {
+    "format": "FactoryControl/v1",
+    "result": "receipt",
+    "receipt": {
+      "action_id": "action-fixture-3",
+      "request": {
+        "format": "FactoryControl/v1",
+        "operation": "resume",
+        "action_id": "action-fixture-3",
+        "confirmation": null
+      },
+      "request_digest": "sha256:a2ebdb5c4f2988b584f5a7ff28a413a5b4564e126d58b6c060babc44a4e212cd",
+      "outcome": "denied",
+      "reason": "confirmation did not match the required phrase",
+      "ledger_action_id": "ledger:action-fixture-3",
+      "actor": "human",
+      "recorded_at_unix_ms": "1791820805001"
+    },
+    "observed_stop": {
+      "stopped": true,
+      "reason": "operator pause",
+      "observed_at_unix_ms": "1791820805001"
+    }
+  },
+  "unconfirmed": {
+    "format": "FactoryControl/v1",
+    "result": "unconfirmed",
+    "action_id": "action-fixture-1",
+    "request": {
+      "format": "FactoryControl/v1",
+      "operation": "pause",
+      "action_id": "action-fixture-1",
+      "confirmation": null
+    },
+    "request_digest": "sha256:d43c81acdc6009c1b97dcaa415a011ba0cee744a36b8f88748e63570372a40e2",
+    "code": "EffectUnconfirmed",
+    "reason": "durable intent recorded; effect not confirmed",
+    "observed_stop": null
+  },
+  "not_found": {
+    "format": "FactoryControl/v1",
+    "result": "not_found",
+    "action_id": "action-fixture-404",
+    "observed_stop": {
+      "stopped": true,
+      "reason": "operator pause",
+      "observed_at_unix_ms": "1791820805002"
+    }
+  }
+}

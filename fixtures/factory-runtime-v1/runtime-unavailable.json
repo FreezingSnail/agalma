@@ -1,0 +1,20 @@
+{
+  "format": "FactoryRuntime/v1",
+  "repository_id": "agalma",
+  "state_id": "state-fixture-2",
+  "runtime_instance_id": null,
+  "observed_at_unix_ms": "9223372036854775807",
+  "status": "Unavailable",
+  "reason": "runtime not attached",
+  "sources": [
+    { "source": "runtime", "state": "missing", "detail": null, "observed_at_unix_ms": null },
+    { "source": "worker", "state": "missing", "detail": null, "observed_at_unix_ms": null },
+    { "source": "queue", "state": "missing", "detail": null, "observed_at_unix_ms": null },
+    { "source": "execution", "state": "missing", "detail": null, "observed_at_unix_ms": null },
+    { "source": "stop", "state": "missing", "detail": null, "observed_at_unix_ms": null }
+  ],
+  "stop": null,
+  "current_execution": null,
+  "eligible": { "entries": [], "revision": null, "total": null, "next_cursor": null },
+  "permissions": { "pause": false, "resume": false }
+}

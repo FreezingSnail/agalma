@@ -1,0 +1,149 @@
+[
+  {
+    "format": "FactoryRuntime/v1",
+    "repository_id": "agalma",
+    "state_id": "state-fixture-starting",
+    "runtime_instance_id": "rt-fixture-1",
+    "observed_at_unix_ms": "1791820800000",
+    "status": "Starting",
+    "reason": null,
+    "sources": [
+      { "source": "runtime", "state": "available", "detail": "boot", "observed_at_unix_ms": "1791820800000" },
+      { "source": "worker", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820800000" },
+      { "source": "queue", "state": "available", "detail": null, "observed_at_unix_ms": "1791820800000" },
+      { "source": "execution", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820800000" },
+      { "source": "stop", "state": "unknown", "detail": "no stop observation yet", "observed_at_unix_ms": null }
+    ],
+    "stop": null,
+    "current_execution": null,
+    "eligible": { "entries": [], "revision": null, "total": null, "next_cursor": null },
+    "permissions": { "pause": false, "resume": false }
+  },
+  {
+    "format": "FactoryRuntime/v1",
+    "repository_id": "agalma",
+    "state_id": "state-fixture-recovering",
+    "runtime_instance_id": "rt-fixture-2",
+    "observed_at_unix_ms": "1791820801000",
+    "status": "Recovering",
+    "reason": "replaying durable state",
+    "sources": [
+      { "source": "runtime", "state": "available", "detail": null, "observed_at_unix_ms": "1791820801000" },
+      { "source": "worker", "state": "unknown", "detail": null, "observed_at_unix_ms": "1791820801000" },
+      { "source": "queue", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820801000" },
+      { "source": "execution", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820801000" },
+      { "source": "stop", "state": "missing", "detail": "no stop latch record", "observed_at_unix_ms": null }
+    ],
+    "stop": null,
+    "current_execution": null,
+    "eligible": { "entries": [], "revision": "rev-1", "total": "0", "next_cursor": null },
+    "permissions": { "pause": false, "resume": false }
+  },
+  {
+    "format": "FactoryRuntime/v1",
+    "repository_id": "agalma",
+    "state_id": "state-fixture-idle",
+    "runtime_instance_id": "rt-fixture-3",
+    "observed_at_unix_ms": "1791820802000",
+    "status": "Idle",
+    "reason": null,
+    "sources": [
+      { "source": "runtime", "state": "available", "detail": null, "observed_at_unix_ms": "1791820802000" },
+      { "source": "worker", "state": "available", "detail": null, "observed_at_unix_ms": "1791820802000" },
+      { "source": "queue", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820802000" },
+      { "source": "execution", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820802000" },
+      { "source": "stop", "state": "unknown", "detail": null, "observed_at_unix_ms": null }
+    ],
+    "stop": null,
+    "current_execution": null,
+    "eligible": { "entries": [], "revision": "rev-2", "total": "0", "next_cursor": null },
+    "permissions": { "pause": true, "resume": false }
+  },
+  {
+    "format": "FactoryRuntime/v1",
+    "repository_id": "agalma",
+    "state_id": "state-fixture-running",
+    "runtime_instance_id": "rt-fixture-4",
+    "observed_at_unix_ms": "1791820803000",
+    "status": "Running",
+    "reason": null,
+    "sources": [
+      { "source": "runtime", "state": "available", "detail": null, "observed_at_unix_ms": "1791820803000" },
+      { "source": "worker", "state": "available", "detail": null, "observed_at_unix_ms": "1791820803000" },
+      { "source": "queue", "state": "available", "detail": null, "observed_at_unix_ms": "1791820803000" },
+      { "source": "execution", "state": "available", "detail": "one execution", "observed_at_unix_ms": "1791820803000" },
+      { "source": "stop", "state": "unknown", "detail": null, "observed_at_unix_ms": null }
+    ],
+    "stop": null,
+    "current_execution": {
+      "execution_id": "exec:fix-answer:1",
+      "task_id": "fix-answer",
+      "generation": "1",
+      "phase": "Build",
+      "state": "Running",
+      "updated_at_unix_ms": "1791820803001"
+    },
+    "eligible": { "entries": [], "revision": "rev-3", "total": "0", "next_cursor": null },
+    "permissions": { "pause": true, "resume": false }
+  },
+  {
+    "format": "FactoryRuntime/v1",
+    "repository_id": "agalma",
+    "state_id": "state-fixture-paused",
+    "runtime_instance_id": "rt-fixture-5",
+    "observed_at_unix_ms": "1791820804000",
+    "status": "Paused",
+    "reason": "operator pause",
+    "sources": [
+      { "source": "runtime", "state": "available", "detail": null, "observed_at_unix_ms": "1791820804000" },
+      { "source": "worker", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820804000" },
+      { "source": "queue", "state": "available", "detail": null, "observed_at_unix_ms": "1791820804000" },
+      { "source": "execution", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820804000" },
+      { "source": "stop", "state": "available", "detail": "latch observed", "observed_at_unix_ms": "1791820804000" }
+    ],
+    "stop": { "stopped": true, "reason": "operator pause", "observed_at_unix_ms": "1791820804000" },
+    "current_execution": null,
+    "eligible": { "entries": [], "revision": "rev-4", "total": "0", "next_cursor": null },
+    "permissions": { "pause": false, "resume": true }
+  },
+  {
+    "format": "FactoryRuntime/v1",
+    "repository_id": "agalma",
+    "state_id": "state-fixture-failed",
+    "runtime_instance_id": "rt-fixture-6",
+    "observed_at_unix_ms": "1791820805000",
+    "status": "Failed",
+    "reason": "runtime read failed",
+    "sources": [
+      { "source": "runtime", "state": "unreadable", "detail": "ledger read error", "observed_at_unix_ms": "1791820805000" },
+      { "source": "worker", "state": "missing", "detail": null, "observed_at_unix_ms": null },
+      { "source": "queue", "state": "missing", "detail": null, "observed_at_unix_ms": null },
+      { "source": "execution", "state": "missing", "detail": null, "observed_at_unix_ms": null },
+      { "source": "stop", "state": "unknown", "detail": null, "observed_at_unix_ms": null }
+    ],
+    "stop": null,
+    "current_execution": null,
+    "eligible": { "entries": [], "revision": null, "total": null, "next_cursor": null },
+    "permissions": { "pause": false, "resume": false }
+  },
+  {
+    "format": "FactoryRuntime/v1",
+    "repository_id": "agalma",
+    "state_id": "state-fixture-unavailable",
+    "runtime_instance_id": null,
+    "observed_at_unix_ms": "1791820806000",
+    "status": "Unavailable",
+    "reason": "runtime not attached",
+    "sources": [
+      { "source": "runtime", "state": "missing", "detail": null, "observed_at_unix_ms": null },
+      { "source": "worker", "state": "missing", "detail": null, "observed_at_unix_ms": null },
+      { "source": "queue", "state": "missing", "detail": null, "observed_at_unix_ms": null },
+      { "source": "execution", "state": "missing", "detail": null, "observed_at_unix_ms": null },
+      { "source": "stop", "state": "missing", "detail": null, "observed_at_unix_ms": null }
+    ],
+    "stop": null,
+    "current_execution": null,
+    "eligible": { "entries": [], "revision": null, "total": null, "next_cursor": null },
+    "permissions": { "pause": false, "resume": false }
+  }
+]

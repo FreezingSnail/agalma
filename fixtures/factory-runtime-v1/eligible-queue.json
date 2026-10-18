@@ -1,0 +1,22 @@
+{
+  "empty": { "entries": [], "revision": null, "total": null, "next_cursor": null },
+  "partial": {
+    "entries": [
+      { "task_id": "fix-answer", "title": "Fix the answer", "priority": "high", "family": "fix" },
+      { "task_id": "feat-widget", "title": "Add a widget", "priority": "normal", "family": "feature" }
+    ],
+    "revision": "rev-fixture-42",
+    "total": "2",
+    "next_cursor": null
+  },
+  "paged": {
+    "entries": [
+      { "task_id": "bench-load", "title": "Load benchmark", "priority": "low", "family": "bench" },
+      { "task_id": "fix-answer", "title": "Fix the answer", "priority": "critical", "family": "fix" },
+      { "task_id": "mutate-core", "title": "Mutate the core", "priority": "high", "family": "mutation" }
+    ],
+    "revision": "rev-fixture-43",
+    "total": "9007199254740993",
+    "next_cursor": "{\"after\":\"mutate-core\",\"format\":\"FactoryQueueCursor/v1\",\"repository_id\":\"agalma\",\"revision\":\"rev-fixture-43\",\"runtime_instance_id\":\"rt-fixture-4\",\"state_id\":\"state-fixture-running\"}"
+  }
+}

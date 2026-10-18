@@ -1,0 +1,154 @@
+{
+  "base": {
+    "format": "FactoryRuntime/v1",
+    "repository_id": "agalma",
+    "state_id": "state-invalid",
+    "runtime_instance_id": "rt-invalid-1",
+    "observed_at_unix_ms": "1791820800000",
+    "status": "Idle",
+    "reason": null,
+    "sources": [
+      { "source": "runtime", "state": "available", "detail": null, "observed_at_unix_ms": "1791820800000" },
+      { "source": "worker", "state": "available", "detail": null, "observed_at_unix_ms": "1791820800000" },
+      { "source": "queue", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820800000" },
+      { "source": "execution", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820800000" },
+      { "source": "stop", "state": "unknown", "detail": null, "observed_at_unix_ms": null }
+    ],
+    "stop": null,
+    "current_execution": null,
+    "eligible": { "entries": [], "revision": "rev-invalid", "total": "0", "next_cursor": null },
+    "permissions": { "pause": false, "resume": false }
+  },
+  "cases": [
+    { "name": "format-version", "expected_code": "UnsupportedVersion", "set": { "format": "FactoryRuntime/v2" } },
+    { "name": "format-family", "expected_code": "UnsupportedSchema", "set": { "format": "FactoryRuntimeV1" } },
+    { "name": "format-version-alias-v01", "expected_code": "UnsupportedSchema", "set": { "format": "FactoryRuntime/v01" } },
+    { "name": "format-version-alias-capital", "expected_code": "UnsupportedSchema", "set": { "format": "FactoryRuntime/V1" } },
+    { "name": "permissions-missing-pause", "expected_code": "InvalidRecord", "remove": ["permissions.pause"] },
+    { "name": "permissions-missing-resume", "expected_code": "InvalidRecord", "remove": ["permissions.resume"] },
+    { "name": "missing-format", "expected_code": "InvalidRecord", "remove": ["format"] },
+    { "name": "repository-id-empty", "expected_code": "InvalidRecord", "set": { "repository_id": "" } },
+    { "name": "repository-id-path", "expected_code": "InvalidRecord", "set": { "repository_id": "/var/lib/agalma" } },
+    { "name": "repository-id-overlimit", "expected_code": "InvalidRecord", "set": { "repository_id": { "fill": "r", "len": 257 } } },
+    { "name": "state-id-traversal", "expected_code": "InvalidRecord", "set": { "state_id": "../secret" } },
+    { "name": "state-id-overlimit", "expected_code": "InvalidRecord", "set": { "state_id": { "fill": "s", "len": 257 } } },
+    { "name": "runtime-instance-overlimit", "expected_code": "InvalidRecord", "set": { "runtime_instance_id": { "fill": "r", "len": 129 } } },
+    { "name": "observed-at-float", "expected_code": "InvalidRecord", "set": { "observed_at_unix_ms": "1.5" } },
+    { "name": "observed-at-negative", "expected_code": "InvalidRecord", "set": { "observed_at_unix_ms": "-1" } },
+    { "name": "reason-overlimit", "expected_code": "InvalidRecord", "set": { "reason": { "fill": "r", "len": 2049 } } },
+    { "name": "status-unknown", "expected_code": "InvalidRecord", "set": { "status": "Serving" } },
+    {
+      "name": "sources-missing",
+      "expected_code": "InvalidRecord",
+      "set": {
+        "sources": [
+          { "source": "runtime", "state": "available", "detail": null, "observed_at_unix_ms": "1791820800000" },
+          { "source": "worker", "state": "available", "detail": null, "observed_at_unix_ms": "1791820800000" },
+          { "source": "queue", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820800000" },
+          { "source": "execution", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820800000" }
+        ]
+      }
+    },
+    {
+      "name": "sources-duplicate",
+      "expected_code": "InvalidRecord",
+      "set": {
+        "sources": [
+          { "source": "runtime", "state": "available", "detail": null, "observed_at_unix_ms": "1791820800000" },
+          { "source": "worker", "state": "available", "detail": null, "observed_at_unix_ms": "1791820800000" },
+          { "source": "queue", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820800000" },
+          { "source": "execution", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820800000" },
+          { "source": "runtime", "state": "available", "detail": null, "observed_at_unix_ms": "1791820800000" }
+        ]
+      }
+    },
+    {
+      "name": "source-name-unknown",
+      "expected_code": "InvalidRecord",
+      "set": {
+        "sources": [
+          { "source": "unknown", "state": "available", "detail": null, "observed_at_unix_ms": "1791820800000" },
+          { "source": "worker", "state": "available", "detail": null, "observed_at_unix_ms": "1791820800000" },
+          { "source": "queue", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820800000" },
+          { "source": "execution", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820800000" },
+          { "source": "stop", "state": "unknown", "detail": null, "observed_at_unix_ms": null }
+        ]
+      }
+    },
+    {
+      "name": "source-detail-overlimit",
+      "expected_code": "InvalidRecord",
+      "set": {
+        "sources": [
+          { "source": "runtime", "state": "available", "detail": { "fill": "d", "len": 2049 }, "observed_at_unix_ms": "1791820800000" },
+          { "source": "worker", "state": "available", "detail": null, "observed_at_unix_ms": "1791820800000" },
+          { "source": "queue", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820800000" },
+          { "source": "execution", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820800000" },
+          { "source": "stop", "state": "unknown", "detail": null, "observed_at_unix_ms": null }
+        ]
+      }
+    },
+    {
+      "name": "stop-reason-overlimit",
+      "expected_code": "InvalidRecord",
+      "set": { "stop": { "stopped": true, "reason": { "fill": "r", "len": 2049 }, "observed_at_unix_ms": "1791820800000" } }
+    },
+    {
+      "name": "execution-id-overlimit",
+      "expected_code": "InvalidRecord",
+      "set": { "current_execution": { "execution_id": { "fill": "e", "len": 257 }, "task_id": "fix-answer", "generation": "1", "phase": "Build", "state": "Running", "updated_at_unix_ms": null } }
+    },
+    {
+      "name": "execution-updated-float",
+      "expected_code": "InvalidRecord",
+      "set": { "current_execution": { "execution_id": "exec:fix-answer:1", "task_id": "fix-answer", "generation": "1", "phase": "Build", "state": "Running", "updated_at_unix_ms": "1.5" } }
+    },
+    {
+      "name": "eligible-title-overlimit",
+      "expected_code": "InvalidRecord",
+      "set": { "eligible": { "entries": [ { "task_id": "fix-answer", "title": { "fill": "t", "len": 1025 }, "priority": "low", "family": "fix" } ], "revision": null, "total": null, "next_cursor": null } }
+    },
+    {
+      "name": "eligible-revision-overlimit",
+      "expected_code": "InvalidRecord",
+      "set": { "eligible": { "entries": [], "revision": { "fill": "r", "len": 129 }, "total": null, "next_cursor": null } }
+    },
+    {
+      "name": "eligible-cursor-overlimit",
+      "expected_code": "InvalidRecord",
+      "set": { "eligible": { "entries": [], "revision": null, "total": null, "next_cursor": { "fill": "c", "len": 4097 } } }
+    },
+    {
+      "name": "eligible-too-many",
+      "expected_code": "InvalidRecord",
+      "set": { "eligible": { "entries": { "repeat": 101, "value": { "task_id": "fix-answer", "title": "T", "priority": "low", "family": "fix" } }, "revision": null, "total": null, "next_cursor": null } }
+    },
+    {
+      "name": "eligible-total-float",
+      "expected_code": "InvalidRecord",
+      "set": { "eligible": { "entries": [], "revision": null, "total": "1.5", "next_cursor": null } }
+    },
+    { "name": "remove-runtime-instance", "expected_code": "InvalidRecord", "remove": ["runtime_instance_id"] },
+    { "name": "remove-reason", "expected_code": "InvalidRecord", "remove": ["reason"] },
+    { "name": "remove-stop", "expected_code": "InvalidRecord", "remove": ["stop"] },
+    { "name": "remove-current-execution", "expected_code": "InvalidRecord", "remove": ["current_execution"] },
+    { "name": "remove-eligible-revision", "expected_code": "InvalidRecord", "remove": ["eligible.revision"] },
+    { "name": "remove-eligible-total", "expected_code": "InvalidRecord", "remove": ["eligible.total"] },
+    { "name": "remove-eligible-cursor", "expected_code": "InvalidRecord", "remove": ["eligible.next_cursor"] },
+    { "name": "remove-source-detail", "expected_code": "InvalidRecord", "remove": ["sources.0.detail"] },
+    { "name": "remove-source-observed-at", "expected_code": "InvalidRecord", "remove": ["sources.0.observed_at_unix_ms"] },
+    {
+      "name": "remove-execution-updated-at",
+      "expected_code": "InvalidRecord",
+      "set": { "current_execution": { "execution_id": "exec:fix-answer:1", "task_id": "fix-answer", "generation": "1", "phase": "Build", "state": "Running", "updated_at_unix_ms": null } },
+      "remove": ["current_execution.updated_at_unix_ms"]
+    },
+    {
+      "name": "remove-stop-reason",
+      "expected_code": "InvalidRecord",
+      "set": { "stop": { "stopped": false, "reason": null, "observed_at_unix_ms": "1791820800000" } },
+      "remove": ["stop.reason"]
+    },
+    { "name": "extra-field", "expected_code": "InvalidRecord", "set": { "extra": 1 } }
+  ]
+}

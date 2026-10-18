@@ -30,6 +30,7 @@
 pub mod client;
 pub mod command;
 pub mod connect;
+pub mod control_plane_client;
 pub mod envelope;
 pub mod error;
 pub mod execution_client;
@@ -45,6 +46,7 @@ pub mod plugin_server;
 pub mod server;
 pub mod taskqueue_client;
 pub mod taskqueue_server;
+pub mod web_http;
 pub mod workspace_client;
 pub mod workspace_server;
 
@@ -81,6 +83,9 @@ where
 pub use client::Client;
 pub use command::CommandSpec;
 pub use connect::{serve_wire, ConnectClient, IpcDispatcher, Wire, PARENT_DEATH_STDIN_ENV, WIRE_ENV};
+pub use control_plane_client::{
+    ControlPlaneReadClient, CONNECT_TIMEOUT, CONTROL_PLANE_READ_API,
+};
 pub use envelope::{Request, Response, ResponseError, PROTOCOL_VERSION};
 pub use error::{IpcError, CODE_PROTOCOL, CODE_UNAVAILABLE};
 pub use execution_client::{
@@ -118,6 +123,11 @@ pub use taskqueue_client::{
     TaskQueueClient, TaskQueueOps,
 };
 pub use taskqueue_server::{register_taskqueue, TASKQUEUE_METHODS};
+pub use web_http::{
+    Asset, AssetInventory, ListenerConfig, LoopbackListener, Router, WebApp, WebAppBuilder,
+    WebHandler, WebHttpError, WebRequest, WebResponse, DEFAULT_HOST, MAX_OUTSTANDING_READS,
+    READ_DEADLINE,
+};
 pub use workspace_client::{
     CheckoutCall, IntegrateOriginParams, IntegrateParams, OriginReceiptParams, PrepareParams,
     PrepareRepoParams, PrepareVerifyParams, RevertOriginParams, RevertParams, TagParams,

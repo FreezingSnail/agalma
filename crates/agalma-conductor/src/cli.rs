@@ -59,6 +59,11 @@ pub struct WorkArgs {
     /// Process at most this many tasks before exiting.
     #[arg(long, value_name = "N")]
     pub max_tasks: Option<u32>,
+    /// Continuous single-owner queue mode: keep consuming eligible work and stay
+    /// observable through an empty queue, long tasks and admission pause. Cannot
+    /// be combined with `--once` or `--max-tasks`.
+    #[arg(long)]
+    pub watch: bool,
     /// Override the state directory.
     #[arg(long, value_name = "DIR")]
     pub state_dir: Option<PathBuf>,

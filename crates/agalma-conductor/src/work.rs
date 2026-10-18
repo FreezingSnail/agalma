@@ -73,6 +73,8 @@ use crate::taskqueue_process::{TaskQueueHandle, TaskQueueTransport};
 use crate::workspace_process::{WorkspaceHandle, WorkspaceTransport};
 use crate::LockGuard;
 
+pub mod factory_runtime;
+
 /// Terminal outcome of driving one task's execution.
 #[derive(Clone, Debug)]
 enum Terminal {
@@ -96,6 +98,12 @@ pub fn run_work(args: WorkArgs) -> ExitCode {
 }
 
 fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
+    // Continuous single-owner mode (`WEB.10`): an explicit separate runtime path
+    // that reuses the same selection/claim/`run_task` pipeline. Ordinary
+    // batch/once/max_tasks behavior below is unchanged.
+    if args.watch {
+        return factory_runtime::run_watch(args);
+    }
     let state_dir = resolve_state_dir(args.state_dir.as_deref())
         .map_err(|e| ContractError::KnownFailure(e.to_string()))?;
     // H3 routing: `--model`/`AGALMA_MODEL` override every class; otherwise the
@@ -365,6 +373,7 @@ fn work(args: WorkArgs) -> Result<ExitCode, ContractError> {
             &mut queue,
             harness.clone(),
             Rc::clone(&stop),
+            None,
         )?;
         processed += 1;
         last = Some(terminal);
@@ -469,6 +478,7 @@ fn run_task(
     queue: &mut TaskQueueHandle,
     harness: HarnessHandle,
     stop: Rc<dyn StopControl>,
+    observer: Option<&dyn crate::work::factory_runtime::ExecutionObserver>,
 ) -> Result<Terminal, ContractError> {
     let (builder, verifier) = task_routes(
         state_dir,
@@ -509,6 +519,17 @@ fn run_task(
 
     record_claim(&mut lifecycle, &execution, evidence, generation, lease)?;
 
+    // Publish the truthfully allocated durable execution identity and its
+    // current phase (`WEB.10`): the observer is a no-op in batch mode, and the
+    // continuous runtime uses it to expose real execution progress.
+    observe_execution(
+        observer,
+        &execution,
+        &task.task_id,
+        generation,
+        &lifecycle,
+    );
+
     // First dispatch consumes the frozen admitted values, not the live task.
     let package = load_admitted_package(state_dir, &persisted.digest)?;
     verify_recovered_pins(state_dir, &package, &harness)?;
@@ -544,11 +565,13 @@ fn run_task(
     let terminal = drive_task(
         &mut executor,
         &execution,
-        queue,
         &task.task_id,
+        generation,
+        queue,
         lease,
         false,
         &*stop,
+        observer,
     )?;
     // CP.5: pin the epic review baseline at the effect boundary. The candidate
     // has already landed (the integrate phase committed it), but the execution is
@@ -890,13 +913,16 @@ fn project_terminal(
 fn drive_task(
     executor: &mut Executor<LedgerHandle>,
     execution: &ExecutionId,
-    queue: &mut TaskQueueHandle,
     task_id: &TaskId,
+    generation: u32,
+    queue: &mut TaskQueueHandle,
     lease: u32,
     best_effort: bool,
     stop: &dyn StopControl,
+    observer: Option<&dyn crate::work::factory_runtime::ExecutionObserver>,
 ) -> Result<Terminal, ContractError> {
     let mut last_phase: Option<ExecutionPhase> = None;
+    let mut last_observed: Option<(ExecutionPhase, ExecutionState)> = None;
     loop {
         match stop.decision() {
             crate::stop::StopDecision::Running => {}
@@ -911,6 +937,10 @@ fn drive_task(
             }
         }
         let status = executor.status(execution)?;
+        if last_observed != Some((status.phase, status.state)) {
+            observe_execution(observer, execution, task_id, generation, executor);
+            last_observed = Some((status.phase, status.state));
+        }
         if last_phase != Some(status.phase) {
             let projection = queue.comment(
                 task_id,
@@ -946,6 +976,30 @@ fn drive_task(
             StepOutcome::Parked { reason } => return Ok(Terminal::Parked(reason)),
             StepOutcome::Blocked { .. } => return Ok(Terminal::Blocked),
         }
+    }
+}
+
+/// Publish the current durable phase/state to an observation sink (`WEB.10`).
+/// A no-op sink (batch mode) does nothing; the status read is best-effort so a
+/// read error never blocks execution.
+fn observe_execution(
+    observer: Option<&dyn crate::work::factory_runtime::ExecutionObserver>,
+    execution: &ExecutionId,
+    task_id: &TaskId,
+    generation: u32,
+    executor: &Executor<LedgerHandle>,
+) {
+    let Some(observer) = observer else {
+        return;
+    };
+    if let Ok(status) = executor.status(execution) {
+        observer.observe(
+            execution.as_str(),
+            task_id.as_str(),
+            generation,
+            status.phase,
+            status.state,
+        );
     }
 }
 
@@ -1168,11 +1222,13 @@ fn recover_inflight(
         let terminal = drive_task(
             &mut executor,
             &record.execution_id,
-            queue,
             &task_id,
+            record.generation,
+            queue,
             lease,
             true,
             &*stop,
+            None,
         )?;
         finalize(
             state_dir,

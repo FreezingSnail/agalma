@@ -1851,6 +1851,26 @@ pub fn attach_work_plugin_host(
     roots: &crate::cli::PluginRootArgs,
     ledger: &LedgerHandle,
 ) -> Option<PluginHost> {
+    let mut host = assemble_work_plugin_host(state_dir, roots, ledger)?;
+    let mut probe = RpcHealthProbe::new(host.state_dir.clone());
+    if let Err(err) = host.start_desired(&mut probe) {
+        eprintln!("agalma: plugin host start failed: {err:?}");
+    }
+    Some(host)
+}
+
+/// Assemble the plugin host for the `agalma work --watch` supervision owner
+/// **without** starting desired plugins.
+///
+/// The caller serves the hub capability socket first and then calls
+/// [`PluginHost::start_desired`], so a child that binds back during startup
+/// always reaches a hub that is already accepting. Best-effort: an assembly
+/// failure returns `None` (reported) and never blocks factory work.
+pub fn assemble_work_plugin_host(
+    state_dir: &Path,
+    roots: &crate::cli::PluginRootArgs,
+    ledger: &LedgerHandle,
+) -> Option<PluginHost> {
     let config = PluginHostConfig {
         state_dir: state_dir.to_path_buf(),
         plugin_roots: crate::config::resolve_plugin_roots(roots),
@@ -1858,19 +1878,72 @@ pub fn attach_work_plugin_host(
     };
     let clock: Arc<dyn Fn() -> u64 + Send + Sync> = Arc::new(|| SystemClock.now_ms());
     let installations = InMemoryInstallations::new();
-    let mut host =
-        match PluginHost::assemble_with_ledger(&config, &installations, ledger.clone(), clock) {
-            Ok(host) => host,
-            Err(err) => {
-                eprintln!("agalma: plugin host assembly failed: {err:?}");
-                return None;
-            }
-        };
-    let mut probe = RpcHealthProbe::new(host.state_dir.clone());
-    if let Err(err) = host.start_desired(&mut probe) {
-        eprintln!("agalma: plugin host start failed: {err:?}");
+    match PluginHost::assemble_with_ledger(&config, &installations, ledger.clone(), clock) {
+        Ok(host) => Some(host),
+        Err(err) => {
+            eprintln!("agalma: plugin host assembly failed: {err:?}");
+            None
+        }
     }
-    Some(host)
+}
+
+/// The composition root's production host-registration hook for `agalma work
+/// --watch` (the WEB.13 seam).
+///
+/// WEB.10 wires this composition-owned hook into the production watch path
+/// (`run_watch` -> `run_watch_with`) so that a later composition change —
+/// WEB.13, which owns this file only — can bind the factory adapter/control to
+/// the **actual** plugin router served by host assembly by editing this
+/// function alone; the WEB.10 runtime internals are never touched.
+///
+/// The default registration is the composition-owned marker adapter
+/// [`WorkPluginHostMarkerAdapter`]: an inert, ungranted capability under the
+/// reserved `agalma.watch.registration/v1` namespace. It exists so the
+/// production path proves that the registrar installed here reaches the served
+/// router; WEB.13 replaces the body with the factory adapter/control
+/// registration.
+pub fn register_work_plugin_host(composition: &crate::work::factory_runtime::WatchComposition) {
+    composition.register(Arc::new(WorkPluginHostRegistrar));
+}
+
+/// The reserved capability namespace of the default production registration
+/// marker installed by [`register_work_plugin_host`].
+pub const WORK_PLUGIN_HOST_MARKER_CAPABILITY: &str = "agalma.watch.registration/v1";
+
+/// The composition-owned default registrar installed by
+/// [`register_work_plugin_host`].
+struct WorkPluginHostRegistrar;
+
+impl crate::work::factory_runtime::HostRegistrar for WorkPluginHostRegistrar {
+    fn register(
+        &self,
+        registration: &crate::work::factory_runtime::HostRegistration<'_>,
+    ) -> Result<(), ContractError> {
+        registration
+            .router
+            .router()
+            .register_adapter(WorkPluginHostMarkerAdapter);
+        Ok(())
+    }
+}
+
+/// The inert composition-owned registration marker adapter. It carries no
+/// grant and no hub authority; invoking it requires a launch grant that is
+/// never issued for the reserved namespace.
+struct WorkPluginHostMarkerAdapter;
+
+impl CapabilityAdapter for WorkPluginHostMarkerAdapter {
+    fn capability(&self) -> &str {
+        WORK_PLUGIN_HOST_MARKER_CAPABILITY
+    }
+
+    fn invoke(
+        &mut self,
+        _scope: &crate::plugin_router::GrantScope,
+        _input: &serde_json::Value,
+    ) -> Result<serde_json::Value, ContractError> {
+        Ok(serde_json::json!({"registered": true}))
+    }
 }
 
 #[cfg(test)]

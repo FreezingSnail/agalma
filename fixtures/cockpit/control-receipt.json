@@ -1,0 +1,15 @@
+{
+  "format": "FactoryControl/v1",
+  "result": "receipt",
+  "receipt": {
+    "action_id": "ui-fixture",
+    "request": { "format": "FactoryControl/v1", "operation": "pause", "action_id": "ui-fixture", "confirmation": null },
+    "request_digest": "sha256:b1e24a1454ae226e1682459cc17bb5cb85f41022e68677af8d0d0f0403c016f1",
+    "outcome": "applied",
+    "reason": null,
+    "ledger_action_id": "ledger:ui-fixture",
+    "actor": "human",
+    "recorded_at_unix_ms": "1791820805000"
+  },
+  "observed_stop": { "stopped": true, "reason": "operator pause", "observed_at_unix_ms": "1791820805000" }
+}

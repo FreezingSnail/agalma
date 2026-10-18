@@ -1,0 +1,20 @@
+{
+  "format": "FactoryRuntime/v1",
+  "repository_id": "example-repo",
+  "state_id": "example-state",
+  "runtime_instance_id": "rt-fixture-2",
+  "observed_at_unix_ms": "1791820803001",
+  "status": "Paused",
+  "reason": "operator pause",
+  "sources": [
+    { "source": "runtime", "state": "available", "detail": null, "observed_at_unix_ms": "1791820803001" },
+    { "source": "worker", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820803001" },
+    { "source": "queue", "state": "available", "detail": null, "observed_at_unix_ms": "1791820803001" },
+    { "source": "execution", "state": "empty", "detail": null, "observed_at_unix_ms": "1791820803001" },
+    { "source": "stop", "state": "available", "detail": "stop latch set", "observed_at_unix_ms": "1791820803001" }
+  ],
+  "stop": { "stopped": true, "reason": "operator pause", "observed_at_unix_ms": "1791820803001" },
+  "current_execution": null,
+  "eligible": { "entries": [], "revision": "rev-8", "total": "0", "next_cursor": null },
+  "permissions": { "pause": false, "resume": true }
+}

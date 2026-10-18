@@ -1,0 +1,36 @@
+{
+  "metadata": {
+    "format": "ControlPlaneRead/v1",
+    "collected_at_unix_ms": 1791820802000,
+    "registry_revision": "18446744073709551615",
+    "report_watermark": null,
+    "sources": [
+      { "source": "ledger", "state": "available", "detail": "", "observed_at_unix_ms": 1791820802000 }
+    ]
+  },
+  "factory": { "stopped": false, "reason": null, "observed_at_unix_ms": 1791820802000 },
+  "executions": [
+    {
+      "execution_id": "exec:boundary:1",
+      "task_id": "boundary",
+      "generation": "18446744073709551615",
+      "phase": "Build",
+      "state": "Running",
+      "attempt": "1",
+      "revision": "9007199254740993",
+      "updated_at_unix_ms": 1791820802000
+    }
+  ],
+  "economics": {
+    "completeness": "Complete",
+    "usage": "9007199254740993",
+    "usage_unit": "tokens",
+    "cost": "0.000000000000000001",
+    "allowance": "18446744073709551615.99",
+    "cost_unit": "usd",
+    "observed_at_unix_ms": 1791820802000
+  },
+  "timeline": [
+    { "at_unix_ms": 1791820802000, "kind": "note", "title": "Boundary values", "detail": "exact decimal strings" }
+  ]
+}

@@ -1,0 +1,72 @@
+:root {
+  color-scheme: light dark;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+body {
+  margin: 0;
+  padding: 1rem;
+  background: Canvas;
+  color: CanvasText;
+}
+
+main {
+  max-width: 72rem;
+  margin: 0 auto;
+}
+
+h1 {
+  font-size: 1.25rem;
+}
+
+.panel {
+  border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0;
+}
+
+.panel h2 {
+  font-size: 1rem;
+  margin: 0.25rem 0 0.5rem;
+}
+
+.kv {
+  margin: 0.1rem 0;
+}
+
+.key {
+  opacity: 0.7;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.25rem 0;
+}
+
+th,
+td {
+  text-align: left;
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 15%, transparent);
+  padding: 0.15rem 0.4rem;
+  word-break: break-word;
+}
+
+.note,
+.truncation {
+  opacity: 0.7;
+  font-size: 0.85rem;
+}
+
+.stale {
+  color: color-mix(in srgb, CanvasText 60%, #b8860b);
+}
+
+.reload {
+  color: #b8860b;
+}
+
+.controls button {
+  margin-right: 0.5rem;
+}

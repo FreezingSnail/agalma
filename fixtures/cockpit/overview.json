@@ -1,0 +1,37 @@
+{
+  "metadata": {
+    "format": "ControlPlaneRead/v1",
+    "collected_at_unix_ms": 1791820800000,
+    "registry_revision": "18446744073709551615",
+    "report_watermark": null,
+    "sources": [
+      { "source": "ledger", "state": "available", "detail": "", "observed_at_unix_ms": 1791820800000 },
+      { "source": "budget", "state": "unknown", "detail": "no allowance observation yet", "observed_at_unix_ms": 1791820800000 }
+    ]
+  },
+  "factory": { "stopped": true, "reason": "operator pause", "observed_at_unix_ms": 1791820800000 },
+  "executions": [
+    {
+      "execution_id": "exec:cabinets-are-not-shelves:1",
+      "task_id": "cabinets-are-not-shelves",
+      "generation": "18446744073709551615",
+      "phase": "Build",
+      "state": "Running",
+      "attempt": "1",
+      "revision": "9007199254740993",
+      "updated_at_unix_ms": 1791820800000
+    }
+  ],
+  "economics": {
+    "completeness": "Partial",
+    "usage": "123456789012345.678901",
+    "usage_unit": "tokens",
+    "cost": null,
+    "allowance": "5.00",
+    "cost_unit": "usd",
+    "observed_at_unix_ms": 1791820800000
+  },
+  "timeline": [
+    { "at_unix_ms": 1791820800000, "kind": "factory.stop", "title": "Factory stopped", "detail": "operator pause" }
+  ]
+}

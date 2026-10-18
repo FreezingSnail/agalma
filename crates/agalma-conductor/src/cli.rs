@@ -64,6 +64,12 @@ pub struct WorkArgs {
     /// be combined with `--once` or `--max-tasks`.
     #[arg(long)]
     pub watch: bool,
+    /// Optional explicit factory control-surface selector (WEB.13): only the
+    /// installed plugin with this exact id may receive the `factory.control/v1`
+    /// capability, and only from its own current, exact-digest durable approval
+    /// pin. Absent keeps the cockpit read-only.
+    #[arg(long, value_name = "PLUGIN_ID")]
+    pub factory_control_plugin: Option<String>,
     /// Override the state directory.
     #[arg(long, value_name = "DIR")]
     pub state_dir: Option<PathBuf>,

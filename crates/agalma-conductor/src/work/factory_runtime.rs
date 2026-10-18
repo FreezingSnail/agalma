@@ -861,6 +861,7 @@ impl<D: RuntimeDriver> ContinuousRuntime<D> {
         let task = match self.driver.select_task(&ready) {
             Ok(task) => task,
             Err(err) => {
+                eprintln!("agalma: work --watch task selection failed: {err}");
                 self.shared
                     .publish_failed(format!("task selection failed: {err}"));
                 return LoopAction::Fatal;
@@ -902,6 +903,7 @@ impl<D: RuntimeDriver> ContinuousRuntime<D> {
                 LoopAction::Ran
             }
             Err(err) => {
+                eprintln!("agalma: work --watch task execution failed: {err}");
                 self.shared
                     .publish_failed(format!("task execution failed: {err}"));
                 LoopAction::Fatal
@@ -1086,6 +1088,12 @@ pub struct HostRegistration<'a> {
     pub repository_id: &'a str,
     /// Opaque configured state-directory identity.
     pub state_id: &'a str,
+    /// The configured state directory the supervision owner was built over,
+    /// borrowed unchanged from [`HostSupervision::state_dir`]. This is the exact
+    /// path (already canonicalized by the watch entry point) used for the
+    /// state-scoped factory-control owner guard and STOP sentinel; it is never
+    /// derived from the opaque [`Self::state_id`].
+    pub state_dir: &'a Path,
     /// The selected durable ledger the host was assembled over.
     pub ledger: &'a LedgerHandle,
     /// The exact router served on the hub capability socket.
@@ -1193,10 +1201,34 @@ impl SupervisionHandle {
         registration: Option<HostRegistrationContext>,
         cadence: Duration,
     ) -> Self {
+        Self::spawn_host_with_factory_control(
+            state_dir,
+            roots,
+            ledger,
+            shared,
+            registration,
+            cadence,
+            None,
+        )
+    }
+
+    /// Spawn the production plugin-host supervision owner with the optional
+    /// explicit factory control-surface selector (`WEB.13`). `None` keeps the
+    /// cockpit read-only.
+    pub fn spawn_host_with_factory_control(
+        state_dir: PathBuf,
+        roots: crate::cli::PluginRootArgs,
+        ledger: LedgerHandle,
+        shared: Arc<RuntimeShared>,
+        registration: Option<HostRegistrationContext>,
+        cadence: Duration,
+        factory_control_plugin: Option<String>,
+    ) -> Self {
         let shutdown = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&shutdown);
         let thread = std::thread::spawn(move || {
             let mut owner = HostSupervision::new(state_dir, roots, ledger, shared, registration);
+            owner.factory_control_plugin = factory_control_plugin;
             run_supervision(&mut owner, &flag, cadence)
         });
         SupervisionHandle::from_thread(shutdown, thread)
@@ -1239,6 +1271,10 @@ pub struct HostSupervision {
     runtime: Option<tokio::runtime::Runtime>,
     serve: Option<tokio::task::JoinHandle<()>>,
     registration: Option<HostRegistrationContext>,
+    /// The optional explicit factory control-surface selector (`WEB.13`): the
+    /// installed plugin id allowed to receive `factory.control/v1` from its own
+    /// current durable approval pin. `None` keeps the cockpit read-only.
+    factory_control_plugin: Option<String>,
     state: HostState,
     /// Set when a crash or unready desired plugin was observed; cleared only
     /// after a subsequent successful probe confirms readiness again, so a
@@ -1327,6 +1363,7 @@ impl HostSupervision {
             runtime: None,
             serve: None,
             registration,
+            factory_control_plugin: None,
             state: HostState::Unstarted,
             degraded: false,
         }
@@ -1342,10 +1379,11 @@ impl HostSupervision {
         if !matches!(self.state, HostState::Unstarted) {
             return Ok(());
         }
-        let Some(host) = crate::composition::assemble_work_plugin_host(
+        let Some(host) = crate::composition::assemble_work_plugin_host_with_control(
             &self.state_dir,
             &self.roots,
             &self.ledger,
+            self.factory_control_plugin.as_deref(),
         ) else {
             // Assembly failure is an explicit unavailable observation, never a
             // fabricated healthy host. It never blocks factory work.
@@ -1390,6 +1428,7 @@ impl HostSupervision {
             let context = HostRegistration {
                 repository_id: &registration.repository_id,
                 state_id: &registration.state_id,
+                state_dir: &self.state_dir,
                 ledger: &self.ledger,
                 router: &host.router,
                 shared: &registration.shared,
@@ -2100,13 +2139,14 @@ pub fn run_watch_with(
     // The supervision owner is constructed and used in its own native thread so
     // host health/hub serving keeps progressing while `run_task` blocks the
     // worker. Allowed under a stop: observation services only.
-    let mut supervision = SupervisionHandle::spawn_host(
+    let mut supervision = SupervisionHandle::spawn_host_with_factory_control(
         state_dir.clone(),
         args.plugin_roots.clone(),
         ledger.clone(),
         Arc::clone(&shared),
         registration,
         WATCH_SUPERVISION_TICK,
+        args.factory_control_plugin.clone(),
     );
     eprintln!(
         "agalma: work --watch repository_id={repository_id} state_id={state_id} instance={instance}"
@@ -2246,6 +2286,7 @@ mod tests {
             harness: None,
             plugin_roots: crate::cli::PluginRootArgs::default(),
             watch: false,
+            factory_control_plugin: None,
         };
         assert!(watch_conflict(&args).is_none());
         args.watch = true;

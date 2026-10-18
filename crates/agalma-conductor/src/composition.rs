@@ -10,19 +10,23 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use agalma_contracts::harness::StopEvidence;
 use agalma_contracts::{
-    BindingPin, ContractError, ExecutionApi, ExecutionPhase, FailureCode, HealthState, LedgerApi,
-    PluginHealth, PluginInstallation, PLUGIN_HEALTH_FORMAT,
+    BindingPin, ContractError, ExactU64, ExecutionApi, ExecutionPhase, FailureCode, HealthState,
+    LedgerApi, PluginHealth, PluginInstallation, FACTORY_CONTROL_CAPABILITY, PLUGIN_HEALTH_FORMAT,
 };
 use agalma_execution::{Executor, ExecutorConfig, EXECUTION_DEFINITION_VERSION};
+use agalma_ipc::{CapabilityBinding, PLUGIN_CAPABILITY_BINDINGS_ENV};
 use agalma_process::LocalLauncher;
 
 use crate::cli::PluginHostArgs;
 use crate::config::{Config, PluginHostConfig};
+use crate::factory_control::{
+    ApprovedControlBinding, ControlBindingResolver, ControlOwnership, FactoryControlService,
+};
 use crate::harness_binding::{harness_handle, HarnessChoice};
 use crate::harness_process::READY_TIMEOUT;
 use crate::ledger_process::{LedgerHandle, LedgerTransport};
@@ -48,6 +52,9 @@ use crate::stop::{BoundStopControl, StopControl};
 use crate::task::{self, TaskDescriptor};
 use crate::watch::{service_action_driver_shared, ActionDriver};
 use crate::workspace_process::{WorkspaceHandle, WorkspaceTransport};
+use crate::work::factory_runtime::{
+    FactoryRuntimeSource, HostRegistrar, HostRegistration, WatchComposition,
+};
 
 /// Repository-mode builder prompt shipped with the conductor. It is the base
 /// text for every repository (`agalma work`) build; the per-attempt render adds
@@ -450,17 +457,32 @@ fn report_capability(
 /// plugin-invented capability are never auto-granted.
 pub const SAFE_CAPABILITY_ALLOWLIST: &[&str] = &["report.publish", "ledger.read"];
 
+/// Read-only hub capabilities a configured-root package may hold by default.
+///
+/// These observe hub state and create no effect (the router classifies them as
+/// read-only/direct). They are auto-approved so the local cockpit's read UI/API
+/// works without a separate operator pin, while `factory.control/v1` is **never**
+/// auto-approved. This is a capability-class rule, not a plugin-id allowlist, and
+/// it does not change [`SAFE_CAPABILITY_ALLOWLIST`].
+pub const AUTO_APPROVED_READ_CAPABILITIES: &[&str] = &[
+    agalma_contracts::CONTROL_PLANE_READ_CAPABILITY,
+    agalma_contracts::FACTORY_READ_CAPABILITY,
+];
+
 /// The automatic hub grant for a package: the exact intersection of its
-/// requested capabilities and [`SAFE_CAPABILITY_ALLOWLIST`].
+/// requested capabilities and the safe set (the [`SAFE_CAPABILITY_ALLOWLIST`]
+/// plus the read-only [`AUTO_APPROVED_READ_CAPABILITIES`]).
 ///
 /// Order follows the request; the result is duplicate-free and never contains an
-/// empty, `ledger.write` or unknown capability. It depends only on the request
-/// set, so it is a deterministic function the host re-derives identically on
-/// every restart.
+/// empty, `ledger.write`, `factory.control/v1` or unknown capability. It depends
+/// only on the request set, so it is a deterministic function the host
+/// re-derives identically on every restart.
 pub fn auto_approved_capabilities(requested: &[String]) -> Vec<String> {
     let mut approved: Vec<String> = Vec::new();
     for capability in requested {
-        if !SAFE_CAPABILITY_ALLOWLIST.contains(&capability.as_str()) {
+        if !SAFE_CAPABILITY_ALLOWLIST.contains(&capability.as_str())
+            && !AUTO_APPROVED_READ_CAPABILITIES.contains(&capability.as_str())
+        {
             continue;
         }
         if approved.iter().any(|seen| seen == capability) {
@@ -586,6 +608,11 @@ pub struct PluginHost {
     pub hub_socket: PathBuf,
     /// Per-launch grants issued for installed plugins (private launch channel).
     grants: BTreeMap<String, LaunchGrant>,
+    /// Per-launch grants for **every** approved capability of each installed
+    /// plugin, keyed by plugin then capability (the private
+    /// `PluginCapabilityBindings/v1` descriptor). A launch rotation revokes every
+    /// prior token here so the descriptor never carries a stale grant.
+    capability_grants: BTreeMap<String, BTreeMap<String, LaunchGrant>>,
     /// Per-launch `hub.PublishReport` grants (private launch channel).
     report_grants: BTreeMap<String, LaunchGrant>,
     desired: Box<dyn DesiredStateStore>,
@@ -606,6 +633,11 @@ pub struct PluginHost {
     /// WEB.2 live component projection cell (refreshed each supervise tick so a
     /// crash is visible to `control-plane.read/v1` before freshness expiry).
     pub read_live: Arc<Mutex<Vec<crate::control_plane_read::ProjectedComponent>>>,
+    /// The optional explicit factory control-surface selector (`WEB.13`). Only
+    /// this plugin id may receive `factory.control/v1` from its durable pin;
+    /// `None` withholds control from every plugin while preserving each
+    /// installation's read capabilities.
+    factory_control_plugin: Option<String>,
 }
 
 /// What one supervise tick observed and did.
@@ -764,6 +796,7 @@ impl PluginHost {
             router,
             hub_socket,
             grants: BTreeMap::new(),
+            capability_grants: BTreeMap::new(),
             report_grants: BTreeMap::new(),
             desired,
             ledger: None,
@@ -771,6 +804,7 @@ impl PluginHost {
             action_sockets: Arc::new(Mutex::new(BTreeMap::new())),
             action_grants: Arc::new(Mutex::new(BTreeMap::new())),
             read_live: Arc::new(Mutex::new(Vec::new())),
+            factory_control_plugin: None,
         })
     }
 
@@ -846,6 +880,15 @@ impl PluginHost {
     /// The selected durable ledger attached to this host, when one is.
     pub fn ledger(&self) -> Option<&LedgerHandle> {
         self.ledger.as_ref()
+    }
+
+    /// Set the optional explicit factory control-surface selector (`WEB.13`).
+    ///
+    /// Only the plugin with this id may receive `factory.control/v1`; `None`
+    /// withholds control from every plugin while preserving read capabilities.
+    /// Used by the production assembly path and by regressions.
+    pub fn set_factory_control_plugin(&mut self, plugin: Option<&str>) {
+        self.factory_control_plugin = plugin.map(str::to_string);
     }
 
     /// The plugin -> active/pending generation map the registry is running.
@@ -1011,33 +1054,127 @@ impl PluginHost {
         let socket = plugin_socket_path(&self.state_dir, plugin_id, epoch);
         let mut request = LaunchRequest::from_installed(&installed, socket);
 
-        // Rotate the per-launch grants: revoke the prior tokens, then issue
-        // fresh tokens for the identical immutable binding scope.
+        // Controlled launch gating (`WEB.13`): the `factory.control/v1`
+        // capability is issued **only** to the explicitly selected control
+        // surface. Every other plugin (and every plugin when no selector is
+        // configured) keeps its read capabilities but never receives a control
+        // token, descriptor entry or permission. The durable installation pin is
+        // never rewritten: only the per-launch grant/announce set is narrowed.
+        let control_selected = self.factory_control_plugin.as_deref() == Some(plugin_id);
+        let effective_capabilities: Vec<String> = installed
+            .approved_capabilities
+            .iter()
+            .filter(|capability| {
+                capability.as_str() != FACTORY_CONTROL_CAPABILITY || control_selected
+            })
+            .cloned()
+            .collect();
+        request.required_capabilities = effective_capabilities.iter().cloned().collect();
+
+        // Rotate the per-launch grants: revoke the prior tokens, then issue a
+        // fresh token for **every** effective capability over the identical
+        // immutable binding scope. Each capability is an independent private
+        // binding (WEB.13): the legacy first-grant env keeps its documented
+        // behavior for old clients, and the generic
+        // `PluginCapabilityBindings/v1` descriptor carries all of them for the
+        // WEB.12 client bootstrap.
         let binding = plugin_binding(plugin_id, &installed);
         let expiry =
             crate::plugin_router::wall_clock_now_ms().saturating_add(LAUNCH_GRANT_TTL_MS);
-        if let Some(capability) = installed.approved_capabilities.first().cloned() {
-            if let Some(previous) = self.grants.remove(plugin_id) {
-                self.router.router().revoke_grant(&previous.fingerprint());
+        if let Some(previous) = self.grants.remove(plugin_id) {
+            self.router.router().revoke_grant(&previous.fingerprint());
+        }
+        if let Some(previous) = self.capability_grants.remove(plugin_id) {
+            for grant in previous.values() {
+                self.router.router().revoke_grant(&grant.fingerprint());
+            }
+        }
+        // Grant rotation/revocation is scoped to *this* plugin's own launch
+        // binding. A rotation clears the published control binding only when it
+        // belongs to this exact plugin (and, when re-approved, republishes the
+        // new pinned generation below). Launching an unrelated plugin must never
+        // clear or disable another plugin's live control binding.
+        clear_control_binding_for(&self.state_dir, plugin_id);
+
+        let mut issued: Vec<(String, LaunchGrant)> = Vec::new();
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        for capability in &effective_capabilities {
+            if !seen.insert(capability.clone()) {
+                continue;
             }
             let grant = LaunchGrant::for_capability(
                 plugin_id.to_string(),
                 binding.clone(),
                 agalma_ipc::plugin_server::METHOD_INVOKE_CAPABILITY,
-                capability,
+                capability.clone(),
                 expiry,
                 None,
             )?;
             self.router.router().install_grant(&grant);
+            issued.push((capability.clone(), grant));
+        }
+
+        // Legacy first-grant env: unchanged behavior for old clients.
+        if let Some((capability, grant)) = issued.first() {
             request
                 .env
                 .insert(PLUGIN_GRANT_ENV.to_string(), grant.token_hex());
-            request.env.insert(
-                PLUGIN_GRANT_CAPABILITY_ENV.to_string(),
-                grant.scope().resource_namespace.clone(),
-            );
-            self.grants.insert(plugin_id.to_string(), grant);
+            request
+                .env
+                .insert(PLUGIN_GRANT_CAPABILITY_ENV.to_string(), capability.clone());
+            self.grants.insert(plugin_id.to_string(), grant.clone());
         }
+
+        // Generic capability-keyed private descriptor. The hub socket is the
+        // only launch-channel path it carries; grants never reach a public
+        // response, log or report.
+        if !issued.is_empty() {
+            let bindings: Vec<CapabilityBinding> = issued
+                .iter()
+                .map(|(capability, grant)| CapabilityBinding {
+                    capability: capability.clone(),
+                    hub_socket: self.hub_socket.to_string_lossy().into_owned(),
+                    grant: grant.token_hex(),
+                    plugin_id: plugin_id.to_string(),
+                    generation: ExactU64::from(installed.generation),
+                })
+                .collect();
+            let descriptor = serde_json::json!({
+                "format": "PluginCapabilityBindings/v1",
+                "bindings": bindings,
+            });
+            request.env.insert(
+                PLUGIN_CAPABILITY_BINDINGS_ENV.to_string(),
+                serde_json::to_string(&descriptor).map_err(|error| {
+                    FailureCode::InvalidRecord.failure(
+                        plugin_id,
+                        format!("cannot encode capability bindings: {error}"),
+                    )
+                })?,
+            );
+        }
+
+        // Publish the live approved control binding for this launch to the
+        // composition-owned resolver the hub factory adapter consults. Only an
+        // explicitly approved `factory.control/v1` installation reaches here;
+        // the automatic safe-allowlist path never does.
+        if issued
+            .iter()
+            .any(|(capability, _)| capability == FACTORY_CONTROL_CAPABILITY)
+        {
+            set_control_binding(
+                &self.state_dir,
+                ApprovedControlBinding {
+                    plugin_id: plugin_id.to_string(),
+                    capability: FACTORY_CONTROL_CAPABILITY.to_string(),
+                    generation: installed.generation,
+                    expires_at_unix_ms: expiry,
+                },
+            );
+        }
+
+        self.capability_grants
+            .insert(plugin_id.to_string(), issued.into_iter().collect());
 
         // A plugin that declares a report capability gets a separate,
         // launch-scoped `hub.PublishReport` grant. The scope is narrow: the
@@ -1080,6 +1217,14 @@ impl PluginHost {
     /// plugin declares a report capability (private launch channel).
     pub fn report_grant(&self, plugin_id: &str) -> Option<&LaunchGrant> {
         self.report_grants.get(plugin_id)
+    }
+
+    /// The per-launch grant issued for one approved capability of `plugin_id`,
+    /// if any (private launch channel; the token is never logged).
+    pub fn capability_grant(&self, plugin_id: &str, capability: &str) -> Option<&LaunchGrant> {
+        self.capability_grants
+            .get(plugin_id)
+            .and_then(|grants| grants.get(capability))
     }
 
     /// The host-pinned `BindingPin` for `plugin_id`'s staged candidate or active
@@ -1871,20 +2016,135 @@ pub fn assemble_work_plugin_host(
     roots: &crate::cli::PluginRootArgs,
     ledger: &LedgerHandle,
 ) -> Option<PluginHost> {
+    assemble_work_plugin_host_with_control(state_dir, roots, ledger, None)
+}
+
+/// Assemble the `agalma work --watch` plugin host with the optional explicit
+/// factory control-surface selector (`WEB.13`).
+///
+/// `factory_control_plugin` names the single installed plugin id that may
+/// receive `factory.control/v1`. `None` keeps every plugin read-only.
+pub fn assemble_work_plugin_host_with_control(
+    state_dir: &Path,
+    roots: &crate::cli::PluginRootArgs,
+    ledger: &LedgerHandle,
+    factory_control_plugin: Option<&str>,
+) -> Option<PluginHost> {
     let config = PluginHostConfig {
         state_dir: state_dir.to_path_buf(),
         plugin_roots: crate::config::resolve_plugin_roots(roots),
         once: true,
     };
     let clock: Arc<dyn Fn() -> u64 + Send + Sync> = Arc::new(|| SystemClock.now_ms());
-    let installations = InMemoryInstallations::new();
+    let (installations, approved_ids) =
+        operator_installations(state_dir, &config.plugin_roots, factory_control_plugin);
     match PluginHost::assemble_with_ledger(&config, &installations, ledger.clone(), clock) {
-        Ok(host) => Some(host),
+        Ok(mut host) => {
+            host.factory_control_plugin = factory_control_plugin.map(str::to_string);
+            // An explicit selected-pin approval both grants capabilities and
+            // requests that the exact pinned package is launched and supervised
+            // by this runtime (desired `Running`); an unpinned package keeps the
+            // read-only safe-allowlist auto-install path.
+            for plugin_id in &approved_ids {
+                if let Err(err) = host.set_desired(plugin_id, DesiredState::Running) {
+                    eprintln!("agalma: cannot request {plugin_id} running: {err:?}");
+                }
+            }
+            Some(host)
+        }
         Err(err) => {
             eprintln!("agalma: plugin host assembly failed: {err:?}");
             None
         }
     }
+}
+
+/// Durable selected control-surface approval for the continuous cockpit
+/// (`WEB.13`).
+///
+/// With `factory_control_plugin = None` nothing is consumed: every discovered
+/// package keeps the read-only safe-allowlist auto-install path (the cockpit is
+/// read-only). With a selector, only the package with that **exact plugin id**
+/// is considered, and only its **current (newest installed) generation** pin is
+/// read from the existing durable hub installation store
+/// ([`HubInstallStore`], `<state_dir>/plugins/<id>/<gen>/installation.json`).
+///
+/// The pin is accepted only when its frozen `package_digest` matches the
+/// discovered package bytes **and** it explicitly approves `factory.control/v1`
+/// (a capability outside the automatic safe allowlist). An absent, changed or
+/// mismatched pin — and a newer generation whose pin drops `factory.control/v1`
+/// (no older-generation fallback) — fails closed to read-only. Unselected
+/// plugins never receive control, even with an explicit control pin, and the
+/// selected plugin is bound to that exact generation.
+fn operator_installations(
+    state_dir: &Path,
+    roots: &[crate::plugin_manifest::PluginRoot],
+    factory_control_plugin: Option<&str>,
+) -> (InMemoryInstallations, Vec<String>) {
+    let mut installations = InMemoryInstallations::new();
+    let mut approved_ids: Vec<String> = Vec::new();
+    let state_dir = std::fs::canonicalize(state_dir).unwrap_or_else(|_| state_dir.to_path_buf());
+    let store = HubInstallStore::new(&state_dir);
+    let Ok(report) = crate::plugin_manifest::discover_plugins(roots) else {
+        return (installations, approved_ids);
+    };
+
+    // The cockpit read surface is launched independently of the control
+    // selector: any discovered package that requests the read-only factory read
+    // capability (`factory.read/v1`) is requested `Running`. This is a
+    // capability-class rule (no plugin id in source), and it never implies
+    // control.
+    for package in &report.packages {
+        if package
+            .manifest
+            .requested_capabilities
+            .iter()
+            .any(|capability| capability == agalma_contracts::FACTORY_READ_CAPABILITY)
+            && !approved_ids.iter().any(|id| id == &package.plugin_id)
+        {
+            approved_ids.push(package.plugin_id.clone());
+        }
+    }
+
+    let Some(selected) = factory_control_plugin else {
+        return (installations, approved_ids);
+    };
+    let Some(package) = report
+        .packages
+        .iter()
+        .find(|package| package.plugin_id == selected)
+    else {
+        return (installations, approved_ids);
+    };
+    let Some(current) = current_generation(&store, &package.plugin_id) else {
+        return (installations, approved_ids);
+    };
+    match store.load_installation(&package.plugin_id, current) {
+        Ok(Some(pin))
+            if pin.package_digest == package.package_digest
+                && pin
+                    .approved_capabilities
+                    .iter()
+                    .any(|capability| capability == FACTORY_CONTROL_CAPABILITY) =>
+        {
+            if !approved_ids.iter().any(|id| id == &package.plugin_id) {
+                approved_ids.push(package.plugin_id.clone());
+            }
+            installations.insert(pin);
+        }
+        _ => {}
+    }
+    (installations, approved_ids)
+}
+
+/// The plugin's current generation: the newest generation present in the durable
+/// hub installation store.
+///
+/// A newer generation always supersedes an older one, so a newer pin that drops
+/// `factory.control/v1` revokes an older granting generation. The store is the
+/// operative head of authority (no ascending scan, no older-generation fallback).
+fn current_generation(store: &HubInstallStore, plugin_id: &str) -> Option<u64> {
+    store.installed_generations(plugin_id).ok()?.into_iter().max()
 }
 
 /// The composition root's production host-registration hook for `agalma work
@@ -1902,28 +2162,303 @@ pub fn assemble_work_plugin_host(
 /// production path proves that the registrar installed here reaches the served
 /// router; WEB.13 replaces the body with the factory adapter/control
 /// registration.
-pub fn register_work_plugin_host(composition: &crate::work::factory_runtime::WatchComposition) {
-    composition.register(Arc::new(WorkPluginHostRegistrar));
+pub fn register_work_plugin_host(composition: &WatchComposition) {
+    composition.register(Arc::new(WorkPluginHostRegistrar {
+        repository_id: composition.repository_id.clone(),
+        state_id: composition.state_id.clone(),
+    }));
 }
 
-/// The reserved capability namespace of the default production registration
+/// The reserved capability namespace of the inert production registration
 /// marker installed by [`register_work_plugin_host`].
+///
+/// The marker is a lifetime probe (it proves the registrar reaches the *served*
+/// router); it carries no grant and no hub authority. It is registered alongside
+/// the real factory adapter/control so the WEB.10 registration regression keeps
+/// observing the production hook reach host assembly.
 pub const WORK_PLUGIN_HOST_MARKER_CAPABILITY: &str = "agalma.watch.registration/v1";
 
-/// The composition-owned default registrar installed by
+/// The composition-owned production registrar installed by
 /// [`register_work_plugin_host`].
-struct WorkPluginHostRegistrar;
+///
+/// It binds the WEB.11 factory runtime read/control service to the **actual**
+/// router served on the hub capability socket, over the selected ledger, the
+/// live WEB.10 observation cell and the exclusive state-scoped control owner.
+struct WorkPluginHostRegistrar {
+    repository_id: String,
+    state_id: String,
+}
 
-impl crate::work::factory_runtime::HostRegistrar for WorkPluginHostRegistrar {
-    fn register(
-        &self,
-        registration: &crate::work::factory_runtime::HostRegistration<'_>,
-    ) -> Result<(), ContractError> {
-        registration
-            .router
-            .router()
-            .register_adapter(WorkPluginHostMarkerAdapter);
+impl HostRegistrar for WorkPluginHostRegistrar {
+    fn register(&self, registration: &HostRegistration<'_>) -> Result<(), ContractError> {
+        let source = Arc::new(FactoryRuntimeSource::new(
+            Arc::clone(registration.shared),
+            self.repository_id.clone(),
+            self.state_id.clone(),
+        ));
+        let ledger = registration.ledger.clone();
+        let stop: Arc<dyn StopControl + Send + Sync> =
+            Arc::new(BoundStopControl::new(registration.state_dir, ledger.clone()));
+        let ownership = Arc::new(FactoryControlOwner::acquire(registration.state_dir));
+        let authority = Arc::new(LiveControlBindings {
+            cell: control_binding_cell(registration.state_dir),
+        });
+        let service = FactoryControlService::new(
+            self.repository_id.clone(),
+            self.state_id.clone(),
+            Box::new(ledger),
+            registration.state_dir,
+        )
+        .with_runtime(source)
+        .with_stop(stop)
+        .with_authority(authority)
+        .with_ownership(ownership);
+        {
+            let mut router = registration.router.router();
+            service.register(&mut router);
+            router.register_adapter(WorkPluginHostMarkerAdapter);
+        }
         Ok(())
+    }
+}
+
+/// The process-local approved-control-binding cell for one state directory.
+///
+/// The launcher publishes each launched plugin's approved `factory.control/v1`
+/// binding here, keyed by the exact installed plugin id; the hub factory adapter
+/// (WEB.11) reads the caller's entry through [`LiveControlBindings`]. Keyed by
+/// the configured state directory so two independent hubs in one process never
+/// share authority, and by plugin id so one plugin's launch rotation can never
+/// disable another plugin's live control binding. The descriptor itself stays
+/// private: only the resolver-visible scope is published.
+type ControlBindingMap = Arc<Mutex<BTreeMap<String, ApprovedControlBinding>>>;
+
+fn control_binding_cell(state_dir: &Path) -> ControlBindingMap {
+    static CELLS: OnceLock<Mutex<BTreeMap<PathBuf, ControlBindingMap>>> = OnceLock::new();
+    let cells = CELLS.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut guard = cells.lock().unwrap_or_else(PoisonError::into_inner);
+    Arc::clone(
+        guard
+            .entry(state_dir.to_path_buf())
+            .or_insert_with(|| Arc::new(Mutex::new(BTreeMap::new()))),
+    )
+}
+
+/// Publish the current launch's approved control binding for its exact plugin.
+fn set_control_binding(state_dir: &Path, binding: ApprovedControlBinding) {
+    let cell = control_binding_cell(state_dir);
+    cell.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(binding.plugin_id.clone(), binding);
+}
+
+/// Clear the published control binding only for the exact plugin being relaunched.
+///
+/// Scoping the clear to the exact plugin (and, on republish, the exact pinned
+/// generation) means one plugin's launch rotation can never disable another
+/// plugin's live control binding.
+fn clear_control_binding_for(state_dir: &Path, plugin_id: &str) {
+    let cell = control_binding_cell(state_dir);
+    cell.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(plugin_id);
+}
+
+/// The current approved control binding for one exact plugin in a configured
+/// state directory.
+///
+/// Exposed for the WEB.13 composition/registration regressions: the launcher
+/// publishes the binding and the hub factory adapter resolves it. A `None`
+/// result means no live approved `factory.control/v1` installation exists for
+/// that plugin, so WEB.11 leaves permissions disabled and refuses every control
+/// action.
+pub fn control_binding_for(state_dir: &Path, plugin_id: &str) -> Option<ApprovedControlBinding> {
+    control_binding_cell(state_dir)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(plugin_id)
+        .cloned()
+}
+
+/// The live approved factory-control binding resolver (WEB.13 injection).
+///
+/// A missing entry (no approved `factory.control/v1` installation for the caller,
+/// or a rotated/revoked launch) leaves the WEB.11 permissions disabled and every
+/// control action refused, independent of any UI hint.
+struct LiveControlBindings {
+    cell: ControlBindingMap,
+}
+
+impl ControlBindingResolver for LiveControlBindings {
+    fn resolve(&self, plugin_id: &str) -> Option<ApprovedControlBinding> {
+        self.cell
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(plugin_id)
+            .cloned()
+    }
+}
+
+/// The state-scoped exclusive factory-control owner guard (WEB.13).
+///
+/// A dedicated `factory-control.lock` beside the selected ledger proves
+/// cross-process exclusivity for the service lifetime; a process mutex alone is
+/// not sufficient. A competing live owner yields `owned() == false` (controls
+/// disabled), never a second owner. The guard is removed on drop (graceful
+/// shutdown).
+///
+/// Acquisition and reclamation are atomic and identity-conditional: a lock is
+/// published by writing the owner pid to a private temp file and linking it into
+/// place with a single `hard_link` (so a lock path never exists without its
+/// owner pid), and a stale lock is reclaimed only through a sole-reclaimer token
+/// and only after re-checking that the inspected lock still records a
+/// well-formed **dead** pid. An empty, malformed, replacement or live lock is
+/// never unlinked, so a contender that inspected a dead pid can never remove a
+/// lock another contender has since published. A contender that cannot obtain
+/// the sole-reclaimer token fails closed.
+pub struct FactoryControlOwner {
+    path: PathBuf,
+    held: bool,
+}
+
+impl FactoryControlOwner {
+    /// Acquire the dedicated `factory-control.lock` for `state_dir`.
+    pub fn acquire(state_dir: &Path) -> Self {
+        let path = state_dir.join("factory-control.lock");
+        let reclaim = state_dir.join("factory-control.lock.reclaim");
+        for _ in 0..3 {
+            if publish_lock(state_dir, &path) {
+                return Self { path, held: true };
+            }
+            // The lock exists. Only a well-formed dead pid is reclaimable; an
+            // empty, malformed or live lock is never touched.
+            if !stale_lock(&path) {
+                return Self { path, held: false };
+            }
+            // Become the sole reclaimer. If another contender holds the token
+            // (or a crashed reclaimer left it), fail closed rather than risk
+            // unlinking a lock that contender may have published.
+            if !publish_lock(state_dir, &reclaim) {
+                return Self { path, held: false };
+            }
+            // Sole reclaimer: re-check the identity of the lock we inspected
+            // immediately before unlinking. No live holder can replace an
+            // existing path (creates are link-only), so this is still the same
+            // dead lock we observed and never a replacement.
+            if stale_lock(&path) {
+                let _ = std::fs::remove_file(&path);
+            }
+            let _ = std::fs::remove_file(&reclaim);
+            // Loop to publish our own lock; losing the publish race to another
+            // live owner is correct (we then report not-owned).
+        }
+        Self { path, held: false }
+    }
+
+    /// Whether this guard currently holds the exclusive owner.
+    pub fn owned(&self) -> bool {
+        self.held
+    }
+}
+
+impl ControlOwnership for FactoryControlOwner {
+    fn owned(&self) -> bool {
+        self.held
+    }
+}
+
+impl Drop for FactoryControlOwner {
+    fn drop(&mut self) {
+        if self.held {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Atomically publish a lock file at `path` whose content is this process's pid.
+///
+/// The pid is written to a private temp file first and the lock path is created
+/// with a single `hard_link`, so the lock never exists without its pid. Returns
+/// `false` when the path already exists (another owner) or on any error.
+fn publish_lock(state_dir: &Path, path: &Path) -> bool {
+    let label = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "lock".to_string());
+    let temp = state_dir.join(format!(
+        "{label}.tmp.{}.{}",
+        std::process::id(),
+        next_temp_sequence()
+    ));
+    if std::fs::write(&temp, format!("{}\n", std::process::id())).is_err() {
+        return false;
+    }
+    let published = std::fs::hard_link(&temp, path).is_ok();
+    let _ = std::fs::remove_file(&temp);
+    published
+}
+
+/// A per-process counter making private temp-file names unique.
+fn next_temp_sequence() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    SEQ.fetch_add(1, Ordering::SeqCst)
+}
+
+/// Whether the lock at `path` is stale: its recorded pid is well-formed and
+/// **confirmed dead**. A missing, empty, malformed, live, or unknown-status lock
+/// is **not** stale, so it is never reclaimed.
+fn stale_lock(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(pid) = text.trim().parse::<u32>() else {
+        return false;
+    };
+    pid_status(pid) == PidStatus::Dead
+}
+
+/// The result of probing a process id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PidStatus {
+    /// The process exists and is signalable.
+    Alive,
+    /// The process is confirmed not to exist (`kill -0` reported `No such
+    /// process`, `ESRCH`).
+    Dead,
+    /// The probe could not confirm either way (permission denied, a command
+    /// error, an unrecognized outcome). Treated as live/unknown: never reclaimed.
+    Unknown,
+}
+
+/// Classify a completed `kill -0` probe. Only a confirmed `ESRCH` ("No such
+/// process") outcome is [`PidStatus::Dead`]; success is [`PidStatus::Alive`];
+/// anything else (permission denied, an empty or unrecognized message, a spawn
+/// failure) is [`PidStatus::Unknown`] and must fail closed.
+pub fn classify_process_probe(success: bool, stderr: &str) -> PidStatus {
+    if success {
+        return PidStatus::Alive;
+    }
+    let message = stderr.to_ascii_lowercase();
+    if message.contains("no such process") {
+        PidStatus::Dead
+    } else {
+        PidStatus::Unknown
+    }
+}
+
+/// The status of `pid`, probe-based. A spawn/command error is `Unknown`.
+fn pid_status(pid: u32) -> PidStatus {
+    match std::process::Command::new("/bin/kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .output()
+    {
+        Ok(out) => classify_process_probe(
+            out.status.success(),
+            &String::from_utf8_lossy(&out.stderr),
+        ),
+        Err(_) => PidStatus::Unknown,
     }
 }
 

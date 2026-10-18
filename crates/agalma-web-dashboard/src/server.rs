@@ -26,10 +26,13 @@ use std::time::Duration;
 use agalma_contracts::control_plane::ReadPageRequest;
 use agalma_contracts::{
     failure_code, BrowserWire, FailureCode, ReadCursor, CONTROL_PLANE_READ_CAPABILITY,
+    FACTORY_CONTROL_CAPABILITY, FACTORY_READ_CAPABILITY,
 };
 use agalma_ipc::{
-    plugin_server_info, register_plugin, ControlPlaneReadClient, IpcError, LoopbackListener,
-    Server, WebApp, WebHandler, WebRequest, WebResponse,
+    parse_capability_bindings, plugin_server_info, register_factory_routes, register_plugin,
+    CapabilityBindings, ControlAuthority, ControlPlaneReadClient, FactoryRuntimeClient, IpcError,
+    LoopbackListener, RevocableControl, Server, SharedFactoryClient, WebApp, WebHandler,
+    WebRequest, WebResponse, PLUGIN_CAPABILITY_BINDINGS_ENV,
 };
 use http::StatusCode;
 use tokio::sync::Mutex;
@@ -68,8 +71,27 @@ pub struct LaunchInputs {
     pub generation: u64,
     /// Exact installed configuration artifact digest carried by the host.
     pub config_digest: String,
+    /// The parsed private `PluginCapabilityBindings/v1` descriptor, when the
+    /// hub issued one. Bindings stay server-side: no value here enters a
+    /// browser response, a log line, or a health detail.
+    pub capability_bindings: Option<CapabilityBindings>,
     /// Whether the generation was present in canonical positive-decimal form.
     valid_generation: bool,
+}
+
+/// The capability families this process can announce. It only ever announces a
+/// subset of these, so an installation approval outside the set would fail the
+/// launcher identity gate rather than be silently dropped.
+const ANNOUNCEABLE_CAPABILITIES: [&str; 3] = [
+    CONTROL_PLANE_READ_CAPABILITY,
+    FACTORY_READ_CAPABILITY,
+    FACTORY_CONTROL_CAPABILITY,
+];
+
+/// Parse a present-but-malformed descriptor as absent (fail closed: no binding
+/// authority is inferred from a broken private channel).
+fn parse_bindings(raw: Option<String>) -> Option<CapabilityBindings> {
+    raw.and_then(|text| parse_capability_bindings(&text).ok())
 }
 
 impl LaunchInputs {
@@ -102,8 +124,40 @@ impl LaunchInputs {
                 .map(PathBuf::from),
             generation,
             config_digest: lookup(PLUGIN_CONFIG_DIGEST_ENV).unwrap_or_default(),
+            capability_bindings: parse_bindings(lookup(PLUGIN_CAPABILITY_BINDINGS_ENV)),
             valid_generation,
         }
+    }
+
+    /// The capability families this process announces in `plugin.Describe`.
+    ///
+    /// The descriptor's capabilities are announced exactly (the launcher's
+    /// identity gate requires the announced set to cover the installation's
+    /// approved capabilities). Without a descriptor the legacy single grant is
+    /// announced, matching the documented first-grant behavior.
+    pub fn announced_capabilities(&self) -> Vec<String> {
+        if let Some(bindings) = &self.capability_bindings {
+            let announced: Vec<String> = ANNOUNCEABLE_CAPABILITIES
+                .iter()
+                .filter(|capability| bindings.get(capability).is_some())
+                .map(|capability| (*capability).to_string())
+                .collect();
+            if !announced.is_empty() {
+                return announced;
+            }
+        }
+        match &self.capability {
+            Some(capability) => vec![capability.clone()],
+            None => vec![READ_CAPABILITY.to_string()],
+        }
+    }
+
+    /// Whether the private descriptor grants an actual `factory.control/v1`
+    /// binding (the only path that ever enables operator controls).
+    pub fn has_control_binding(&self) -> bool {
+        self.capability_bindings
+            .as_ref()
+            .is_some_and(|bindings| bindings.control().is_some())
     }
 
     /// Whether all immutable installed configuration and binding inputs are
@@ -219,6 +273,14 @@ impl ReadSlot {
 struct Shared {
     status: Arc<RuntimeStatus>,
     read: Mutex<ReadSlot>,
+    /// The typed factory client (WEB.12), when the private descriptor grants a
+    /// `factory.read/v1` binding. One serialized client is the sole path to the
+    /// hub factory adapter; the page never opens a second queue/control owner.
+    factory: Option<SharedFactoryClient>,
+    /// The live operator-control authority (WEB.12 `ControlAuthority`). Present
+    /// only when an actual explicit `factory.control/v1` binding exists; the
+    /// transport re-reads it on every session bootstrap and POST.
+    control: Option<Arc<RevocableControl>>,
 }
 
 /// A running dashboard: the loopback listener plus its shared readiness.
@@ -258,10 +320,34 @@ impl DashboardServer {
         config.validate().map_err(DashboardError::Config)?;
         let generation = launch.generation;
         let config_digest = launch.config_digest.clone();
+
+        // Connect the typed factory read/control client from the private
+        // descriptor. A read binding is required for the factory routes; the
+        // control binding is independent and optional. A connect failure leaves
+        // the factory endpoint unavailable (never a fabricated healthy state).
+        let (factory, control) = match launch
+            .capability_bindings
+            .as_ref()
+            .filter(|bindings| bindings.read().is_some())
+        {
+            Some(bindings) => match FactoryRuntimeClient::connect_from_bindings(bindings).await {
+                Ok(client) => (
+                    Some(Arc::new(Mutex::new(client))),
+                    Some(Arc::new(RevocableControl::new(
+                        launch.has_control_binding(),
+                    ))),
+                ),
+                Err(_) => (None, None),
+            },
+            None => (None, None),
+        };
+
         let status = Arc::new(RuntimeStatus::new(generation, config_digest));
         let shared = Arc::new(Shared {
             status: status.clone(),
             read: Mutex::new(ReadSlot::new(launch)),
+            factory,
+            control,
         });
         let app = build_app(&config, shared.clone())?;
         let listener = LoopbackListener::start(app)
@@ -305,8 +391,19 @@ impl DashboardServer {
         }
     }
 
-    /// Stop admitting reads, drain the listener under its bound, and close it.
+    /// Revoke operator control and stop admitting reads, drain the listener
+    /// under its bound, and close it.
     pub async fn shutdown(mut self) {
+        // Revoke the operator surface first so a concurrent POST cannot race
+        // shutdown, then drain the listener.
+        if let Some(control) = &self.shared.control {
+            control.revoke();
+        }
+        if let Some(factory) = &self.shared.factory {
+            if let Ok(mut client) = factory.try_lock() {
+                client.revoke_control();
+            }
+        }
         if let Some(listener) = self.listener.take() {
             listener.shutdown().await;
         }
@@ -324,13 +421,25 @@ fn build_app(config: &DashboardConfig, shared: Arc<Shared>) -> Result<WebApp, Da
     };
     let (content_type, bytes) =
         crate::inventory::compiled_asset(root_asset).ok_or(DashboardError::MissingHealthPage)?;
-    WebApp::builder(config.listener_config())
+    let builder = WebApp::builder(config.listener_config())
         .asset("/", content_type, bytes.to_vec())
         .assets(inventory)
         .get("/api/v1/overview", overview_handler(shared.clone()))
-        .get("/api/v1/components", components_handler(shared))
-        .build()
-        .map_err(DashboardError::Assets)
+        .get("/api/v1/components", components_handler(shared.clone()));
+    // The typed factory routes are mounted only when an actual explicit
+    // `factory.read/v1` binding exists; otherwise the factory endpoint is
+    // absent (honest unavailable, never a fabricated control surface). The
+    // narrow pause/resume POSTs and the operator session bootstrap are further
+    // gated by the live control authority, so a read-only launch exposes no
+    // mutation route.
+    let builder = match (&shared.factory, &shared.control) {
+        (Some(client), Some(control)) => {
+            let authority: Arc<dyn ControlAuthority> = control.clone();
+            register_factory_routes(builder, Arc::clone(client), authority)
+        }
+        _ => builder,
+    };
+    builder.build().map_err(DashboardError::Assets)
 }
 
 fn overview_handler(shared: Arc<Shared>) -> impl WebHandler {
@@ -550,15 +659,12 @@ pub async fn run(
     config: DashboardConfig,
     launch: LaunchInputs,
 ) -> Result<(), DashboardError> {
+    let announced = launch.announced_capabilities();
     let server = DashboardServer::start(config, launch).await?;
     server.warm_binding().await;
 
-    let handler = Arc::new(DashboardHandler::new(server.status()));
-    let mut plugin = Server::new(plugin_server_info(
-        PLUGIN_ID,
-        PACKAGE_VERSION,
-        [READ_CAPABILITY.to_string()],
-    ));
+    let handler = Arc::new(DashboardHandler::new(server.status(), announced.clone()));
+    let mut plugin = Server::new(plugin_server_info(PLUGIN_ID, PACKAGE_VERSION, announced));
     register_plugin(&mut plugin, handler);
 
     let serve_socket = socket.clone();

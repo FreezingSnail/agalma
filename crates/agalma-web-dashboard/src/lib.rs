@@ -12,13 +12,18 @@
 //!
 //! Boundaries: this crate depends only on public contracts and IPC. It never
 //! imports the conductor, a spoke implementation, or another supervisor; it
-//! opens no ledger/database and exposes no mutation route. The browser read
-//! surface is `GET /api/v1/overview` and `GET /api/v1/components`; report-detail
+//! opens no ledger/database and exposes no mutation route beyond the declared
+//! factory control routes. The browser read surface is `GET /api/v1/overview`,
+//! `GET /api/v1/components`, and — only when the private capability descriptor
+//! grants it — the factory `GET /api/v1/factory`, `GET
+//! /api/v1/factory/actions/{action_id}` and the narrow `POST
+//! /api/v1/factory/pause` / `POST /api/v1/factory/resume` controls. Report-detail
 //! and artifact routes remain intentionally absent.
 //!
-//! Authority: the per-launch grant stays inside this process. Viewing is
-//! observational and grants no factory control. No POST route, operator
-//! session, or effect authority is created here.
+//! Authority: the per-launch grants stay inside this process. A read-only launch
+//! mounts no factory route; the operator session/CSRF surface exists only when
+//! an actual explicit live `factory.control/v1` binding is present. Viewing is
+//! observational and grants no factory control.
 
 pub mod asset_walk;
 pub mod config;

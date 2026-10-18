@@ -56,6 +56,14 @@ scope, and a stopping condition. Use existing bead schemas and staging rules.
 Do not pad a small task into an epic or produce temporary scripts to manage the
 handoff. Record accepted decisions in the canonical design and bead.
 
+Check handoff readiness using `docs/development-workflow.md`: verify the actual
+production call path, required interface inputs, and permission to edit each
+composition seam. Resolve difficult authority, concurrency, and recovery
+mechanisms before dispatch. Keep current acceptance coherent across native bead
+fields and map critical requirements to observable production checks. Prepare
+later tasks when their predecessor APIs are available; preserve active repair
+scope and frozen history.
+
 ## Context discipline
 
 Follow AGENTS.md's context and tool-output rules. For planning, start with compact

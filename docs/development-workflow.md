@@ -38,6 +38,40 @@ schema and authorization rules. Model selection alone does not release work or
 authorize spending. If the permitted route is unavailable, keep the handoff ready
 and report that condition instead of changing implementation ownership.
 
+### Implementation handoff readiness
+
+Prepare upcoming tasks against the actual predecessor APIs. Each bead names the
+production entry point and call path, existing functions/types to reuse or extend,
+required inputs, and the files its implementer may change. Before dispatch,
+confirm those interfaces supply the required inputs and ownership permits their
+composition. If a predecessor is unfinished, record the assumption and recheck it
+after that predecessor lands; future API names are not existing implementation.
+
+Resolve hard authority, concurrency, and recovery mechanisms in the accepted
+design before dispatch. Specify the algorithm and failure behavior where a
+high-level invariant alone leaves a material correctness decision unresolved.
+Split a task when it introduces several independent correctness mechanisms;
+its final integration task connects reviewed mechanisms and proves the real
+production flow. Ordinary coding steps do not need separate beads.
+
+Keep one complete current acceptance list in the native acceptance field, with
+critical requirements mapped to observable checks on the production path.
+Description and machine acceptance commands must agree with that list. Keep
+superseded decisions in notes and preserve frozen historical inputs. New test
+names are implementation deliverables until the required cases actually run.
+Before review, the implementer maps each critical requirement to its code
+location and executed check, and identifies unresolved items in the existing
+concise handoff. Do not create a separate coverage receipt.
+
+Apply this preparation as tasks approach dispatch. Preserve active repair scope
+and existing ownership. For the next three implementation handoffs prepared this
+way, record repair round and finding category in existing bead notes: missing
+design, missed explicit requirement, implementation defect, or changed scope.
+Use existing session/run timestamps to report elapsed time only where available;
+session counts alone do not measure time spent.
+After the third handoff, summarize the observed repair patterns from those notes
+and whether further handoff or model-route changes are justified by the evidence.
+
 Implementation and repairs use a named Git worktree and task branch, retained
 across attempts. Record the bead, worktree path, branch, and base commit before
 editing. Do not implement in the shared primary checkout or a disposable temp

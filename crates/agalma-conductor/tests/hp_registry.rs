@@ -43,6 +43,7 @@ use agalma_conductor::plugin_registry::{
 };
 use agalma_conductor::plugin_supervisor::{
     BackoffPolicy, Clock, HealthProbe, LaunchRequest, ManualClock, PluginSupervisor,
+    PLUGIN_BINDING_GENERATION_ENV, PLUGIN_CONFIG_DIGEST_ENV, PLUGIN_CONFIG_PATH_ENV,
 };
 use agalma_contracts::digest::{failure_code, sha256_digest, FailureCode};
 use agalma_contracts::{ContractError, PluginInstallation, PluginManifest};
@@ -52,6 +53,10 @@ use agalma_testkit::ScratchDir;
 const PROPERTY_SEED: u64 = 0x0bd3_5eed_0000_0001;
 /// Recorded property-test case budget per property.
 const PROPERTY_CASES: u64 = 24;
+/// WEB.4 launcher property seed; retained verbatim for replay.
+const LAUNCH_PROPERTY_SEED: u64 = 0x5745_4234;
+/// WEB.4 launcher property budget.
+const LAUNCH_PROPERTY_CASES: u64 = 64;
 
 const CONFIG_SCHEMA_BYTES: &[u8] =
     b"{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}\n";
@@ -544,7 +549,13 @@ fn crash_backoff_restart_keeps_generation_and_fences_stale_epochs() {
     let scratch = fresh("hp-registry-crash");
     let state = scratch.child("state");
     let root = scratch.child("plugins");
-    let package = discover_one(&root, PLUGIN_ID, &live_child(PLUGIN_ID, &["report.publish"]));
+    let launch_capture = scratch.path().join("launch-inputs.txt");
+    let child_script = format!(
+        "#!/bin/sh\n{{ printf 'PATH=%s\\n' \"$AGALMA_PLUGIN_CONFIG_PATH\"; printf 'GEN=%s\\n' \"$AGALMA_PLUGIN_BINDING_GENERATION\"; printf 'DIGEST=%s\\n' \"$AGALMA_PLUGIN_CONFIG_DIGEST\"; for arg in \"$@\"; do printf 'ARG=%s\\n' \"$arg\"; done; }} > '{}'\nprintf '{}'\ncat >/dev/null\n",
+        launch_capture.display(),
+        ready_line(PLUGIN_ID, &["report.publish"]),
+    );
+    let package = discover_one(&root, PLUGIN_ID, &child_script);
     let store = HubInstallStore::new(&state);
     let mut registry = PluginRegistry::new();
     let generation = install_active(&mut registry, &store, &package);
@@ -555,6 +566,21 @@ fn crash_backoff_restart_keeps_generation_and_fences_stale_epochs() {
     let request = request_for(PLUGIN_ID, &installed_gen, state.join("sock/plugin.sock"));
 
     let first = sup.spawn(&mut registry, &request).unwrap();
+    let expected_launch_capture = format!(
+        "PATH={}\nGEN={}\nDIGEST={}\nARG=--serve\nARG=--read-only\nARG=--socket\nARG={}\n",
+        installed_gen
+            .installed_dir
+            .join(&installed_gen.configuration.path)
+            .display(),
+        installed_gen.generation,
+        installed_gen.config_digest,
+        request.socket.display(),
+    );
+    assert_eq!(
+        fs::read_to_string(&launch_capture).unwrap(),
+        expected_launch_capture,
+        "the child receives pinned private inputs and unchanged manifest argv"
+    );
     let mut probe = ScriptedProbe::healthy(true);
     assert!(sup.confirm_ready(&mut registry, PLUGIN_ID, &mut probe).unwrap());
     registry.pin_operation(PLUGIN_ID, generation, "op-1").unwrap();
@@ -574,9 +600,21 @@ fn crash_backoff_restart_keeps_generation_and_fences_stale_epochs() {
     clock.advance(100);
     assert_eq!(sup.take_due_restarts(clock.now_ms()), vec![PLUGIN_ID.to_string()]);
 
-    let second = sup.spawn(&mut registry, &request).unwrap();
+    let restarted_request = request_for(
+        PLUGIN_ID,
+        &installed_gen,
+        state.join("sock/plugin.sock"),
+    );
+    assert_eq!(restarted_request.args, request.args);
+    assert_eq!(restarted_request.env, request.env);
+    let second = sup.spawn(&mut registry, &restarted_request).unwrap();
     assert_eq!(second.generation, first.generation, "restart reuses the pin");
     assert!(second.epoch > first.epoch, "restart issues a fresh launch epoch");
+    assert_eq!(
+        fs::read_to_string(&launch_capture).unwrap(),
+        expected_launch_capture,
+        "restart reissues the same pinned path, generation, digest and argv"
+    );
     assert_eq!(
         registry.entry(PLUGIN_ID).unwrap().active_generation,
         Some(generation)
@@ -914,9 +952,40 @@ fn installation_pin_validates_and_carries_config_profile_and_grants() {
     assert_eq!(gen.approved_capabilities, vec!["report.publish".to_string()]);
 
     // The launch request carries the pinned config/profile and grants as scope.
-    let request = LaunchRequest::from_installed(&gen, scratch.child("sock.sock"));
+    let socket = scratch.child("sock.sock");
+    let request = LaunchRequest::from_installed(&gen, socket.clone());
     assert_eq!(request.configuration, installation.configuration);
     assert_eq!(request.config_digest, gen.config_digest);
+    let mut expected_args = gen.argv.clone();
+    expected_args.extend([
+        "--socket".to_string(),
+        socket.to_string_lossy().into_owned(),
+    ]);
+    assert_eq!(
+        request.args, expected_args,
+        "only the existing socket args append"
+    );
+    assert_eq!(
+        request.env.get(PLUGIN_CONFIG_PATH_ENV).map(String::as_str),
+        Some(
+            gen.installed_dir
+                .join(&gen.configuration.path)
+                .to_str()
+                .unwrap()
+        )
+    );
+    let expected_generation = gen.generation.to_string();
+    assert_eq!(
+        request
+            .env
+            .get(PLUGIN_BINDING_GENERATION_ENV)
+            .map(String::as_str),
+        Some(expected_generation.as_str())
+    );
+    assert_eq!(
+        request.env.get(PLUGIN_CONFIG_DIGEST_ENV).map(String::as_str),
+        Some(gen.config_digest.as_str())
+    );
     assert_eq!(request.launch_profile, gen.launch_profile);
     assert_eq!(request.approved_capabilities, gen.approved_capabilities);
     assert!(request.required_capabilities.contains("report.publish"));
@@ -960,6 +1029,34 @@ fn installation_pin_validates_and_carries_config_profile_and_grants() {
         Rc::new(ManualClock::new(0)),
     ));
     assert_eq!(code(&err), FailureCode::InvalidRecord, "{}", message(&err));
+}
+
+#[test]
+fn launch_refuses_malformed_private_configuration_pins_before_spawn() {
+    let bad_pins = [
+        (PLUGIN_CONFIG_PATH_ENV, "../outside/config.json".to_string()),
+        (PLUGIN_BINDING_GENERATION_ENV, "not-a-generation".to_string()),
+        (PLUGIN_CONFIG_DIGEST_ENV, format!("sha256:{}", "0".repeat(64))),
+    ];
+
+    for (index, (key, value)) in bad_pins.iter().enumerate() {
+        let scratch = fresh(&format!("hp-registry-invalid-launch-pin-{index}"));
+        let state = scratch.child("state");
+        let root = scratch.child("plugins");
+        let package = discover_one(&root, PLUGIN_ID, &live_child(PLUGIN_ID, &["report.publish"]));
+        let store = HubInstallStore::new(&state);
+        let mut registry = PluginRegistry::new();
+        let generation = install_active(&mut registry, &store, &package);
+        let installed_gen = installed(&registry, PLUGIN_ID, generation);
+        let mut request =
+            LaunchRequest::from_installed(&installed_gen, scratch.child("sock.sock"));
+        request.env.insert((*key).to_string(), value.clone());
+
+        let mut sup = supervisor(Rc::new(ManualClock::new(0)), Duration::from_secs(5));
+        let error = sup.spawn(&mut registry, &request).unwrap_err();
+        assert_eq!(code(&error), FailureCode::IntegrityMismatch, "{key}");
+        assert!(!sup.is_running(PLUGIN_ID), "malformed launch pin spawned a child");
+    }
 }
 
 #[test]
@@ -1273,6 +1370,98 @@ fn property_generation_allocation_is_strictly_increasing() {
 }
 
 #[test]
+fn property_installed_launch_preserves_argv_and_exact_private_pins() {
+    let scratch = fresh("hp-registry-launch-properties");
+    let mut rng = XorShift64::new(LAUNCH_PROPERTY_SEED);
+
+    for case in 0..LAUNCH_PROPERTY_CASES {
+        let root = scratch.child(&format!("plugins-{case}"));
+        let package_dir = root.join("pkg");
+        let argv: Vec<String> = (0..=rng.below(4))
+            .map(|index| format!("--generated-{case}-{index}-{}", rng.next_u64()))
+            .collect();
+        let mut manifest = base_manifest(PLUGIN_ID);
+        manifest["entrypoint"]["argv"] = json!(argv);
+        seal_package(
+            &package_dir,
+            &manifest,
+            &live_child(PLUGIN_ID, &["report.publish"]),
+        );
+        let package = discover_plugins(&[PluginRoot::required(&root)])
+            .unwrap()
+            .package(PLUGIN_ID)
+            .unwrap()
+            .clone();
+        let state = scratch.child(&format!("state-{case}"));
+        let store = HubInstallStore::new(&state);
+        let mut registry = PluginRegistry::new();
+        let generation = install_active(&mut registry, &store, &package);
+        let installed_gen = installed(&registry, PLUGIN_ID, generation);
+        let socket = scratch.child(&format!("socket-{case}.sock"));
+        let request = LaunchRequest::from_installed(&installed_gen, socket.clone());
+
+        let mut expected_args = installed_gen.manifest.entrypoint.argv.clone();
+        expected_args.extend([
+            "--socket".to_string(),
+            socket.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(
+            request.args, expected_args,
+            "seed={LAUNCH_PROPERTY_SEED:#x}, case={case}"
+        );
+        assert_eq!(
+            request.env.get(PLUGIN_CONFIG_PATH_ENV).map(String::as_str),
+            Some(
+                installed_gen
+                    .installed_dir
+                    .join(&installed_gen.configuration.path)
+                    .to_str()
+                    .unwrap()
+            )
+        );
+        let expected_generation = installed_gen.generation.to_string();
+        assert_eq!(
+            request
+                .env
+                .get(PLUGIN_BINDING_GENERATION_ENV)
+                .map(String::as_str),
+            Some(expected_generation.as_str())
+        );
+        assert_eq!(
+            request
+                .env
+                .get(PLUGIN_CONFIG_DIGEST_ENV)
+                .map(String::as_str),
+            Some(installed_gen.config_digest.as_str())
+        );
+
+        // Every eighth input is deliberately malformed and must be refused
+        // before a process exists; the remaining generated launch descriptors
+        // are valid installed pins. This records both sides of the property.
+        if case % 8 == 0 {
+            let key = match (case / 8) % 3 {
+                0 => PLUGIN_CONFIG_PATH_ENV,
+                1 => PLUGIN_BINDING_GENERATION_ENV,
+                _ => PLUGIN_CONFIG_DIGEST_ENV,
+            };
+            let invalid_value = match key {
+                PLUGIN_CONFIG_PATH_ENV => format!("../escape-{case}/config.json"),
+                PLUGIN_BINDING_GENERATION_ENV => "0".to_string(),
+                _ => format!("sha256:{}", "f".repeat(64)),
+            };
+            let mut invalid_request = request.clone();
+            invalid_request.env.insert(key.to_string(), invalid_value);
+            let mut sup = supervisor(Rc::new(ManualClock::new(case)), Duration::from_secs(5));
+            let error = sup
+                .spawn(&mut registry, &invalid_request)
+                .expect_err("malformed private pin must fail closed");
+            assert_eq!(code(&error), FailureCode::IntegrityMismatch);
+            assert!(!sup.is_running(PLUGIN_ID));
+        }
+    }
+}
+
+#[test]
 fn property_installed_copy_matches_its_pinned_digest_after_edits() {
     let scratch = fresh("hp-registry-prop-immutable");
     let state = scratch.child("state");
@@ -1307,4 +1496,3 @@ fn property_installed_copy_matches_its_pinned_digest_after_edits() {
         );
     }
 }
-

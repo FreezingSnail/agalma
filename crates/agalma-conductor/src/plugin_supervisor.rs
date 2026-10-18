@@ -46,6 +46,13 @@ use crate::harness_process::{spawn_supervised, stop_supervised};
 use crate::plugin_manifest::package_inventory_digest;
 use crate::plugin_registry::{LifecycleState, PluginRegistry};
 
+/// Private launch input containing the exact installed configuration path.
+pub const PLUGIN_CONFIG_PATH_ENV: &str = "AGALMA_PLUGIN_CONFIG_PATH";
+/// Private launch input containing the pinned installed binding generation.
+pub const PLUGIN_BINDING_GENERATION_ENV: &str = "AGALMA_PLUGIN_BINDING_GENERATION";
+/// Private launch input containing the exact installed configuration digest.
+pub const PLUGIN_CONFIG_DIGEST_ENV: &str = "AGALMA_PLUGIN_CONFIG_DIGEST";
+
 /// Injected wall clock. Production uses [`SystemClock`]; tests advance a
 /// [`ManualClock`] so backoff, restart dues and drain deadlines are
 /// deterministic.
@@ -158,7 +165,11 @@ pub trait HealthProbe {
         Ok(HealthProbeResult {
             ready,
             observation: None,
-            detail: if ready { "ready".to_string() } else { "not ready".to_string() },
+            detail: if ready {
+                "ready".to_string()
+            } else {
+                "not ready".to_string()
+            },
         })
     }
 }
@@ -219,12 +230,29 @@ impl LaunchRequest {
         let mut args = installed.argv.clone();
         args.push("--socket".to_string());
         args.push(socket.to_string_lossy().into_owned());
+        let mut env = BTreeMap::new();
+        env.insert(
+            PLUGIN_CONFIG_PATH_ENV.to_string(),
+            installed
+                .installed_dir
+                .join(&installed.configuration.path)
+                .to_string_lossy()
+                .into_owned(),
+        );
+        env.insert(
+            PLUGIN_BINDING_GENERATION_ENV.to_string(),
+            installed.generation.to_string(),
+        );
+        env.insert(
+            PLUGIN_CONFIG_DIGEST_ENV.to_string(),
+            installed.config_digest.clone(),
+        );
         LaunchRequest {
             plugin_id: installed.plugin_id.clone(),
             generation: installed.generation,
             program: installed.entrypoint.clone(),
             args,
-            env: BTreeMap::new(),
+            env,
             socket,
             expected_api: "plugin".to_string(),
             protocol_major: installed.protocol_major,
@@ -359,10 +387,8 @@ impl PluginSupervisor {
     ) -> Result<Spawned, ContractError> {
         let id = request.plugin_id.as_str();
         if self.running.contains_key(id) {
-            return Err(FailureCode::IdentityConflict.failure(
-                id,
-                "a child is already owned for this plugin",
-            ));
+            return Err(FailureCode::IdentityConflict
+                .failure(id, "a child is already owned for this plugin"));
         }
         self.check_dependencies(registry, request)?;
 
@@ -382,15 +408,15 @@ impl PluginSupervisor {
         for (key, value) in &request.env {
             spec.env.insert(key.clone(), value.clone());
         }
-        let (guard, info) = match spawn_supervised(&spec, &request.program, &request.socket, self.ready_timeout)
-        {
-            Ok(pair) => pair,
-            Err(error) => {
-                registry.mark_failed(id, format!("startup failed: {error}"), now)?;
-                self.schedule_restart(id);
-                return Err(FailureCode::StateUnavailable.failure(id, error));
-            }
-        };
+        let (guard, info) =
+            match spawn_supervised(&spec, &request.program, &request.socket, self.ready_timeout) {
+                Ok(pair) => pair,
+                Err(error) => {
+                    registry.mark_failed(id, format!("startup failed: {error}"), now)?;
+                    self.schedule_restart(id);
+                    return Err(FailureCode::StateUnavailable.failure(id, error));
+                }
+            };
 
         if let Err(reason) = identity_gate(&info, request) {
             // The guard still owns the group: dropping it tears the tree down.
@@ -653,6 +679,54 @@ fn rehash_request(request: &LaunchRequest) -> Result<(), ContractError> {
                 "launch rehash {recomputed} != pinned package {}",
                 request.package_digest
             ),
+        ));
+    }
+
+    let config_path = std::path::Path::new(&request.configuration.path);
+    if request.generation == 0
+        || config_path.is_absolute()
+        || config_path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(FailureCode::IntegrityMismatch.failure(
+            &request.plugin_id,
+            "installed configuration launch pin is invalid",
+        ));
+    }
+
+    let expected_config_path = request.installed_dir.join(config_path);
+    let expected_config_path = expected_config_path.to_str().ok_or_else(|| {
+        FailureCode::IntegrityMismatch.failure(
+            &request.plugin_id,
+            "installed configuration launch pin is invalid",
+        )
+    })?;
+    let expected_generation = request.generation.to_string();
+    let config_bytes = std::fs::read(&request.installed_dir.join(config_path)).map_err(|_| {
+        FailureCode::IntegrityMismatch.failure(
+            &request.plugin_id,
+            "installed configuration launch pin is invalid",
+        )
+    })?;
+    let config_digest = agalma_contracts::digest::sha256_digest(&config_bytes);
+    if request.env.get(PLUGIN_CONFIG_PATH_ENV).map(String::as_str) != Some(expected_config_path)
+        || request.env.get(PLUGIN_BINDING_GENERATION_ENV).map(String::as_str)
+            != Some(expected_generation.as_str())
+        || request.env.get(PLUGIN_CONFIG_DIGEST_ENV).map(String::as_str)
+            != Some(request.configuration.digest.as_str())
+        || request.config_digest != request.configuration.digest
+        || request.configuration.bytes != config_bytes.len() as u64
+        || config_digest != request.configuration.digest
+    {
+        return Err(FailureCode::IntegrityMismatch.failure(
+            &request.plugin_id,
+            "installed configuration launch pin does not match its artifact",
         ));
     }
     Ok(())

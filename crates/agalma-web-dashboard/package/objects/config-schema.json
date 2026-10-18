@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "PluginConfig/algalma.web-dashboard/v1",
+  "title": "DashboardConfig/v1",
+  "description": "Loopback-only configuration for the independent Agalma dashboard package.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "address": {
+      "type": "string",
+      "const": "127.0.0.1",
+      "default": "127.0.0.1",
+      "description": "Only the IPv4 loopback address is accepted; foreign and IPv6 addresses are refused."
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535,
+      "default": 0,
+      "description": "0 asks the operating system for an available ephemeral port."
+    },
+    "refresh_interval_secs": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60,
+      "default": 1,
+      "description": "Browser refresh interval in seconds."
+    }
+  }
+}

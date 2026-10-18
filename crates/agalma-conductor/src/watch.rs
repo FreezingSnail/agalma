@@ -437,6 +437,11 @@ pub struct PendingAction {
 pub struct App {
     /// Latest read model (executions / components / economics / timeline).
     pub snapshot: Snapshot,
+    /// The durable (stateless) plugin panel, kept as the overlay baseline. The
+    /// live host layer is always re-derived from this on each authoritative tick,
+    /// so a live-only plugin that a later panel omits disappears instead of
+    /// lingering.
+    pub durable_plugins: Vec<PluginComponent>,
     /// Boundary transports (shown in the header; also pinned for refresh).
     pub transports: Transports,
     /// Refresh interval in milliseconds (footer).
@@ -467,8 +472,10 @@ pub struct App {
 impl App {
     /// Build the app from a snapshot.
     pub fn new(snapshot: Snapshot, transports: Transports, interval_ms: u64) -> Self {
+        let durable_plugins = snapshot.plugins.clone();
         let mut app = App {
             snapshot,
+            durable_plugins,
             transports,
             interval_ms,
             focus: Pane::Executions,
@@ -487,11 +494,41 @@ impl App {
     }
 
     /// Rebuild the snapshot from `state_dir`, preserving focus and clamping the
-    /// selection to the new row count.
+    /// selection to the new row count. The freshly read panel also becomes the
+    /// durable overlay baseline.
     pub fn refresh(&mut self, state_dir: &Path) -> Result<(), String> {
         self.snapshot = crate::status::snapshot_with_transports(state_dir, &self.transports)?;
+        self.durable_plugins = self.snapshot.plugins.clone();
         self.clamp_selection();
         Ok(())
+    }
+
+    /// Replace the **live** plugin layer over the durable baseline (HP.6
+    /// reopened addendum).
+    ///
+    /// The production host's [`run_interactive_with`] tick supplies the current
+    /// registry/report-derived plugin components, including the host's **current**
+    /// `PluginHealth` observation (a probe result, not a durable report stream,
+    /// so the stateless ledger snapshot can only show the last checkpoint's
+    /// health). The panel is authoritative and **replaces** any previous live
+    /// layer: it is merged over [`Self::durable_plugins`], never over the
+    /// previously overlaid snapshot, so a live-only plugin the new panel omits
+    /// disappears and a durable-only entry is preserved. An empty panel therefore
+    /// clears every live-only plugin. Ordering (by plugin id) and selection
+    /// clamping match a refresh.
+    pub fn overlay_plugins(&mut self, live: Vec<PluginComponent>) {
+        self.snapshot.plugins = merge_plugin_panel(&self.durable_plugins, live);
+        self.clamp_selection();
+    }
+
+    /// Drop any live layer and restore the durable baseline (no attached host).
+    ///
+    /// [`run_interactive_with`] calls this when its tick returns `None` — no
+    /// host-supplied panel — so the stateless `status`/`watch` behavior is
+    /// exactly what a hostless run renders.
+    pub fn clear_live_plugins(&mut self) {
+        self.snapshot.plugins = self.durable_plugins.clone();
+        self.clamp_selection();
     }
 
     /// Keep the execution, plugin, and action selections inside the current lists.
@@ -984,24 +1021,30 @@ fn run_interactive(
     stop: Arc<AtomicBool>,
     actions: Option<Box<dyn ActionDriver + Send>>,
 ) -> ExitCode {
-    run_interactive_with(state_dir, interval_ms, stop, actions, || {})
+    run_interactive_with(state_dir, interval_ms, stop, actions, || None)
 }
 
 /// The interactive view loop with a host tick callback and an injected
-/// plugin-action driver (HP.7 production host attachment).
+/// plugin-action driver (HP.7 production host attachment; HP.6 live-health
+/// overlay).
 ///
 /// `on_tick` runs once per loop iteration before the draw; the in-process plugin
 /// host uses it to advance supervision (`supervise_tick`) and refresh its live
-/// child-socket map while the operator drives actions through `actions`. The
-/// driver is bound exactly as [`bind_action_driver`] specifies: the injected
-/// production driver when present, else the fail-closed default. Blocking;
-/// restores the terminal on all exits.
+/// child-socket map while the operator drives actions through `actions`. It
+/// returns the host's current live plugin panel (`PluginHost::plugin_components`)
+/// — `Some(components)` when a live host is attached, `None` otherwise. A
+/// returned panel is overlaid onto the refreshed snapshot through
+/// [`App::overlay_plugins`], so the host's current health observation reaches
+/// the shipped UI; `None` restores the durable baseline (no attached host). The driver
+/// is bound exactly as [`bind_action_driver`] specifies: the injected production
+/// driver when present, else the fail-closed default. Blocking; restores the
+/// terminal on all exits.
 pub fn run_interactive_with(
     state_dir: &Path,
     interval_ms: u64,
     stop: Arc<AtomicBool>,
     actions: Option<Box<dyn ActionDriver + Send>>,
-    mut on_tick: impl FnMut(),
+    mut on_tick: impl FnMut() -> Option<Vec<PluginComponent>>,
 ) -> ExitCode {
     // The guard owns restoration: on normal return, early error return, or panic
     // unwinding. Installed first so even a later failure leaves a clean terminal.
@@ -1048,8 +1091,14 @@ pub fn run_interactive_with(
             app.refresh_requested = false;
             last_refresh = Instant::now();
         }
-        // Advance the host (supervision + live sockets) before the draw.
-        on_tick();
+        // Advance the host (supervision + live sockets) and apply its current
+        // live plugin panel before the draw. `Some(panel)` replaces the live
+        // layer over the durable baseline (including `Some(empty)`); `None` means
+        // no attached host, so the durable baseline is restored.
+        match on_tick() {
+            Some(live) => app.overlay_plugins(live),
+            None => app.clear_live_plugins(),
+        }
 
         if let Err(err) = terminal.draw(|frame| draw(frame, &app)) {
             eprintln!("agalma watch: draw failed: {err}");
@@ -1149,6 +1198,27 @@ impl<M: TerminalMode> Drop for ModeGuard<M> {
             let _ = mode.exit();
         }
     }
+}
+
+/// Merge a live plugin layer over the durable baseline.
+///
+/// A live component replaces the durable entry with the same plugin id; a
+/// durable-only entry is preserved; a live-only entry exists only while the
+/// current `live` panel contains it. Ordering is by plugin id (both inputs are
+/// already sorted, and a `BTreeMap` keeps the merged order deterministic).
+fn merge_plugin_panel(
+    durable: &[PluginComponent],
+    live: Vec<PluginComponent>,
+) -> Vec<PluginComponent> {
+    let mut merged: BTreeMap<String, PluginComponent> = durable
+        .iter()
+        .cloned()
+        .map(|component| (component.plugin_id.clone(), component))
+        .collect();
+    for component in live {
+        merged.insert(component.plugin_id.clone(), component);
+    }
+    merged.into_values().collect()
 }
 
 /// Draw the whole composition.

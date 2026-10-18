@@ -34,9 +34,11 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 
 use agalma_conductor::components::{
-    derive_plugin_components, escape_control, render_blocks, ComponentView, PluginComponent,
-    Transports, ViewBlock, MAX_VIEW_BLOCK_ROWS, MAX_VIEW_TEXT_CHARS,
+    derive_plugin_components, escape_control, render_blocks, ComponentView, HealthView,
+    PluginComponent, Transports, ViewBlock, MAX_VIEW_BLOCK_ROWS, MAX_VIEW_TEXT_CHARS,
 };
+use agalma_conductor::composition::{InMemoryInstallations, PluginHost};
+use agalma_conductor::config::PluginHostConfig;
 use agalma_conductor::economics::EconomicsSnapshot;
 use agalma_conductor::ledger_process::{LedgerHandle, LedgerTransport};
 use agalma_conductor::plugin_manifest::{
@@ -1097,6 +1099,448 @@ fn control_characters_are_escaped_and_rows_bounded() {
 }
 
 // ---------------------------------------------------------------------------
+// Live host health overlay (HP.6 reopened addendum)
+//
+// The shipped interactive `watch` path builds its plugin panel from the
+// stateless ledger snapshot. The production plugin host additionally holds the
+// live registry and its attached `ReportIngestor`, whose transient
+// `PluginHealth` (recorded by the identity-checked `plugin.Health` probe) is
+// never persisted. `PluginHost::plugin_components` is the production helper
+// that supplies that live panel and `watch::App::overlay_plugins` is the
+// production overlay the interactive loop applies each tick. These cases drive
+// both and render through `watch::render_to_string` (`ratatui::TestBackend`).
+// No plugin-specific UI code is exercised.
+// ---------------------------------------------------------------------------
+
+/// A real assembled production [`PluginHost`] over the sealed fixture package.
+///
+/// Assembly installs the hub-owned generation and opens the host's live report
+/// ingestor against the selected ledger; it does not spawn the child, so the
+/// transient health below is recorded exactly as the identity-checked probe
+/// gate would (`PluginHealth/v1` naming the host pin). HP.8 owns the executable
+/// end-to-end child proof.
+struct HostFixture {
+    dir: ScratchDir,
+    host: PluginHost,
+    clock: ManualClock,
+    generation: u64,
+}
+
+fn host_fixture(name: &str) -> HostFixture {
+    let dir = ScratchDir::new(name);
+    let root = dir.child("discovery");
+    fs::create_dir_all(&root).expect("discovery root");
+    let package_dir = root.join("pkg");
+    seal_package(&package_dir, &manifest_value(PLUGIN_ID));
+
+    let clock = ManualClock::new(START_MS);
+    let ledger = LedgerHandle::in_process(dir.path()).expect("selected ledger");
+    let config = PluginHostConfig {
+        state_dir: dir.path().to_path_buf(),
+        plugin_roots: vec![PluginRoot::required(&root)],
+        once: false,
+    };
+    let host = PluginHost::assemble_with_ledger(
+        &config,
+        &InMemoryInstallations::new(),
+        ledger,
+        clock.clock(),
+    )
+    .expect("assemble production host");
+    let generation = *host
+        .installed
+        .get(PLUGIN_ID)
+        .unwrap_or_else(|| panic!("the fixture package auto-installs: {:?}", host.diagnostics));
+    HostFixture {
+        dir,
+        host,
+        clock,
+        generation,
+    }
+}
+
+impl HostFixture {
+    /// The host-pinned binding for the installed generation.
+    fn pin(&self) -> BindingPin {
+        self.host
+            .pinned_binding(PLUGIN_ID)
+            .expect("host-pinned binding")
+    }
+
+    /// Record a transient hub-observed health observation exactly as the
+    /// identity-checked `plugin.Health` probe gate does.
+    fn record_health(&self, state: HealthState, detail: &str) {
+        let pin = self.pin();
+        let health = PluginHealth {
+            format: "PluginHealth/v1".to_string(),
+            plugin_id: PLUGIN_ID.to_string(),
+            binding: pin.clone(),
+            state,
+            detail: detail.to_string(),
+            checked_at_unix_ms: START_MS,
+        };
+        let reports = self
+            .host
+            .reports
+            .clone()
+            .expect("the production host attaches a report ingestor");
+        reports
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_health(PLUGIN_ID, &pin, &health)
+            .expect("record health");
+    }
+
+    /// Activate the staged generation and mark it Ready (the pending-to-active
+    /// transition the READY/Describe/Health gates perform).
+    fn mark_ready(&mut self) {
+        self.host
+            .registry
+            .activate(PLUGIN_ID, self.generation)
+            .expect("activate staged generation");
+        self.host
+            .registry
+            .mark_ready(PLUGIN_ID, self.generation, START_MS)
+            .expect("mark ready");
+    }
+
+    /// The live host read model through the exact production helper.
+    fn live_components(&self) -> Vec<PluginComponent> {
+        self.host.plugin_components()
+    }
+
+    fn live_component(&self) -> PluginComponent {
+        self.live_components()
+            .into_iter()
+            .find(|component| component.plugin_id == PLUGIN_ID)
+            .unwrap_or_else(|| panic!("the live host exposes `{PLUGIN_ID}`"))
+    }
+
+    /// The live host panel overlaid onto an empty stateless snapshot, rendered
+    /// off-screen through the production overlay helper.
+    fn overlay_frame(&self) -> (PluginComponent, String) {
+        let live = self.live_components();
+        let component = live
+            .iter()
+            .find(|component| component.plugin_id == PLUGIN_ID)
+            .cloned()
+            .expect("live plugin component");
+        let mut app = App::new(
+            render_snapshot(self.dir.path(), Vec::new()),
+            Transports::all_in_process(),
+            1000,
+        );
+        app.overlay_plugins(live);
+        (component, render_to_string(&app, 160, 60))
+    }
+}
+
+#[test]
+fn live_host_ready_health_overlays_into_the_shipped_ui() {
+    let mut fx = host_fixture("hp-ui-live-ready");
+    fx.mark_ready();
+    fx.record_health(HealthState::Ready, "serving");
+
+    let (component, text) = fx.overlay_frame();
+    assert_eq!(component.plugin_id, PLUGIN_ID);
+    assert_eq!(component.lifecycle, "ready");
+    assert_eq!(component.generation, Some(fx.generation));
+    assert_eq!(component.freshness, "fresh", "{component:?}");
+    assert!(!component.disconnected, "{component:?}");
+    let health = component.health.as_ref().expect("health view");
+    assert_eq!(health.state, "ready");
+    assert_eq!(health.detail, "serving");
+
+    // Rendered through TestBackend with the exact identity, generation, detail.
+    assert!(text.contains(PLUGIN_ID), "{text}");
+    assert!(text.contains(&format!("gen{}", fx.generation)), "{text}");
+    assert!(text.contains("health: ready · serving"), "{text}");
+    assert!(!text.contains("DISCONNECTED"), "{text}");
+}
+
+#[test]
+fn live_host_unavailable_health_overlays_disconnected_into_the_ui() {
+    let mut fx = host_fixture("hp-ui-live-unavailable");
+    fx.mark_ready();
+    fx.record_health(HealthState::Ready, "serving");
+
+    // The child crashes: the supervisor records the failure and the identity
+    // checked health probe records an `unavailable` observation (the hub never
+    // fabricates a `ready`). The injected clock then ages past the failed
+    // threshold so freshness is `unavailable` too.
+    fx.host
+        .registry
+        .mark_failed(PLUGIN_ID, "child exited unexpectedly", START_MS)
+        .expect("mark failed");
+    fx.record_health(
+        HealthState::Unavailable,
+        "plugin.Health probe failed: process exited",
+    );
+    fx.clock.advance(31_000);
+
+    let (component, text) = fx.overlay_frame();
+    assert_eq!(component.lifecycle, "failed");
+    assert_eq!(component.generation, Some(fx.generation));
+    assert_eq!(component.freshness, "unavailable", "{component:?}");
+    assert!(component.disconnected, "{component:?}");
+    let health = component.health.as_ref().expect("health view");
+    assert_eq!(health.state, "unavailable");
+    assert!(health.detail.contains("process exited"), "{health:?}");
+
+    assert!(text.contains(PLUGIN_ID), "{text}");
+    assert!(text.contains("DISCONNECTED"), "{text}");
+    assert!(text.contains("unavailable"), "{text}");
+    assert!(text.contains("failed"), "{text}");
+    assert!(text.contains("child exited unexpectedly"), "{text}");
+}
+
+#[test]
+fn live_host_recovery_after_restart_overlays_into_the_ui() {
+    let mut fx = host_fixture("hp-ui-live-recovery");
+    fx.mark_ready();
+    fx.record_health(HealthState::Ready, "serving");
+
+    // Crash, then the host restarts the same pinned generation under a fresh
+    // launch epoch and re-runs the identity-checked health gate.
+    fx.host
+        .registry
+        .mark_failed(PLUGIN_ID, "child exited unexpectedly", START_MS)
+        .expect("mark failed");
+    fx.record_health(HealthState::Unavailable, "probe failed");
+    fx.clock.advance(31_000);
+    assert!(fx.live_component().disconnected, "crash is visible first");
+
+    fx.host
+        .registry
+        .mark_starting(PLUGIN_ID, fx.generation, START_MS + 31_000)
+        .expect("restart launch epoch");
+    fx.mark_ready();
+    fx.record_health(HealthState::Ready, "recovered and serving");
+
+    let (component, text) = fx.overlay_frame();
+    assert_eq!(component.lifecycle, "ready");
+    assert_eq!(component.generation, Some(fx.generation));
+    assert_eq!(component.freshness, "fresh", "{component:?}");
+    assert!(!component.disconnected, "{component:?}");
+    let health = component.health.as_ref().expect("health view");
+    assert_eq!(health.state, "ready");
+    assert_eq!(health.detail, "recovered and serving");
+
+    assert!(text.contains(&format!("gen{}", fx.generation)), "{text}");
+    assert!(text.contains("health: ready · recovered and serving"), "{text}");
+    assert!(!text.contains("DISCONNECTED"), "{text}");
+}
+
+#[test]
+fn live_overlay_reports_fresh_health_over_stale_durable_reports() {
+    // Independent semantics: report **freshness** is driven by the age of the
+    // durable observations, while **health** is the hub's live observation of the
+    // plugin. A stateless snapshot whose reports are 600 s old is disconnected
+    // regardless of any health field its checkpoint happens to carry; the
+    // attached live host observes a current `ready` health. The overlay must
+    // present the live health/freshness, must not mask the stale durable report
+    // state it replaced (report age still drives the durable panel it overlays),
+    // and must keep durable-only plugins.
+    let stale = durable_fixture("hp-ui-overlay-durable-stale", 600_000);
+    let durable = durable_snapshot(&stale, LedgerTransport::InProcess);
+    let durable_component = durable
+        .plugins
+        .iter()
+        .find(|component| component.plugin_id == PLUGIN_ID)
+        .expect("durable component");
+    assert_eq!(
+        durable_component.freshness, "unavailable",
+        "{durable_component:?}"
+    );
+    assert!(durable_component.disconnected, "{durable_component:?}");
+    let durable_text = render_to_string(
+        &App::new(durable.clone(), Transports::all_in_process(), 1000),
+        160,
+        60,
+    );
+    assert!(durable_text.contains("DISCONNECTED"), "{durable_text}");
+
+    let mut fx = host_fixture("hp-ui-overlay-live");
+    fx.mark_ready();
+    fx.record_health(HealthState::Ready, "serving");
+    let live = fx.live_components();
+    let live_component = live
+        .iter()
+        .find(|component| component.plugin_id == PLUGIN_ID)
+        .expect("live component");
+    assert_eq!(live_component.freshness, "fresh", "{live_component:?}");
+    assert!(!live_component.disconnected, "{live_component:?}");
+    assert_eq!(
+        live_component.health.as_ref().map(|health| health.state.as_str()),
+        Some("ready")
+    );
+
+    let mut app = App::new(durable, Transports::all_in_process(), 1000);
+    app.overlay_plugins(live);
+    let merged = app
+        .snapshot
+        .plugins
+        .iter()
+        .find(|component| component.plugin_id == PLUGIN_ID)
+        .expect("merged component");
+    assert_eq!(merged.freshness, "fresh", "{merged:?}");
+    assert!(!merged.disconnected, "{merged:?}");
+    assert_eq!(
+        merged.health.as_ref().map(|health| health.state.as_str()),
+        Some("ready")
+    );
+
+    let text = render_to_string(&app, 160, 60);
+    assert!(text.contains(PLUGIN_ID), "{text}");
+    assert!(text.contains("health: ready · serving"), "{text}");
+    assert!(!text.contains("DISCONNECTED"), "{text}");
+}
+
+#[test]
+fn empty_live_panel_leaves_the_stateless_snapshot_untouched() {
+    // No live host: the durable stateless panel is retained verbatim.
+    let fixture = durable_fixture("hp-ui-overlay-none", 0);
+    let mut app = App::new(
+        durable_snapshot(&fixture, LedgerTransport::InProcess),
+        Transports::all_in_process(),
+        1000,
+    );
+    let before = app.snapshot.plugins.clone();
+    assert!(before.iter().any(|component| component.plugin_id == PLUGIN_ID));
+    app.overlay_plugins(Vec::new());
+    assert_eq!(app.snapshot.plugins, before, "empty live panel restores baseline");
+}
+
+/// The plugin id set of the current panel.
+fn panel_ids(app: &App) -> BTreeSet<String> {
+    app.snapshot
+        .plugins
+        .iter()
+        .map(|component| component.plugin_id.clone())
+        .collect()
+}
+
+#[test]
+fn live_overlay_removal_drops_omitted_live_only_plugins() {
+    // A durable baseline with one durable-only plugin that no live host reports.
+    let durable = vec![generated_live_component(
+        "durable.only",
+        1,
+        HealthState::Degraded,
+        "durable",
+    )];
+    let mut app = App::new(
+        render_snapshot(Path::new("overlay-removal"), durable.clone()),
+        Transports::all_in_process(),
+        1000,
+    );
+
+    // First authoritative live panel adds two live-only plugins.
+    let live_a = generated_live_component("live.a", 2, HealthState::Ready, "a-ready");
+    let live_b = generated_live_component("live.b", 3, HealthState::Unavailable, "b-gone");
+    app.overlay_plugins(vec![live_a.clone(), live_b]);
+    assert_eq!(
+        panel_ids(&app),
+        BTreeSet::from([
+            "durable.only".to_string(),
+            "live.a".to_string(),
+            "live.b".to_string(),
+        ])
+    );
+
+    // Second authoritative panel omits `live.b`: it must disappear, not linger.
+    app.overlay_plugins(vec![live_a.clone()]);
+    assert_eq!(
+        panel_ids(&app),
+        BTreeSet::from(["durable.only".to_string(), "live.a".to_string()])
+    );
+    assert!(!app
+        .snapshot
+        .plugins
+        .iter()
+        .any(|component| component.plugin_id == "live.b"));
+
+    // The durable-only entry is preserved verbatim; the live entry is current.
+    let durable_only = app
+        .snapshot
+        .plugins
+        .iter()
+        .find(|component| component.plugin_id == "durable.only")
+        .expect("durable-only preserved");
+    assert_eq!(*durable_only, durable[0]);
+    let live = app
+        .snapshot
+        .plugins
+        .iter()
+        .find(|component| component.plugin_id == "live.a")
+        .expect("live.a current");
+    assert_eq!(*live, live_a);
+}
+
+#[test]
+fn empty_live_panel_drops_previous_live_only_plugins() {
+    let durable = vec![generated_live_component(
+        "durable.only",
+        1,
+        HealthState::Ready,
+        "durable",
+    )];
+    let mut app = App::new(
+        render_snapshot(Path::new("overlay-empty"), durable.clone()),
+        Transports::all_in_process(),
+        1000,
+    );
+    app.overlay_plugins(vec![generated_live_component(
+        "live.a",
+        2,
+        HealthState::Ready,
+        "a",
+    )]);
+    assert!(app
+        .snapshot
+        .plugins
+        .iter()
+        .any(|component| component.plugin_id == "live.a"));
+
+    // An authoritative empty panel means the host currently reports no plugins:
+    // the live layer is replaced with nothing, so live-only entries disappear
+    // while durable-only entries remain.
+    app.overlay_plugins(Vec::new());
+    assert_eq!(app.snapshot.plugins, durable);
+    assert!(!app
+        .snapshot
+        .plugins
+        .iter()
+        .any(|component| component.plugin_id == "live.a"));
+}
+
+#[test]
+fn clear_live_plugins_restores_the_durable_baseline() {
+    let durable = vec![generated_live_component(
+        "durable.only",
+        1,
+        HealthState::Ready,
+        "durable",
+    )];
+    let mut app = App::new(
+        render_snapshot(Path::new("overlay-clear"), durable.clone()),
+        Transports::all_in_process(),
+        1000,
+    );
+    app.overlay_plugins(vec![generated_live_component(
+        "live.a",
+        2,
+        HealthState::Ready,
+        "a",
+    )]);
+    assert_eq!(panel_ids(&app).len(), 2);
+
+    // `None` from the tick (no attached host) drops the live layer entirely.
+    app.clear_live_plugins();
+    assert_eq!(app.snapshot.plugins, durable);
+}
+
+// ---------------------------------------------------------------------------
 // Property cases (recorded seed + budget)
 // ---------------------------------------------------------------------------
 
@@ -1209,6 +1653,272 @@ fn rendered_blocks_are_always_escaped_and_bounded() {
                     _ => {}
                 }
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Live-overlay property cases (recorded seed + budget)
+// ---------------------------------------------------------------------------
+
+/// Recorded deterministic property-test seed for the live-overlay invariant.
+const OVERLAY_PROPERTY_SEED: u64 = 0x0bd3_5eed_0000_006b;
+/// Recorded property-test case budget for the live-overlay invariant.
+const OVERLAY_PROPERTY_CASES: u64 = 60;
+
+/// Build one generated live plugin component independently of the production
+/// `derive_plugin_components` (the property assertions must not mirror the
+/// implementation under test).
+fn generated_live_component(
+    plugin_id: &str,
+    generation: u64,
+    state: HealthState,
+    detail: &str,
+) -> PluginComponent {
+    let (freshness, lifecycle, stale, disconnected) = match state {
+        HealthState::Ready => ("fresh", "ready", false, false),
+        HealthState::Degraded => ("stale", "ready", true, false),
+        HealthState::Unavailable => ("unavailable", "failed", false, true),
+    };
+    PluginComponent {
+        plugin_id: plugin_id.to_string(),
+        origin: "discovered".to_string(),
+        desired: "running".to_string(),
+        lifecycle: lifecycle.to_string(),
+        generation: Some(generation),
+        freshness: freshness.to_string(),
+        stale,
+        disconnected,
+        incomplete: false,
+        last_error: None,
+        health: Some(HealthView {
+            state: match state {
+                HealthState::Ready => "ready",
+                HealthState::Degraded => "degraded",
+                HealthState::Unavailable => "unavailable",
+            }
+            .to_string(),
+            detail: detail.to_string(),
+            observed_at_unix_ms: START_MS,
+        }),
+        actions: Vec::new(),
+        views: Vec::new(),
+    }
+}
+
+/// Property: the production overlay applies the live panel exactly — a live
+/// component replaces any durable entry with the same plugin id (transient
+/// health wins), durable-only entries are preserved verbatim, and the rendered
+/// frame shows every live identity, generation and health detail. Generated over
+/// a recorded seed and bounded case budget.
+#[test]
+fn overlay_health_property_preserves_identity_generation_and_refresh() {
+    let mut rng = XorShift64::new(OVERLAY_PROPERTY_SEED);
+    let states = [
+        HealthState::Ready,
+        HealthState::Degraded,
+        HealthState::Unavailable,
+    ];
+
+    for case in 0..OVERLAY_PROPERTY_CASES {
+        let pool: Vec<String> = (0..4).map(|index| format!("prop.plugin.{index}")).collect();
+
+        // The durable stateless panel holds an arbitrary subset with an opaque
+        // freshness, a distinct generation and no live health.
+        let mut baseline: Vec<PluginComponent> = Vec::new();
+        for plugin_id in &pool {
+            if rng.below(2) != 0 {
+                continue;
+            }
+            let mut component = generated_live_component(
+                plugin_id,
+                rng.below(5) + 1,
+                HealthState::Degraded,
+                "durable",
+            );
+            component.health = None;
+            component.freshness = "unknown".to_string();
+            component.stale = false;
+            component.disconnected = false;
+            baseline.push(component);
+        }
+
+        // The live host panel holds an independent subset with generated
+        // identity/generation/health.
+        let mut live: Vec<PluginComponent> = Vec::new();
+        for plugin_id in &pool {
+            if rng.below(2) != 0 {
+                continue;
+            }
+            let generation = rng.below(5) + 1;
+            let state = states[rng.below(3) as usize].clone();
+            let detail = format!("detail-{case}-{plugin_id}");
+            live.push(generated_live_component(plugin_id, generation, state, &detail));
+        }
+
+        let mut app = App::new(
+            render_snapshot(Path::new("overlay-prop"), baseline.clone()),
+            Transports::all_in_process(),
+            1000,
+        );
+        app.overlay_plugins(live.clone());
+
+        // The merged panel is exactly the union of ids, one entry each.
+        let mut expected_ids: BTreeSet<String> =
+            baseline.iter().map(|c| c.plugin_id.clone()).collect();
+        expected_ids.extend(live.iter().map(|c| c.plugin_id.clone()));
+        let merged_ids: BTreeSet<String> = app
+            .snapshot
+            .plugins
+            .iter()
+            .map(|c| c.plugin_id.clone())
+            .collect();
+        assert_eq!(merged_ids, expected_ids, "case {case} id union");
+
+        // Each live component wins for its id, with its exact identity/health.
+        for live_component in &live {
+            let merged = app
+                .snapshot
+                .plugins
+                .iter()
+                .find(|c| c.plugin_id == live_component.plugin_id)
+                .unwrap_or_else(|| panic!("case {case} missing live id"));
+            assert_eq!(
+                merged.generation, live_component.generation,
+                "case {case} generation"
+            );
+            assert_eq!(merged.health, live_component.health, "case {case} health");
+            assert_eq!(
+                merged.freshness, live_component.freshness,
+                "case {case} freshness"
+            );
+            assert_eq!(
+                merged.disconnected, live_component.disconnected,
+                "case {case} disconnected"
+            );
+        }
+
+        // Durable-only ids keep their baseline entry verbatim.
+        for baseline_component in &baseline {
+            if live
+                .iter()
+                .any(|c| c.plugin_id == baseline_component.plugin_id)
+            {
+                continue;
+            }
+            let merged = app
+                .snapshot
+                .plugins
+                .iter()
+                .find(|c| c.plugin_id == baseline_component.plugin_id)
+                .unwrap_or_else(|| panic!("case {case} durable-only id dropped"));
+            assert_eq!(*merged, *baseline_component, "case {case} durable-only preserved");
+        }
+
+        // The rendered frame shows every live identity, generation and detail.
+        let text = render_to_string(&app, 160, 200);
+        for live_component in &live {
+            assert!(
+                text.contains(&live_component.plugin_id),
+                "case {case} identity not rendered"
+            );
+            let generation = live_component.generation.expect("live generation");
+            assert!(
+                text.contains(&format!("gen{generation}")),
+                "case {case} generation not rendered"
+            );
+            let detail = &live_component
+                .health
+                .as_ref()
+                .expect("live health")
+                .detail;
+            assert!(
+                text.contains(detail.as_str()),
+                "case {case} health detail not rendered"
+            );
+        }
+    }
+}
+
+/// Recorded deterministic seed for the live-overlay sequence invariant.
+const OVERLAY_SEQUENCE_SEED: u64 = 0x0bd3_5eed_0000_006c;
+/// Recorded case budget for the live-overlay sequence invariant.
+const OVERLAY_SEQUENCE_CASES: u64 = 40;
+
+/// Property: over a sequence of authoritative live panels, each one **replaces**
+/// the previous live layer over the durable baseline. After every step the panel
+/// is exactly the durable-only entries plus the current live entries: an omitted
+/// live-only plugin disappears and a durable-only plugin persists, step after
+/// step. Generated over a recorded seed and bounded case budget.
+#[test]
+fn overlay_sequence_property_replaces_the_live_layer() {
+    let mut rng = XorShift64::new(OVERLAY_SEQUENCE_SEED);
+    let states = [
+        HealthState::Ready,
+        HealthState::Degraded,
+        HealthState::Unavailable,
+    ];
+
+    for case in 0..OVERLAY_SEQUENCE_CASES {
+        let pool: Vec<String> = (0..5).map(|index| format!("seq.plugin.{index}")).collect();
+
+        // A fixed durable baseline (opaque freshness, no live health).
+        let mut durable: Vec<PluginComponent> = Vec::new();
+        for plugin_id in &pool {
+            if rng.below(2) != 0 {
+                continue;
+            }
+            let mut component = generated_live_component(
+                plugin_id,
+                rng.below(5) + 1,
+                HealthState::Degraded,
+                "durable",
+            );
+            component.health = None;
+            component.freshness = "unknown".to_string();
+            component.stale = false;
+            component.disconnected = false;
+            durable.push(component);
+        }
+
+        let mut app = App::new(
+            render_snapshot(Path::new("overlay-seq"), durable.clone()),
+            Transports::all_in_process(),
+            1000,
+        );
+
+        let steps = 1 + rng.below(4);
+        for step in 0..steps {
+            let mut live: Vec<PluginComponent> = Vec::new();
+            for plugin_id in &pool {
+                if rng.below(2) != 0 {
+                    continue;
+                }
+                let generation = rng.below(5) + 1;
+                let state = states[rng.below(3) as usize].clone();
+                let detail = format!("seq-{case}-{step}-{plugin_id}");
+                live.push(generated_live_component(plugin_id, generation, state, &detail));
+            }
+            app.overlay_plugins(live.clone());
+
+            // The panel must be exactly the durable-only entries plus the
+            // current live entries — never the previous step's live layer.
+            let mut expected: BTreeMap<String, PluginComponent> = durable
+                .iter()
+                .cloned()
+                .map(|component| (component.plugin_id.clone(), component))
+                .collect();
+            for component in &live {
+                expected.insert(component.plugin_id.clone(), component.clone());
+            }
+            let actual: BTreeMap<String, PluginComponent> = app
+                .snapshot
+                .plugins
+                .iter()
+                .cloned()
+                .map(|component| (component.plugin_id.clone(), component))
+                .collect();
+            assert_eq!(actual, expected, "case {case} step {step}");
         }
     }
 }

@@ -846,6 +846,28 @@ impl PluginHost {
         out
     }
 
+    /// The host's current generic registry/report-derived plugin components
+    /// (HP.6 reopened addendum).
+    ///
+    /// This is the production **live** read model the shipped watch UI overlays
+    /// onto its durable snapshot each tick: every entry is derived from the
+    /// running [`PluginRegistry`] and the host's attached
+    /// [`crate::plugin_reports::ReportIngestor`] — durable report observations
+    /// **and the host's current health observation** — never from the stateless
+    /// ledger snapshot alone. Health is an observation, not a durable report
+    /// stream: the live ingestor holds the latest `plugin.Health` probe result,
+    /// so the UI reflects a crash or recovery as soon as the host observes it.
+    /// When no report ingestor is attached the panel reflects registry lifecycle
+    /// only. Purely read-only: it opens no socket and writes nothing.
+    pub fn plugin_components(&self) -> Vec<crate::components::PluginComponent> {
+        let reports = self.reports.as_ref().map(|reports| {
+            reports
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
+        crate::components::derive_plugin_components(&self.registry, reports.as_deref())
+    }
+
     /// Desired-state store (HP.5 attaches the durable implementation).
     pub fn desired_mut(&mut self) -> &mut dyn DesiredStateStore {
         self.desired.as_mut()
@@ -1736,6 +1758,11 @@ pub async fn run_plugin_host(args: &PluginHostArgs) -> std::process::ExitCode {
                     eprintln!("agalma: plugin supervise tick failed: {err:?}");
                 }
                 host.refresh_action_sockets();
+                // HP.6 reopened addendum: hand the UI the host's current live
+                // registry/report-derived panel (including the current health
+                // observation) so the shipped watch view overlays it after this
+                // tick.
+                Some(host.plugin_components())
             },
         );
         host.shutdown();

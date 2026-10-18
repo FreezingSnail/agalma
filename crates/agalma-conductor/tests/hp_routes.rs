@@ -49,9 +49,9 @@ use agalma_conductor::plugin_manifest::{
 use agalma_conductor::plugin_registry::InMemoryDesiredStateStore;
 use agalma_conductor::plugin_router::{
     CapabilityAdapter, CapabilityCallRequest, CapabilityRouter, GrantScope, InMemoryOperationJournal,
-    LaunchGrant, RouterService, RunningStop, StopAdmission, DEFAULT_MAX_DEPTH,
+    LaunchGrant, RouterService, RpcHealthProbe, RunningStop, StopAdmission, DEFAULT_MAX_DEPTH,
 };
-use agalma_conductor::plugin_supervisor::{Clock, ManualClock};
+use agalma_conductor::plugin_supervisor::{Clock, HealthProbe, ManualClock};
 use agalma_conductor::stop::{StopControl, StopDecision};
 use agalma_contracts::digest::failure_code;
 use agalma_contracts::task_package::BindingPin;
@@ -1167,10 +1167,28 @@ fn production_restart_rotates_launch_grant() {
         launch1.socket, launch2.socket,
         "a new launch epoch uses a fresh socket"
     );
+    // The immutable binding scope (plugin, pinned binding, method, resource
+    // namespace, directive) is preserved across restart. The expiry is a
+    // wall-clock refresh (`wall_clock_now_ms() + LAUNCH_GRANT_TTL_MS`, no clock
+    // seam), so it may advance by a millisecond between launches; assert the
+    // immutable fields exactly and the expiry as a valid, non-regressing future
+    // refresh rather than comparing the whole scope for equality.
+    let scope2 = grant2.scope();
+    assert_eq!(scope2.plugin_id, scope1.plugin_id, "plugin id preserved");
+    assert_eq!(scope2.binding, scope1.binding, "pinned binding preserved");
+    assert_eq!(scope2.method, scope1.method, "method preserved");
     assert_eq!(
-        grant2.scope(),
-        &scope1,
-        "immutable binding scope is preserved across restart"
+        scope2.resource_namespace, scope1.resource_namespace,
+        "resource namespace preserved"
+    );
+    assert_eq!(scope2.directive, scope1.directive, "directive preserved");
+    assert!(
+        scope2.expiry_unix_ms >= scope1.expiry_unix_ms,
+        "restart refreshes the expiry without regressing it"
+    );
+    assert!(
+        scope1.expiry_unix_ms > agalma_conductor::plugin_router::wall_clock_now_ms(),
+        "the launch grant expiry stays in the future"
     );
 
     // The prior token is revoked; only the new token authorizes an effect.
@@ -1247,4 +1265,144 @@ async fn production_host_serves_hub_capability_with_launch_grant() {
         .expect_err("unknown grant refused");
     assert!(matches!(error, agalma_ipc::IpcError::Contract(_)));
     assert_eq!(call_count(&calls), 1, "unauthorized call had zero effects");
+}
+
+// ---------------------------------------------------------------------------
+// HP.4 reopen: production RPC/runtime lifecycle repair (agalma-jmr.4)
+// ---------------------------------------------------------------------------
+
+/// Regression (`agalma-jmr.4` reopen): the production `agalma plugins --once`
+/// host entry runs `run_plugin_host` (an `async fn` under `#[tokio::main]`) and
+/// dropped its `RpcHealthProbe` — and the probe's owned multi-thread runtime —
+/// from inside that async context, panicking at exit with code 101
+/// ("Cannot drop a runtime in a context where blocking is not allowed").
+/// Dropping the probe inside the async host entry must be safe, and its real
+/// `plugin.Health` read must still report readiness truthfully.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rpc_health_probe_survives_async_host_entry_drop() {
+    let scratch = ScratchDir::new("hp-routes-probe-drop");
+
+    // A real child bound at the probe's deterministic socket reports `ready`.
+    let ready_id = "example.probe.ready";
+    spawn_connect_server(
+        &scratch,
+        ready_id,
+        plugin_server_info(ready_id, "1.2.3", Vec::<String>::new()),
+        {
+            let ready_id = ready_id.to_string();
+            move |server| {
+                register_plugin(
+                    server,
+                    Arc::new(FakePlugin {
+                        plugin_id: ready_id.clone(),
+                        invoke: Box::new(|_| Ok(Value::Null)),
+                    }),
+                );
+            }
+        },
+    );
+
+    // Constructed, used, and dropped inside the async host-entry context — the
+    // exact place the production runtime drop panicked.
+    let mut probe = RpcHealthProbe::new(scratch.path().to_path_buf());
+    assert!(
+        probe.probe(ready_id, 0).expect("probe runs"),
+        "real child health reads ready"
+    );
+    drop(probe);
+
+    // A second cycle in the same context: an unserved socket is not Ready (never
+    // fabricated) and dropping the fresh probe stays panic-free.
+    let mut absent = RpcHealthProbe::new(scratch.path().to_path_buf());
+    assert!(
+        !absent.socket("example.probe.absent", 0).exists(),
+        "the absent child serves no socket"
+    );
+    assert!(
+        !absent.probe("example.probe.absent", 0).expect("probe runs"),
+        "unserved child is never fabricated Ready"
+    );
+    drop(absent);
+}
+
+/// Property (`agalma-jmr.4` reopen): over a deterministic, seeded sequence of
+/// host shutdown cycles, a `RpcHealthProbe` constructed and dropped inside the
+/// async host-entry context never panics, and it reports Ready exactly for a
+/// child actually serving its deterministic socket. Generated inputs vary the
+/// probed plugin id and launch epoch; the served set is fixed independently of
+/// the generator, so readiness is an independently defined oracle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn property_probe_drop_is_async_safe_and_readiness_is_exact() {
+    let scratch = ScratchDir::new("hp-routes-probe-prop");
+
+    // Two served children, both at launch epoch 0; any other (id, epoch) pair
+    // resolves to a distinct, unserved socket.
+    let served = ["example.prop.alpha", "example.prop.beta"];
+    for id in served {
+        spawn_connect_server(
+            &scratch,
+            id,
+            plugin_server_info(id, "1.2.3", Vec::<String>::new()),
+            {
+                let id = id.to_string();
+                move |server| {
+                    register_plugin(
+                        server,
+                        Arc::new(FakePlugin {
+                            plugin_id: id.clone(),
+                            invoke: Box::new(|_| Ok(Value::Null)),
+                        }),
+                    );
+                }
+            },
+        );
+    }
+
+    let candidates = [
+        "example.prop.alpha",
+        "example.prop.beta",
+        "example.prop.gamma",
+    ];
+    let mut rng = XorShift64::new(PROPERTY_SEED);
+    let mut ready_cycles: u64 = 0;
+    let mut not_ready_cycles: u64 = 0;
+
+    for case in 0..PROPERTY_CASES {
+        let id = candidates[rng.below(candidates.len() as u64) as usize];
+        let epoch = rng.below(4);
+        let expected = served.contains(&id) && epoch == 0;
+
+        // Reuse the served state root; the generator varies only the probed
+        // target, so a genuine connect can occur for the served pairs.
+        let mut probe = RpcHealthProbe::new(scratch.path().to_path_buf());
+        let observed = probe
+            .probe(id, epoch)
+            .unwrap_or_else(|e| panic!("case {case}: probe {id}@{epoch} errored: {e:?}"));
+        assert_eq!(
+            observed, expected,
+            "case {case}: readiness must match the independently served set"
+        );
+        assert_eq!(
+            probe.socket(id, epoch).exists(),
+            expected,
+            "case {case}: socket presence tracks the served set"
+        );
+        // Dropping inside the async host-entry context must not panic.
+        drop(probe);
+
+        if expected {
+            ready_cycles += 1;
+        } else {
+            not_ready_cycles += 1;
+        }
+    }
+
+    assert!(
+        ready_cycles > 0,
+        "property exercised at least one ready read"
+    );
+    assert!(
+        not_ready_cycles > 0,
+        "property exercised at least one not-ready read"
+    );
 }

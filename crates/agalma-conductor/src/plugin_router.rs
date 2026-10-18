@@ -1050,7 +1050,9 @@ pub(crate) fn hex_decode_32(value: &str) -> Result<[u8; GRANT_TOKEN_BYTES], Cont
 /// silent Ready.
 pub struct RpcHealthProbe {
     state_dir: PathBuf,
-    runtime: tokio::runtime::Runtime,
+    /// The owned probe runtime. `Option` so [`Drop`] can take it and shut it
+    /// down without the plain field drop, which panics inside an async context.
+    runtime: Option<tokio::runtime::Runtime>,
 }
 
 impl RpcHealthProbe {
@@ -1060,12 +1062,42 @@ impl RpcHealthProbe {
             .enable_all()
             .build()
             .expect("plugin health probe runtime");
-        RpcHealthProbe { state_dir, runtime }
+        RpcHealthProbe {
+            state_dir,
+            runtime: Some(runtime),
+        }
+    }
+
+    /// The owned runtime, present until the probe is dropped.
+    fn runtime(&self) -> &tokio::runtime::Runtime {
+        self.runtime
+            .as_ref()
+            .expect("plugin health probe runtime is present until drop")
     }
 
     /// The socket a launched child serves for `plugin_id`/`epoch`.
     pub fn socket(&self, plugin_id: &str, epoch: u64) -> PathBuf {
         crate::plugin_registry::plugin_socket_path(&self.state_dir, plugin_id, epoch)
+    }
+}
+
+impl Drop for RpcHealthProbe {
+    fn drop(&mut self) {
+        // A multi-thread runtime's plain drop shuts its blocking pool down with a
+        // blocking wait, which panics ("Cannot drop a runtime in a context where
+        // blocking is not allowed") when the probe is dropped inside an async
+        // context — the production `agalma plugins --once` host entry does exactly
+        // that. `shutdown_background` flags the pool first, so the runtime's own
+        // drop is then a no-op, and the probe stays droppable from either a
+        // synchronous or an asynchronous context.
+        let Some(runtime) = self.runtime.take() else {
+            return;
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            runtime.shutdown_background();
+        } else {
+            drop(runtime);
+        }
     }
 }
 
@@ -1094,7 +1126,7 @@ impl HealthProbe for RpcHealthProbe {
                 )
             })
         };
-        let health = block_on_runtime(&self.runtime, probe);
+        let health = block_on_runtime(self.runtime(), probe);
         match health {
             Ok(record) => Ok(
                 record.get("state").and_then(Value::as_str) == Some("ready"),

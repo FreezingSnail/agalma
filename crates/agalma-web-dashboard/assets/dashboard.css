@@ -743,6 +743,25 @@ details.technical pre {
   font-weight: 700;
 }
 
+.pill--ok,
+.pill--healthy {
+  --pill-c: var(--ok);
+}
+
+.pill--info {
+  --pill-c: var(--info);
+}
+
+.pill--warn,
+.pill--warning {
+  --pill-c: var(--warn);
+}
+
+.pill--error,
+.pill--critical {
+  --pill-c: var(--bad);
+}
+
 @keyframes pill-pulse {
   0%,
   100% {
@@ -968,6 +987,166 @@ div.time {
   color: var(--muted);
   font-size: var(--text-xs);
   font-style: italic;
+}
+
+/* Generic declared component views. Every region is a normal block; long
+   values wrap, tables scroll inside their own box, and no state is hidden
+   behind colour alone. */
+.component-hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.component-source-states {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  min-width: 0;
+}
+
+.component-source-state {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.component-scope {
+  flex: 1 1 18rem;
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.component-views {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  margin: var(--space-3) 0;
+}
+
+.component-view {
+  min-width: 0;
+  padding: var(--space-3);
+  background: color-mix(in srgb, var(--text) 2%, var(--panel));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.component-view > h3 {
+  margin-bottom: var(--space-2);
+  padding-bottom: var(--space-1);
+  font-size: var(--text-sm);
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.component-view[data-state="conflict"],
+.component-view[data-state="malformed"],
+.component-view[data-state="schema-mismatch"],
+.component-view[data-state="unsupported"] {
+  border-inline-start: 3px solid var(--bad);
+}
+
+.component-view[data-state="stale"],
+.component-view[data-state="missing"],
+.component-view[data-state="unknown"],
+.component-view[data-state="awaiting"],
+.component-view[data-state="empty"] {
+  border-inline-start: 3px solid var(--unknown);
+}
+
+.component-view .empty {
+  padding: var(--space-3);
+  text-align: start;
+}
+
+.component-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.component-status-value {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.component-status-value--unknown {
+  color: var(--unknown);
+}
+
+.component-metrics .key {
+  min-width: 11rem;
+}
+
+.component-metrics,
+.component-artifact {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.component-table-scroll,
+.component-view .table {
+  max-width: 100%;
+}
+
+.component-view .table {
+  display: block;
+  overflow-x: auto;
+}
+
+.value--missing {
+  color: var(--unknown);
+  font-style: italic;
+}
+
+.component-expansion {
+  margin-top: var(--space-2);
+  min-width: 0;
+}
+
+.component-alert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-inline-start: 3px solid var(--warn);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warn) 10%, var(--panel));
+}
+
+.component-alert--unclassified {
+  border-inline-start-color: var(--unknown);
+  background: color-mix(in srgb, var(--unknown) 10%, var(--panel));
+}
+
+.component-alert-level {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.component-alert-message {
+  flex: 1 1 16rem;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.component-artifact-download {
+  margin: var(--space-2) 0 0;
+}
+
+.component-view details.technical {
+  margin-top: var(--space-2);
 }
 
 /* --------------------------------------------------------------- responsive */

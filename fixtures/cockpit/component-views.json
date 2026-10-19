@@ -1,0 +1,216 @@
+{
+  "metadata": {
+    "format": "ControlPlaneRead/v1",
+    "collected_at_unix_ms": 1791820810000,
+    "registry_revision": "9007199254740993",
+    "report_watermark": "18446744073709551615",
+    "sources": [
+      { "source": "registry", "state": "available", "detail": "", "observed_at_unix_ms": 1791820810000 },
+      { "source": "reports", "state": "available", "detail": "", "observed_at_unix_ms": 1791820810000 }
+    ]
+  },
+  "binding": {
+    "binding_id": "fixture.views",
+    "api": "plugin",
+    "api_version": 1,
+    "implementation_version": "fixture-views",
+    "generation": "18446744073709551615",
+    "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+  },
+  "descriptors": [
+    {
+      "view_id": "status",
+      "schema_namespace": "private.vendor.telemetry.status",
+      "kind": "Status",
+      "title": "Observed state",
+      "schema_version": 1,
+      "fields": ["state", "detail"]
+    },
+    {
+      "view_id": "metrics",
+      "schema_namespace": "private.vendor.telemetry.metrics",
+      "kind": "Metrics",
+      "title": "Key metrics",
+      "schema_version": 1,
+      "fields": ["ready", "count", "nested.value", "absent"]
+    },
+    {
+      "view_id": "rows",
+      "schema_namespace": "private.vendor.telemetry.rows",
+      "kind": "Table",
+      "title": "Observed rows",
+      "schema_version": 1,
+      "fields": ["id", "state", "note"]
+    },
+    {
+      "view_id": "events",
+      "schema_namespace": "private.vendor.telemetry.events",
+      "kind": "Timeline",
+      "title": "Recent observations",
+      "schema_version": 1,
+      "fields": ["at", "message", "detail"]
+    },
+    {
+      "view_id": "alert",
+      "schema_namespace": "private.vendor.telemetry.alert",
+      "kind": "Alert",
+      "title": "Needs attention",
+      "schema_version": 1,
+      "fields": ["level", "message"]
+    },
+    {
+      "view_id": "artifact",
+      "schema_namespace": "private.vendor.telemetry.artifact",
+      "kind": "ArtifactLink",
+      "title": "Latest artifact",
+      "schema_version": 1,
+      "fields": ["label", "reference", "digest"]
+    }
+  ],
+  "entries": [
+    {
+      "format": "ReportEnvelope/v1",
+      "plugin_id": "example.unfamiliar-reporter",
+      "binding": {
+        "binding_id": "fixture.views",
+        "api": "plugin",
+        "api_version": 1,
+        "implementation_version": "fixture-views",
+        "generation": "18446744073709551615",
+        "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "schema_namespace": "private.vendor.telemetry.status",
+      "schema_version": 1,
+      "sequence": "18446744073709551615",
+      "reported_at_unix_ms": "1791820800000",
+      "observed_at_unix_ms": "1791820800001",
+      "execution_id": null,
+      "durability": "durable",
+      "payload": { "state": "ready", "detail": "<script>alert('status')</script>" },
+      "payload_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "format": "ReportEnvelope/v1",
+      "plugin_id": "example.unfamiliar-reporter",
+      "binding": {
+        "binding_id": "fixture.views",
+        "api": "plugin",
+        "api_version": 1,
+        "implementation_version": "fixture-views",
+        "generation": "18446744073709551615",
+        "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "schema_namespace": "private.vendor.telemetry.metrics",
+      "schema_version": 1,
+      "sequence": "2",
+      "reported_at_unix_ms": "1791820800001",
+      "observed_at_unix_ms": "1791820800002",
+      "execution_id": null,
+      "durability": "durable",
+      "payload": {
+        "ready": false,
+        "count": 0,
+        "nested": { "value": "40" },
+        "absent": null
+      },
+      "payload_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "format": "ReportEnvelope/v1",
+      "plugin_id": "example.unfamiliar-reporter",
+      "binding": {
+        "binding_id": "fixture.views",
+        "api": "plugin",
+        "api_version": 1,
+        "implementation_version": "fixture-views",
+        "generation": "18446744073709551615",
+        "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "schema_namespace": "private.vendor.telemetry.rows",
+      "schema_version": 1,
+      "sequence": "3",
+      "reported_at_unix_ms": "1791820800002",
+      "observed_at_unix_ms": "1791820800003",
+      "execution_id": "exec:views:1",
+      "durability": "durable",
+      "payload": [
+        { "id": "row-1", "state": "ready", "note": "first" },
+        { "id": "row-2", "state": null, "note": "<script>alert('row')</script>" }
+      ],
+      "payload_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    {
+      "format": "ReportEnvelope/v1",
+      "plugin_id": "example.unfamiliar-reporter",
+      "binding": {
+        "binding_id": "fixture.views",
+        "api": "plugin",
+        "api_version": 1,
+        "implementation_version": "fixture-views",
+        "generation": "18446744073709551615",
+        "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "schema_namespace": "private.vendor.telemetry.events",
+      "schema_version": 1,
+      "sequence": "4",
+      "reported_at_unix_ms": "1791820800003",
+      "observed_at_unix_ms": "1791820800004",
+      "execution_id": null,
+      "durability": "durable",
+      "payload": {
+        "entries": [
+          { "at": "2026-10-19T00:00:00Z", "message": "Observed one", "detail": "kept order" },
+          { "at": "2026-10-19T00:00:01Z", "message": "Observed two", "detail": "second" }
+        ]
+      },
+      "payload_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    {
+      "format": "ReportEnvelope/v1",
+      "plugin_id": "example.unfamiliar-reporter",
+      "binding": {
+        "binding_id": "fixture.views",
+        "api": "plugin",
+        "api_version": 1,
+        "implementation_version": "fixture-views",
+        "generation": "18446744073709551615",
+        "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "schema_namespace": "private.vendor.telemetry.alert",
+      "schema_version": 1,
+      "sequence": "5",
+      "reported_at_unix_ms": "1791820800004",
+      "observed_at_unix_ms": "1791820800005",
+      "execution_id": null,
+      "durability": "durable",
+      "payload": { "level": "degraded", "message": "Report source delayed" },
+      "payload_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    },
+    {
+      "format": "ReportEnvelope/v1",
+      "plugin_id": "example.unfamiliar-reporter",
+      "binding": {
+        "binding_id": "fixture.views",
+        "api": "plugin",
+        "api_version": 1,
+        "implementation_version": "fixture-views",
+        "generation": "18446744073709551615",
+        "config_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      "schema_namespace": "private.vendor.telemetry.artifact",
+      "schema_version": 1,
+      "sequence": "6",
+      "reported_at_unix_ms": "1791820800005",
+      "observed_at_unix_ms": "1791820800006",
+      "execution_id": null,
+      "durability": "durable",
+      "payload": {
+        "label": "<img src=x onerror=alert(1)>",
+        "reference": "javascript:alert('artifact')",
+        "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      },
+      "payload_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    }
+  ],
+  "next_cursor": null
+}

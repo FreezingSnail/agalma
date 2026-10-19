@@ -18,7 +18,9 @@ supervised; the hub UI imports no plugin code.
 Owned files:
 
 - `crates/agalma-web-dashboard/assets/index.html`, `dashboard.css`, `app.js`,
-  `api.js`, `refresh.js`, `controls.js`
+  `api.js`, `refresh.js`, `controls.js`, `views.js`
+- `crates/agalma-web-dashboard/assets/pages/` (`component.js` and the other
+  route modules)
 - `crates/agalma-web-dashboard/tests/browser_support/` (reusable headless
   browser + loopback fixture harness)
 - `crates/agalma-web-dashboard/tests/cockpit_page.rs`,
@@ -182,6 +184,53 @@ drops the previous generation's row state. Plugin text is written with
 truncation marker; lists are bounded with explicit additional-content
 indicators. Plugin HTML/scripts/templates are never evaluated.
 
+## Generic declared component views (CW.1 / `agalma-51dg.2`)
+
+`assets/views.js` renders the six declared `ViewKind` blocks —
+Status, Metrics, Table, Timeline, Alert and ArtifactLink — for any registered
+component. The renderer consumes only `ReadComponent` descriptors, report
+envelopes and the active binding pin; it contains no component-ID or
+private-schema branch. A previously unknown plugin therefore renders its
+declared views without a consumer change.
+
+Envelope selection is deterministic:
+
+1. The route loader pins the detail subject and an epoch. A late response for
+   another target, or an older epoch of the same target, is never committed;
+   the page reads the pinned page, not a generic last-success value.
+2. Every envelope for a descriptor namespace must match the page publisher and
+   the full active binding pin (identity, API/version, implementation,
+   generation, config digest). Identity `u64` values compare as exact decimal
+   text; a legacy numeric generation is accepted only when safely integral.
+   Conflicting identity or digest renders an explicit conflict.
+3. The greatest sequence for a namespace is chosen **before** the descriptor
+   schema version is checked. A superseded older version is never resurrected;
+   the latest report with the wrong version is an explicit schema mismatch.
+4. Views render in descriptor order. A missing report for the current page is
+   `awaiting`, and any remaining opaque cursor is explained; without an entry
+   the `reports` metadata state maps missing/empty/unknown to distinct honest
+   states. Reports-missing is not registry-missing, and unknown is not empty.
+5. Field lookup is own-property only and supports dotted paths. `null`, `false`,
+   zero, empty string and an absent field each keep a distinct presentation;
+   composite values render as bounded JSON text.
+
+Presentation keeps the existing bounds: 4 KiB per text value, 100 rows/entries
+per report page, and 24 table/timeline rows by default with an explicit
+expanded disclosure for the remainder. Technical schema/binding metadata and raw
+payloads live under native `<details>` elements keyed by subject, binding
+generation and view ID, so their open state survives polling and resets when the
+subject or generation changes. Status colors always carry their exact text; an
+unrecognized status or alert severity stays unclassified. ArtifactLink renders
+label/reference/digest as inert text and states that download is unavailable;
+it emits no `href`, no `src` and initiates no request. Focus and scroll remain
+stable across refresh.
+
+The page keeps registration as a registry-only fact: a built-in with no reports
+still shows its binding and declared views, while only the registry `missing`
+source renders “not registered”. A component page with no declared views shows
+“No declared views.” and one with no report envelopes shows “No report
+envelopes.”.
+
 ## Optional factory endpoint and controls
 
 `GET /api/v1/factory` and the control routes are optional in M1. When the route
@@ -222,6 +271,28 @@ request-abort cleanup. Its component-detail coverage includes a deterministic
 `component:harness` no-report binding regression. The broader generated/
 out-of-order state-machine corpus is not part of WEB.6 release acceptance.
 
+CW.1 adds the generic-view selections (run them with the same environment):
+
+```sh
+CHROME_BIN='<installed chrome>' make test-focused \
+  SELECTION='-p agalma-web-dashboard --test cockpit_page cockpit_component_views_'
+CHROME_BIN='<installed chrome>' make test-focused \
+  SELECTION='-p agalma-web-dashboard --test cockpit_page cockpit_page_component_detail'
+CHROME_BIN='<installed chrome>' make test-focused \
+  SELECTION='-p agalma-web-dashboard --test first_launch first_launch_production_'
+```
+
+`cockpit_component_views_` runs eight installed-browser cases against real
+compiled assets: a 6-kind x 6-data-state matrix (36 scenarios), 16 dotted
+field/value boundaries, 12 sequence/version/binding permutations, eight
+route-switch/epoch traces, a 4-width x 2-theme layout matrix with expanded long
+tables and local stale labels, an unknown-plugin/private-namespace case, an
+injection/exact-identity case, and eight real browser screenshots
+(populated at 390/720/1280/1920, stale, unknown and expanded at 1280 dark).
+Deterministic scenario IDs and case listings are written beside the screenshots
+under `target/test-runs/agalma-51dg.2/` (the `RUN_ROOT` persistent root), and the
+runner keeps its raw logs under the same bead directory.
+
 `first_launch` is the real production smoke: an isolated established ledger, the
 sealed installed package, the assembled production hub
 (`PluginHost::assemble_with_ledger`) serving the real `control-plane.read/v1`
@@ -234,9 +305,11 @@ disabled, a lost read source surfaces as `503` rather than a healthy empty page,
 and viewing creates no control intent or task claim (the child holds exactly
 `control-plane.read/v1`; no control route exists).
 
-Run artifacts are written under `target/test-runs/agalma-rwn.6/<run-id>/` and are
-never deleted. `browser_support/` is the shared harness; later WEB.5/7/8 readers
-consume it after a named ownership transfer rather than building a replacement.
+Run artifacts are written under `target/test-runs/<bead>/<run-id>/` and are
+never deleted. CW.1 additionally keeps its scenario listings and screenshots
+under `target/test-runs/agalma-51dg.2/` at the persistent root.
+`browser_support/` is the shared harness; later WEB.5/7/8 readers consume it
+after a named ownership transfer rather than building a replacement.
 
 ## M2: continuous automatic-queue operation and operator controls (WEB.13)
 

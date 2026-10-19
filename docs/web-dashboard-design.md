@@ -607,3 +607,164 @@ the tool). Evidence for the live target is an isolated end-to-end run (scratch
 repo/backlog and scratch state) proving live `DashboardStatus/v1`,
 `ControlPlaneRead/v1`, the real dashboard component and `FactoryRuntime/v1`
 with no claims; the operator state directory is never used for test runs.
+
+## Information and appearance increment (2026-10-19)
+
+Proposed product specification for `agalma-82f.8` (UI.3). The human requested
+detailed planning following the cockpit usability repair `agalma-wu6k`
+(`6460c21`). Implementation acceptance, ownership, checks and delivery live in
+the bead's native fields. This increment awaits its native human execution
+approval; planning does not release implementation.
+
+The operator should be able to answer: what is the factory doing, what needs
+attention, and what work is currently eligible? Use existing reads to improve
+Overview, the shared shell and component navigation in one presentation task.
+The shell repair remains the baseline, including sidebar clearance, hidden
+pages, valid bare-URL Overview and refresh recovery after returning to the tab.
+That valid bare-URL behavior supersedes the earlier UI v2 empty-hash notice rule.
+
+### Layout and visual hierarchy
+
+```text
+Desktop: reserved sidebar | Repository / page title   Runtime   Refresh status
+                          | Factory | Eligible | Observed components | Cost
+                          | Current work (wide)       | Needs attention
+                          | Eligible work preview     | Economics details
+                          | Recent activity (full width)
+```
+
+The header is shared by all routes. On Overview, four compact summary cards
+precede a two-column content grid at desktop widths. Current work has the
+strongest content emphasis. At 721–1199 px, cards use two columns; at 1200 px
+and above, four. At 720 px and below, cards and content use one column beneath
+the existing sticky navigation. At 1280×800 with the ordinary short fixture,
+the header, cards and Current work heading are visible without scrolling.
+Long values may increase height; content must wrap rather than clip.
+
+Reuse the existing dark/light CSS tokens, system fonts, borders and focus
+rings. Use a restrained accent for links/actions; status colors accompany
+explicit text. Keep primary navigation and action targets at least 40 px high,
+normal text contrast at least 4.5:1, and logical heading/keyboard order.
+Monospace is for IDs and technical details. Expandable technical information
+provides exact text without making long IDs the dominant page content.
+Respect reduced motion; use no downloaded fonts, icon pack or framework.
+
+### Information and available inputs
+
+| Surface | Existing input | Required meaning |
+|---|---|---|
+| Header | `factory.repository_id`, runtime status; `Refresher.snapshot()` source states | Repository identity, runtime state, per-source freshness and last-success time |
+| Factory card | `factory.status`, `factory.reason`, `factory.stop` | Typed runtime state and explicit stop observation; missing stop is unknown |
+| Eligible card | `factory.eligible.total`, entries and cursor | Exact eligible total when known; loaded entries are not a substitute total |
+| Component card | Current `components.entries`, cursor and source state | Counts explicitly labeled **in observed page**, never whole-registry totals |
+| Cost card | `overview.economics` | Observed amount and unit, with completeness; null remains unknown |
+| Current work | `factory.current_execution`; optional matching overview execution | Execution/task IDs, generation, phase, state, update time; attempt only on exact identity match |
+| Needs attention | Core source state, runtime/stop observations, current component page | Deterministic display of observed problems, with context and existing-route links |
+| Eligible preview | First five `factory.eligible.entries` | Task title, priority, family; server order is not promised dispatch order |
+| Economics details | Usage, cost, allowance, completeness, observation time | Exact values and units; no invented remaining budget or spend trend |
+| Recent activity | `overview.timeline` | Newest ten observations, expandable to bounded maximum of 100 |
+| Component names | `entry.plugin_id`, `entry.name` | Bounded safe link to the existing `#/components/<encoded-id>` route |
+
+Production path is the compiled `index.html` → `startCockpit` / `Cockpit` →
+route page renderers. The shell already reads overview, factory and components.
+Component detail already has a route, loader and back link; the registry table
+currently fails to expose a name link. This increment composes these browser
+inputs without adding hub imports, private storage access or polling endpoints.
+
+Current execution observations have no title, model, provider, token breakdown,
+start time or progress percentage. Show the task ID and existing fields.
+Optional attempt information may join overview only on both exact execution ID
+and generation. A historical execution never substitutes for the authoritative
+current execution, and `Running` plus `current_execution: null` must not become
+an invented idle execution. A known null displays “No current execution
+reported”; a failed initial read displays unknown/unavailable.
+
+Eligible entries are ordered by the source for display, not authoritative
+scheduling priority. Call the preview “Eligible work”, never “Next to run”.
+Show up to five entries and a Tasks link; when the total is known, explain
+that this is a preview of that total, and otherwise say the total is unknown.
+Do not suggest the Tasks queue pager was repaired by this presentation work.
+
+Component observations use the current fetched page, even after the user has
+advanced its cursor. Show ready, attention and unknown counts in that page.
+Ready requires `available === true`, ready health, fresh data and Complete
+completeness. Attention means an explicit unhealthy/unavailable/stale/partial
+observation; otherwise unresolved state is unknown. These categories are
+disjoint and sum to the page length. `next_cursor: null` does not prove that
+the currently displayed page contains every registered component.
+
+### Unknown, stale and attention behavior
+
+Header freshness is per core source: overview, factory and components. One
+successful endpoint cannot establish that the other sources are current.
+Show “Not loaded”, “Unavailable”, or “Last updated …; refresh failed” as
+applicable, with exact time accessible. Each retained section carries its own
+stale label and last successful observation; successful empty responses remain
+distinct from unknown or missing sources. Keep original source details available
+in an expandable diagnostics section, with a System link.
+
+Attention entries are derived presentation, with no scheduling/control effects:
+
+1. Errors: core endpoint failure, factory Failed/Unavailable, explicitly
+   unavailable component or failed health.
+2. Warnings: an explicitly stopped factory, degraded health, stale data or
+   partial completeness.
+3. Unknown/informational: source not loaded or missing, unknown health,
+   freshness or completeness. Empty sources are described as empty rather
+   than automatically being called failures.
+
+Deduplicate endpoint failure and the warning for its retained stale data into
+one entry. Use stable source or plugin-ID-plus-generation keys, severity first,
+then identity order; show at most ten entries and an exact additional-entry
+count. Component-derived attention is page-scoped and includes that qualification.
+If there are no entries, say “No issues in available observations”; expose any
+coverage gaps instead of asserting global health. Link only to existing System,
+Tasks or component detail routes. Read-only permission is explained beside
+controls without marking the factory failed.
+
+Pause/Resume stay in one Overview controls region and retain ControlPanel's
+enabled state, confirmation phrase, pending behavior, operation IDs and receipt
+reconciliation. This task changes explanations and presentation, not control
+policy. Navigation, cards, disclosures and refresh must never submit mutations.
+
+### Interaction, exactness and bounded content
+
+Recent activity sorts newest first by valid observation time, with stable source
+order for ties and invalid times last. Default to ten; disclosure shows at most
+100. Use relative timestamps with exact ISO time accessible inline or on
+expansion. Clock calculations use one render-time value. A future timestamp
+is labeled as future, an invalid one unknown. Convert decimal timestamps only
+after integer/range validation; IDs, generations, queue totals and amounts
+remain exact strings. Do not round through JavaScript `Number` or manufacture
+derived budget arithmetic. Keep existing 4 KiB text and 100-row bounds with
+explicit truncation markers and inert `textContent` construction.
+
+Store disclosure state outside rebuilt DOM under a fixed set of semantic keys
+in Cockpit's in-memory UI state. Refresh preserves expansion, focused links or
+summary controls, hash and scroll. Reset contextual disclosure state if repository
+or state identity changes; do not persist plugin-derived state to browser storage.
+Use stable focus keys and restore focus only within the visible active page.
+The initial disclosure defaults are closed, except the first ten activity items.
+
+### Verification and later work
+
+Native acceptance in `agalma-82f.8` defines independent deterministic state,
+decimal, identity and interaction cases, plus a 24-case viewport/theme/state
+matrix. Existing browser tests load compiled production CSS. Retain these
+geometry, visibility and hit-test assertions and add screenshot evidence for
+visual review. Capture populated Overview at 390/1280/1920 in dark and light,
+and stale/unavailable Overview at 1280 in dark mode (eight PNGs total). These are inspection
+artifacts, not pixel-exact snapshots or a new screenshot framework.
+
+The scoped verification is the dashboard `cockpit_page` target (shared shell,
+builders, controls and every route consume this CSS), then the exact existing
+production `first_launch_production_page_renders_real_data_and_zero_effects`
+case. Preserve all passing/failed/interrupted logs and screenshots outside the
+task worktree. Required new `cockpit_information_*` cases are implementation
+deliverables until they execute; planning establishes no runtime pass.
+
+Later increments may add task search/filtering, execution inspection/logs,
+task titles beyond eligible entries, model/provider details, blocked-task
+reasons, real queue pagination and historical spend charts. Those need separate
+scope and data-contract checks. This task introduces no new backend API, report
+payload semantics, plugin-specific UI integration or automatic factory behavior.

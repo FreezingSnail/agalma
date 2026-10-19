@@ -241,3 +241,19 @@ loopback URL. `make preview` keeps the offline fixture flow. Evidence:
 SIGINT, no claims; isolated scratch repo/state). The live target intentionally
 builds `--workspace --bins` because the runtime resolves its component servers
 as sibling binaries.
+
+## UI.3 information and appearance plan (2026-10-19)
+
+`agalma-82f.8` is one bounded presentation task: an informative Overview,
+shared header/styling, and links from component names to existing detail pages.
+Canonical specification: [Information and appearance increment](web-dashboard-design.md#information-and-appearance-increment-2026-10-19).
+Detailed ownership, sequencing, data rules, acceptance and exact check selections
+are the bead's native fields. No backend/data-contract expansion is included.
+
+The prerequisite shell repair `agalma-wu6k` is delivered at `6460c21`.
+`agalma-82f.8` is staged for planning; the direct blocking native human gate is
+`agalma-5hnu`, with labels `human,execution-approval` and metadata
+`approval_for=agalma-82f.8`. Execution requires explicit human
+`bd gate resolve agalma-5hnu`; no model session has been dispatched for UI.3.
+Implementation uses one Luna/Flash OpenCode session and independent DeepSeek
+Flash review under the existing development workflow.

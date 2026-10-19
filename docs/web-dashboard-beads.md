@@ -257,3 +257,46 @@ The prerequisite shell repair `agalma-wu6k` is delivered at `6460c21`.
 `bd gate resolve agalma-5hnu`; no model session has been dispatched for UI.3.
 Implementation uses one Luna/Flash OpenCode session and independent DeepSeek
 Flash review under the existing development workflow.
+
+Delivery update: UI.3 `agalma-82f.8` merged at `c95a893`; production detail
+repair `agalma-82f.9` merged at `cc47696`. The former planned gate is resolved;
+both tasks are closed. Their native records retain review and evidence paths.
+
+## CW component views plan (2026-10-19)
+
+Epic `agalma-51dg` plans component-owned reports and a generic browser renderer.
+Canonical specification: [Component views rollout](web-dashboard-design.md#component-views-rollout-2026-10-19).
+Implementation scope, owned files, current readiness and complete acceptance
+are in native child fields. No new per-bead staging documents are used.
+
+| Bead | Outcome | Direct task prerequisites (plus own gate) | Human execution gate |
+|---|---|---|---|
+| `agalma-51dg.1` | Owner/payload/recovery design freeze | None beyond own approval | `agalma-f933` |
+| `agalma-51dg.2` | Generic browser view renderer | None beyond own approval | `agalma-imfi` |
+| `agalma-51dg.3` | Shared publication and recovery | `agalma-51dg.1` | `agalma-i83r` |
+| `agalma-51dg.4` | Dashboard readiness reports | `agalma-51dg.3` | `agalma-5pv6` |
+| `agalma-51dg.5` | Ledger-owned views | `agalma-51dg.3`, `agalma-pob.3` | `agalma-yj0h` |
+| `agalma-51dg.6` | Selected execution-owner views | `agalma-51dg.3`, `agalma-pob.1`, `agalma-pob.3` | `agalma-ysb6` |
+| `agalma-51dg.7` | Workspace-owned views | `agalma-51dg.3`, `agalma-pob.4` | `agalma-tjz1` |
+| `agalma-51dg.8` | Queue-owned views | `agalma-51dg.3`, `agalma-pob.4` | `agalma-8cks` |
+| `agalma-51dg.9` | Harness-owned views | `agalma-51dg.3`, `agalma-pob.5` | `agalma-6d65` |
+| `agalma-51dg.10` | Provider owner and reporting identity | `agalma-51dg.3`, `agalma-51dg.9`, `agalma-pob.5` | `agalma-yr42` |
+| `agalma-51dg.11` | Real production and recovery acceptance | `agalma-51dg.2`, `agalma-51dg.4`, `agalma-51dg.5`, `agalma-51dg.6`, `agalma-51dg.7`, `agalma-51dg.8`, `agalma-51dg.9`, `agalma-51dg.10` | `agalma-5moi` |
+
+All children are staged. Each gate is a native `human` gate with labels
+`human,execution-approval`, metadata `approval_for=<child>` and a direct blocks
+edge. Planning/decomposition and a cleared defer date grant no execution
+authority; explicit human `bd gate resolve <gate>` remains required.
+
+The renderer is the first bounded implementation with current browser inputs.
+CW.0 is documentation/architecture work that freezes producer seams and the
+provider-proxy owner decision; CW.2 is not dispatch-ready until it completes.
+Producer tasks remain blocked by actual owner/package prerequisites and their
+task-specific field/module readiness. Existing `agalma-pob.1/.3/.4/.5` scopes,
+gates and frozen evidence are preserved; CW does not reimplement them.
+
+Reviewer assignment: independent Flash for routine renderer/producer work;
+Sol for the shared recovery mechanism, unresolved identity/authority decisions
+and final architecture acceptance. One implementer session/worktree is retained
+through repairs/delivery per child. No implementation session or executable
+verification was started by this planning request.

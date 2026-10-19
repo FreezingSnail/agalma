@@ -768,3 +768,292 @@ task titles beyond eligible entries, model/provider details, blocked-task
 reasons, real queue pagination and historical spend charts. Those need separate
 scope and data-contract checks. This task introduces no new backend API, report
 payload semantics, plugin-specific UI integration or automatic factory behavior.
+
+## Component views rollout (2026-10-19)
+
+Proposed design for epic `agalma-51dg`, requested after the operator inspected
+the empty ledger component page. Implementation scope, ownership, native human
+execution gates and acceptance live in the child beads. This document specifies
+the product, data and architecture contracts; it is not an execution release.
+
+### Outcome and delivery boundaries
+
+Every real component should answer four questions: what is it doing, what data
+supports that observation, what needs attention, and how current is the data?
+Component pages should lead with useful views and put binding IDs, package
+digests and raw reports under expandable Details. Preserve explicit distinctions
+between a missing component, a registered component with no reports, a failed
+read, and retained stale data.
+
+The current registry advertises five builtins: ledger, workspace, harness,
+taskqueue and provider-proxy. The dashboard is an independently installed plugin.
+Execution is an existing domain boundary but is not in that builtin list.
+Registering a placeholder is not evidence that an execution plugin is running.
+
+Delivery has separate claims:
+
+1. **Renderer:** existing declared reports become usable browser views, including
+   an unfamiliar plugin. This can proceed independently of component migrations.
+2. **First producer:** the dashboard publishes its own observed readiness through
+   the real hub and the same renderer displays it.
+3. **Owner coverage:** selected production component owners publish real data as
+   their existing CV packaging prerequisites deliver. No private-state collector
+   is added to the conductor or dashboard.
+4. **Full coverage:** all seven logical components have truthful reporting owners
+   and real production recovery evidence. An unmigrated placeholder or a parent
+   subsection is not accepted as a separately reporting component.
+
+CW does not duplicate `agalma-pob` service convergence. Ledger/execution packages
+belong to CV.3, workspace/taskqueue packages to CV.4, harness lifecycle and
+credential continuity to CV.5, and selected execution dispatch to CV.1. Those
+tasks remain open with their own design and authorization gates. CW producer
+tasks wait for their real APIs and package ownership instead of assuming names
+or changing the existing CV acceptance.
+
+### Production flow and authority
+
+```mermaid
+flowchart LR
+    O[Selected component owner] --> P[Declared views and bounded reports]
+    P --> H[Authenticated hub.PublishReport]
+    H --> I[Existing ReportIngestor and snapshots]
+    I --> R[Authorized ReadComponent]
+    R --> B[Generic browser view renderer]
+```
+
+Reuse `PluginManifest/v1` views/report schemas, `ReportPublication/v1`,
+`ReportEnvelope/v1`, `plugin.Health`, `plugin.Snapshot` and the existing hub read
+route. The component owns observation collection, private payload schema,
+configuration and report production. The hub authenticates the publisher,
+binding, generation, capability and schema declaration; it does not import
+component-private payload types. The browser renders declared generic blocks.
+
+No switch on component/plugin ID is introduced in the renderer or hub. Domain
+functions remain typed; reporting does not authorize arbitrary commands or
+replace `LedgerApi`, `WorkspaceApi`, `HarnessApi`, `TaskQueueApi` or `ExecutionApi`.
+Only ledger implementation code opens its database. A producer cannot discover
+peer sockets, run `bd` against another owner's backlog, or scan another owner's
+private files to fill a dashboard. Socket presence is a transport observation,
+not proof of health.
+
+Producer identity is the actual registered publisher and binding. Do not forge
+envelopes for `component:*`, invent generations or use an empty digest as a real
+configuration fingerprint. Existing CV migrations must retain their agreed
+identity/pinning guarantees. If a migration changes a logical component route,
+CW.0 must resolve compatible registry/route behavior before that producer is
+dispatched; no browser alias table substitutes for that decision.
+
+### Page structure and generic rendering
+
+```text
+Component name                    Observed state / freshness
+Short explanation of scope and last successful observation
+
+Status / key metrics              Needs attention
+Owned items or operations table
+Recent observations timeline
+
+Details: binding and schema metadata, report provenance, raw bounded data
+```
+
+CW.1 adds a native ES module for generic views, consumed by the existing
+component page. Compiled asset discovery already walks the asset tree; no new
+frontend framework, asset pipeline or backend endpoint is needed. It consumes
+the current `ReadComponent` descriptors, entries, binding and source metadata.
+If registry health is not present in the current response/page, report it as
+unknown rather than infer it from a successful HTTP response.
+
+| Kind | Required generic behavior |
+|---|---|
+| Status | Read the first declared scalar field; explicit unknown for absent/null; text accompanies any recognized status color |
+| Metrics | Declared top-level/dotted fields become key/value rows; preserve exact strings and distinguish false/zero from null |
+| Table | Array of row objects; declared fields define columns; explicit missing cells and row truncation |
+| Timeline | Array, or object with `entries`; first declared field is time and remaining fields provide text; preserve supplied order |
+| Alert | Bounded level/message from declared fields; unrecognized severity stays unclassified rather than healthy |
+| ArtifactLink | Display label/reference/digest as inert metadata; download explicitly unavailable until artifact-read activation is separately approved |
+
+Private payloads remain opaque outside these structural rules. The existing TUI
+`components::render_blocks` and dotted-field lookup are the compatibility
+reference; browser bounds and accessibility are explicit consumer obligations.
+Malformed structure and unsupported kinds/versions show a local unavailable or
+unsupported state with bounded raw details. No expression language, executable
+markup, remote image, external stylesheet or plugin-specific JS is introduced.
+
+Envelope selection is deterministic:
+
+1. Pin the route subject and response epoch. A response for another route
+   subject, including a late response after navigation, cannot become current.
+2. Require matching publisher and full active binding pin. Compare u64 identity
+   strings exactly; accept legacy numeric identity only when safely integral.
+3. For each namespace on the current report page, choose its greatest sequence,
+   then check descriptor schema version. Never filter to an older matching
+   version first and resurrect superseded data. Conflicting identity/digest is
+   an explicit conflict, not a first-row choice.
+4. Render views in descriptor order. No matching report means awaiting data on
+   this page; when another page exists, explain that limit and provide the
+   existing opaque-cursor navigation. Do not fetch an unbounded collection.
+5. Show source-specific stale/error/last-success context beside affected views.
+   Reports missing is not registry missing; unknown is not empty or zero.
+
+Keep the existing 4 KiB text and 100-row/wire bounds; default presentation uses
+24 table/timeline rows with an explicit expansion/truncation marker. Preserve
+full exact IDs and decimals in Details. Field lookup uses own properties only;
+no prototype traversal. Schema versions outside safely supported browser values
+are unsupported rather than silently rounded. Injected content is written as
+text. Artifact targets never become arbitrary `href`, `file:` or `javascript:`
+URLs, and the renderer initiates no artifact request in this increment.
+
+Disclosure state is keyed by subject, binding generation and view ID, retained
+over refresh and reset on subject/generation change. Restore focus only within
+the visible matching page; keep hash and scroll stable. Dark/light palettes,
+keyboard order, visible focus, reduced motion and narrow-screen table scrolling
+reuse the shared design. Normal operator copy describes observations; protocol
+names and digests remain in Details.
+
+### Component data contracts and known gaps
+
+Every producer declares namespaced, versioned Status/Metrics/Items/Events/Alerts
+schemas as applicable. Metrics are objects; tables are arrays of bounded row
+objects; timeline payloads are arrays or `{entries:[...]}`. Envelope time and
+execution reference supply provenance. Scope, completeness, sample-window and
+count coverage are explicit metrics, not inferred from a truncated table.
+CW.0 freezes exact private field names and manifest descriptors for each owner
+against the delivered package APIs; these are proposed producer profiles, not
+new existing RPC methods.
+
+| Component | First useful views | Existing owner/input | Missing or deferred input |
+|---|---|---|---|
+| Ledger | Availability, schema compatibility, bindings, pending dispatch observations, recent recorded outcomes | Ledger-owned `schema_version`, `bindings`, `pending_intents`, execution/event/receipt records | Bounded aggregate/read costs; no full-history scan on each sample; size/integrity only if owner measures it |
+| Execution | Active/recent executions, task/phase/state/attempt, observed recovery/cancel outcomes | Selected ExecutionApi status plus authoritative owner events/receipts | CV.1 actual selection and CV.3 package; existing registry placeholder must not impersonate it |
+| Workspace | Observed checkouts, branch/base, last inspected changes, integration outcomes | Workspace-owned Checkout and prepare/changes/integrate/reconcile results | No enumerate-all-worktrees API; unknown global inventory/dirty status unless owner supplies it |
+| Task queue | Eligible work, observed claims/leases, approval/dependency reasons where available | Queue-owned ready_tasks/get and actual admission/claim observations | No generic blocked/claimed listing; eligibility is not release authority or promised dispatch order |
+| Harness | Selected implementation/model, owned attempts/operations, stalls, sanitized failures | Describe, known operation handles, inspect/read_events and owned health observations | No global session enumeration; no model or start time inferred from generic execution records |
+| Provider proxy | Local listener/mode, observed request/refusal/failure counters, sanitized errors, explicit gate/usage observations | Current parent-owned ProviderProxy and owned forwarding/gate callbacks | No stats API or independently installed proxy package; CONNECT success cannot establish application success, tokens or cost |
+| Dashboard | Listener and hub-read binding readiness, last binding failure and owned observation times | RuntimeStatus, plugin.Health and local status endpoint | Current manifest lacks report.publish and Snapshot is empty; browser-tab freshness is not server-owned data |
+
+The proxy is a specific architecture checkpoint. Its credential owner and
+lifetime are currently in the parent composition and CV.5 scope. CW.0 must
+freeze its real publisher and subject relationship before CW.9 can run. A
+parent-owned provider subsection is useful partial delivery, but it cannot
+close the separate proxy-component goal. If an independent process or a generic
+registry association is required, add and approve that prerequisite explicitly;
+neither extraction nor a new alias contract is smuggled into a reporting task.
+
+Owners collect bounded observations independently of browser polling. Avoid
+full execution/backlog/filesystem scans each second. Lists identify their scope
+and selection window; an observed list is not a global count. Successful local
+listener bind is not upstream provider reachability. Exact cost/usage values
+require actual accounting observations and declared completeness. A read failure
+does not overwrite prior good data with zeros. Credential state, Authorization,
+request headers/bodies, prompts, secret-bearing URLs and raw environments never
+enter report payloads.
+
+### Publication, freshness and recovery
+
+CW.2 supplies shared transport/recovery behavior with owner-provided persistence;
+it does not introduce a new ledger reader or a second report store. CW.0 must
+identify the actual current client, outbox, snapshot and lifecycle composition
+seams before this high-difficulty task is dispatched.
+
+The required algorithm is one outstanding immutable publication per binding:
+
+1. Sample/coalesce an owner observation outside domain request handlers. Seal
+   its canonical payload, digest, sequence, namespace/version, binding and time.
+2. Atomically persist that exact pending publication in the producer's own
+   supported state/outbox before sending it. Never reserve/skip sequence ranges;
+   HP.5 expects contiguous sequences above its watermark.
+3. Send using the private per-launch publish grant. Lost acknowledgement retains
+   the pending record; retry the identical envelope/identity. A changed payload
+   never reuses the pending sequence. Do not advance to a later publication until
+   the acknowledged checkpoint is durable.
+4. Checkpoint acknowledged namespace state and watermark. The plugin snapshot
+   reflects that acknowledged boundary, not unacknowledged future samples.
+5. On restart, replay a pending envelope before allocating another sequence.
+   Reconcile hub loss through supported snapshot behavior and fresh canonical
+   publications. State recovered without canonical producer identity remains
+   incomplete/awaiting refresh; do not fabricate an envelope from snapshot data.
+6. Fence old outboxes by their original binding/generation. Retired publication
+   can be reconciled by existing policy but cannot overwrite the active view.
+   Unsupported snapshots, incompatible state or expired grants yield explicit
+   unavailability and stop unsafe publication; no silent grant widening.
+
+Use a five-second observation/heartbeat cadence while active, coalescing samples
+not yet placed in the immutable outbox. Preserve existing hub freshness policy
+(stale after 15 seconds, unavailable after 30), health and report freshness as
+distinct observations. Each producer has bounded collection deadlines and a
+bounded pending queue; publication failure cannot block domain service progress.
+Transient status does not replace durable business receipts or become automatic
+workflow input. Durable report events remain declared observations under HP.5.
+Ledger bootstrap/Ready must not wait for its own published report to be written
+through an as-yet unavailable hub; reporting starts after the binding is ready.
+
+### Task graph and readiness
+
+```mermaid
+flowchart TD
+    C0[CW.0 owner/profile/recovery freeze] --> C2[CW.2 shared publisher]
+    C1[CW.1 browser renderer] --> I[CW.10 production acceptance]
+    C2 --> D[CW.3 dashboard]
+    C2 --> L[CW.4 ledger]
+    C2 --> E[CW.5 execution]
+    C2 --> W[CW.6 workspace]
+    C2 --> Q[CW.7 queue]
+    C2 --> H[CW.8 harness]
+    H --> P[CW.9 provider owner]
+    CV3[Existing CV.3] --> L
+    CV3 --> E
+    CV1[Existing CV.1] --> E
+    CV4[Existing CV.4] --> W
+    CV4 --> Q
+    CV5[Existing CV.5] --> H
+    CV5 --> P
+    D --> I
+    L --> I
+    E --> I
+    W --> I
+    Q --> I
+    H --> I
+    P --> I
+```
+
+Each task has its own native human execution gate and one implementer session/
+task worktree through review and repair. Renderer input contracts exist today;
+the owner-specific producer handoffs are deliberately readiness-gated until
+their predecessors land. Proposed package/module names are not permission to
+invent a missing owner API. Refresh ownership after each CV delivery, serialize
+shared schema/package/bootstrap seams, and keep readiness separate from release.
+Routine review is independent Flash; Sol reviews publisher recovery, unresolved
+identity/authority decisions and final architecture acceptance.
+
+### Verification and completion
+
+Native child acceptance names exact focused selections, resources, independent
+property scenarios, budgets and evidence requirements. Existing Rust/browser
+harnesses and Makefile entry points are reused, with installed Chrome and fake
+local providers; no new test framework or paid provider checks. Producer tests
+assert their reports describe actual owner state and do not call domain mutation
+methods. Read-only visibility can create authorized report records but never
+task claims, execution steps, control intents or permission changes.
+
+The renderer corpus includes six kinds × six data states (populated, empty,
+missing, malformed, schema-mismatched and retained stale), dotted-field
+boundaries, schema/binding/sequence permutations, late-response route changes,
+injection attempts and viewport/theme cases. Shared publisher properties cover
+crash-before-send, lost acknowledgement, exact duplicate, conflicting identity,
+gap/out-of-order, snapshot, restart and retired generation traces. Per-owner
+corpora exercise their actual invalid/boundary/recovery operations and source
+coverage. Fixed seeds/case budgets and minimized failures are retained.
+
+Final acceptance uses the real selected packages, real hub publication/read
+router and compiled browser assets. Install a previously unknown reporter after
+recording hub/dashboard build identities and show its useful views without
+editing or rebuilding either consumer. Exercise domain fixture operations,
+stale/disconnected sources, source loss, registry-missing versus reports-missing,
+hub restart, owner restart and generation replacement while preserving existing
+identities and receipts. Inspect screenshots of populated/unknown/stale views.
+Missing executables, skipped required cases and zero-case filters are failures.
+
+Retain all source/test fixtures and raw passing/failed/interrupted run evidence
+outside removable worktrees. Successful producer tests do not establish every
+factory migration, existing platform action proof or full workspace acceptance.
+No child is dispatched and no executable check is run by this planning change.

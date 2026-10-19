@@ -178,7 +178,7 @@ start:
 	fi; \
 	rm -rf target/start; \
 	mkdir -p target/start/api/v1; \
-	cp crates/agalma-web-dashboard/assets/* target/start/; \
+	cp -R crates/agalma-web-dashboard/assets/. target/start/; \
 	cp fixtures/cockpit/overview.json target/start/api/v1/overview; \
 	cp fixtures/cockpit/components-page.json target/start/api/v1/components; \
 	cp fixtures/cockpit/factory-runtime.json target/start/api/v1/factory; \

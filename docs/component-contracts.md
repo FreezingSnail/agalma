@@ -298,16 +298,17 @@ is the producer half and two separate platform prerequisites:
    `agalma_ipc::report_publisher` with a caller-owned `PublicationStore`; no
    existing implementation. The hub router, grant, ingestor and component store
    are out of scope and unchanged.
-2. **Hub snapshot-recovery driver (separate prerequisite):**
+2. **Hub snapshot-recovery driver (separate prerequisite `agalma-vosd`):**
    `PluginClient::snapshot`, `ReportIngestor::apply_snapshot` and
    `PluginReportView::needs_snapshot` exist, but no production driver issues a
    snapshot or applies it. This is not CW.2 work and no recovery claim is valid
-   until it is delivered.
-3. **Installed-builtin durable projection (separate prerequisite):**
+   until it is delivered. It directly blocks `agalma-51dg.11`.
+3. **Installed-builtin durable projection (separate prerequisite `agalma-z571`):**
    `crates/agalma-conductor/src/components.rs` (`load_plugin_sources`) skips
    discovered ids in `BUILTIN_COMPONENTS`. An owner package that reuses a
    `component:*` route would be dropped from the durable projection, so route
-   reuse (CW.0-D1) is not production-ready until this is reconciled.
+   reuse (CW.0-D1) is not production-ready until this is reconciled. It directly
+   blocks `agalma-51dg.5`–`agalma-51dg.9`.
 
 The owner packages' declared `plugin_id`, schemas and views also do not exist
 yet (CV.1/CV.3/CV.4/CV.5). See the design's "Missing mechanisms" list. The

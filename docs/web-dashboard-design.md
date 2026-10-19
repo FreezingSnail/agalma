@@ -1029,12 +1029,14 @@ recovery" against those real seams; it does not release any child.
    `ReportIngestor::apply_snapshot` have no production caller;
    `PluginReportView::needs_snapshot` has no consumer. The hub-side driver that
    issues `plugin.Snapshot` on a gap and applies it is a **separate prerequisite
-   gap**, explicitly outside CW.2's IPC publisher/outbox scope.
+   gap**, explicitly outside CW.2's IPC publisher/outbox scope. Tracked as
+   `agalma-vosd` (P1, blocked/design-not-ready).
 3. **Installed-builtin durable projection gap.** `components::load_plugin_sources`
    skips every discovered id in `BUILTIN_COMPONENTS`, so the durable production
    projection would drop an installed owner generation that reuses a
    `component:*` route; the live overlay would disagree whenever its cell is
    empty. This is a **separate bounded prerequisite**, not a CW.2 or CV behavior.
+   Tracked as `agalma-z571` (P2, blocked/design-not-ready).
 4. **No dashboard publication.** The dashboard manifest requests no
    `report.publish`, the process reads only `AGALMA_HUB_SOCKET`/`AGALMA_PLUGIN_GRANT`,
    and it never publishes. Its declared schema/view are the frozen payload
@@ -1054,7 +1056,7 @@ authenticates caller identity and pins the generation. An in-process builtin has
 neither generation nor launch grant, so it cannot publish and is never given a
 forged or synthesized envelope.
 
-- **CW.0-D1 (proposed for Sol confirmation):** each migrated owner package
+- **CW.0-D1 (confirmed by Sol, 2026-10-19; contingent on P2 `agalma-z571`):** each migrated owner package
   declares the existing logical route subject as its `plugin_id` —
   `component:ledger`, `component:workspace`, `component:harness`,
   `component:taskqueue` — and declares namespace `<plugin_id>.status` v1. The
@@ -1081,17 +1083,22 @@ forged or synthesized envelope.
 - **CW.0-D2:** a registered component with no reports and a missing component
   remain distinct; the renderer must never fabricate an envelope from snapshot
   data or from an empty digest.
-- **CW.0-D3 (proposed for Sol confirmation):** provider-proxy stays under its
+- **CW.0-D3 (confirmed by Sol, 2026-10-19):** provider-proxy stays under its
   true parent owner. No `component:provider-proxy` publication identity exists,
-  and CW.9 stays blocked until a separately authorized migration (CV.5 scope)
-  freezes an independently supervised proxy identity and its reporting lifetime.
+  no standalone proxy identity is fabricated, and CW.9 stays blocked until a
+  separately authorized migration (CV.5 scope) freezes an independently
+  supervised proxy identity and its reporting lifetime.
 - **CW.0-D4:** execution is not a registered component today. No placeholder is
   registered; execution views appear only when the selected owner from CV.1/CV.3
   installs a real package.
 
-D1 and D3 change registry/route ownership and therefore require Sol architecture
-confirmation before any owner producer is dispatched; this document cannot
-authorize that dispatch.
+Sol confirmed D1 and D3 on 2026-10-19. D1 retains the existing colon-form
+component identities only together with the separately delivered installed-builtin
+durable-projection reconciliation (P2 `agalma-z571`). D3 keeps ProviderProxy
+truthful under its true parent owner with no fabricated standalone identity;
+CW.9 remains blocked pending a separately authorized migration. These
+confirmations implement nothing, do not close either prerequisite, and do not
+grant CV or release authority.
 
 #### Immutable outbox, acknowledgement and recovery (resolved against HP.5)
 
@@ -1360,18 +1367,20 @@ explicit gate/usage observations; no tokens, cost, headers or URLs).
 
 #### Readiness and dependencies
 
-- CW.2 builds the missing spoke publisher/outbox primitives (missing mechanism 1)
-  and their tests only. It is not blocked by the snapshot driver and must not
-  implement it; it uses only the existing router/ingestor/transport seams above.
-- A separate bounded hub task is required for the missing snapshot-recovery
+- CW.2 `agalma-51dg.3` builds the missing spoke publisher/outbox primitives
+  (missing mechanism 1) and their tests only. It depends only on completed CW.0
+  `agalma-51dg.1`; it is not blocked by the snapshot driver and must not
+  implement it. It uses only the existing router/ingestor/transport seams above.
+- `agalma-vosd` (P1, blocked/design-not-ready) tracks the missing snapshot-recovery
   production driver (missing mechanism 2). Until it exists, producers can
   publish and the hub can ingest/replay durable envelopes, but no one may claim
-  gap/snapshot recovery in production; CW.10's recovery acceptance is blocked on
-  it.
-- A separate bounded prerequisite is required to reconcile the installed-builtin
-  durable projection (missing mechanism 3). Until it exists, an owner package
-  reusing a `component:*` route is installed but not reliably projected; the D1
-  route decision is not production-ready.
+  gap/snapshot recovery in production; CW.10 `agalma-51dg.11` recovery acceptance
+  is directly blocked on it.
+- `agalma-z571` (P2, blocked/design-not-ready) tracks the installed-builtin
+  durable-projection reconciliation (missing mechanism 3). It directly blocks
+  owner producer tasks `agalma-51dg.5`–`agalma-51dg.9` that use builtin routes.
+  Until it is delivered, an owner package reusing a `component:*` route is
+  installed but not reliably projected, and the D1 route is not production-ready.
 - CW.3 is blocked by CW.2 and by the dashboard manifest/grant/env change.
 - CW.4–CW.8 are blocked by CW.2, by their CV predecessors (CV.3, CV.4, CV.5,
   CV.1) delivering a real installed owner package with a declared `plugin_id`,

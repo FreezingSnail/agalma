@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>(untitled) — Agalma docs</title>
+<style>
+  :root{
+    --bg:#0b1120; --card:#111c31; --card2:#152238; --border:#233350;
+    --text:#e6edf7; --muted:#8fa3c0; --green:#34d399; --blue:#60a5fa;
+    --amber:#fbbf24; --red:#f87171; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 24px 96px}
+  .nav{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:22px}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.25}
+  h2{font-size:20px;margin:38px 0 12px;border-bottom:1px solid var(--border);padding-bottom:8px}
+  h3{font-size:16px;margin:26px 0 8px}
+  h4{font-size:14px;margin:20px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  p{margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.8px;
+       background:var(--card2);border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+  pre.code{background:#0d1526;border:1px solid var(--border);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:16px 0}
+  pre.code code{background:none;border:none;padding:0;font-size:12.6px;line-height:1.5}
+  ul,ol{margin:10px 0;padding-left:24px} li{margin:4px 0}
+  hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:16px 0}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  blockquote{margin:14px 0;padding:10px 14px;background:var(--card2);
+             border-left:3px solid var(--blue);border-radius:6px;color:#c6d3e8}
+  strong{color:#f2f6fd}
+  footer{margin-top:56px;color:var(--muted);font-size:12.5px;
+         border-top:1px solid var(--border);padding-top:14px}
+  .ring{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0 26px;
+        font-size:13px}
+  .ring a{background:var(--card);border:1px solid var(--border);border-radius:8px;
+          padding:6px 12px}
+  .ring a:hover{border-color:var(--blue);text-decoration:none}
+  .ring .step{color:var(--muted);font-size:12px;margin-left:auto}
+  details.map{margin:26px 0;background:var(--card);border:1px solid var(--border);
+              border-radius:10px;padding:12px 16px}
+  details.map>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+  details.map ol{margin:12px 0 4px;padding-left:26px}
+  details.map li{margin:3px 0;font-size:13.5px}
+  details.map li.here{color:var(--text);font-weight:700}
+  details.map li.here::after{content:" ← you are here";color:var(--amber);font-weight:600;font-size:11.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="nav">← <a href="progress-roadmap.html">Progress roadmap</a> · source: <a href="web-dashboard-beads.md">web-dashboard-beads.md</a></div>
+<div class="ring"><a href="testing-strategy.html">⟲ testing-strategy</a><span class="step">step 32 / 32 in the ring</span><a href="component-contracts.html">component-contracts ⟳</a></div>
+<details class="map">
+    <summary>Component ingestion map — recommended order (32 docs)</summary>
+    <ol>
+      <li><a href="component-contracts.html">component-contracts</a></li>
+      <li><a href="ipc-connect-design.html">ipc-connect-design</a></li>
+      <li><a href="b1-ledger-evidence.html">b1-ledger-evidence</a></li>
+      <li><a href="b1-taskqueue-evidence.html">b1-taskqueue-evidence</a></li>
+      <li><a href="b1-harness-evidence.html">b1-harness-evidence</a></li>
+      <li><a href="b1-sandbox-evidence.html">b1-sandbox-evidence</a></li>
+      <li><a href="sandbox-removal-design.html">sandbox-removal-design</a></li>
+      <li><a href="b1-workspace-evidence.html">b1-workspace-evidence</a></li>
+      <li><a href="b1-execution-evidence.html">b1-execution-evidence</a></li>
+      <li><a href="b0-kernel.html">b0-kernel</a></li>
+      <li><a href="m1-workloop.html">m1-workloop</a></li>
+      <li><a href="self-hosting-roadmap.html">self-hosting-roadmap</a></li>
+      <li><a href="self-mutation-roadmap.html">self-mutation-roadmap</a></li>
+      <li><a href="m0-exit-evidence.html">m0-exit-evidence</a></li>
+      <li><a href="m1-exit-evidence.html">m1-exit-evidence</a></li>
+      <li><a href="hardening-evidence.html">hardening-evidence</a></li>
+      <li><a href="reliability-hardening.html">reliability-hardening</a></li>
+      <li><a href="paid-route-evidence.html">paid-route-evidence</a></li>
+      <li><a href="b1-extraction.html">b1-extraction</a></li>
+      <li><a href="b1-exit-evidence.html">b1-exit-evidence</a></li>
+      <li><a href="b1-f3-evidence.html">b1-f3-evidence</a></li>
+      <li><a href="b0-exit-evidence.html">b0-exit-evidence</a></li>
+      <li><a href="ipc-exit-evidence.html">ipc-exit-evidence</a></li>
+      <li><a href="planning-pipeline.html">planning-pipeline</a></li>
+      <li><a href="tui-design.html">tui-design</a></li>
+      <li><a href="tui.html">tui</a></li>
+      <li><a href="self-mutation-contracts.html">self-mutation-contracts</a></li>
+      <li><a href="self-mutation-standup.html">self-mutation-standup</a></li>
+      <li><a href="smart-routing-design.html">smart-routing-design</a></li>
+      <li><a href="web-dashboard-design.html">web-dashboard-design</a></li>
+      <li><a href="testing-strategy.html">testing-strategy</a></li>
+      <li class="here"><a href="web-dashboard-beads.html">web-dashboard-beads</a></li>
+    </ol>
+  </details>
+<article>
+<h1 id="local-cockpit-bead-index">Local cockpit bead index</h1>
+<p>Accepted amendment: 2026-10-18, authored by <code>gpt-6</code>. Canonical design: <a href="web-dashboard-design.html">web-dashboard-design.md</a>. Epic <code>agalma-rwn</code> delivers the first local operator cockpit: real browser page followed by continuous automatic eligible-queue operation and existing human pause/resume controls. Implementation remains paused. Design approval, dependency readiness, native execution approval, successful dispatch and delivered acceptance are distinct.</p>
+<h2 id="first-release-tasks">First-release tasks</h2>
+<p>The epic has ten direct children, including the unchanged closed WEB.1. New contracts create an early handoff; the actual page does not wait for the worker runtime or deferred rich plugin views. Blocking IDs below omit parent-child and native approval edges, which are listed separately.</p>
+<table><thead><tr><th>Bead</th><th>Outcome / owned surface</th><th>Direct implementation prerequisites</th><th>Review</th></tr></thead><tbody><tr><td><code>agalma-rwn.1</code></td><td>Merged typed summary read/BrowserWire contracts; unchanged</td><td>HP.1 (closed)</td><td>Already approved</td></tr><tr><td><code>agalma-rwn.2</code></td><td>Production overview/components; live/source/bound/unknown economics semantics</td><td>WEB.1, HP.4/5/6</td><td>Sol</td></tr><tr><td><code>agalma-rwn.3</code></td><td>Retained GET-only IPC transport; final review pending</td><td>WEB.1, HP.4</td><td>Sol</td></tr><tr><td><code>agalma-rwn.4</code></td><td>Compiling package/executable/config/inventory with independent RPC bootstrap acceptance</td><td>WEB.1 via WEB.3, WEB.3, HP.3; no WEB.2 dependency</td><td>Separate DeepSeek</td></tr><tr><td><code>agalma-rwn.6</code></td><td>One page/polling/browser harness and actual production M1 launch</td><td>WEB.2, WEB.4, WEB.9; no WEB.5/10 dependency</td><td>Separate DeepSeek</td></tr><tr><td><code>agalma-rwn.9</code></td><td>FactoryRuntime/v1 + FactoryControl/v1 types/trait/golden fixtures</td><td>WEB.1</td><td>Sol</td></tr><tr><td><code>agalma-rwn.10</code></td><td>Continuous queue/idle/paused runtime and independent host/RPC lifecycle</td><td>WEB.2, WEB.9</td><td>Sol</td></tr><tr><td><code>agalma-rwn.11</code></td><td>Injected runtime read adapter and intent/result control replay</td><td>WEB.2, WEB.9; no WEB.10 implementation dependency</td><td>Sol</td></tr><tr><td><code>agalma-rwn.12</code></td><td>Separate-grant factory client, bounded POST, local session/CSRF</td><td>WEB.3, WEB.9; no WEB.10/11 dependency</td><td>Sol</td></tr><tr><td><code>agalma-rwn.13</code></td><td>Production bindings/registration and actual M2 queue/control browser proof</td><td>WEB.4/6/10/11/12</td><td>Sol</td></tr></tbody></table>
+<p>Every amended/new body contains source files, concrete algorithm/contract, failure/recovery/authority semantics, deterministic property budgets/seeds, selected checks/prerequisites, ownership transfers and stopping condition. Budgets in intake blocks are ceilings, not live-provider spending permission. <code>difficulty</code> is the validator's structural tier; <code>review_route</code> records the intended reviewer and routine multi-file UI/package work does not automatically require Sol.</p>
+<h2 id="parallel-ownership">Parallel ownership</h2>
+<ul><li>A: WEB.2 read service/economics/routing, WEB.9 typed contracts, WEB.11 adapters. Contract and summary can occupy independent available implementers initially; the three-stream limit is an active-work budget, not a static model assignment.</li><li>B: WEB.10 work.rs/CLI/work::factory_runtime and composition after WEB.2. Declaring the runtime submodule from work.rs avoids a concurrent lib.rs edit.</li><li>C: WEB.4 Cargo/package/server/build; then WEB.6 assets/page/browser support. WEB.4 health.html is separate from WEB.6 index/app. Asset additions need no server/inventory edit.</li><li>IPC: finish WEB.3 review, then WEB.12 receives those files and uses a free implementation slot. Factory clients use WEB.9 fixtures before live services.</li><li>Join: composition transfers WEB.2→WEB.10→WEB.13; package server WEB.4→WEB.13. WEB.11 never owns composition. Browser support begins WEB.6 and is reused by later tests rather than replaced.</li></ul>
+<p>At most three active implementation sessions and two isolated test binaries by default. Use named worktrees/branches and absolute redirected cache paths; coordinate compilation/ports/state/browser profiles. A missing predecessor goes back to its owner, not an unbounded cross-task repair. This is a manual dispatch cap. Dependency waves are [1,3,4,1,1], including the closed contract seed and final joins; queue the fourth ready task until a slot opens. A stricter median-width-three diagnostic fails and is not reported as a pass. The normal planner's default width/count/schema checks pass.</p>
+<h2 id="execution-state-and-gates">Execution state and gates</h2>
+<p>The existing WEB.1–WEB.8 execution gates were resolved in earlier user-authorized work. Keep those historical approvals; unchanged work is not being asked for approval again. New tasks have native unresolved human gates, each labeled <code>human,execution-approval</code>, metadata <code>approval_for=&lt;child&gt;</code>, and one direct blocks edge. Only explicit human <code>bd gate resolve</code> releases them. The current instruction updates planning; it does not resume implementation or run the factory.</p>
+<table><thead><tr><th>Task</th><th>Gate</th><th>Current gate state</th></tr></thead><tbody><tr><td>WEB.2</td><td><code>agalma-6df</code></td><td>Closed, prior approval retained</td></tr><tr><td>WEB.3</td><td><code>agalma-3gx</code></td><td>Closed, prior approval retained</td></tr><tr><td>WEB.4</td><td><code>agalma-5ke</code></td><td>Closed, prior approval retained</td></tr><tr><td>WEB.6</td><td><code>agalma-4ws</code></td><td>Closed, prior approval retained</td></tr><tr><td>WEB.9</td><td><code>agalma-avh</code></td><td>Open</td></tr><tr><td>WEB.10</td><td><code>agalma-6x4</code></td><td>Open</td></tr><tr><td>WEB.11</td><td><code>agalma-uen</code></td><td>Open</td></tr><tr><td>WEB.12</td><td><code>agalma-gne</code></td><td>Open</td></tr><tr><td>WEB.13</td><td><code>agalma-xux</code></td><td>Open</td></tr></tbody></table>
+<p>WEB.2 remains in_progress with its retained source; WEB.3 is open with an idle completed implementation attempt, 19/19 latest recorded focused cases, and final review pending. Neither is accepted/merged. No source/worktree is deleted by the rescope. New tasks are specified, not dispatched.</p>
+<h2 id="focused-checks-and-milestones">Focused checks and milestones</h2>
+<p>Use the implemented unified runner via <code>make test-focused SELECTION=...</code>, not the historical direct Cargo commands. Required real binaries are declared with runner prerequisites. Missing CHROME_BIN/binary, zero cases or skipped required cases fails. All behavior changes retain independent deterministic properties.</p>
+<table><thead><tr><th>Task</th><th>Required named target(s); affected consumers are detailed in the bead</th></tr></thead><tbody><tr><td>WEB.2</td><td>conductor <code>control_plane_read</code>, affected economics/routing</td></tr><tr><td>WEB.3</td><td>IPC <code>web_http</code>, relevant cap/client unit regressions</td></tr><tr><td>WEB.4</td><td>dashboard <code>package_lifecycle</code>; build no-op checks if build.rs changes</td></tr><tr><td>WEB.6</td><td>dashboard <code>cockpit_page</code>, then production <code>first_launch</code></td></tr><tr><td>WEB.9</td><td>contracts <code>factory_contracts</code></td></tr><tr><td>WEB.10</td><td>conductor <code>factory_runtime</code>, affected protected stop/frozen recovery</td></tr><tr><td>WEB.11</td><td>conductor <code>factory_control</code>, <code>control::tests</code>, affected hp_routes</td></tr><tr><td>WEB.12</td><td>IPC <code>factory_http</code>, affected web_http security/drain</td></tr><tr><td>WEB.13</td><td>conductor <code>cockpit_runtime</code>, dashboard <code>cockpit_queue</code></td></tr></tbody></table>
+<p>M1 uses real host/dashboard/ledger and installed Chrome/Chromium, not a fixture hub. It prints a usable URL and shows actual summary data with optional runtime unavailable/controls disabled. WEB.4's fixture bootstrap is a package boundary test, not that end-to-end claim.</p>
+<p>M2 uses real continuous runtime/dashboard/browser and deterministic local reference tasks: empty→Idle→new eligible work→one execution, long busy phase with responsive reads/health/control, pause holds later claims, confirmed resume, control replay/conflict/unknown boundaries, stopped-established no-init safety, frozen restart recovery, one owner and clean shutdown. No paid provider/download. There is no full suite per task. Later WEB.8 retains its full workspace gate; broader new runtime checks require a named recorded risk.</p>
+<p>Before editing record bead/worktree/branch/base/cache. Evidence root is always the primary checkout's absolute <code>target/test-runs/&lt;bead&gt;/&lt;run-id&gt;/</code>; preserve all passing/failed/interrupted commands/environment/source/pending identity, logs/exit codes/fixtures/seeds. Stop after focused acceptance/handoff or one blocker/30-minute diagnosis. Coordinator commits/merges only reviewed task paths, stamps closure implementation model, preserves sources/evidence, then guarded clean worktree/cache removal. No push.</p>
+<h2 id="deliberately-deferred-platform-work">Deliberately deferred platform work</h2>
+<p>Epic <code>agalma-v38</code> follows the first-release epic and preserves the original generic-plugin promise. Reparenting keeps original WEB IDs/history; it does not close tasks or weaken the original proof. These tasks use actual deferred status with a reason and no sentinel approval date.</p>
+<table><thead><tr><th>Bead</th><th>Later outcome</th><th>Direct prerequisites excluding approval</th></tr></thead><tbody><tr><td><code>agalma-v38.1</code></td><td>Additive recovered-state provenance design; no code claim</td><td>HP.5, WEB.1</td></tr><tr><td><code>agalma-v38.2</code></td><td>Versioned report-state/artifact implementation after exact design</td><td>v38.1, WEB.2</td></tr><tr><td><code>agalma-rwn.5</code></td><td>Six generic browser blocks, consuming existing harness</td><td>WEB.4/6, v38.2</td></tr><tr><td><code>agalma-rwn.7</code></td><td>Rich navigation and report snapshot/generation/restart recovery</td><td>WEB.5/6/13, v38.2</td></tr><tr><td><code>agalma-rwn.8</code></td><td>Unknown independently built plugin browser proof and unchanged binaries</td><td>WEB.5/7, v38.2, HP.8</td></tr></tbody></table>
+<p>WEB.5/7 depend on actual report implementation, not design closure. v38.2 remains explicitly design-required and human-gated until its version/migration/file details are frozen. v38 is a deferred backlog, not a claim of a validated released implementation decomposition. WEB.8's focused <code>browser_plugin_proof</code> and one <code>make test-full</code> remain protected. HP.8 action/pinning work remains separate.</p>
+<p>Deferred <code>agalma-1o7</code> designs concierge goal intake after WEB.13. Gate <code>agalma-orv</code> stays open. Planning proposals flow through existing authority into the same eligible queue; no second scheduler or inferred gate approval.</p>
+<h2 id="amendment-evidence">Amendment evidence</h2>
+<p>The prior spec/index remain in Git at the recorded baseline. Before-amendment own bead fields and the base revision are retained as <code>beads-before.json</code> and <code>base-revision.txt</code> under <code>target/test-runs/web-dashboard-rescope-20261018/</code>. Per-bead Markdown drafts and the redundant planning-summary document were removed after migration at the user's request. Deep implementation details live in bd; this index is a compact reference, not a second task tracker. Validation results are recorded after graph/gate/content checks. Historical planning/runtime receipts and original source/test evidence are not rewritten.</p>
+<p>Default <code>agalma plan-check --epic agalma-rwn</code> passed (<code>plan-check-default.log</code>). <code>bd dep cycles</code> returned no cycles (<code>cycles.json</code>). Native gate audit found one correctly associated direct human execution gate for each of15 audited tasks, with all8 newly created gates open (<code>gate-audit.json</code>). The stronger width-three diagnostic is retained separately in <code>plan-check-width3.log</code>. These are planning checks, not implementation/build/browser acceptance.</p>
+<h2 id="ui-v2-amendment-multi-page-cockpit-and-design-pass">UI v2 amendment: multi-page cockpit and design pass</h2>
+<p>Accepted user instruction, 2026-10-18: after M1/M2 delivery the cockpit gains multi-page navigation, the component registry with health, task/project views and a visual design pass. New epic <code>agalma-82f</code> with two sequential children; data scope unchanged (existing reads only). Canonical design: <a href="web-dashboard-design.html">web-dashboard-design.md</a> &quot;UI v2 amendment&quot;. Planning artifacts: <code>target/test-runs/cockpit-ui-v2-plan/</code>.</p>
+<table><thead><tr><th>Bead</th><th>Outcome / owned surface</th><th>Direct prerequisite</th><th>Review</th></tr></thead><tbody><tr><td><code>agalma-82f.1</code></td><td>Multi-page hash-routed shell, Overview/Components/Tasks/Projects pages, CSS design pass; assets + browser suites only</td><td>None (after approval)</td><td>DeepSeek</td></tr><tr><td><code>agalma-82f.2</code></td><td>Component detail + <code>/api/v1/status</code> routes, detail/System pages, fixtures, preview; server + assets + route tests</td><td><code>agalma-82f.1</code></td><td>DeepSeek</td></tr></tbody></table>
+<p>Execution state: both children carry an individual unresolved native human execution-approval gate (<code>agalma-5fv</code>, <code>agalma-9ur</code>) and are not dispatchable until explicitly resolved. No implementation was dispatched by this planning; no code, fixture or server file changed.</p>
+<table><thead><tr><th>Task</th><th>Required named target(s)</th></tr></thead><tbody><tr><td>UI.1</td><td>dashboard <code>cockpit_page</code>; <code>cockpit_queue</code> expected unchanged (brand/loose assertions); <code>first_launch</code> updated for route navigation</td></tr><tr><td>UI.2</td><td>dashboard <code>package_lifecycle</code> (route cases), <code>cockpit_page</code> (detail/System cases), ipc <code>control_plane_client</code> (pub validator regression)</td></tr></tbody></table>
+<p>Evidence rules are unchanged: focused runner via <code>make test-focused SELECTION=...</code>, installed <code>CHROME_BIN</code>, raw logs under <code>target/test-runs/&lt;bead&gt;/&lt;run-id&gt;/</code>, stop at accepted evidence or one blocker/30-minute bounded diagnosis.</p>
+</article>
+<div class="ring" style="margin:32px 0 0"><a href="testing-strategy.html">⟲ testing-strategy</a><span class="step">step 32 / 32 in the ring</span><a href="component-contracts.html">component-contracts ⟳</a></div>
+<footer>Rendered from <span style="font-family:ui-monospace,monospace">web-dashboard-beads.md</span> by <span style="font-family:ui-monospace,monospace">scripts/md-to-html.mjs</span>. Edit the markdown, then run <span style="font-family:ui-monospace,monospace">make docs-html</span>.</footer>
+</div>
+</body>
+</html>

@@ -1,98 +1,198 @@
-# Browser dashboard bead index
+# Local cockpit bead index
 
-Created 2026-10-13 by Sol (`gpt-6`). Epic: `agalma-rwn`.
-Canonical accepted design: [web-dashboard-design.md](web-dashboard-design.md).
-The user approved local, read-only browser viewing and requested decomposition.
+Accepted amendment: 2026-10-18, authored by `gpt-6`. Canonical design:
+[web-dashboard-design.md](web-dashboard-design.md). Epic `agalma-rwn` delivers
+the first local operator cockpit: real browser page followed by continuous
+automatic eligible-queue operation and existing human pause/resume controls.
+Implementation remains paused. Design approval, dependency readiness, native
+execution approval, successful dispatch and delivered acceptance are distinct.
 
-Eight children are `decomp-approved`, `staged`, `difficulty:high`, and deferred
-to 2099-01-01. Planning validation does not grant implementation/spending release.
-Implementation belongs to GPT-6 Luna or DeepSeek Flash through OpenCode; no
-implementation session was dispatched for these beads.
+## First-release tasks
 
-## Tasks and direct blockers
+The epic has ten direct children, including the unchanged closed WEB.1. New
+contracts create an early handoff; the actual page does not wait for the worker
+runtime or deferred rich plugin views. Blocking IDs below omit parent-child and
+native approval edges, which are listed separately.
 
-| Bead | Owned outcome | Blocking prerequisites |
+| Bead | Outcome / owned surface | Direct implementation prerequisites | Review |
+|---|---|---|---|
+| `agalma-rwn.1` | Merged typed summary read/BrowserWire contracts; unchanged | HP.1 (closed) | Already approved |
+| `agalma-rwn.2` | Production overview/components; live/source/bound/unknown economics semantics | WEB.1, HP.4/5/6 | Sol |
+| `agalma-rwn.3` | Retained GET-only IPC transport; final review pending | WEB.1, HP.4 | Sol |
+| `agalma-rwn.4` | Compiling package/executable/config/inventory with independent RPC bootstrap acceptance | WEB.1 via WEB.3, WEB.3, HP.3; no WEB.2 dependency | Separate DeepSeek |
+| `agalma-rwn.6` | One page/polling/browser harness and actual production M1 launch | WEB.2, WEB.4, WEB.9; no WEB.5/10 dependency | Separate DeepSeek |
+| `agalma-rwn.9` | FactoryRuntime/v1 + FactoryControl/v1 types/trait/golden fixtures | WEB.1 | Sol |
+| `agalma-rwn.10` | Continuous queue/idle/paused runtime and independent host/RPC lifecycle | WEB.2, WEB.9 | Sol |
+| `agalma-rwn.11` | Injected runtime read adapter and intent/result control replay | WEB.2, WEB.9; no WEB.10 implementation dependency | Sol |
+| `agalma-rwn.12` | Separate-grant factory client, bounded POST, local session/CSRF | WEB.3, WEB.9; no WEB.10/11 dependency | Sol |
+| `agalma-rwn.13` | Production bindings/registration and actual M2 queue/control browser proof | WEB.4/6/10/11/12 | Sol |
+
+Every amended/new body contains source files, concrete algorithm/contract,
+failure/recovery/authority semantics, deterministic property budgets/seeds,
+selected checks/prerequisites, ownership transfers and stopping condition. Budgets
+in intake blocks are ceilings, not live-provider spending permission. `difficulty`
+is the validator's structural tier; `review_route` records the intended reviewer
+and routine multi-file UI/package work does not automatically require Sol.
+
+## Parallel ownership
+
+- A: WEB.2 read service/economics/routing, WEB.9 typed contracts, WEB.11 adapters.
+  Contract and summary can occupy independent available implementers initially;
+  the three-stream limit is an active-work budget, not a static model assignment.
+- B: WEB.10 work.rs/CLI/work::factory_runtime and composition after WEB.2.
+  Declaring the runtime submodule from work.rs avoids a concurrent lib.rs edit.
+- C: WEB.4 Cargo/package/server/build; then WEB.6 assets/page/browser support.
+  WEB.4 health.html is separate from WEB.6 index/app. Asset additions need no
+  server/inventory edit.
+- IPC: finish WEB.3 review, then WEB.12 receives those files and uses a free
+  implementation slot. Factory clients use WEB.9 fixtures before live services.
+- Join: composition transfers WEB.2→WEB.10→WEB.13; package server WEB.4→WEB.13.
+  WEB.11 never owns composition. Browser support begins WEB.6 and is reused by
+  later tests rather than replaced.
+
+At most three active implementation sessions and two isolated test binaries by
+default. Use named worktrees/branches and absolute redirected cache paths;
+coordinate compilation/ports/state/browser profiles. A missing predecessor goes
+back to its owner, not an unbounded cross-task repair.
+This is a manual dispatch cap. Dependency waves are [1,3,4,1,1], including the
+closed contract seed and final joins; queue the fourth ready task until a slot
+opens. A stricter median-width-three diagnostic fails and is not reported as a
+pass. The normal planner's default width/count/schema checks pass.
+
+## Execution state and gates
+
+The existing WEB.1–WEB.8 execution gates were resolved in earlier user-authorized
+work. Keep those historical approvals; unchanged work is not being asked for
+approval again. New tasks have native unresolved human gates, each labeled
+`human,execution-approval`, metadata `approval_for=<child>`, and one direct blocks
+edge. Only explicit human `bd gate resolve` releases them. The current instruction
+updates planning; it does not resume implementation or run the factory.
+
+| Task | Gate | Current gate state |
 |---|---|---|
-| `agalma-rwn.1` | typed control-plane read contracts and browser wire fixtures | `agalma-jmr.1` |
-| `agalma-rwn.2` | hub-owned read projections and scoped capability routing | `agalma-rwn.1`, `agalma-jmr.4`, `agalma-jmr.5`, `agalma-jmr.6` |
-| `agalma-rwn.3` | bounded loopback HTTP read transport in IPC | `agalma-rwn.1`, `agalma-jmr.4` |
-| `agalma-rwn.4` | independently installable dashboard package and supervised listener | `agalma-rwn.2`, `agalma-rwn.3`, `agalma-jmr.3` |
-| `agalma-rwn.5` | generic plugin view blocks and required browser fixture harness | `agalma-rwn.4` |
-| `agalma-rwn.6` | factory pages and registry-derived plugin navigation | `agalma-rwn.5` |
-| `agalma-rwn.7` | snapshot polling, freshness and hub restart recovery | `agalma-rwn.6` |
-| `agalma-rwn.8` | unknown-plugin browser install and restart acceptance | `agalma-rwn.7`, `agalma-jmr.8` |
+| WEB.2 | `agalma-6df` | Closed, prior approval retained |
+| WEB.3 | `agalma-3gx` | Closed, prior approval retained |
+| WEB.4 | `agalma-5ke` | Closed, prior approval retained |
+| WEB.6 | `agalma-4ws` | Closed, prior approval retained |
+| WEB.9 | `agalma-avh` | Open |
+| WEB.10 | `agalma-6x4` | Open |
+| WEB.11 | `agalma-uen` | Open |
+| WEB.12 | `agalma-gne` | Open |
+| WEB.13 | `agalma-xux` | Open |
 
-The epic blocks on `agalma-jmr` (HP). No HP or CV task depends on this epic.
-HP.8 proves the platform; WEB.8 adds browser acceptance after that evidence.
-CV.2's standalone CLI migration remains its own work. WEB.2 adds the shared
-hub read surface without reusing the current direct-SQLite status path.
+WEB.2 remains in_progress with its retained source; WEB.3 is open with an idle
+completed implementation attempt, 19/19 latest recorded focused cases, and final
+review pending. Neither is accepted/merged. No source/worktree is deleted by
+the rescope. New tasks are specified, not dispatched.
 
-Every child has complete scope, owned files, typed contracts, observable
-acceptance, intake block, structural difficulty, notes and stopping condition.
-The MACHINE symbols describe sibling interfaces because the current validator
-resolves those within an epic. Actual bd edges enforce external HP prerequisites.
-Canonical contracts/ownership details are in the design; implementers read their
-complete assigned bead locally, without expanded parent/dependency bodies.
+## Focused checks and milestones
 
-## Focused acceptance commands
+Use the implemented unified runner via `make test-focused SELECTION=...`, not
+the historical direct Cargo commands. Required real binaries are declared with
+runner prerequisites. Missing CHROME_BIN/binary, zero cases or skipped required
+cases fails. All behavior changes retain independent deterministic properties.
 
-These commands are future implementation acceptance, not checks run in planning.
-They use the workflow's existing focused entry point while the unified runner
-is pending. Required real server/browser prerequisites must be stated separately.
-
-| Bead | Command |
+| Task | Required named target(s); affected consumers are detailed in the bead |
 |---|---|
-| `agalma-rwn.1` | `cargo test --offline -p agalma-contracts --test control_plane_protocol` |
-| `agalma-rwn.2` | `cargo test --offline -p agalma-conductor --test control_plane_read` |
-| `agalma-rwn.3` | `cargo test --offline -p agalma-ipc --test web_http` |
-| `agalma-rwn.4` | `cargo test --offline -p agalma-web-dashboard --test package_lifecycle` |
-| `agalma-rwn.5` | `cargo test --offline -p agalma-web-dashboard --test view_blocks` |
-| `agalma-rwn.6` | `cargo test --offline -p agalma-web-dashboard --test dashboard_pages` |
-| `agalma-rwn.7` | `cargo test --offline -p agalma-web-dashboard --test refresh_recovery` |
-| `agalma-rwn.8` | `cargo test --offline -p agalma-web-dashboard --test browser_plugin_proof` |
+| WEB.2 | conductor `control_plane_read`, affected economics/routing |
+| WEB.3 | IPC `web_http`, relevant cap/client unit regressions |
+| WEB.4 | dashboard `package_lifecycle`; build no-op checks if build.rs changes |
+| WEB.6 | dashboard `cockpit_page`, then production `first_launch` |
+| WEB.9 | contracts `factory_contracts` |
+| WEB.10 | conductor `factory_runtime`, affected protected stop/frozen recovery |
+| WEB.11 | conductor `factory_control`, `control::tests`, affected hp_routes |
+| WEB.12 | IPC `factory_http`, affected web_http security/drain |
+| WEB.13 | conductor `cockpit_runtime`, dashboard `cockpit_queue` |
 
-WEB.5 introduces reusable browser test support using installed `CHROME_BIN`.
-A missing browser or required binary, skipped required case, or zero-case
-selection is a failure. Browser fixtures prove rendering; WEB.8 must separately
-prove production discovery/report routing/restart with unchanged hub/dashboard
-binary SHA-256 digests and an independently built unknown reporting plugin.
-The fixture build uses `target/web-dashboard-plugin-build` as a stable isolated
-cache. No browser download or live-provider check is required.
+M1 uses real host/dashboard/ledger and installed Chrome/Chromium, not a fixture
+hub. It prints a usable URL and shows actual summary data with optional runtime
+unavailable/controls disabled. WEB.4's fixture bootstrap is a package boundary
+test, not that end-to-end claim.
 
-WEB.8 runs one full workspace acceptance after its focused proof:
-`cargo build --offline --workspace --bins`, then
-`cargo test --offline --workspace`. Preserve established environment and
-serialization requirements and state the broader cost before execution.
+M2 uses real continuous runtime/dashboard/browser and deterministic local
+reference tasks: empty→Idle→new eligible work→one execution, long busy phase with
+responsive reads/health/control, pause holds later claims, confirmed resume,
+control replay/conflict/unknown boundaries, stopped-established no-init safety,
+frozen restart recovery, one owner and clean shutdown. No paid provider/download.
+There is no full suite per task. Later WEB.8 retains its full workspace gate;
+broader new runtime checks require a named recorded risk.
 
-## Ownership and handoff
+Before editing record bead/worktree/branch/base/cache. Evidence root is always
+the primary checkout's absolute `target/test-runs/<bead>/<run-id>/`; preserve
+all passing/failed/interrupted commands/environment/source/pending identity,
+logs/exit codes/fixtures/seeds. Stop after focused acceptance/handoff or one
+blocker/30-minute diagnosis. Coordinator commits/merges only reviewed task paths,
+stamps closure implementation model, preserves sources/evidence, then guarded
+clean worktree/cache removal. No push.
 
-WEB.2 waits for HP.4/HP.6 before shared conductor edits. WEB.3 waits for HP.4
-before IPC exports. WEB.4 owns root Cargo and package/build wiring. Its std-only
-build logic creates a compiled inventory from committed assets, so later browser
-modules need no server source edit. WEB.5 owns views; WEB.6 owns the shell;
-WEB.7 receives app.js integration ownership. Browser test support transfers
-WEB.5 -> WEB.6 -> WEB.7 -> WEB.8. Shared edits are limited to those named seams.
+## Deliberately deferred platform work
 
-The reporting fixture belongs to WEB.8 under fixtures/web-dashboard-plugin;
-it does not overlap HP.8's fixtures/plugin-pack. Runtime predecessor defects
-return to their owner. Do not weaken accepted contracts or acquire another task's
-files during repair. Stop after focused acceptance, or one reproducible blocker
-and at most 30 minutes of diagnosis. Save raw logs and status under
-`target/test-runs/<bead-id>/`, and return one concise handoff.
+Epic `agalma-v38` follows the first-release epic and preserves the original
+generic-plugin promise. Reparenting keeps original WEB IDs/history; it does not
+close tasks or weaken the original proof. These tasks use actual deferred status
+with a reason and no sentinel approval date.
 
-## Planning validation
+| Bead | Later outcome | Direct prerequisites excluding approval |
+|---|---|---|
+| `agalma-v38.1` | Additive recovered-state provenance design; no code claim | HP.5, WEB.1 |
+| `agalma-v38.2` | Versioned report-state/artifact implementation after exact design | v38.1, WEB.2 |
+| `agalma-rwn.5` | Six generic browser blocks, consuming existing harness | WEB.4/6, v38.2 |
+| `agalma-rwn.7` | Rich navigation and report snapshot/generation/restart recovery | WEB.5/6/13, v38.2 |
+| `agalma-rwn.8` | Unknown independently built plugin browser proof and unchanged binaries | WEB.5/7, v38.2, HP.8 |
 
-- `target/debug/agalma plan-check --epic agalma-rwn --repo /Users/connorfranc/code/agalma`
-  returned `OK`, exit 0, for all eight staged children with default count/width
-  rules. Raw output: `target/test-runs/web-dashboard-planning/plan-check.log`.
-- `bd dep add --actor gpt-6 --file target/test-runs/web-dashboard-planning/dependencies.jsonl`
-  added 16 blocking edges, exit 0. Parent-child edges came from child creation.
-- `bd dep cycles` reported no dependency cycles, exit 0. Raw output:
-  `target/test-runs/web-dashboard-planning/cycles.log`.
-- Sol marked the clean direct-authored decomposition `decomp-approved` after
-  validation. This is not designer-session, runtime sweep, browser, or factory
-  execution evidence. All eight tasks remain deferred.
+WEB.5/7 depend on actual report implementation, not design closure. v38.2 remains
+explicitly design-required and human-gated until its version/migration/file
+details are frozen. v38 is a deferred backlog, not a claim of a validated released
+implementation decomposition. WEB.8's focused `browser_plugin_proof` and one
+`make test-full` remain protected. HP.8 action/pinning work remains separate.
 
-The next implementation prerequisite is HP.1 for WEB.1; hub projections require
-HP.4/5/6. Existing platform release gates remain intact. This planning operation
-adds no automatic task release, claims, paid inference, commit or push.
+Deferred `agalma-1o7` designs concierge goal intake after WEB.13. Gate
+`agalma-orv` stays open. Planning proposals flow through existing authority into
+the same eligible queue; no second scheduler or inferred gate approval.
+
+## Amendment evidence
+
+The prior spec/index remain in Git at the recorded baseline. Before-amendment
+own bead fields and the base revision are retained as `beads-before.json` and
+`base-revision.txt` under `target/test-runs/web-dashboard-rescope-20261018/`.
+Per-bead Markdown drafts and the redundant planning-summary document were
+removed after migration at the user's request. Deep implementation details live
+in bd; this index is a compact reference, not a second task tracker.
+Validation results are recorded after graph/gate/content checks. Historical
+planning/runtime receipts and original source/test evidence are not rewritten.
+
+Default `agalma plan-check --epic agalma-rwn` passed (`plan-check-default.log`).
+`bd dep cycles` returned no cycles (`cycles.json`). Native gate audit found one
+correctly associated direct human execution gate for each of15 audited tasks,
+with all8 newly created gates open (`gate-audit.json`). The stronger width-three
+diagnostic is retained separately in `plan-check-width3.log`. These are planning
+checks, not implementation/build/browser acceptance.
+
+## UI v2 amendment: multi-page cockpit and design pass
+
+Accepted user instruction, 2026-10-18: after M1/M2 delivery the cockpit gains
+multi-page navigation, the component registry with health, task/project views
+and a visual design pass. New epic `agalma-82f` with two sequential children;
+data scope unchanged (existing reads only). Canonical design:
+[web-dashboard-design.md](web-dashboard-design.md) "UI v2 amendment". Planning
+artifacts: `target/test-runs/cockpit-ui-v2-plan/`.
+
+| Bead | Outcome / owned surface | Direct prerequisite | Review |
+|---|---|---|---|
+| `agalma-82f.1` | Multi-page hash-routed shell, Overview/Components/Tasks/Projects pages, CSS design pass; assets + browser suites only | None (after approval) | DeepSeek |
+| `agalma-82f.2` | Component detail + `/api/v1/status` routes, detail/System pages, fixtures, preview; server + assets + route tests | `agalma-82f.1` | DeepSeek |
+
+Execution state: both children carry an individual unresolved native human
+execution-approval gate (`agalma-5fv`, `agalma-9ur`) and are not dispatchable
+until explicitly resolved. No implementation was dispatched by this planning;
+no code, fixture or server file changed.
+
+| Task | Required named target(s) |
+|---|---|
+| UI.1 | dashboard `cockpit_page`; `cockpit_queue` expected unchanged (brand/loose assertions); `first_launch` updated for route navigation |
+| UI.2 | dashboard `package_lifecycle` (route cases), `cockpit_page` (detail/System cases), ipc `control_plane_client` (pub validator regression) |
+
+Evidence rules are unchanged: focused runner via `make test-focused
+SELECTION=...`, installed `CHROME_BIN`, raw logs under
+`target/test-runs/<bead>/<run-id>/`, stop at accepted evidence or one
+blocker/30-minute bounded diagnosis.

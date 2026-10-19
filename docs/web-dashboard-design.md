@@ -1,270 +1,553 @@
-# Browser dashboard and shared plugin display interface
+# Local cockpit and automatic queue operation
 
-Status: accepted for decomposition, 2026-10-13. The user approved this design
-and requested bead decomposition. Implementation has not been released.
+Accepted scope amendment: 2026-10-18. The user requested the smaller personal
+cockpit design be applied to the spec and deeply specified beads. This replaces
+the first-delivery sequence accepted on 2026-10-13. Implementation remains paused;
+this planning update does not resume dispatch, spend, or resolve execution gates.
 
-## Goal and decisions
+Canonical bead index: [web-dashboard-beads.md](web-dashboard-beads.md).
+Epic `agalma-rwn` now delivers the first operator cockpit. The original broader
+generic-plugin browser promise is retained in deferred epic `agalma-v38`.
+Historical inputs/receipts stay immutable. The prior spec/index remain in Git;
+before-amendment own bead fields are retained as JSON planning evidence.
+This document owns the design; implementation task details live in beads.
 
-The user wants to view the Agalma dashboard in a browser and have a standard
-interface through which any plugin can display information there.
+## Product and delivery
 
-Accepted first delivery: a local, read-only dashboard with factory overview,
-executions, component health, economics, timeline, and plugin detail pages.
-Remote access and operator controls need their own explicit delivery scope.
+One operator starts a local factory for one repository/state directory, opens its
+printed loopback URL, sees the eligible queue and execution progress, and leaves
+workers consuming eligible work automatically. The cockpit remains available
+through an empty queue, long tasks and admission pause. Pause/resume controls use
+existing factory authority and durable receipts. High-level planning through
+concierge is a later increment; there is no per-task Dispatch button.
 
-The common plugin reporting and view contracts already exist as revision-1
-designs. This module consumes them. Their runtime implementation remains staged
-under the HP plugin-platform work.
+Two milestones keep a visible page ahead of runtime integration:
 
-## Module boundary
-
-Package the dashboard as an independently installable plugin process. Its package
-contains its executable, browser assets, manifest, configuration schema, and
-protocol version. The common registry and supervisor discover and launch it.
-It reports its own health through the common plugin contract.
-
-The process serves the browser assets and a bounded HTTP read adapter. It receives
-scoped read capabilities through the hub. The browser talks to this adapter; the
-adapter reads hub-owned projections through declared APIs and hub routing.
-Credentials used for plugin-to-hub access stay inside the server process.
-
-The dashboard opens no ledger database and discovers no peer sockets. It uses
-the same canonical identities and report projections as other frontends.
-Refresh is observational: it does not claim tasks, trigger builds, or dispatch
-plugin actions.
-
-Initial transport is periodic snapshot refresh, with a visible last
-successful refresh and connection state. Streaming can follow if a measured
-need justifies it. A failed refresh retains the last snapshot marked stale;
-it must not turn missing information into healthy or empty state.
-
-## Standard display interface
-
-The existing canonical sources are:
-
-- `docs/self-mutation-contracts.md`, HP reporting and lifecycle sections.
-- `docs/contracts/self-mutation-v1/schema.json`, especially `PluginManifest`,
-  `View`, `ReportPublication`, and `ReportEnvelope`.
-- HP.1 (`agalma-jmr.1`) for typed contracts and HP.5 (`agalma-jmr.5`) for
-  durable reports and snapshot recovery.
-
-Each plugin declares namespaced, versioned report schemas and view descriptors
-in its manifest. It publishes data conforming to those schemas. A descriptor
-contains a stable view ID, title, schema namespace/version, supported block kind,
-and field paths. The frontend binds those paths to the plugin's reported data.
-
-The supported blocks are Status, Metrics, Table, Timeline, Alert, and ArtifactLink.
-For example, a build plugin can publish build rows and a manifest Table view;
-the browser dashboard then displays those rows using its generic table renderer.
-That plugin needs no custom dashboard code.
-
-Descriptors contain bounded data and field paths. They contain no executable
-scripts, templates, SQL, or remote fetch instructions. Plugin text is rendered
-as text and rows/text are bounded under the common contract. Unknown namespaces
-have a generic data fallback; unsupported view versions are shown explicitly.
-Artifact links use authorized artifact references resolved through the hub.
-
-Report identity, binding generation, sequence, timestamps, and recovery watermark
-remain authoritative. The hub performs validation, deduplication, gap detection,
-and snapshot recovery. The dashboard displays the resulting completeness and
-freshness state rather than independently rebuilding producer history.
-
-Navigation derives from registry entries. An installed plugin appears with its
-name, health, and declared views. Degraded, unavailable, stale, disconnected, and
-unsupported states remain distinguishable. An empty successful report differs
-from unavailable data.
-
-## Relationship to existing UI work
-
-HP.6 (`agalma-jmr.6`) currently adds registry navigation and generic rendering to
-the TUI. The browser module is a second renderer of the common report/view
-contract. Keep report validation and read-model derivation shared; each renderer
-owns its presentation.
-
-The existing `status.rs` path opens SQLite and derives a fixed component list.
-These are current migration gaps, not a recipe for this module. CV.2
-(`agalma-pob.2`) tracks standalone API convergence. The browser plan needs a
-declared hub read surface for registry/report projections and factory overview;
-the detailed design must identify its ownership before implementation. Avoid
-adding a circular dependency between that shared read surface and dashboard
-acceptance.
-
-Operator actions remain advertised separately from reports. If browser controls
-are included in a later agreed increment, they use HP.7 (`agalma-jmr.7`) admission,
-pinned operations, durable receipts, cancellation, and reconciliation. Viewing a
-plugin never grants action authority.
-
-## Implementation contract for decomposition
-
-Use a new `agalma-web-dashboard` crate for the plugin executable. Package browser
-assets with that executable; serve plain HTML, CSS, and JavaScript with browser
-modules. WEB.4 generates the compiled asset inventory from committed assets
-using std-only build logic; later asset modules require no server source edit.
-An initial health page reflects real listener/read-binding status. No npm build
-chain or UI framework is required. HTTP plumbing stays in
-`agalma-ipc`, using the locked transport dependencies; the dashboard depends on
-public contracts and IPC, never on conductor or spoke implementations. New direct
-dependencies or downloads need a separately reviewed dependency decision.
-
-Add a typed hub-owned `ControlPlaneReadApi/v1` behind HP.4's capability routing.
-The dashboard requests `control-plane.read/v1`. This capability authorizes
-observation and report-referenced artifact reads only. It grants neither arbitrary
-LedgerApi calls nor control actions. The hub derives scope from the authenticated
-plugin grant, not browser-supplied identity. Revoked/expired grants refuse reads.
-Reads remain available while factory effect admission is stopped.
-
-The API owns these read operations and projection rules:
-
-| Operation | Result and source |
-|---|---|
-| ReadOverview | Factory stop observation, executions, known usage/cost and allowance, curated timeline; sources are bound domain APIs |
-| ListComponents | Registry identities, active generations, health/freshness/completeness, declared views; includes installed unavailable components |
-| ReadComponent | A component's bounded namespace reports and descriptors from the authoritative HP.5 projection, retaining envelope identities |
-| ReadArtifactChunk | At most 64 KiB from an immutable, authorized report reference; total artifact bound remains 16 MiB |
-
-Read response format is `ControlPlaneRead/v1`; its version is independent of
-ledger schema version. Each successful response carries collection time, source
-availability, registry revision, and report watermark where applicable. A page
-contains at most 100 entries and at most 256 KiB serialized JSON. Limit defaults
-to 50, accepts 1-100, and never permits unbounded reads. Opaque cursors pin the
-collection/filter/revision; invalid cursors fail and expired revision cursors
-return RevisionConflict so the client starts a fresh collection. No implicit
-claim of atomicity across different domain sources is made: their availability
-and observation metadata remain visible.
-
-Represent identity-bearing u64 generations, sequences, revisions, watermarks,
-and money as decimal strings in the browser read projection to retain exact
-values. HP producer envelopes and their revision-1 schema remain unchanged.
-Unavailable usage or allowance is unknown, never a numeric zero. A missing
-ledger, unreadable ledger, empty successful list, and stopped factory are distinct
-states. Source failures do not initialize or reopen private storage.
-
-The hub implementation reuses HP registry/report projections and existing pure
-factory calculations through bound API inputs. HP.6 retains TUI ownership;
-CV.2 retains standalone CLI migration. The new read handler is registered once
-as a shared platform service. Adding reporting plugins requires no new handler,
-import, environment selector, or frontend entry. Runtime wiring filenames below
-are intentional targets after HP lands, not claims that those modules exist now.
-
-The browser HTTP adapter maps GET `/api/v1/overview`, `/api/v1/components`, and
-`/api/v1/components/{plugin_id}` to the typed reads, and
-`/api/v1/artifacts/{plugin_id}/{digest}` to authorized chunk reads. Plugin IDs are
-URL-encoded opaque IDs, not filesystem paths. Artifact requests resolve against
-references visible in that plugin's authorized reports and revalidate authority;
-clients cannot select an arbitrary store path or remote URL. The server returns
-explicit errors for unknown routes, unsupported methods, versions, limits,
-scope, and unavailable sources. The API grants no mutation method. Browser
-responses contain no hub grant token, provider credential, or private config.
-Report artifacts download as attachments with content sniffing disabled; plugin
-HTML or scripts never execute under the dashboard origin.
-
-Listen on `127.0.0.1` only; default port 0 lets the operating system select an
-available port. Report the actual local URL and listener health through the
-common plugin contract after both listener and hub read binding are ready. Allow only the
-configured local Host/Origin, use same-origin browser fetches, and enable no
-cross-origin reads. Configuration rejects non-loopback addresses. Read deadlines
-are 5 seconds; at most 16 HTTP reads are outstanding, with bounded backpressure.
-Listener shutdown drains admitted reads within that deadline and closes cleanly.
-
-Field selectors in `View.fields` retain the existing bare top-level key form
-(for example `ready`). A selector beginning `/` is an object/array path with
-`~0` and `~1` escapes for literal tilde and slash. Other selectors are literal
-top-level keys. They are never expressions or executable templates. Missing
-fields render as missing, never healthy. The generic browser renderer applies:
-
-| Block | Resolved field value and presentation |
-|---|---|
-| Status | Scalar or bounded object, labeled by field name; plugin health remains a separate hub observation |
-| Metrics | Scalar or `{value, unit}`; decimal values are text and unknown values remain unknown |
-| Table | Array of objects, columns from sorted keys; scalar rows use a Value column; each field selects its own table |
-| Timeline | Ordered array of entries; preserve producer order and display available time/title/detail fields |
-| Alert | Text or `{severity, message}`; unsupported severity is visibly unknown |
-| ArtifactLink | Canonical artifact reference resolved through the authorized adapter |
-
-Incompatible field shapes render a bounded generic data fallback with a visible
-reason. Unknown view versions also show a fallback and their version. Bound a
-rendered field to 4 KiB text, a table/timeline to 100 rows, and a table to 20
-columns per page; indicate additional content explicitly. Full authorized data
-remains reachable through pagination or artifact references under common bounds.
-Render text with DOM text operations; never evaluate report text as HTML/code.
-These renderer semantics interpret existing View fields and do not rewrite the
-frozen HP schemas or receipts.
-
-The shell provides Overview, Executions, Economics, Timeline, and Components.
-Component navigation is registry-derived, keyed by stable plugin identity and
-generation. Selection survives refresh while its identity remains present.
-Plugin removal leaves a visible unavailable selection and permits navigation
-away; it does not display cached data as current. The Overview includes factory
-stop state and source freshness. There are no action controls in this delivery.
-
-Poll every 1 second by default, configurable from 1-60 seconds. Do not overlap
-refreshes. Reject late responses from an older refresh or hub/registry revision;
-a generation change replaces the previous generation's current data. A failed
-read retains the last successful data marked stale with its timestamp and error.
-On restart or RevisionConflict, reacquire the registry and fresh report snapshot.
-Gap recovery remains HP.5's responsibility; the browser displays incomplete state.
-
-Ownership and dependency order:
-
-| Child | Owned surface | Required predecessors |
+| Milestone | Observable result | Acceptance owner |
 |---|---|---|
-| WEB.1 | Typed read contracts and independent wire fixtures | HP.1 |
-| WEB.2 | Hub projection/capability handler and scoped read integration | WEB.1, HP.4, HP.5, HP.6 |
-| WEB.3 | Loopback HTTP transport abstraction in agalma-ipc | WEB.1, HP.4 |
-| WEB.4 | Dashboard executable, manifest/config, packaged assets/lifecycle | WEB.2, WEB.3, HP.3 |
-| WEB.5 | Generic view-block renderer and browser fixture harness | WEB.4 |
-| WEB.6 | Dashboard shell, overview and registry navigation | WEB.5 |
-| WEB.7 | Refresh, stale/disconnected state and restart recovery | WEB.6 |
-| WEB.8 | Independently built unknown-plugin browser proof and operator docs | WEB.7, HP.8 |
+| M1: open the cockpit | Actual browser shows real overview/executions/component health through the production host | WEB.6 |
+| M2: operate the queue | Continuous automatic eligible-work consumption, responsive busy/idle UI, verified pause/resume and restart recovery | WEB.13 |
 
-WEB.2 owns shared conductor registration edits after HP.4/HP.6 handoff. WEB.3
-owns IPC exports after HP.4. WEB.4 owns workspace/Cargo/package wiring; successor
-UI children may not change those files. WEB.5 introduces the browser fixture
-harness, transferred to WEB.6 then WEB.7 then WEB.8. Assets are split into
-renderer, shell, and refresh modules with the same order. Shared integration
-edits are limited to exposing the assigned surface; preserve unrelated work.
+The first page also shows available economics/timeline and eligible work/runtime
+observations when supported. Unknown costs, worker state and source availability
+remain explicit. M1 may show the factory runtime endpoint unavailable with
+controls disabled; this is an intermediate delivery, not M2 acceptance.
 
-No dependency points from HP or CV back to WEB. The browser proof follows HP.8;
-it does not become an HP prerequisite. The browser can be planned and compiled
-in parallel with platform work only within explicit file ownership; staged
-dependencies and implementation release still govern dispatch.
+Remote access, shared accounts, a frontend framework/npm pipeline, task/backlog
+editing, arbitrary commands, per-task worker/model selection, rich plugin-detail
+pages, artifact downloads, generic plugin actions and concierge UI are outside
+the first release. Existing queue eligibility/approval/stop/spending policies
+remain mandatory. Automatic queue consumption does not create/release new tasks.
 
-## Delivery and acceptance
+## Existing implementation and reuse
 
-The bead index is `docs/web-dashboard-beads.md`. Children use existing focused
-Cargo commands during the test-runner transition. Browser tests use an installed
-Chrome/Chromium executable supplied as `CHROME_BIN`; no browser/tool download is
-assumed. Required browser cases must fail on a missing executable, a skipped case,
-or zero-case selection. The implementer owns reusable repository test code,
-including browser fixtures; Sol adds no disposable executable wrapper.
+The inspected main baseline is `1f3649480dbf05472dc5987b38c229c2c4a9b55b`.
+HP.1–HP.7 and WEB.1 are closed/merged. HP.8 is incomplete. WEB.2 and WEB.3 have
+retained uncommitted worktrees; WEB.3's latest focused evidence records 19/19,
+with final review still pending. No dashboard package/browser page exists yet.
 
-Each implementer reads its full bead, this design, AGENTS.md, and the workflow
-locally. Implementation belongs to GPT-6 Luna or DeepSeek Flash through OpenCode.
-Stop after focused acceptance and a concise handoff, or one reproducible blocker
-and at most 30 minutes of investigation. Artifacts go under target/test-runs;
-preserve exact commands, raw logs, exit status and executed/ignored case counts.
-Return predecessor contract/wiring defects to their owner instead of acquiring
-another child's files. Proposed intake budgets are ceilings for later release,
-not authorization to spend. Decomposition approval releases no implementation.
+`status.rs` now consumes a selected ledger handle; it is not the old direct-SQLite
+recipe. Existing snapshot/economics/component functions cover executions,
+timeline, costs and registry/report-derived plugins. Reuse those calculations
+through hub-owned adapters, without importing conductor implementations into the
+dashboard. HP.6 already supplies common component/view derivation.
 
-The implementation follows the HP dependency order: contracts, discovery and
-registry, hub routing, report ingestion/recovery, then browser rendering. Reuse
-existing work rather than duplicate those platform tasks.
+`work.rs` already selects/claims eligible tasks, freezes inputs, applies budgets
+and drives execution/recovery. It currently exits on an empty queue and refuses
+stopped entry before starting the plugin host. Its attached host lacks the
+standalone host's continuously progressing supervision/callback-serving path.
+The runtime increment explicitly repairs those gaps; assets alone cannot do so.
 
-Browser acceptance must use the production registry and report path:
+## Package and process boundary
 
-1. Install and launch the dashboard package through common discovery/supervision.
-2. View factory state and a previously unknown reporting plugin in a real browser.
-3. Add that reporting plugin without editing or rebuilding the hub or dashboard.
-4. Render all six supported blocks with independent fixture data; cover malformed
-   descriptors, unsupported versions, bounded content, and escaped plugin text.
-5. Show stale/disconnected state after report or hub loss; recover from a fresh
-   snapshot without retaining data from a retired generation as current.
-6. Restart the hub/dashboard and retain plugin identity and durable observations.
-7. Establish that viewing and refresh do not create task claims or action intents.
+Retain `agalma-web-dashboard` as an independently installed/supervised process.
+Its package supplies executable, manifest, configuration schema, protocol version
+and committed browser assets. Use public contracts and IPC only. Discover and
+launch through the existing registry/supervisor; no dashboard-specific core
+import, peer discovery, second supervisor, SQL or private ledger open.
 
-Scoped contract/adapter checks come first. WEB.8 runs the browser proof and then
-one documented full workspace build/test acceptance, recording the broader cost
-before execution. Isolated renderer fixtures do not establish production plugin
-installation. No paid-provider check is required. Planning validation and content
-review do not claim implementation or browser acceptance.
+Rust serves compiled HTML/CSS/browser JavaScript modules and bounded HTTP API.
+WEB.4 generates a deterministic inventory using std-only build logic; adding an
+asset does not require editing server source. Watch source assets, never an
+OUT_DIR output. WEB.4 owns Cargo/package/build/server and distinct `health.html`;
+WEB.6 owns final page/modules/browser support. No new dependency/download is
+authorized. A build-script change includes existing no-op rebuild verification.
+
+Bind `127.0.0.1`, default port 0; reject foreign addresses. Print/report actual
+URL only after listener/read binding readiness. Configuration refresh interval
+is 1–60 seconds, default 1. Health distinguishes listener, binding and runtime
+availability. Missing optional runtime support does not make M1 startup fail.
+
+## Continuous runtime and ownership
+
+Add explicit `agalma work --watch --repo <repo> --state-dir <state>
+--plugin-root <packages>`. Reject `--watch` with `--once` or `--max-tasks`.
+Existing ordinary batch/once/max-tasks behavior and exit codes remain covered.
+
+One runtime holds the existing state-directory admission lock. One worker owns
+queue selection, claim, frozen admission and serial execution. Empty successful
+queue means Idle and an interruptible five-second wait; later eligible work runs
+through the existing pipeline. Queue error means Unavailable with capped retry
+(5 seconds initial, 30 seconds maximum), never successful empty state.
+
+On admitted startup, run existing frozen-package recovery before new claims,
+then existing reap/reconciliation/review policy in its established order. Do not
+repeat startup recovery/planning on every idle scan or add automatic release,
+mining, recurring concierge or a parallel builder scheduler. M3's durable cadence,
+operator-directive release, backup and 72-hour acceptance remain separate work.
+
+Three responsibilities progress independently:
+
+1. The worker runs synchronous task execution and is the sole claimant.
+2. A host/probe supervision owner is constructed/used in its own context and
+   continues supervision during idle, running and paused states (nominal 250ms
+   tick with existing backoff). Share only safe selected-ledger/router/report
+   handles and short-lived snapshot copies; never mutable host/queue/executor.
+3. The hub callback/control event loop remains responsive while the worker
+   blocks. The supervised dashboard process separately serves browser HTTP.
+   A supervision thread alone is insufficient. Never hold a worker/router lock
+   throughout a task or slow read. Wake hints use a bounded channel (capacity16);
+   coalescing a hint never drops the durable stop decision.
+
+Pause blocks new admission through existing stop policy; it is not a new cancel
+operation and does not change current in-flight phase-stop semantics. Resume
+requires the existing human confirmation and receipt. Wake/recheck actual stop
+state instead of treating a successful HTTP response as observed worker state.
+
+Continuous-mode startup with STOP/latch may serve observations and confirmed
+resume only against readable, compatible established storage. Never initialize,
+replace or migrate fresh/missing/corrupt state under stopped admission, clear
+stop automatically, or dispatch while recovery/stop authority is unknown.
+This is an explicit continuous-mode change, not behavior already in `work()`.
+
+Graceful shutdown stops admission, uses existing cooperative phase/cancellation
+deadlines to reach a terminal/parked boundary, then stops/joins hub serving and
+host owners, drains owned plugin processes, and finally releases the lock. Forced
+termination can leave durable nonterminal execution; next permitted startup
+recovers from frozen packages before new work. No fabricated terminal receipt
+or force-unlock. Fatal worker failure is visible and requires explicit runtime
+restart; plugin-child restart does not create a fresh queue claimant.
+
+## Summary reads
+
+Keep immutable WEB.1 `ControlPlaneRead/v1` / `BrowserWire` and scoped
+`control-plane.read/v1`. Supported first-release operations are `read_overview`
+and `list_components`, exposed as GET `/api/v1/overview` and
+GET `/api/v1/components`. Grant scope/expiry/revocation remain server-validated.
+
+ReadOverview contains stop observation, executions, usage/cost/allowance and
+curated timeline from bound APIs. Sources distinguish missing, unreadable,
+unknown, successfully empty and available. Unknown usage/allowance is null, not
+numeric zero. Missing stop authority cannot become a green Running indication.
+No implicit atomic snapshot is claimed across sources.
+
+Overview is capped at100 executions/100 timeline entries and256KiB actual wire
+JSON with visible truncation. Component pages default50, accept1–100, and stay
+within256KiB including metadata. Sort by opaque ID; cursor pins collection,
+filter and revision. Mutation/retired generation invalidates the collection;
+RevisionConflict means reacquire. Fingerprint revisions are not monotonic clocks.
+
+Use installed binding/version/config pins plus live host lifecycle/health. An
+old Ready report cannot hide a Failed/Retired registry observation. Include
+installed unavailable plugins. Do not derive liveness from socket presence.
+Preserve exact decimal strings for identity/money in browser projection.
+
+Keep reads available while admission stopped, bounded by five seconds including
+queueing/source work, and release router locks before slow I/O. Reads create no
+claims/actions. Component-report/artifact operations explicitly unsupported in
+this slice; their HTTP routes are absent. Preserve their old code/tests/evidence
+before editing the retained WEB.2 worktree. Timestamp/digest matching never
+establishes missing producer provenance.
+
+## Factory contracts
+
+WEB.9 defines additive `factory.rs` types, strict codecs and independent golden
+fixtures. Existing ControlPlaneRead/v1, HP envelopes and LedgerApi are unchanged.
+Capabilities separate `factory.read/v1` (snapshot/lookup) from
+`factory.control/v1` (pause/resume). No public body contains actor or credentials.
+
+Requests use exact tags/fields; unknown fields/families/versions fail:
+
+```json
+{"format":"FactoryRuntime/v1","operation":"snapshot","limit":50,"cursor":null}
+{"format":"FactoryControl/v1","operation":"lookup","action_id":"op-1"}
+{"format":"FactoryControl/v1","operation":"pause","action_id":"op-2","confirmation":null}
+{"format":"FactoryControl/v1","operation":"resume","action_id":"op-3","confirmation":"resume"}
+```
+
+Snapshot limit defaults50/accepts1–100; nullable cursor≤4096 UTF-8 bytes. Omitted
+snapshot paging fields take defaults. Action IDs are1–128 ASCII characters from
+`[A-Za-z0-9._-]`; action confirmation is required nullable and≤64 UTF-8 bytes.
+Preserve exact submitted confirmation for input identity, then apply existing
+trimmed confirmation semantics. Request digest is canonical SHA-256 over the
+complete validated action object, excluding outer grant/deadline/operationID,
+session and CSRF. Distinct submitted input with the same actionID conflicts.
+
+FactoryRuntime/v1 response required fields:
+
+| Field | Exact content |
+|---|---|
+| format | `FactoryRuntime/v1` |
+| repository_id, state_id | Nonempty opaque configured identities≤256bytes; no private absolute paths |
+| runtime_instance_id | Nullable opaque launch identity≤128bytes |
+| observed_at_unix_ms | ExactU64 decimal string |
+| status | Exactly Starting, Recovering, Idle, Running, Paused, Failed, Unavailable |
+| reason | Nullable text≤2048bytes |
+| sources | Exactly five unique records for runtime, worker, queue, execution, stop |
+| stop | Nullable stop observation |
+| current_execution | Nullable observed execution summary |
+| eligible | Bounded eligible-work page |
+| permissions | `{pause:bool,resume:bool}`, false by default |
+
+Source record: `{source,state,detail,observed_at_unix_ms}` using existing
+SourceState, nullable bounded detail and nullable ExactU64 timestamp.
+Stop: `{stopped,reason,observed_at_unix_ms}`, bounded nullable reason and exact
+timestamp. Execution: `{execution_id,task_id,generation,phase,state,
+updated_at_unix_ms}` using existing phase/state enums, exact generation, nullable
+exact update time and IDs≤256bytes. Unknown time is null, never invented zero.
+
+Eligible page: `{entries,revision,total,next_cursor}`; entries are
+`{task_id,title,priority,family}` using TaskPriority/TaskFamily, title≤1024bytes,
+IDs≤256bytes. At most100 entries and256KiB entire response. Revision is nullable
+opaque string≤128bytes; total nullable ExactU64; cursor nullable≤4096bytes.
+Sort task_id for display; this does not change dispatch selection priority.
+Unavailable can have null launch/revision/total/execution and empty entries
+without claiming a successfully empty queue. All nullable response keys exist.
+
+Observation seam in contracts:
+
+```rust
+pub trait RuntimeObservationSource: Send + Sync {
+    fn snapshot(&self, request: &FactoryRuntimeRequest)
+        -> Result<FactoryRuntime, ContractError>;
+}
+```
+
+WEB.10 owns queue order/revision/cursor/source truth; WEB.11 only validates and
+adapts it. Queue cursor is canonical JSON text, opaque to browsers:
+`{format:"FactoryQueueCursor/v1",repository_id,state_id,runtime_instance_id,
+revision,after}`. Fields are bounded/nonempty and pin scope/launch/collection.
+Malformed/wrong scope returns InvalidRecord; changed queue revision/launch
+returns RevisionConflict. Golden literals freeze encoding. WEB.10's raw source
+permissions default false. WEB.11 is the sole trusted permission composer: it
+may enable pause/resume only from source availability, the authenticated caller's
+current approved factory.control binding, exclusive owner and observed stop
+state. WEB.13 supplies the live binding/owner resolver. WEB.12 and the browser
+can only narrow this result. UI permissions are hints, never admission authority.
+
+FactoryControl/v1 responses are strict tagged variants, all with nullable live
+`observed_stop` separate from immutable history:
+
+- `result:"receipt"`, `receipt:{action_id,request,request_digest,outcome,
+  reason,ledger_action_id,actor,recorded_at_unix_ms}`. Outcome applied/denied,
+  actor human, timestamp exact, nullable reason≤2048bytes.
+- `result:"unconfirmed"`, original action_id/request/request_digest,
+  `code:"EffectUnconfirmed"`, bounded reason; no terminal receipt.
+- `result:"not_found"`, action_id. Only authoritative lookup can say absent.
+
+Whole response≤256KiB. Reuse existing FailureCode values; no frozen failure enum
+extension for HTTP-only session/content errors. A completed historical timestamp
+is replayed exactly. Receipt success and observed worker progress are distinct.
+
+## Control replay, stop admission and authority
+
+Existing `ControlPlane::apply` changes latch/STOP before recording an outcome;
+it does not preserve complete original request identity or atomically commit all
+effects. The new API promises conservative replay, not atomic exactly-once
+completion. Preserve legacy CLI/TUI apply/cancel behavior.
+
+One serialized API control owner holds a dedicated state-scoped
+`factory-control.lock` guard; a process mutex alone is insufficient. WEB.13
+establishes ownership for the service lifetime. Unbound/competing owner means
+disabled controls. Legacy CLI/TUI never uses this API's reserved action IDs.
+
+Use existing declared ControlReceipt storage, with deterministic IDs
+`factory-control.intent/<action_id>` and `factory-control.result/<action_id>`.
+Fields use action pause/resume, target empty, actor human, and a namespaced
+`factory_control_v1` detail with stage, exact request and digest; terminal detail
+adds actual outcome/reason. No SQL or parallel journal framework.
+
+1. Authenticate method/capability/pinned identity/expiry and strictly decode.
+2. Serialize at exclusive owner; recheck deadline/authority after waiting.
+3. Matching completed record replays exactly; conflicting input fails before
+   effects. Matching orphan intent returns unconfirmed without reexecution.
+4. Otherwise persist intent before effect; uncertain intent write never
+   authorizes effect. Reconcile or return explicit unavailable/unknown.
+5. Apply existing human guards/checked pause/resume semantics, then persist and
+   return terminal result. A mutation/result-write failure leaves uncertainty.
+   New-path Resume must not claim success if STOP removal/observation failed.
+
+Lookup is observational. An interrupted effect/result boundary returns
+EffectUnconfirmed; browser does not retry with another ID automatically. A
+stronger atomic guarantee requires a separate ledger prerequisite.
+
+Pause/resume must be callable while admission stopped. Add a narrow authenticated
+factory-control exception after operation validation; do not disable ordinary
+effect stop policy or admit arbitrary plugin capabilities. Missing/unreadable
+state still fails closed. Read/lookup remains observational while stopped.
+
+Control authority is explicit for the installed dashboard binding/package digest,
+not inherited from auto-install, a UI actor field or plugin report. Do not add
+factory.control/v1 to the automatic safe-capability allowlist. Default package
+is read-only. Live grant expiry/revocation/generation still gates every call.
+
+## Private launch bindings and HTTP controls
+
+WEB.13 issues a generic private descriptor, WEB.12 parses/consumes it:
+
+```json
+{"format":"PluginCapabilityBindings/v1","bindings":[{"capability":"factory.read/v1","hub_socket":"<private path>","grant":"<private token>","plugin_id":"<installed id>","generation":"1"}]}
+```
+
+Environment key `AGALMA_PLUGIN_CAPABILITY_BINDINGS`, max64KiB/16 unique capability
+entries. Capability≤128bytes, pluginID≤256bytes, exact generation; socket/token
+remain bounded by existing launch constraints. Reject duplicates/malformed
+binding identity; no log/Describe/HTTP disclosure. Preserve legacy first-grant
+inputs for old clients, but never use a read/report token as control fallback.
+Issue/rotate/revoke each approved capability independently. This private additive
+channel does not change public frozen HP envelopes.
+
+| HTTP route | Capability/behavior |
+|---|---|
+| GET /api/v1/factory | factory.read snapshot |
+| GET /api/v1/factory/actions/{action_id} | factory.read receipt lookup |
+| POST /api/v1/factory/pause | factory.control pause |
+| POST /api/v1/factory/resume | factory.control confirmed resume |
+
+Retain configured loopback Host and same-origin policy. With explicit actual
+control binding, same-origin factory GET may bootstrap per-launch independent
+32-byte OS-random session/CSRF tokens. Cookie `agalma_operator`, HttpOnly,
+SameSite=Strict, Path=/api/v1/factory; plain loopback HTTP omits Secure. Separate
+CSRF in `X-Agalma-CSRF` response header, Cache-Control:no-store. Tokens never in
+URLs/errors/logs; rotate on restart. No accounts/framework. No control binding
+means no session/outbound mutation and disabled permissions.
+
+POST requires exactly one valid Origin matching actual scheme/host/port, valid
+cookie+CSRF, live explicit control binding and bounded strict JSON with matching
+route operation. Missing/foreign/duplicate/malformed Origin fails. Body≤8192bytes
+including streamed/chunked input, application/json with optional charset=utf-8.
+The existing max16 admitted requests and five-second total budget apply to body
+acquisition/queueing/RPC/response. No unbounded slow-body/admission queue.
+
+HTTP mapping: completed applied/denied receipt200; unconfirmed202; lookup
+not_found404; identity/revision conflict409; invalid schema/input400; authority,
+session/Origin/CSRF or disabled controls403; unavailable/busy503; deadline504;
+body413; contenttype415; unsupported method405; unknown route404. A possible
+effect on timeout/disconnect is unknown, not cancelled; retain ID for lookup.
+Keep bounded safe errors and no secret reflection. WEB.3 read/drain behavior
+remains protected. Only declared control routes accept POST.
+
+## Browser state and refresh
+
+Use one page and browser-native modules. `api.js` validates contracts;
+`app.js` renders the shell; `refresh.js` owns reads; `controls.js` owns explicit
+pause/resume interactions. Independent WEB.9 JSON fixtures let UI and backend
+develop in parallel. No private implementation imports or remote UI dependencies.
+
+One refresh cycle at a time, default1s/config1–60s, abortable5s requests. Track
+last success per source; one failing endpoint does not erase successful others.
+Retain failed-source data visibly stale; first failure is unavailable. Generation
+change replaces old current row state. RevisionConflict resets page collection;
+older aborted replies cannot overwrite later cycles. Page exit stops timers and
+requests. Opaque identities/revisions/money never become floating point.
+
+Use textContent/createTextNode for plugin text. Bound text4KiB, rows100/page,
+explicit truncation/Next. Never evaluate report HTML/scripts/templates. Controls
+disabled when runtime/permission unknown or absent. Explicit Resume collects
+literal existing confirmation. Pending click retains one actionID; lost result
+queries it. GET/refresh/navigation/reconnect/reload never repeats POST.
+
+## Parallel ownership and task graph
+
+Three active implementation streams, not one chain of eight browser tasks:
+
+| Stream | Tasks | Exclusive source ownership |
+|---|---|---|
+| A | WEB.2 summary; WEB.9 contracts; WEB.11 adapters as available | Read handlers/economics/routing/contract exports; lib.rs after WEB.2 |
+| B | WEB.10 continuous runtime | work.rs, cli.rs, work/factory_runtime.rs; composition after WEB.2 |
+| C | WEB.4 foundation then WEB.6 page | Cargo/package/server/build, then page/assets/browser support |
+
+Finish existing WEB.3 review separately. WEB.12 gets IPC ownership after WEB.3
+and uses the next free implementation slot; fixed fixtures allow work without
+WEB.10/11 runtime completion. Initially summary/contract/package work can overlap;
+once contracts and summary land, runtime/adapter/browser work can overlap.
+The three-session limit is a dispatch cap, not a claim that every dependency
+wave has width three. The four-task ready wave queues its fourth task until a
+slot opens; necessary contract and final integration joins remain sequential.
+
+WEB.10 declares `work::factory_runtime` from its owned work.rs, avoiding concurrent
+lib.rs edits with WEB.11. Composition transfers WEB.2→WEB.10→WEB.13. Package server
+transfers WEB.4→WEB.13. Browser support begins WEB.6, then later readers consume
+the same harness. No concurrent shared-file ownership or competing inventories.
+
+```mermaid
+flowchart LR
+    W1[WEB.1 merged] --> W2[WEB.2 summary]
+    W1 --> W3[WEB.3 existing transport review]
+    W1 --> W9[WEB.9 factory contracts]
+    W3 --> W4[WEB.4 package foundation]
+    W2 --> W6[WEB.6 page and real M1 smoke]
+    W4 --> W6
+    W9 --> W6
+    W2 --> W10[WEB.10 queue runtime]
+    W9 --> W10
+    W2 --> W11[WEB.11 runtime/control adapters]
+    W9 --> W11
+    W3 --> W12[WEB.12 bounded control HTTP]
+    W9 --> W12
+    W6 --> W13[WEB.13 production M2 join]
+    W10 --> W13
+    W11 --> W13
+    W12 --> W13
+```
+
+## Verification, review and delivery
+
+Each bead contains concrete files, algorithms, failure/recovery states, target
+selection, property budget/seed, prerequisites and stopping conditions. Use
+`make test-focused SELECTION=...`/unified runner, named task worktrees and
+absolute redirected caches. Keep all raw logs/commands/environment/source/pending
+identity/fixtures/results under primary `target/test-runs/<bead>/<run-id>/`.
+Required browser/binary cases execute; missing/ignored/zero is failure.
+
+Contract/read/transport tests precede integrations. WEB.4 package-level fixture
+tests prove executable/bootstrap, not production hub composition. WEB.6 proves
+actual M1 with installed CHROME_BIN and real hub/dashboard/ledger. WEB.13 proves
+actual continuous runtime/controls with deterministic local reference tasks:
+empty→Idle→eligible task→busy responsive UI→pause holds next claim→confirmed
+resume→one next claim, plus read-only/refused controls, duplicate/conflicting
+identity, interrupted intent/effect/result, frozen restart recovery, second-owner
+refusal, stopped-established versus fresh no-init and clean shutdown.
+
+WEB.6 browser acceptance is intentionally bounded to one production smoke plus
+six fixture browser regressions: safe bounded rendering of real fixture data;
+inert injected text; stale-source retention and conflict reload; bounded
+component paging; permission-gated controls with receipt lookup and no replay;
+and page-exit timer/abort cleanup. The production smoke opens the installed
+dashboard in CHROME_BIN and checks real overview/execution/component data,
+source loss, and disabled controls without a grant. Do not run the prior
+128-sequence browser state-machine corpus as a WEB.6 release gate. Broader
+generated and out-of-order coverage is deferred to a later task if a concrete
+regression justifies it.
+
+Save independent deterministic property generators/assertions, boundary/invalid
+cases and minimized replay data in repository tests. Budgets are specified per
+bead; use existing native infrastructure, no new framework. No paid provider.
+Run at most two isolated test binaries concurrently by default, coordinate cache
+compilation, keep unique state/ports/profiles. Do not run full workspace per bead;
+preserve later WEB.8 full acceptance. Broader new runtime checks need a named
+coverage reason, not a routine second suite after passing focused evidence.
+
+Implement via OpenCode DeepSeek Flash/Luna. Separate DeepSeek reviews routine
+package/UI work; Sol reviews contracts, routing, control uncertainty and runtime
+integration. Validator structural difficulty labels do not automatically select
+review model. Stop at accepted evidence/handoff or one blocker/30-minute bounded
+investigation. Commit/merge only reviewed explicit task paths before closure,
+stamp actor/implemented-by, preserve evidence and remove only clean merged task
+worktrees/caches. No push. Current planning does not dispatch implementation.
+
+## Retained later platform and concierge scope
+
+Deferred epic `agalma-v38` owns the original generic reporting-browser promise.
+WEB.5, WEB.7 and WEB.8 keep their IDs under that parent. Its provenance design
+and implementation tasks distinguish producer publications from recovered state:
+frozen PluginSnapshot/v1 cannot reconstruct all original identity. Design first,
+then actual versioned source/client implementation; rich renderer depends on
+implementation, not a design closure. No timestamp/digest heuristic.
+
+Retain six blocks Status/Metrics/Table/Timeline/Alert/ArtifactLink; literal/slash
+field selectors with ~0/~1 escapes; bounded generic fallbacks and unknown versions;
+no plugin code/templates/private payload types in hub. Rich navigation derives
+from registry with stable identity/generation. Deferred artifacts use current
+authorized immutable references,64KiB chunks/16MiB totals, confined verified
+storage and attachment/no-sniff. Keep stale/gap/restart/generation recovery and
+previously unknown independently built plugin proof with unchanged hub/dashboard
+digests. WEB.8 retains one full workspace acceptance after its focused proof.
+HP.8 remains a prerequisite for that platform proof, not the first cockpit.
+
+Deferred task `agalma-1o7` designs concierge goal intake using existing planner,
+budgets, frozen inputs and human execution gates. Planning produces proposals;
+authority makes work eligible; the same queue worker consumes it. No second
+scheduler or inferred execution approval from submitting a goal. Defer means
+deliberate postponement, not a fake execution-approval date.
+
+## UI v2 amendment: multi-page cockpit and design pass
+
+User-directed increment after the M1/M2 cockpit delivery (epic `agalma-82f`,
+2026-10-18). Scope: multi-page navigation over the currently available reads,
+the hub component registry with health, task and project views, component detail
+and dashboard self-health routes, and a full visual (`dashboard.css`) pass. No
+new hub contracts and no new data semantics: every page renders existing
+`ControlPlaneRead/v1`, `FactoryRuntime/v1` and dashboard health observations.
+Full task metadata (budget/acceptance/base_ref/target/directive) remains
+unavailable in this increment; it lives in taskqueue records and is not exposed
+by any read contract. Implementation stays subject to the standing rules:
+independently installed/supervised `agalma-web-dashboard` process, loopback-only
+HTTP, compiled asset inventory, `textContent`-only rendering,4KiB text/100-row
+bounds, explicit unknown/stale states, no POST from navigation, page-exit
+timer/abort cleanup, no downloads or frontend frameworks.
+
+### Pages and hash routing
+
+One compiled shell (`index.html` plus browser-native ES modules). Hash routes:
+
+| Route | Page content | Reads |
+|---|---|---|
+| `#/overview` | runtime status, stop latch, current execution, economics, timeline, controls | overview + factory |
+| `#/components` | registry table: plugin id, name, generation, health, freshness, completeness, available, declared views; opaque-cursor paging | components |
+| `#/components/<plugin_id>` | binding pin, declared view descriptors, bounded report envelopes | `read_component` via new HTTP route |
+| `#/tasks` | eligible queue (id, title, priority, family, total, revision) and executions (phase, state, attempt, revision, updated) | factory + overview |
+| `#/projects` | repository/state opaque identity, the five runtime sources, stop state, component count | factory + components |
+| `#/system` | dashboard self-health (listener URL, binding, health state, version, detail), refresh interval and read-source states | new `/api/v1/status` |
+
+Hash routing is required: the preview target and the Rust transport serve one
+static shell, so deep links must not need a server rewrite; the History API is
+rejected. An unknown or empty hash resolves to `#/overview` with a visible
+notice. Navigation, hash change, reload and refresh never submit a control POST.
+Read registration is unchanged except for the detail read: overview, factory and
+components keep their existing always-on registration (component data also
+feeds the Projects page count); only the detail read is route-active, fetching
+while its route is active and short-circuiting otherwise so the refresh module
+itself needs no change. The controls panel moves to the overview page unchanged
+in behavior. The brand heading "Agalma cockpit" and the honest
+runtime-unavailable wording remain (retained DOM contract).
+
+### New read routes
+
+Exactly two new dashboard routes, read-only, reusing the existing adapter gate:
+
+- `GET /api/v1/components/{plugin_id}`: `read_component` page (`limit`1–100
+  default50, opaque `cursor`). The transport already refuses smuggled path
+  separators; the handler validates the decoded segment with the single shared
+  component-id rule (exposed `pub` in `agalma-ipc`, reused, not duplicated).
+  Malformed plugin id or request →400 `invalid_request`; cursor revision
+  conflict →409 `cursor_conflict`; deadline →504 `read_timeout`; binding
+  unavailable →503 `read_unavailable`; success →200 exact `BrowserWire`
+  projection with exact decimal string identities. A valid but unknown plugin
+  id answers200 with missing-source metadata and the page renders the honest
+  not-registered state, never404 and never an empty healthy page.
+- `GET /api/v1/status`: local process facts only, never hub data and never
+  requiring the read binding. Strict JSON `DashboardStatus/v1`:
+  `{format,version,health_state,listener:{state,url},binding:{state},detail,
+  observed_at_unix_ms}` with Ready/Degraded/Unavailable derived by the existing
+  `plugin.Health` rule and nullable bounded detail. Private launch inputs
+  (socket, grant, capability token, config path, config digest, generation,
+  capability bindings) never enter any browser response.
+
+### Browser modules, fixtures and verification
+
+Module layout: `api.js` (adds `getComponentDetail`, `getStatus`), `refresh.js`
+and `controls.js` unchanged, new `router.js` and `ui.js`, and `pages/
+{overview,components,component,tasks,projects,system}.js` with `app.js` as the
+shell. All WEB.6 invariants carry over. Visual pass: design tokens with
+dark-first `prefers-color-scheme` light override, sidebar→top nav at720px,
+status/health pills, card panels, dense sticky-header tables, timeline stream,
+`focus-visible` rings, monospace reserved for ids/digests/cursors/code, no
+webfonts/downloads/frameworks. New fixtures `component-detail.json` and
+`status.json`; `make start` previews every route offline with a committed
+stdlib-only preview server. Browser acceptance extends the retained
+`browser_support` harness; Rust route cases extend the `package_lifecycle`
+patterns and one `agalma-ipc` focused check covers the exposed validator. Task
+mapping: UI.1 `agalma-82f.1`, UI.2 `agalma-82f.2` (blocked by UI.1), human
+gates `agalma-5fv`/`agalma-9ur`; compact index in
+[web-dashboard-beads.md](web-dashboard-beads.md).

@@ -1,0 +1,32 @@
+# Standalone HP.8 plugin package (agalma-jmr.8).
+#
+# This is deliberately its own Cargo workspace ([workspace] below), separate
+# from the product workspace in the repository root. It consumes only the
+# public common plugin contracts (`agalma-contracts`) and the common Connect RPC
+# transport (`agalma-ipc`) through path dependencies — no new dependency
+# download, no vendor handle, no conductor internals.
+#
+# Build (from the repository root, offline, existing pinned deps):
+#   cargo build --offline --manifest-path fixtures/plugin-pack/Cargo.toml \
+#       --target-dir target/plugin-pack-build
+[package]
+name = "plugin-pack"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+description = "HP.8 independent plugin package fixture: a real executable that speaks the common plugin protocol."
+
+[[bin]]
+name = "plugin-pack"
+path = "src/main.rs"
+
+[dependencies]
+agalma-contracts = { path = "../../crates/agalma-contracts" }
+agalma-ipc = { path = "../../crates/agalma-ipc" }
+serde_json = "=1.0.151"
+tokio = { version = "=1.53.2", features = ["rt", "rt-multi-thread", "net", "time", "macros"] }
+
+# Own workspace boundary: this manifest is a workspace root, so it is never
+# pulled into the product workspace in the repository root.
+[workspace]

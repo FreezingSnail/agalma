@@ -1,0 +1,72 @@
+{
+  "format": "PluginManifest/v1",
+  "plugin_id": "example.plugin-pack",
+  "package_version": "0.1.0",
+  "package_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "protocol_major": 1,
+  "entrypoint": {
+    "path": "bin/plugin-pack",
+    "argv": [],
+    "launch_profile": "plugin-pack/v1"
+  },
+  "domain_apis": [],
+  "requested_capabilities": ["ledger.read", "report.publish"],
+  "required_services": [],
+  "optional_services": [],
+  "config_schema": {
+    "path": "config-schema.json",
+    "digest": "sha256:e4c44d80c21341ac3503ba7c6558d4bf8820bf9569565c0977218f37f6c9965a",
+    "bytes": 342,
+    "media_type": "application/json"
+  },
+  "default_configuration": {
+    "path": "default-config.json",
+    "digest": "sha256:d645c08784c740b3b612109997cfe6d2abe7e3cba4fc9b0a6f05340360d17b8a",
+    "bytes": 49,
+    "media_type": "application/json"
+  },
+  "report_schemas": [
+    {
+      "namespace": "example.plugin-pack.load",
+      "version": 1,
+      "schema": {
+        "path": "report-schema.json",
+        "digest": "sha256:1c5c73d21fd0e0a4910c73c3118e9c099a0d5eb112c71e2a98d84a478352f5b2",
+        "bytes": 297,
+        "media_type": "application/json"
+      }
+    }
+  ],
+  "views": [
+    {
+      "view_id": "load",
+      "schema_namespace": "example.plugin-pack.load",
+      "kind": "Metrics",
+      "title": "Plugin pack load",
+      "schema_version": 1,
+      "fields": ["items", "ready"]
+    }
+  ],
+  "actions": [
+    {
+      "action_id": "flush",
+      "input_schema": "example.plugin-pack.flush/v1",
+      "required_capability": "ledger.read",
+      "effectful": true,
+      "human_confirmation": null,
+      "default_deadline_ms": 60000
+    },
+    {
+      "action_id": "danger",
+      "input_schema": "example.plugin-pack.danger/v1",
+      "required_capability": "ledger.write",
+      "effectful": true,
+      "human_confirmation": null,
+      "default_deadline_ms": 60000
+    }
+  ],
+  "state_compatibility": {
+    "reads": [],
+    "writes": "plugin-pack-state/v1"
+  }
+}

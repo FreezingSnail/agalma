@@ -247,3 +247,71 @@ No consumer may parse OpenCode SSE, call its endpoints, read bd CLI output, issu
 ledger SQL, or render vendor configuration outside the owning implementation.
 New components must declare their API, state owner, dependencies, and replacement
 procedure before joining the factory.
+
+## Reporting-owner appendix (CW.0, 2026-10-19)
+
+Reporting is an observation channel, not a new domain API. A component that
+reports its own state still exposes only its declared contract; generic
+reporting never becomes a way to call arbitrary commands, read another owner's
+private state, or replace `LedgerApi`, `WorkspaceApi`, `HarnessApi`,
+`TaskQueueApi` or `ExecutionApi`. Only the ledger implementation opens its
+database or issues SQL against it.
+
+The producer profile, publication identity, outbox/recovery algorithm and the
+per-owner field freeze live in
+[web-dashboard-design.md § CW.0 freeze](web-dashboard-design.md#cw0-freeze-producer-profiles-outbox-and-owner-readiness-2026-10-19).
+This appendix records which logical component owns which profile and what is
+still missing. A component is a reporting owner only when its actual selected
+implementation is installed and publishing; a representation-only builtin or a
+parent subsection is not a reporting owner.
+
+| Logical component | Owning contract | Owner implementation | Reporting identity | Namespace v1 | Readiness |
+|---|---|---|---|---|---|
+| Ledger | `LedgerApi` | Ledger implementation (`agalma-ledger`, `ledger_process`); package not declared | Installed generation of `component:ledger` | `component:ledger.status` | Blocked: CV.3 package |
+| Execution | `ExecutionApi` | Selected production owner; no registered component today | Installed generation of the selected owner | `component:execution.status` | Blocked: CV.1 + CV.3; no placeholder |
+| Workspace | `WorkspaceApi` | Git adapter; package not declared | Installed generation of `component:workspace` | `component:workspace.status` | Blocked: CV.4 package |
+| Task queue | `TaskQueueApi` | bd adapter; package not declared | Installed generation of `component:taskqueue` | `component:taskqueue.status` | Blocked: CV.4 package |
+| Harness | `HarnessApi` | Selected harness adapter; package not declared | Installed generation of `component:harness` | `component:harness.status` | Blocked: CV.5 package |
+| Provider proxy | Parent-owned composition (`provider_proxy.rs`) | Parent composition; no independent package | None until a separately authorized migration | none yet | Blocked: identity/ownership decision |
+| Dashboard | Dashboard `RuntimeStatus` | `agalma-web-dashboard` | Existing installed generation | `agalma.web-dashboard.status` | Installed; publication missing |
+
+Invariants for every owner row:
+
+- The publisher identity is the installed generation's `plugin_id` and binding
+  pin. No forged `component:*` envelope, invented generation or empty-digest
+  configuration fingerprint is permitted.
+- A builtin entry with no installed generation has no publication identity and
+  cannot report; the component page shows reports-missing, distinct from a
+  missing component.
+- Observations are bounded, come from the owner's own contract, and identify
+  their scope and selection window; a truncated list is not a global count.
+- Credentials, authorization, request headers/bodies, prompts, secret-bearing
+  URLs and raw environments never enter a report payload.
+- The hub owns authorization, registration and routing; producers do not
+  discover peer sockets or access another component's private storage.
+
+The hub ingestion path already exists: `CapabilityRouter::publish_report`
+authenticates the per-launch grant and calls `ReportIngestor::publish`. Missing
+is the producer half and two separate platform prerequisites:
+
+1. **Spoke publisher/outbox primitives (CW.2):** proposed
+   `agalma_ipc::report_publisher` with a caller-owned `PublicationStore`; no
+   existing implementation. The hub router, grant, ingestor and component store
+   are out of scope and unchanged.
+2. **Hub snapshot-recovery driver (separate prerequisite `agalma-vosd`):**
+   `PluginClient::snapshot`, `ReportIngestor::apply_snapshot` and
+   `PluginReportView::needs_snapshot` exist, but no production driver issues a
+   snapshot or applies it. This is not CW.2 work and no recovery claim is valid
+   until it is delivered. It directly blocks `agalma-51dg.11`.
+3. **Installed-builtin durable projection (separate prerequisite `agalma-z571`):**
+   `crates/agalma-conductor/src/components.rs` (`load_plugin_sources`) skips
+   discovered ids in `BUILTIN_COMPONENTS`. An owner package that reuses a
+   `component:*` route would be dropped from the durable projection, so route
+   reuse (CW.0-D1) is not production-ready until this is reconciled. It directly
+   blocks `agalma-51dg.5`–`agalma-51dg.9`.
+
+The owner packages' declared `plugin_id`, schemas and views also do not exist
+yet (CV.1/CV.3/CV.4/CV.5). See the design's "Missing mechanisms" list. The
+publication, acknowledgement, retry, restart and generation-fencing behavior is
+otherwise already frozen by the common plugin contracts and
+[self-mutation-contracts.md § HP](self-mutation-contracts.md#hp-durable-component-storage-and-reports).

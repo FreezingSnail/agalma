@@ -841,7 +841,9 @@ envelopes for `component:*`, invent generations or use an empty digest as a real
 configuration fingerprint. Existing CV migrations must retain their agreed
 identity/pinning guarantees. If a migration changes a logical component route,
 CW.0 must resolve compatible registry/route behavior before that producer is
-dispatched; no browser alias table substitutes for that decision.
+dispatched; no browser alias table substitutes for that decision. The CW.0
+freeze below records the resolved route/identity decision, the exact existing
+seams and the still-missing mechanisms.
 
 ### Page structure and generic rendering
 
@@ -950,10 +952,12 @@ enter report payloads.
 
 ### Publication, freshness and recovery
 
-CW.2 supplies shared transport/recovery behavior with owner-provided persistence;
-it does not introduce a new ledger reader or a second report store. CW.0 must
-identify the actual current client, outbox, snapshot and lifecycle composition
-seams before this high-difficulty task is dispatched.
+CW.2 supplies the spoke-side publisher/outbox primitives and restart replay with
+owner-provided persistence; it does not introduce a new ledger reader or a second
+report store, and it does not implement the hub-side snapshot-recovery driver
+(that is a separate prerequisite gap). CW.0 identifies the actual current client,
+outbox, snapshot and lifecycle composition seams before this high-difficulty
+task is dispatched.
 
 The required algorithm is one outstanding immutable publication per binding:
 
@@ -986,6 +990,407 @@ Transient status does not replace durable business receipts or become automatic
 workflow input. Durable report events remain declared observations under HP.5.
 Ledger bootstrap/Ready must not wait for its own published report to be written
 through an as-yet unavailable hub; reporting starts after the binding is ready.
+
+### CW.0 freeze: producer profiles, outbox and owner readiness (2026-10-19)
+
+Deliverable of `agalma-51dg.1` (CW.0). Frozen against the actual code at base
+`c6ce1ab3adcfc1cbc01bc4a9f0d603ebd51d778e`. Names recorded as **existing** are
+compiled seams a producer may rely on today. Names recorded as **proposed** do
+not exist in the repository, are not an API, and may not be used to dispatch a
+child. This subsection resolves the identity/route question in "Production flow
+and authority" and the recovery algorithm in "Publication, freshness and
+recovery" against those real seams; it does not release any child.
+
+#### Existing seams (verified)
+
+| Seam | Location | What a producer or the hub gets |
+|---|---|---|
+| Contract records | `crates/agalma-contracts/src/plugin.rs` | Existing `PluginManifest/v1`, `PluginInstallation/v1`, `PluginHealth/v1`, `PluginSnapshot/v1`, `ReportPublication/v1`, `ReportEnvelope/v1` |
+| Hub RPC methods | `crates/agalma-ipc/src/plugin_server.rs` | Existing `hub.PublishReport`, `hub.InvokeCapability`, `hub.ReconcileCapability`; spoke `plugin.Snapshot` |
+| Spoke→hub transport | `crates/agalma-ipc/src/plugin_client.rs` | Existing `HubCallbackClient::publish_report`; existing `PluginClient::snapshot` (hub→spoke) |
+| Hub authorization + ingest | `crates/agalma-conductor/src/plugin_router.rs` (`CapabilityRouter::publish_report`) | Existing grant authentication (method, plugin, generation), then ingest |
+| Ingestor | `crates/agalma-conductor/src/plugin_reports.rs` (`publish`, `record_health`, `apply_snapshot`, `Freshness`) | Existing identity/dedup/gap/snapshot/retired-generation read model; 15 s stale, 30 s unavailable |
+| Durable backing | `plugin_reports.rs` (`ReportStore`) over `SqliteLedger` / `LedgerHandle` | Existing `component-store/v1` writes; rehydrated view and replay window after restart |
+| Read route | `crates/agalma-conductor/src/control_plane_read.rs`, `crates/agalma-ipc/src/control_plane_client.rs` | Existing `ReadComponent { binding, descriptors, entries, next_cursor }` and `ListComponents`; only canonical producer envelopes are served, snapshot-recovered entries are not fabricated into envelopes |
+| Launch grant | `crates/agalma-conductor/src/composition.rs` | Existing per-launch `hub.PublishReport` grant in `PLUGIN_REPORT_GRANT_ENV` (24 h TTL), issued only when the installed generation declares `report.publish`/`report.*`; hub socket in `AGALMA_HUB_SOCKET` |
+| Builtins | `composition.rs` (`BUILTIN_COMPONENTS`) | Existing representation-only entries `component:ledger`, `component:workspace`, `component:harness`, `component:taskqueue`, `component:provider-proxy`; no installed generation, never launched, cannot hold a publication identity |
+| Dashboard package | `crates/agalma-web-dashboard/package/plugin-manifest.json`, `src/plugin.rs` | Existing installed generation (`agalma.web-dashboard`), declared `agalma.web-dashboard.status` v1 with fields `listener`/`binding`/`url`; `snapshot()` returns an empty snapshot |
+
+#### Missing mechanisms (must not be treated as existing)
+
+1. **No spoke-side publisher or outbox.** The hub ingestion path is production
+   and complete: `CapabilityRouter::publish_report` authenticates the per-launch
+   grant and calls `ReportIngestor::publish` for every `hub.PublishReport`. What
+   does not exist is the producer half: no spoke code outside tests constructs a
+   publication or calls `HubCallbackClient::publish_report`, and no
+   outbox/checkpoint primitive exists. The **proposed** `agalma-ipc` publisher
+   contract below is CW.2's bounded deliverable, not an existing API.
+2. **No hub snapshot-recovery production driver.** `PluginClient::snapshot` and
+   `ReportIngestor::apply_snapshot` have no production caller;
+   `PluginReportView::needs_snapshot` has no consumer. The hub-side driver that
+   issues `plugin.Snapshot` on a gap and applies it is a **separate prerequisite
+   gap**, explicitly outside CW.2's IPC publisher/outbox scope. Tracked as
+   `agalma-vosd` (P1, blocked/design-not-ready).
+3. **Installed-builtin durable projection gap.** `components::load_plugin_sources`
+   skips every discovered id in `BUILTIN_COMPONENTS`, so the durable production
+   projection would drop an installed owner generation that reuses a
+   `component:*` route; the live overlay would disagree whenever its cell is
+   empty. This is a **separate bounded prerequisite**, not a CW.2 or CV behavior.
+   Tracked as `agalma-z571` (P2, blocked/design-not-ready).
+4. **No dashboard publication.** The dashboard manifest requests no
+   `report.publish`, the process reads only `AGALMA_HUB_SOCKET`/`AGALMA_PLUGIN_GRANT`,
+   and it never publishes. Its declared schema/view are the frozen payload
+   contract for CW.3, not a live producer.
+5. **Owner packages not declared.** CV.1/CV.3/CV.4/CV.5 are open and not
+   dispatch-ready; none declares a package `plugin_id`, report schema or view.
+   Builtins have no generation and can never hold a grant. Owner producer rows
+   below are therefore blocked on those deliveries.
+6. **Provider proxy has no independent producer.** It is parent-owned composition
+   with no stats API and no separately supervised package; its `component:*`
+   builtin entry cannot publish.
+
+#### Producer identity and route decision
+
+Publication identity is `(plugin_id, binding.generation, sequence)`; the grant
+authenticates caller identity and pins the generation. An in-process builtin has
+neither generation nor launch grant, so it cannot publish and is never given a
+forged or synthesized envelope.
+
+- **CW.0-D1 (confirmed by Sol, 2026-10-19; contingent on P2 `agalma-z571`):** each migrated owner package
+  declares the existing logical route subject as its `plugin_id` —
+  `component:ledger`, `component:workspace`, `component:harness`,
+  `component:taskqueue` — and declares namespace `<plugin_id>.status` v1. The
+  pattern `^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,255}$` accepts these ids, so
+  `PluginRegistry::install` reuses the existing builtin entry instead of
+  allocating a second route; the browser route subject and `ListComponents` key
+  stay identical and no alias table is introduced. Until an owner package
+  installs, the builtin stays a representation-only, reports-missing entry.
+
+  This decision has a verified precondition that must be reconciled before any
+  owner dispatch: `components::load_plugin_sources` (the durable production
+  projection `ControlPlaneReadService::production` uses) currently skips every
+  discovered id that is in `BUILTIN_COMPONENTS`, so a discovered owner generation
+  under `component:ledger` would be dropped from the durable projection. The
+  live overlay (`live_components`, authoritative when populated) would show it,
+  but the two projections would disagree and the owner views/binding would be
+  missing whenever the live cell is empty. Reusing a builtin route therefore
+  requires an explicit, separately owned reconciliation of that projection
+  de-duplication (a bounded hub change or a CV.3/CV.4/CV.5 packaging decision).
+  If Sol instead assigns distinct owner `plugin_id`s, the route subject changes
+  and the corresponding builtin entry must be retired in the same activation;
+  the renderer still gets no alias table. This document does not decide that
+  change.
+- **CW.0-D2:** a registered component with no reports and a missing component
+  remain distinct; the renderer must never fabricate an envelope from snapshot
+  data or from an empty digest.
+- **CW.0-D3 (confirmed by Sol, 2026-10-19):** provider-proxy stays under its
+  true parent owner. No `component:provider-proxy` publication identity exists,
+  no standalone proxy identity is fabricated, and CW.9 stays blocked until a
+  separately authorized migration (CV.5 scope) freezes an independently
+  supervised proxy identity and its reporting lifetime.
+- **CW.0-D4:** execution is not a registered component today. No placeholder is
+  registered; execution views appear only when the selected owner from CV.1/CV.3
+  installs a real package.
+
+Sol confirmed D1 and D3 on 2026-10-19. D1 retains the existing colon-form
+component identities only together with the separately delivered installed-builtin
+durable-projection reconciliation (P2 `agalma-z571`). D3 keeps ProviderProxy
+truthful under its true parent owner with no fabricated standalone identity;
+CW.9 remains blocked pending a separately authorized migration. These
+confirmations implement nothing, do not close either prerequisite, and do not
+grant CV or release authority.
+
+#### Immutable outbox, acknowledgement and recovery (resolved against HP.5)
+
+One outstanding immutable publication per binding, producer-owned persistence.
+The concrete state and algorithm below are the contract CW.2 implements; the
+function names are proposed, the states and ordering are frozen.
+
+Producer state (owner-private, single writer, outside domain request handlers):
+
+- `outbox`: at most one sealed pending record holding the exact
+  `ReportPublication/v1` bytes plus its canonical content digest.
+- `checkpoint`: the last acknowledged `(generation, sequence, payload_digest)`
+  and the acknowledged namespace watermark.
+- The hub's `ReportEnvelope` return value is the only acknowledgement. The hub's
+  durable component store remains hub-side report storage; the producer never
+  reads it.
+
+1. **Sample/coalesce** an owner observation on the bounded cadence (five seconds
+   while active) in a task outside domain handlers; drop a sample superseded
+   before it is sealed.
+2. **Seal** the canonical payload, compute `payload_digest`, choose
+   `sequence = checkpoint.sequence + 1`, and fix namespace/version, `binding`
+   and `reported_at_unix_ms`. Never reserve or skip sequence ranges: HP.5 expects
+   contiguous sequences above its watermark, and a gap marks the view incomplete.
+3. **Persist before send.** Atomically write the sealed record to `outbox`, then
+   send `hub.PublishReport` with the per-launch grant, `plugin_id`, generation and
+   the publication. A crash before send replays this exact record on restart.
+4. **Acknowledge.** A returned `ReportEnvelope` is the acknowledgement; commit
+   `checkpoint` (generation/sequence/digest/watermark) before clearing `outbox`.
+   A lost response leaves `outbox` pending and the sequence unconsumed.
+5. **Retry identically.** Retry the byte-identical publication. An acknowledged
+   replay returns the original envelope (the hub dedups on identity and never
+   re-stamps); a changed payload under the same identity is
+   `FailureCode::IdentityConflict` and must never reuse that sequence.
+6. **Advance one step.** Do not seal sequence `n+1` until sequence `n` is
+   acknowledged and checkpointed. The snapshot reflects the acknowledged
+   boundary, not unacknowledged samples.
+7. **Restart.** Replay the pending outbox record before allocating any sequence.
+   The hub rehydrates its view and durable replay window from the selected
+   ledger's component store; a producer-side replay of the same identity is an
+   acknowledged no-op. Snapshot-based gap recovery additionally requires the
+   separate hub driver; replay and durable-envelope rehydration do not. State
+   recovered without a canonical producer identity stays incomplete/awaiting
+   refresh; never synthesize an envelope.
+8. **Generation fencing.** An outbox/checkpoint bound to a retired generation is
+   fenced: it may finish its own pinned observation but cannot overwrite the
+   active view. A new generation starts a fresh outbox/checkpoint; an expired or
+   rotated grant stops publication with explicit unavailability and no silent
+   grant widening.
+
+Failure states the producer must expose (never as healthy data):
+
+| State | Trigger | Required behavior |
+|---|---|---|
+| Pending | Persisted, unacknowledged | Retain outbox; retry identical; report last acknowledged data with its age |
+| Conflict | Same identity, changed content | Stop and surface; never reuse the sequence |
+| Unsupported schema | Namespace/version not declared in the manifest | Refuse locally; owner fixes the manifest, no fallback namespace |
+| Grant expired/rotated | Launch grant no longer authenticates | Explicit unavailability; resume after relaunch with a fresh grant |
+| Gap | The hub's separate snapshot driver requests recovery (not CW.2) | Rebuild from the acknowledged snapshot boundary plus canonical publications |
+| Snapshot unsupported | Plugin cannot serve `plugin.Snapshot`, or state is incompatible | Explicit unavailability; no fabricated envelopes |
+| Retired generation | Fenced by a newer active generation | Pinned observations only; never overwrite the active view |
+
+#### Proposed CW.2 publisher/outbox contract (not implemented)
+
+CW.2 is scoped to IPC publisher/outbox primitives and their tests. It does not
+change the hub router, grant issuance/TTL, `ReportIngestor`, the component
+store, `ReadComponent`, or the ledger. It implements no owner sampling and no
+persistence backend: the caller owns durable storage and passes it in.
+
+**Proposed module:** `agalma_ipc::report_publisher` in the existing `agalma-ipc`
+crate (no new crate, framework or dependency). The names below are proposals;
+the states and ordering above are the frozen contract.
+
+```rust
+pub struct PublisherBinding {
+    pub plugin_id: String,
+    pub binding: BindingPin,
+}
+
+pub struct PublisherLimits {
+    /// REPORT_PAYLOAD_LIMIT_BYTES (64 KiB); refuse larger payloads locally.
+    pub max_payload_bytes: usize,
+    /// One send attempt bound.
+    pub publish_deadline_ms: u64,
+    /// Sample coalescing window before sealing.
+    pub coalesce_after_ms: u64,
+    /// Retry backoff ceiling (start 250 ms, double to this).
+    pub max_retry_backoff_ms: u64,
+}
+
+pub struct AckCheckpoint {
+    pub generation: u64,
+    pub sequence: u64,
+    pub payload_digest: String,
+    pub acknowledged_at_unix_ms: u64,
+}
+
+pub enum LoadedPublication {
+    /// No pending record; the next sequence is checkpoint.sequence + 1.
+    Empty { checkpoint: Option<AckCheckpoint> },
+    /// Exact sealed record to replay before any new sequence is allocated.
+    Pending { publication: ReportPublication },
+    /// Store belongs to another generation; never read or write its sequence.
+    Fenced { generation: u64 },
+}
+
+/// Caller-owned durable persistence. CW.2 defines the seam, not a backend.
+pub trait PublicationStore {
+    fn load(&mut self) -> Result<LoadedPublication, ContractError>;
+
+    /// Durably write the one pending record before any send. Must fail if a
+    /// pending record already exists; must not reserve or skip a sequence.
+    fn begin(&mut self, publication: &ReportPublication) -> Result<(), ContractError>;
+
+    /// Atomically persist the new checkpoint and clear the pending record.
+    /// Returns the durable checkpoint; no later seal is allowed until it does.
+    fn acknowledge(&mut self, envelope: &ReportEnvelope)
+        -> Result<AckCheckpoint, ContractError>;
+}
+
+pub struct ReportPublisher<S: PublicationStore> { /* private */ }
+
+pub enum PublishOutcome {
+    Acknowledged(ReportEnvelope),
+    /// Send failed or acknowledgement was lost; the identical record is pending.
+    Pending,
+    /// Grant/binding generation no longer matches this publisher.
+    Fenced,
+}
+
+impl<S: PublicationStore> ReportPublisher<S> {
+    pub fn open(
+        store: S,
+        binding: PublisherBinding,
+        limits: PublisherLimits,
+        clock: Arc<dyn Fn() -> u64 + Send + Sync>,
+    ) -> Result<Self, ContractError>;
+
+    /// Seal and persist one publication. Refuses while a record is pending,
+    /// after fencing, or when the namespace/version is not declared by the
+    /// installed manifest. Returns the exact persisted publication.
+    pub fn seal(
+        &mut self,
+        schema_namespace: &str,
+        schema_version: u64,
+        payload: Value,
+        reported_at_unix_ms: u64,
+    ) -> Result<ReportPublication, ContractError>;
+
+    /// Send/replay the pending record with the per-launch report grant. A
+    /// returned envelope must match the pending identity; it is acknowledged
+    /// before `Pending` can become `Acknowledged`.
+    pub async fn publish_pending(
+        &mut self,
+        client: &mut HubCallbackClient,
+        grant: &str,
+    ) -> Result<PublishOutcome, ContractError>;
+
+    pub fn checkpoint(&self) -> Option<&AckCheckpoint>;
+}
+```
+
+Caller-owned persistence transaction requirements (CW.2 documents and tests the
+call ordering; the owner implements the store):
+
+- Single writer per binding; exactly one pending record.
+- `begin` is durable before the send starts (atomic replace plus the caller's
+  durability primitive); a crash before send replays the same bytes.
+- `acknowledge` commits the checkpoint and clears pending in one atomic durable
+  step; a crash between send and acknowledge leaves the record pending.
+- The record stores its generation; a different active generation never reuses
+  the store or its sequence. Corrupt/incompatible state is an explicit
+  unavailability, never a silent reset to zero.
+- No external I/O inside an owner domain transaction or request handler.
+- Record size is bounded by `max_payload_bytes` plus fixed envelope bytes;
+  oversized payloads fail locally with `InvalidRecord`.
+- The store never reads the hub ledger or another owner's private state.
+
+Bounded behavior frozen for CW.2: one pending/in-flight publication; 5 s
+coalescing; 5 s send deadline; retry backoff 250 ms doubling to 5 s; 64 KiB
+payload bound; no unbounded queue. Generation fencing: `open` on a mismatched
+generation returns `Fenced`; a grant/generation mismatch keeps the pending
+record and returns `Fenced`; a new generation starts with a fresh store, never a
+rewritten checkpoint.
+
+CW.2's tests cover crash-before-send, lost acknowledgement, exact duplicate
+replay, changed-content conflict, oversized payload, deadline expiry, restart
+replay, fenced generation and store corruption. Deterministic store and callback
+fakes reuse existing test infrastructure; no live provider, hub, ledger or
+operator state. The hub snapshot-recovery driver and installed-builtin durable
+projection gap are **not** CW.2 tests or deliverables.
+
+#### Owner producer profiles
+
+Each profile fixes the route subject, the owning implementation, the namespace,
+the declared views and the binding pin. The owner collects bounded observations
+and never scans another owner's private state; unsupported fields are omitted
+rather than guessed. Package/manifest declaration is a CV deliverable; column
+"package" is the current truth.
+
+| Route subject | Owner API / implementation | Package (truth) | Namespace v1 | Binding pin |
+|---|---|---|---|---|
+| `component:ledger` | `LedgerApi` / ledger implementation, `agalma-ledger` + `ledger_process` | Not declared; CV.3 open | `component:ledger.status` | Installed generation of the ledger owner package |
+| `component:workspace` | `WorkspaceApi` / git adapter | Not declared; CV.4 open | `component:workspace.status` | Installed generation of the workspace owner package |
+| `component:taskqueue` | `TaskQueueApi` / bd adapter | Not declared; CV.4 open | `component:taskqueue.status` | Installed generation of the queue owner package |
+| `component:harness` | `HarnessApi` / selected harness adapter | Not declared; CV.5 open | `component:harness.status` | Installed generation of the harness owner package |
+| `component:provider-proxy` | Parent-owned composition (`provider_proxy.rs`) | No independent identity (D3) | none until D3 migration | None; parent-owned, CW.9 blocked |
+| `component:execution` (proposed; not a current builtin) | `ExecutionApi` / selected kernel or process owner | Not declared; CV.1 + CV.3 open | `component:execution.status` | Installed generation of the selected execution owner |
+| `agalma.web-dashboard` | Dashboard `RuntimeStatus` + local status endpoint | Installed today | `agalma.web-dashboard.status` | Existing dashboard binding pin (`RuntimeStatus::binding_pin`) |
+
+**Dashboard (existing contract, no changes to field names).** Fields `listener`
+(`"ready"`/`"unavailable"`), `binding` (`"ready"`/`"unavailable"`), `url`
+(string or null). Provenance: `RuntimeStatus`. View `status` (Status) already
+declares these fields. CW.3 adds `report.publish`, reads the report grant env and
+publishes; nothing here is a new payload.
+
+**Ledger.** Fields: `available` (bool, bounded probe), `schema_version` (int,
+`LedgerApi::schema_version`), `bindings` (bounded array of
+`{binding_id, api, api_version, implementation_version, generation}` from
+`LedgerApi::bindings`), `pending_intents` (bounded array of
+`{operation_id, execution_id}` from `pending_intents`), `counts`
+(`{bindings, pending_intents, executions_total, executions_active}` from
+`bindings`/`pending_intents`/`executions`), `scope`
+(`{window, limit, complete}`), `observed_at_unix_ms`. Unsupported: full-history
+scan, database size/integrity, and per-execution events in the status payload.
+
+**Workspace.** Fields: `available`, `checkouts` (bounded array of
+`{checkout_id, candidate_branch, base_sha}` from `Checkout` plus the owner's own
+checkout inventory), `last_changes` (bounded array of
+`{checkout_id, kind, path, old_path?}` from `WorkspaceApi::changes`),
+`last_integration` (`{expected_main_sha, candidate_sha, result_sha}` from
+`MergeReceipt`), `scope`, `observed_at_unix_ms`. Unsupported: enumerate-all
+worktrees and global dirty status; the owner has no such API.
+
+**Task queue.** Fields: `available`, `ready` (bounded array of
+`{task_id, title, priority, family, base_ref}` from `ReadyTasks.tasks`),
+`skipped` (bounded array of `{task_id, reason}` from `ReadyTasks.skipped`),
+`claims` (bounded array of the owner's observed `ClaimEvidence`:
+`{task_id, status, assignee?, started_at?}`), `scope`
+(`{window, limit, complete}`), `observed_at_unix_ms`. Eligibility is an
+observation, not release authority. Unsupported: a generic blocked/claimed
+listing; none exists.
+
+**Harness.** Fields: `available`, `selected` (`{impl_name, impl_version,
+api_version, capabilities}` from `HarnessApi::describe`; selected model comes
+from the owner's own binding, never inferred from generic execution records),
+`operations` (bounded array of `{operation_id, execution_id, state, attempt}`
+from own `inspect_operation` handles), `stalls` (int, owner observation),
+`last_failure` (`{kind, detail}` from `TurnFailed`/`read_events`, sanitized),
+`observed_at_unix_ms`. Unsupported: global session enumeration, model or start
+time inferred from generic records, raw prompts/headers.
+
+**Selected execution owner.** Fields: `available`, `active` (bounded array of
+`{execution_id, task_id, phase, state, attempt, pending_operations}` from
+`ExecutionApi::status`), `recent` (bounded array of `{execution_id, phase,
+state, outcome}` from the owner's recorded outcomes/receipts), `cancellation`
+(`{requested, terminated, detail}` from the owner's settlement state), `scope`,
+`observed_at_unix_ms`. Unsupported: a second execution path; a placeholder must
+never impersonate the selected owner.
+
+**Provider proxy.** No frozen profile. Its credential owner and lifetime remain
+in the parent composition and CV.5 scope; when a migration freezes an
+independently supervised identity, its profile is defined then (local
+listener/mode, observed request/refusal/failure counters, sanitized errors,
+explicit gate/usage observations; no tokens, cost, headers or URLs).
+
+#### Readiness and dependencies
+
+- CW.2 `agalma-51dg.3` builds the missing spoke publisher/outbox primitives
+  (missing mechanism 1) and their tests only. It depends only on completed CW.0
+  `agalma-51dg.1`; it is not blocked by the snapshot driver and must not
+  implement it. It uses only the existing router/ingestor/transport seams above.
+- `agalma-vosd` (P1, blocked/design-not-ready) tracks the missing snapshot-recovery
+  production driver (missing mechanism 2). Until it exists, producers can
+  publish and the hub can ingest/replay durable envelopes, but no one may claim
+  gap/snapshot recovery in production; CW.10 `agalma-51dg.11` recovery acceptance
+  is directly blocked on it.
+- `agalma-z571` (P2, blocked/design-not-ready) tracks the installed-builtin
+  durable-projection reconciliation (missing mechanism 3). It directly blocks
+  owner producer tasks `agalma-51dg.5`–`agalma-51dg.9` that use builtin routes.
+  Until it is delivered, an owner package reusing a `component:*` route is
+  installed but not reliably projected, and the D1 route is not production-ready.
+- CW.3 is blocked by CW.2 and by the dashboard manifest/grant/env change.
+- CW.4–CW.8 are blocked by CW.2, by their CV predecessors (CV.3, CV.4, CV.5,
+  CV.1) delivering a real installed owner package with a declared `plugin_id`,
+  schema and views, and by the missing-mechanism-3 projection prerequisite.
+  Until then the owner rows are documentation, not dispatch targets.
+- CW.9 additionally requires the D3 identity decision (separately authorized
+  migration) before any proxy producer exists.
+- CW.10 requires every owner package, the snapshot driver, the projection
+  reconciliation, and the D1/D3 confirmations. No child closure or CV
+  modification is authorized by this freeze.
 
 ### Task graph and readiness
 

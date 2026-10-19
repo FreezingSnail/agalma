@@ -78,12 +78,11 @@ factory does not yet run unattended. Peer socket bounds and smoke evidence are i
 [`docs/b1-f3-evidence.md`](docs/b1-f3-evidence.md) §6 (`agalma-fez`); auxiliary
 ledger connections remain migration work (`agalma-1o3`).
 
-The next architecture is a hub with independently installable plugins, registry
-discovery/supervision, and common reporting rendered dynamically in the control
-plane. That platform is planned, not the current runtime. The browser dashboard
-design is accepted for decomposition, but its implementation is prerequisite-gated;
-unknown-plugin end-to-end acceptance has not been established. See the
-[self-hosting roadmap](docs/self-hosting-roadmap.md) and
+The hub platform is partially delivered: an independently installed dashboard
+plugin serves the operator cockpit, and `agalma work --watch` supervises it with
+live factory reads. The remaining hub work (dynamic registry UI, generic reports,
+actions, artifacts) stays on the [self-hosting roadmap](docs/self-hosting-roadmap.md);
+the cockpit scope is specified in the
 [browser dashboard design](docs/web-dashboard-design.md).
 
 ## Verified behavior
@@ -111,6 +110,8 @@ make release     # same targets in the release profile
 make test-focused SELECTION='-p <crate> --test <target> [filter]'
 make test-peers  # five local process smokes on the default Connect wire
 make test-full   # workspace tests; excludes ignored live-provider checks
+make start       # live cockpit: real work --watch runtime (dispatches eligible work)
+make preview     # offline fixture cockpit preview at http://127.0.0.1:8791/
 make report      # sizes of every target/ consumer
 make sweep       # classify worktree caches; sweep-apply reclaims them
 make help        # targets, scope, outputs, and overrides
@@ -167,7 +168,7 @@ as `opencode-log-<unique-id>/`; workspace files are preserved. Set
 - `docs/reliability-hardening.md`, `docs/hardening-evidence.md` — watchdog, routing, xcrun/TMPDIR
 - `docs/research/`, `docs/spikes/` — recon and spike reports
 - [Self-hosting roadmap](docs/self-hosting-roadmap.md) — current gaps and planned platform sequence
-- [Browser dashboard design](docs/web-dashboard-design.md) — accepted design and gated implementation plan
+- [Browser dashboard design](docs/web-dashboard-design.md) — cockpit design, delivered scope, and live/fixture start targets
 - [Development workflow](docs/development-workflow.md) — build and verification guidance
 
 ## License

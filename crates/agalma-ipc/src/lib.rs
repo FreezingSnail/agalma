@@ -44,6 +44,7 @@ pub mod ledger_client;
 pub mod ledger_server;
 pub mod plugin_client;
 pub mod plugin_server;
+pub mod report_publisher;
 pub mod server;
 pub mod taskqueue_client;
 pub mod taskqueue_server;
@@ -122,6 +123,12 @@ pub use plugin_server::{
     PluginHandler, HUB_METHODS, METHOD_CANCEL, METHOD_DESCRIBE, METHOD_HEALTH, METHOD_INVOKE,
     METHOD_INVOKE_CAPABILITY, METHOD_PUBLISH_REPORT, METHOD_RECONCILE, METHOD_RECONCILE_CAPABILITY,
     METHOD_SNAPSHOT, PLUGIN_API, PLUGIN_PROTOCOL_MAJOR, SPOKE_METHODS,
+};
+pub use report_publisher::{
+    AckCheckpoint, LoadedPublication, PublicationStore, PublishOutcome, PublisherBinding,
+    PublisherLimits, ReportPublisher, ReportTransport, DEFAULT_COALESCE_AFTER_MS,
+    DEFAULT_MAX_PAYLOAD_BYTES, DEFAULT_MAX_RETRY_BACKOFF_MS, DEFAULT_PUBLISH_DEADLINE_MS,
+    INITIAL_RETRY_BACKOFF_MS,
 };
 pub use server::{socket_from_args, Handler, Server, ServerInfo};
 pub use taskqueue_client::{

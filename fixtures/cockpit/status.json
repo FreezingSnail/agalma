@@ -1,0 +1,9 @@
+{
+  "format": "DashboardStatus/v1",
+  "version": "0.1.0",
+  "health_state": "ready",
+  "listener": { "state": "ready", "url": "http://127.0.0.1:8791" },
+  "binding": { "state": "ready" },
+  "detail": null,
+  "observed_at_unix_ms": "1791820800000"
+}

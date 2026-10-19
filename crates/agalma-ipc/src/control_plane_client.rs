@@ -374,8 +374,13 @@ fn check_page_request(request: &ReadPageRequest) -> Result<(), IpcError> {
 }
 
 /// Validate a caller-supplied component id before any RPC: non-empty and free
-/// of control characters, path separators, and NUL.
-fn check_component_id(plugin_id: &str) -> Result<(), IpcError> {
+/// of control characters and path separators (including NUL).
+///
+/// This is the one component-id rule shared by the typed client and the
+/// dashboard's `GET /api/v1/components/{plugin_id}` route, so a browser path
+/// segment and an RPC caller are refused for exactly the same ids instead of
+/// keeping two copies of the rule.
+pub fn check_component_id(plugin_id: &str) -> Result<(), IpcError> {
     if plugin_id.is_empty()
         || plugin_id
             .bytes()
@@ -386,4 +391,52 @@ fn check_component_id(plugin_id: &str) -> Result<(), IpcError> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_component_id;
+    use crate::error::IpcError;
+    use agalma_contracts::ContractError;
+
+    fn assert_refused(plugin_id: &str) {
+        let error = check_component_id(plugin_id)
+            .expect_err("invalid component id must be refused before any RPC");
+        match error {
+            IpcError::Contract(ContractError::KnownFailure(message)) => {
+                assert!(
+                    message.contains("invalid component id"),
+                    "unexpected refusal message {message:?}"
+                );
+            }
+            other => panic!("expected a KnownFailure contract error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn control_plane_client_component_id_rule_is_shared_and_bounded() {
+        // Accepted canonical ids (the dashboard route reuses this exact rule).
+        for valid in [
+            "agalma-web-dashboard",
+            "example.unfamiliar-reporter",
+            "a",
+            "plugin_1",
+            "Ünicode",
+        ] {
+            assert!(
+                check_component_id(valid).is_ok(),
+                "valid id {valid:?} was refused"
+            );
+        }
+
+        // Empty, path separators, NUL and every ASCII control character are
+        // refused before any RPC.
+        for invalid in ["", "a/b", "/", "a\\b", "\\", "\0", "a\0b"] {
+            assert_refused(invalid);
+        }
+        for byte in (0u8..=0x1f).chain(std::iter::once(0x7f)) {
+            let plugin_id = format!("prefix{}suffix", char::from(byte));
+            assert_refused(&plugin_id);
+        }
+    }
 }

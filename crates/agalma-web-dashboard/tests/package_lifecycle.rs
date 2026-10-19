@@ -69,6 +69,8 @@ const PROPERTY_CASES: u64 = 64;
 const OVERVIEW_JSON: &str = include_str!("../../../fixtures/control-plane-read-v1/overview.json");
 const COMPONENTS_JSON: &str =
     include_str!("../../../fixtures/control-plane-read-v1/components-page.json");
+const DETAIL_JSON: &str = include_str!("../../../fixtures/cockpit/component-detail.json");
+const STATUS_JSON: &str = include_str!("../../../fixtures/cockpit/status.json");
 
 // ---------------------------------------------------------------------------
 // Deterministic generator
@@ -423,8 +425,15 @@ struct FixtureHub {
     valid_grant: String,
     overview: Value,
     components: Value,
+    detail: Value,
+    /// The plugin id the detail fixture describes; every other valid id is
+    /// answered with the honest missing-source projection.
+    detail_plugin_id: String,
     overview_reads: Arc<AtomicU64>,
     component_cursors: Arc<Mutex<Vec<Option<String>>>>,
+    /// Every operation the fixture served, so a test can prove reads never
+    /// create a control intent.
+    operations: Arc<Mutex<Vec<String>>>,
 }
 
 impl HubHandler for FixtureHub {
@@ -457,10 +466,18 @@ impl HubHandler for FixtureHub {
             .ok_or_else(|| FailureCode::InvalidRecord.failure("input", "missing operation"))?;
         match operation {
             "read_overview" => {
+                self.operations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("read_overview".to_string());
                 self.overview_reads.fetch_add(1, Ordering::SeqCst);
                 Ok(self.overview.clone())
             }
             "list_components" => {
+                self.operations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push("list_components".to_string());
                 let cursor = object
                     .get("input")
                     .and_then(|input| input.get("cursor"))
@@ -486,6 +503,47 @@ impl HubHandler for FixtureHub {
                 }
                 Ok(self.components.clone())
             }
+            "read_component" => {
+                let input = object
+                    .get("input")
+                    .ok_or_else(|| FailureCode::InvalidRecord.failure("input", "missing input"))?;
+                let plugin_id = input
+                    .get("plugin_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        FailureCode::InvalidRecord.failure("plugin_id", "missing plugin id")
+                    })?
+                    .to_string();
+                let cursor = input
+                    .get("cursor")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                self.operations
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(format!("read_component:{plugin_id}"));
+                if plugin_id == self.detail_plugin_id {
+                    let after = cursor
+                        .as_deref()
+                        .and_then(|raw| raw.strip_prefix("cp1:"))
+                        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                        .and_then(|value| value["after"].as_str().map(str::to_string));
+                    if after.as_deref() == Some("deadline") {
+                        return Err(FailureCode::DeadlineExceeded
+                            .failure("component", "fixture deadline reached"));
+                    }
+                    // The fixture detail page has no continuation: any cursor is
+                    // a stale revision, exactly like the components page.
+                    if cursor.is_some() {
+                        return Err(FailureCode::RevisionConflict
+                            .failure("component", "fixture cursor revision changed"));
+                    }
+                    return Ok(self.detail.clone());
+                }
+                // A valid but unknown plugin id is never a 404: the hub answers
+                // a missing-source ReadComponent and the route serves it as 200.
+                Ok(missing_component(&plugin_id))
+            }
             other => Err(FailureCode::ScopeDenied
                 .failure(other, "fixture supports overview/components only")),
         }
@@ -497,12 +555,21 @@ fn start_fixture_hub(
     socket: &Path,
     grant: &str,
 ) -> Arc<FixtureHub> {
+    let detail: Value =
+        serde_json::from_str(DETAIL_JSON).expect("component detail fixture");
+    let detail_plugin_id = detail["entries"][0]["plugin_id"]
+        .as_str()
+        .expect("fixture entry plugin id")
+        .to_string();
     let hub = Arc::new(FixtureHub {
         valid_grant: grant.to_string(),
         overview: serde_json::from_str(OVERVIEW_JSON).expect("overview fixture"),
         components: fixture_components(),
+        detail,
+        detail_plugin_id,
         overview_reads: Arc::new(AtomicU64::new(0)),
         component_cursors: Arc::new(Mutex::new(Vec::new())),
+        operations: Arc::new(Mutex::new(Vec::new())),
     });
     let mut server = Server::new(ServerInfo {
         api: "hub".to_string(),
@@ -539,6 +606,46 @@ fn fixture_components() -> Value {
 // ---------------------------------------------------------------------------
 // Package sealing and production launch
 // ---------------------------------------------------------------------------
+
+/// The exact `BrowserWire` shape of a `ReadComponent` for a valid but unknown
+/// plugin id: every source states `missing` and no healthy empty page is
+/// fabricated.
+fn missing_component(plugin_id: &str) -> Value {
+    let binding = json!({
+        "binding_id": plugin_id,
+        "api": "plugin",
+        "api_version": 1,
+        "implementation_version": "unknown",
+        "generation": "0",
+        "config_digest": format!("sha256:{}", "0".repeat(64)),
+    });
+    json!({
+        "metadata": {
+            "format": "ControlPlaneRead/v1",
+            "collected_at_unix_ms": 1_791_820_800_002u64,
+            "registry_revision": "9007199254740993",
+            "report_watermark": null,
+            "sources": [
+                {
+                    "source": "registry",
+                    "state": "missing",
+                    "detail": format!("plugin `{plugin_id}` is not registered"),
+                    "observed_at_unix_ms": 1_791_820_800_002u64,
+                },
+                {
+                    "source": "reports",
+                    "state": "missing",
+                    "detail": format!("plugin `{plugin_id}` has no report projection"),
+                    "observed_at_unix_ms": 1_791_820_800_002u64,
+                },
+            ],
+        },
+        "binding": binding,
+        "descriptors": [],
+        "entries": [],
+        "next_cursor": null,
+    })
+}
 
 fn seal_dashboard_package(scratch: &Path, config_override: Option<&str>) -> DiscoveredPackage {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("package");
@@ -1154,9 +1261,195 @@ fn package_bootstraps_ephemeral_port_serves_and_shuts_down() {
 }
 
 // ---------------------------------------------------------------------------
-// Missing / rejected read binding
+// UI.2a component detail and dashboard status routes (`agalma-82f.2`)
 // ---------------------------------------------------------------------------
 
+#[test]
+fn component_detail_and_status_routes_serve_exact_projections() {
+    let scratch = ScratchDir::new("web2a-detail-status");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let grant = "detail-status-read-grant";
+    // Keep the hub fixture alive for the control-intent assertion.
+    let hub_socket = short_socket(&scratch, "detail-status-hub");
+    let hub = start_fixture_hub(&runtime, &hub_socket, grant);
+    let config = r#"{"address":"127.0.0.1","port":0,"refresh_interval_secs":1}"#;
+    let package = seal_dashboard_package(scratch.path(), Some(config));
+    let mut launched = launch_dashboard(&scratch, &package, Some((&hub_socket, grant)));
+    let mut client = runtime
+        .block_on(PluginClient::connect(&launched.plugin_socket))
+        .expect("connect real dashboard plugin RPC");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let health = loop {
+        let health = runtime.block_on(health_status(&mut client));
+        if health.state == HealthState::Ready {
+            break health;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "detail/status package did not become ready: {health:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let url = detail_field(&health, "url").expect("actual URL reported").to_string();
+    let port: u16 = url
+        .strip_prefix("http://127.0.0.1:")
+        .expect("reported URL is loopback HTTP")
+        .parse()
+        .expect("reported URL contains only its allocated port");
+    let detail_plugin_id = hub.detail_plugin_id.clone();
+
+    // Case 1: the detail route serves the exact fixture BrowserWire projection,
+    // with exact decimal string identities.
+    let detail_fixture: Value = serde_json::from_str(DETAIL_JSON).expect("detail fixture");
+    let detail = http_request(
+        port,
+        "GET",
+        &format!("/api/v1/components/{detail_plugin_id}"),
+    );
+    assert_eq!(detail.status, 200, "{}", detail.body);
+    assert!(
+        detail.headers.contains("content-type: application/json"),
+        "{}",
+        detail.headers
+    );
+    let expected = serde_json::to_string(&detail_fixture).expect("fixture serializes");
+    assert_eq!(
+        detail.body, expected,
+        "detail body must equal the exact fixture projection"
+    );
+    assert!(detail.body.contains("\"generation\":\"9007199254740993\""));
+    assert!(detail.body.contains("\"sequence\":\"1\""));
+    assert!(detail.body.contains("\"reported_at_unix_ms\":\"1791820800000\""));
+
+    // Case 2: a valid but unknown plugin id is 200 with missing-source
+    // metadata, never 404 and never a healthy empty page.
+    let unknown = http_request(port, "GET", "/api/v1/components/example.not-installed");
+    assert_eq!(unknown.status, 200, "{}", unknown.body);
+    let unknown_body: Value = serde_json::from_str(&unknown.body).expect("unknown JSON");
+    assert_eq!(unknown_body["binding"]["binding_id"], "example.not-installed");
+    assert_eq!(unknown_body["metadata"]["sources"][0]["state"], "missing");
+    assert_eq!(unknown_body["metadata"]["sources"][1]["state"], "missing");
+    assert_eq!(unknown_body["descriptors"], json!([]));
+    assert_eq!(unknown_body["entries"], json!([]));
+
+    // Case 3: an invalid plugin id, limit or cursor is 400 invalid_request.
+    // `%5C` (backslash) and `%01` (control) decode through the transport and are
+    // refused by the shared validator; `%2F` is refused by the transport.
+    for path in [
+        "/api/v1/components/bad%5Cid",
+        "/api/v1/components/bad%01id",
+        "/api/v1/components/bad%2Fid",
+        "/api/v1/components/example.unfamiliar-reporter?limit=101",
+        "/api/v1/components/example.unfamiliar-reporter?limit=0",
+        "/api/v1/components/example.unfamiliar-reporter?limit=abc",
+        "/api/v1/components/example.unfamiliar-reporter?cursor=not-a-cursor",
+    ] {
+        let response = http_request(port, "GET", path);
+        assert_eq!(response.status, 400, "path {path}: {}", response.body);
+        assert!(
+            response.body.contains("invalid_request"),
+            "path {path}: {}",
+            response.body
+        );
+    }
+
+    // Case 4: a stale cursor revision is 409 cursor_conflict.
+    let stale_cursor = percent_encode_query_component(&cursor_token(&detail_plugin_id));
+    let conflict = http_request(
+        port,
+        "GET",
+        &format!("/api/v1/components/{detail_plugin_id}?cursor={stale_cursor}"),
+    );
+    assert_eq!(conflict.status, 409, "{}", conflict.body);
+    assert!(conflict.body.contains("cursor_conflict"), "{}", conflict.body);
+
+    // Case 6: the status route serves the exact DashboardStatus/v1 shape from
+    // local process facts, without the read binding's private inputs.
+    let started = now_unix_ms();
+    let status = http_request(port, "GET", "/api/v1/status");
+    let ended = now_unix_ms();
+    assert_eq!(status.status, 200, "{}", status.body);
+    assert!(
+        status.headers.contains("content-type: application/json"),
+        "{}",
+        status.headers
+    );
+    let status_body: Value = serde_json::from_str(&status.body).expect("status JSON");
+    let status_fixture: Value = serde_json::from_str(STATUS_JSON).expect("status fixture");
+    let mut actual_keys: Vec<&String> = status_body.as_object().unwrap().keys().collect();
+    let mut fixture_keys: Vec<&String> = status_fixture.as_object().unwrap().keys().collect();
+    actual_keys.sort();
+    fixture_keys.sort();
+    assert_eq!(
+        actual_keys, fixture_keys,
+        "status route must carry exactly the fixture's DashboardStatus/v1 keys"
+    );
+    assert_eq!(status_body["format"], "DashboardStatus/v1");
+    assert_eq!(status_body["version"], PACKAGE_VERSION);
+    assert_eq!(status_body["health_state"], "ready");
+    assert_eq!(status_body["listener"]["state"], "ready");
+    assert_eq!(status_body["listener"]["url"], url);
+    assert_eq!(status_body["binding"]["state"], "ready");
+    assert_eq!(status_body["detail"], Value::Null);
+    let observed: u64 = status_body["observed_at_unix_ms"]
+        .as_str()
+        .expect("observed_at_unix_ms is an exact decimal string")
+        .parse()
+        .expect("observed_at_unix_ms parses as an unsigned decimal");
+    assert!(
+        (started..=ended).contains(&observed),
+        "observed_at_unix_ms {observed} outside [{started}, {ended}]"
+    );
+    assert!(
+        !status.body.contains(&grant.to_string()),
+        "status must not leak the private grant"
+    );
+
+    // Case 7: POST to either new path is refused and reads create no control
+    // intent of any kind.
+    for path in [
+        format!("/api/v1/components/{detail_plugin_id}"),
+        "/api/v1/status".to_string(),
+    ] {
+        let method = http_request(port, "POST", &path);
+        assert_eq!(method.status, 405, "POST {path}: {}", method.body);
+        assert!(method.headers.contains("allow: get"), "{}", method.headers);
+    }
+    let operations = hub
+        .operations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert!(
+        operations.iter().all(|operation| {
+            operation == "read_overview" || operation == "list_components" || operation.starts_with("read_component:")
+        }),
+        "reads must create no control intent: {operations:?}"
+    );
+    assert!(
+        operations.iter().any(|operation| operation.starts_with("read_component:")),
+        "the detail route must have issued a read_component: {operations:?}"
+    );
+    assert_eq!(
+        operations.iter().filter(|operation| *operation == "read_overview").count(),
+        1,
+        "only the initial binding warmup reads the overview: {operations:?}"
+    );
+
+    let evidence = launched
+        .supervisor
+        .stop(PLUGIN_ID)
+        .expect("supervisor owns the dashboard process");
+    assert!(evidence.process_group_gone, "{}", evidence.detail);
+}
+
+// ---------------------------------------------------------------------------
+// Missing / rejected read binding
+// ---------------------------------------------------------------------------
 #[test]
 fn missing_and_rejected_read_binding_degrade_health_and_refuse_reads() {
     let scratch = ScratchDir::new("web4-package-binding");
@@ -1197,6 +1490,37 @@ fn missing_and_rejected_read_binding_degrade_health_and_refuse_reads() {
     assert_eq!(refused.status, 503);
     assert!(refused.body.contains("read_unavailable"));
     assert!(!refused.body.contains("package_digest"));
+    // Case 5: the detail route shares the mapping (never a fabricated page) and
+    // the status route reports the same degraded health with local facts only.
+    let detail = http_request(
+        missing_port,
+        "GET",
+        "/api/v1/components/example.unfamiliar-reporter",
+    );
+    assert_eq!(detail.status, 503, "{}", detail.body);
+    assert!(detail.body.contains("read_unavailable"), "{}", detail.body);
+    assert!(!detail.body.contains("ControlPlaneRead/v1"));
+    let status = http_request(missing_port, "GET", "/api/v1/status");
+    assert_eq!(status.status, 200, "{}", status.body);
+    let status_body: Value = serde_json::from_str(&status.body).expect("status JSON");
+    assert_eq!(status_body["format"], "DashboardStatus/v1");
+    assert_eq!(
+        status_body["health_state"],
+        serde_json::to_value(health.state).unwrap(),
+        "status health_state must match plugin.Health"
+    );
+    assert_eq!(status_body["health_state"], "degraded");
+    assert_eq!(status_body["listener"]["state"], "ready");
+    assert_eq!(
+        status_body["listener"]["url"],
+        format!("http://127.0.0.1:{missing_port}")
+    );
+    assert_eq!(status_body["binding"]["state"], "unavailable");
+    assert_eq!(
+        status_body["detail"],
+        "hub read binding unavailable",
+        "status detail mirrors the bounded health detail surface"
+    );
     assert!(
         missing.supervisor.stop(PLUGIN_ID).is_some(),
         "missing-binding child stopped"
@@ -1227,6 +1551,15 @@ fn missing_and_rejected_read_binding_degrade_health_and_refuse_reads() {
     assert_eq!(refused.status, 503, "{}", refused.body);
     assert!(!refused.body.contains("PRIVATE_HUB_SOCKET_SENTINEL"));
     assert!(!refused.body.contains("PRIVATE_GRANT_SENTINEL"));
+    let status = http_request(private_port, "GET", "/api/v1/status");
+    assert_eq!(status.status, 200, "{}", status.body);
+    assert_eq!(
+        serde_json::from_str::<Value>(&status.body).unwrap()["health_state"],
+        "degraded"
+    );
+    assert!(!status.body.contains("PRIVATE_HUB_SOCKET_SENTINEL"));
+    assert!(!status.body.contains("PRIVATE_GRANT_SENTINEL"));
+    assert!(!status.body.contains(&private_token));
     assert!(private.supervisor.stop(PLUGIN_ID).is_some());
 
     // Rejected (expired) grant: the fixture knows a different valid token.
@@ -1458,6 +1791,13 @@ fn wait_for_path(path: &Path, label: &str) {
         assert!(Instant::now() < deadline, "{label} did not appear");
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn unused_loopback_port() -> u16 {

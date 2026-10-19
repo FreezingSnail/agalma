@@ -317,12 +317,15 @@ fn first_launch_production_page_renders_real_data_and_zero_effects() {
         pause.status
     );
 
-    // Open the real printed URL in the installed browser.
-    let outcome = run_browser(&chrome, &url, BROWSER_BUDGET_MS, "first-launch");
+    // Open the real printed URL with the components route: the production page
+    // must prove the installed dashboard component is rendered by the registry
+    // page, not merely listed in an API response.
+    let components_url = format!("{url}#/components");
+    let outcome = run_browser(&chrome, &components_url, BROWSER_BUDGET_MS, "first-launch");
     assert!(outcome.status.success(), "browser failed: {}", outcome.stderr);
     let dom = &outcome.dom;
     assert!(dom.contains("Agalma cockpit"), "page shell missing: {dom}");
-    assert!(dom.contains(PLUGIN_ID), "real component must render in the page: {dom}");
+    assert!(dom.contains(PLUGIN_ID), "real component must render in the components page: {dom}");
     // The factory runtime endpoint is not part of M1, so the page says so
     // honestly and never claims Idle/Running.
     assert!(

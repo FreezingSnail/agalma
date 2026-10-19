@@ -1,26 +1,27 @@
-//! WEB.6 cockpit page acceptance (`agalma-rwn.6`).
+//! WEB.6 / UI.1c cockpit page acceptance (`agalma-rwn.6`, `agalma-82f.4`).
 //!
 //! Drives the **compiled** dashboard assets through the installed Chrome in
 //! headless mode against a real loopback fixture server that serves independent
-//! `fixtures/cockpit` JSON. Six critical fixture browser regressions:
+//! `fixtures/cockpit` JSON. The retained single-page cases plus the UI v2
+//! multi-page shell cases:
 //!
-//! 1. one page renders factory/worker status, eligible queue, executions,
-//!    component health and economics/timeline from independent unfamiliar
-//!    component fixtures, with exact identity/money strings (values > 2^53 and
-//!    exact decimals) and bounded safe text;
-//! 2. injected `<script>`/`<img>` text stays inert text;
-//! 3. a failing source keeps its last successful data visible as stale and a
-//!    revision conflict reloads the collection once;
-//! 4. component paging uses the opaque server cursor within the 100-row bound;
-//! 5. controls are rendered permission-gated, resume requires the literal
-//!    phrase, a lost response queries the retained action id and shows
-//!    `EffectUnconfirmed` without replay, and a view issues zero POSTs;
-//! 6. page exit stops the refresh timer and aborts the active read.
+//! 1. each route renders its sections from the fixtures (overview, components,
+//!    component detail, tasks, projects, system);
+//! 2. an unknown hash falls back to overview with the visible notice;
+//! 3. navigation between all routes generates zero POSTs;
+//! 4. `aria-current` marks the active route;
+//! 5. the component-detail descriptors and envelopes render as inert text;
+//! 6. an unknown plugin id renders the explicit not-registered state;
+//! 7. the system page renders status facts and a malformed response yields a
+//!    visible bounded error;
+//! 8. page exit on a non-overview route stops timers and aborts the active read;
+//! 9. component paging uses the opaque server cursor within the row bound.
 //!
-//! The production first-launch smoke is the separate seventh acceptance item in
-//! `first_launch.rs`. These cases run through the real refresh, control and
-//! render modules in one driver page; the runner retains raw logs under
-//! `target/test-runs`.
+//! The retained critical cases (injection inertness, stale source, revision
+//! conflict, permission-gated controls with the literal resume phrase and
+//! EffectUnconfirmed lookup, page-exit timer/abort) stay in place. The
+//! production first-launch smoke is the separate acceptance item in
+//! `first_launch.rs`. The runner retains raw logs under `target/test-runs`.
 
 mod browser_support;
 
@@ -37,6 +38,8 @@ const FACTORY_RUNTIME: &str = include_str!("../../../fixtures/cockpit/factory-ru
 const FACTORY_READONLY: &str = include_str!("../../../fixtures/cockpit/factory-readonly.json");
 const CONTROL_RECEIPT: &str = include_str!("../../../fixtures/cockpit/control-receipt.json");
 const CONTROL_UNCONFIRMED: &str = include_str!("../../../fixtures/cockpit/control-unconfirmed.json");
+const COMPONENT_DETAIL: &str = include_str!("../../../fixtures/cockpit/component-detail.json");
+const STATUS: &str = include_str!("../../../fixtures/cockpit/status.json");
 
 // ---------------------------------------------------------------------------
 // Scripted fixture server
@@ -50,6 +53,10 @@ struct Script {
     overview_index: usize,
     components: Vec<Response>,
     components_index: usize,
+    detail: Vec<Response>,
+    detail_index: usize,
+    status: Vec<Response>,
+    status_index: usize,
     factory: Vec<Response>,
     factory_index: usize,
     lookup: Option<Response>,
@@ -92,6 +99,28 @@ impl Script {
         self.factory_index += 1;
         response
     }
+
+    fn next_detail(&mut self) -> Response {
+        let response = self
+            .detail
+            .get(self.detail_index)
+            .or_else(|| self.detail.last())
+            .cloned()
+            .unwrap_or_else(|| Response::json(404, "{\"error\":\"not_found\"}"));
+        self.detail_index += 1;
+        response
+    }
+
+    fn next_status(&mut self) -> Response {
+        let response = self
+            .status
+            .get(self.status_index)
+            .or_else(|| self.status.last())
+            .cloned()
+            .unwrap_or_else(|| Response::json(404, "{\"error\":\"not_found\"}"));
+        self.status_index += 1;
+        response
+    }
 }
 
 fn scripted_server(script: Script) -> (FixtureServer, Arc<Mutex<Script>>) {
@@ -107,12 +136,16 @@ fn scripted_server(script: Script) -> (FixtureServer, Arc<Mutex<Script>>) {
                 script.overview_index = 0;
                 script.components_index = 0;
                 script.factory_index = 0;
+                script.detail_index = 0;
+                script.status_index = 0;
                 script.posted_bodies.clear();
                 None
             }
             ("GET", "/api/v1/overview") => Some(script.next_overview()),
             ("GET", "/api/v1/components") => Some(script.next_components()),
             ("GET", "/api/v1/factory") => Some(script.next_factory()),
+            ("GET", "/api/v1/status") => Some(script.next_status()),
+            ("GET", path) if path.starts_with("/api/v1/components/") => Some(script.next_detail()),
             ("GET", path) if path.starts_with("/api/v1/factory/actions/") => {
                 Some(script.lookup.clone().unwrap_or_else(|| Response::json(404, "{\"error\":\"not_found\"}")))
             }
@@ -140,6 +173,17 @@ fn ok_json(body: &str) -> Response {
 }
 
 fn run_driver(server: &FixtureServer, body: &str, label: &str) -> serde_json::Value {
+    run_driver_at(server, "", body, label)
+}
+
+/// Run one driver page at `/harness.html<hash>`. A route case deep-links with
+/// its hash so the shell's initial dispatch sees the intended route.
+fn run_driver_at(
+    server: &FixtureServer,
+    hash: &str,
+    body: &str,
+    label: &str,
+) -> serde_json::Value {
     server.register(
         "/harness.html",
         Response::text(200, "text/html; charset=utf-8", driver_page(body)),
@@ -151,7 +195,7 @@ fn run_driver(server: &FixtureServer, body: &str, label: &str) -> serde_json::Va
     // a JSON result or a harness error, which is never retried.
     let (outcome, result) = browser_support::run_browser_result(
         &chrome,
-        &format!("{}/harness.html", server.base_url()),
+        &format!("{}/harness.html{hash}", server.base_url()),
         BUDGET_MS,
         label,
     );
@@ -661,4 +705,557 @@ fn cockpit_page_start_cockpit_stops_timers_and_aborts_on_pagehide() {
         Some(true),
         "an in-flight request's abort signal must fire"
     );
+}
+
+// ---------------------------------------------------------------------------
+// UI v2 multi-page shell cases
+// ---------------------------------------------------------------------------
+
+fn ok_value(value: &serde_json::Value) -> Response {
+    Response::json(200, value.to_string())
+}
+
+fn sha256_placeholder() -> &'static str {
+    "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+}
+
+/// A component-detail projection whose descriptor titles and envelope payload
+/// carry hostile markup, so the detail page's inert rendering is observable.
+fn injected_component_detail() -> serde_json::Value {
+    serde_json::json!({
+        "metadata": {
+            "format": "ControlPlaneRead/v1",
+            "collected_at_unix_ms": 1791820800003i64,
+            "registry_revision": "9007199254740993",
+            "report_watermark": "1",
+            "sources": [
+                { "source": "registry", "state": "available", "detail": "", "observed_at_unix_ms": 1791820800003i64 }
+            ]
+        },
+        "binding": {
+            "binding_id": "fixture.injected",
+            "api": "plugin",
+            "api_version": 1,
+            "implementation_version": "fixture-injected",
+            "generation": "9007199254740993",
+            "config_digest": sha256_placeholder()
+        },
+        "descriptors": [{
+            "view_id": "status",
+            "schema_namespace": "example.injected.status",
+            "kind": "Status",
+            "title": "<script>alert('descriptor')</script>",
+            "schema_version": 1,
+            "fields": ["<img src=x onerror=alert(1)>"]
+        }],
+        "entries": [{
+            "format": "ReportEnvelope/v1",
+            "plugin_id": "example.unfamiliar-reporter",
+            "binding": {
+                "binding_id": "fixture.injected",
+                "api": "plugin",
+                "api_version": 1,
+                "implementation_version": "fixture-injected",
+                "generation": "9007199254740993",
+                "config_digest": sha256_placeholder()
+            },
+            "schema_namespace": "example.injected.status",
+            "schema_version": 1,
+            "sequence": "1",
+            "reported_at_unix_ms": "1791820800000",
+            "observed_at_unix_ms": "1791820800001",
+            "execution_id": null,
+            "durability": "durable",
+            "payload": {
+                "note": "<script>alert('payload')</script>",
+                "html": "<img src=x onerror=alert(1)>"
+            },
+            "payload_digest": "sha256:b342fc286d0216cc212e0d7ba234894e2e7283ddf14f959adf0fe7fd5924308a"
+        }],
+        "next_cursor": null
+    })
+}
+
+/// The honest projection for a valid but unregistered plugin id: a synthetic
+/// binding pin with no descriptors and explicit `missing` sources.
+fn unknown_component_detail(plugin_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "metadata": {
+            "format": "ControlPlaneRead/v1",
+            "collected_at_unix_ms": 1791820800004i64,
+            "registry_revision": "9007199254740993",
+            "report_watermark": null,
+            "sources": [
+                {
+                    "source": "registry",
+                    "state": "missing",
+                    "detail": format!("plugin `{plugin_id}` is not registered"),
+                    "observed_at_unix_ms": 1791820800004i64
+                },
+                {
+                    "source": "reports",
+                    "state": "missing",
+                    "detail": format!("plugin `{plugin_id}` has no report projection"),
+                    "observed_at_unix_ms": 1791820800004i64
+                }
+            ]
+        },
+        "binding": {
+            "binding_id": plugin_id,
+            "api": "plugin",
+            "api_version": 1,
+            "implementation_version": "unknown",
+            "generation": 0,
+            "config_digest": sha256_placeholder()
+        },
+        "descriptors": [],
+        "entries": [],
+        "next_cursor": null
+    })
+}
+
+/// The shared driver prelude for route navigation through the real router.
+const NAVIGATE_PRELUDE: &str = r#"
+    const cockpit = startCockpit({
+      document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000,
+    });
+    await cockpit.refresher.activeCycle;
+    const navigate = async (hash) => {
+      if (location.hash === hash) return;
+      const changed = new Promise((resolve) => window.addEventListener('hashchange', resolve, { once: true }));
+      location.hash = hash;
+      await changed;
+      if (cockpit.refresher.activeCycle) await cockpit.refresher.activeCycle;
+    };
+    const visiblePages = () => [...document.querySelectorAll('[data-page]')]
+      .filter((node) => !node.hidden).map((node) => node.dataset.page);
+    const pageText = (name) => document.querySelector(`[data-page="${name}"]`).textContent;
+"#;
+
+#[test]
+fn cockpit_page_renders_each_route_from_the_fixtures() {
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        factory: vec![ok_json(FACTORY_RUNTIME)],
+        detail: vec![ok_json(COMPONENT_DETAIL)],
+        status: vec![ok_json(STATUS)],
+        ..Script::default()
+    });
+    let body = format!(
+        r#"
+    {prelude}
+    const pages = {{}};
+    const initialVisible = visiblePages();
+    pages.overview = pageText('overview');
+    await navigate('#/components');
+    const componentsVisible = visiblePages();
+    pages.components = pageText('components');
+    await navigate('#/components/example.unfamiliar-reporter');
+    const detailVisible = visiblePages();
+    pages.detail = pageText('component');
+    await navigate('#/tasks');
+    const tasksVisible = visiblePages();
+    pages.tasks = pageText('tasks');
+    await navigate('#/projects');
+    const projectsVisible = visiblePages();
+    pages.projects = pageText('projects');
+    await navigate('#/system');
+    const systemVisible = visiblePages();
+    pages.system = pageText('system');
+    return {{ pages, initialVisible, componentsVisible, detailVisible, tasksVisible, projectsVisible, systemVisible }};
+    "#,
+        prelude = NAVIGATE_PRELUDE,
+    );
+    let result = run_driver(&server, &body, "routes");
+
+    assert_eq!(result["initialVisible"], serde_json::json!(["overview"]));
+    assert_eq!(result["componentsVisible"], serde_json::json!(["components"]));
+    assert_eq!(result["detailVisible"], serde_json::json!(["component"]));
+    assert_eq!(result["tasksVisible"], serde_json::json!(["tasks"]));
+    assert_eq!(result["projectsVisible"], serde_json::json!(["projects"]));
+    assert_eq!(result["systemVisible"], serde_json::json!(["system"]));
+
+    let text = |route: &str| result["pages"][route].as_str().unwrap();
+
+    let overview = text("overview");
+    assert!(overview.contains("Factory / worker status"), "overview={overview}");
+    assert!(overview.contains("Runtime: Running"), "overview={overview}");
+    assert!(overview.contains("Cost: unknown"), "overview={overview}");
+    assert!(overview.contains("Factory stopped"), "overview={overview}");
+
+    let components = text("components");
+    assert!(components.contains("example.unfamiliar-reporter"), "components={components}");
+    assert!(components.contains("9007199254740993"), "exact generation lost: {components}");
+    assert!(components.contains("example.stopped-writer"), "components={components}");
+
+    let detail = text("detail");
+    assert!(detail.contains("fixture.reporter"), "detail binding pin missing: {detail}");
+    assert!(detail.contains("Declared views"), "detail descriptors missing: {detail}");
+    assert!(detail.contains("example.reporter.status"), "detail descriptor namespace missing: {detail}");
+    assert!(detail.contains("Reports"), "detail envelopes missing: {detail}");
+    assert!(detail.contains(r#"{"ready":true}"#), "detail payload missing: {detail}");
+
+    let tasks = text("tasks");
+    assert!(tasks.contains("Alpha task"), "tasks queue missing: {tasks}");
+    assert!(tasks.contains("Showing 2 of 2. Revision rev-7."), "tasks totals missing: {tasks}");
+    assert!(tasks.contains("exec:cabinets-are-not-shelves:1"), "tasks executions missing: {tasks}");
+
+    let projects = text("projects");
+    assert!(projects.contains("example-repo"), "projects repository missing: {projects}");
+    assert!(projects.contains("example-state"), "projects state missing: {projects}");
+    assert!(projects.contains("2+ observed in this page"), "projects component count missing: {projects}");
+
+    let system = text("system");
+    assert!(system.contains("Dashboard health"), "system health missing: {system}");
+    assert!(system.contains("0.1.0"), "system version missing: {system}");
+    assert!(system.contains("http://127.0.0.1:8791"), "system listener missing: {system}");
+
+    assert_eq!(server.post_count(), 0, "route rendering and navigation must not POST");
+}
+
+#[test]
+fn cockpit_page_unknown_hash_falls_back_to_overview_with_notice() {
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        ..Script::default()
+    });
+    let result = run_driver_at(
+        &server,
+        "#/not-a-route",
+        r#"
+    const cockpit = startCockpit({ document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000 });
+    await cockpit.refresher.activeCycle;
+    const notice = [...document.getElementById('app').children].find((node) => node.tagName === 'P');
+    const visible = [...document.querySelectorAll('[data-page]')].filter((node) => !node.hidden).map((node) => node.dataset.page);
+    const current = [...document.querySelectorAll('nav a[aria-current]')].map((node) => node.getAttribute('href'));
+    return {
+      noticeHidden: notice.hidden,
+      noticeText: notice.textContent,
+      route: cockpit.state.route.name,
+      routeValid: cockpit.state.route.valid,
+      visible,
+      current,
+    };
+    "#,
+        "unknown-hash",
+    );
+    assert_eq!(result["route"].as_str().unwrap(), "overview");
+    assert_eq!(result["routeValid"].as_bool(), Some(false), "an unknown hash is not a valid route");
+    assert_eq!(result["noticeHidden"].as_bool(), Some(false), "the fallback notice must be visible");
+    assert_eq!(result["noticeText"].as_str().unwrap(), "Unknown route; showing Overview.");
+    assert_eq!(result["visible"], serde_json::json!(["overview"]));
+    assert_eq!(result["current"], serde_json::json!(["#/overview"]));
+}
+
+#[test]
+fn cockpit_page_navigation_between_all_routes_generates_zero_posts() {
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        factory: vec![ok_json(FACTORY_RUNTIME)],
+        detail: vec![ok_json(COMPONENT_DETAIL)],
+        status: vec![ok_json(STATUS)],
+        ..Script::default()
+    });
+    let body = format!(
+        r#"
+    {prelude}
+    const hashes = [
+      '#/overview', '#/components', '#/components/example.unfamiliar-reporter',
+      '#/tasks', '#/projects', '#/system', '#/not-a-route', '#/overview',
+    ];
+    const visited = [];
+    for (const hash of hashes) {{
+      await navigate(hash);
+      visited.push(`${{cockpit.state.route.name}}:${{location.hash}}`);
+    }}
+    return {{ visited, posts: 0 }};
+    "#,
+        prelude = NAVIGATE_PRELUDE,
+    );
+    let result = run_driver(&server, &body, "nav-posts");
+    assert_eq!(result["visited"].as_array().unwrap().len(), 8);
+    assert_eq!(server.post_count(), 0, "navigation must never POST: {:?}", server.requests());
+    let requests = server.requests();
+    assert!(
+        requests.iter().all(|request| request.method == "GET"),
+        "navigation must only read: {requests:?}"
+    );
+    assert!(
+        requests.iter().any(|request| request.path.starts_with("/api/v1/components/")),
+        "the detail route must read its projection: {requests:?}"
+    );
+    assert!(
+        requests.iter().any(|request| request.path == "/api/v1/status"),
+        "the system route must read the status projection: {requests:?}"
+    );
+}
+
+#[test]
+fn cockpit_page_aria_current_marks_the_active_route() {
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        factory: vec![ok_json(FACTORY_RUNTIME)],
+        detail: vec![ok_json(COMPONENT_DETAIL)],
+        status: vec![ok_json(STATUS)],
+        ..Script::default()
+    });
+    let body = format!(
+        r#"
+    {prelude}
+    const current = () => [...document.querySelectorAll('nav a[aria-current]')]
+      .map((node) => node.getAttribute('href'));
+    const marked = {{}};
+    for (const hash of ['#/overview', '#/components', '#/components/example.unfamiliar-reporter', '#/tasks', '#/projects', '#/system', '#/bogus']) {{
+      await navigate(hash);
+      marked[hash] = current();
+    }}
+    const links = [...document.querySelectorAll('nav a')].length;
+    return {{ marked, links }};
+    "#,
+        prelude = NAVIGATE_PRELUDE,
+    );
+    let result = run_driver(&server, &body, "aria-current");
+    let marked = result["marked"].as_object().unwrap();
+    let expect = |hash: &str, href: &str| {
+        assert_eq!(
+            marked[hash],
+            serde_json::json!([href]),
+            "aria-current for {hash}"
+        );
+    };
+    expect("#/overview", "#/overview");
+    expect("#/components", "#/components");
+    expect("#/components/example.unfamiliar-reporter", "#/components");
+    expect("#/tasks", "#/tasks");
+    expect("#/projects", "#/projects");
+    expect("#/system", "#/system");
+    expect("#/bogus", "#/overview");
+    assert_eq!(result["links"].as_u64().unwrap(), 5, "the nav offers every non-detail route");
+}
+
+#[test]
+fn cockpit_page_component_detail_renders_inert_text() {
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        detail: vec![ok_value(&injected_component_detail())],
+        ..Script::default()
+    });
+    let result = run_driver_at(
+        &server,
+        "#/components/example.unfamiliar-reporter",
+        r#"
+    const cockpit = startCockpit({ document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000 });
+    await cockpit.refresher.activeCycle;
+    const page = document.querySelector('[data-page="component"]');
+    return {
+      route: cockpit.state.route.name,
+      visible: !page.hidden,
+      text: page.textContent,
+      scriptCount: document.querySelectorAll('script').length,
+      imgCount: document.querySelectorAll('img').length,
+      onerrorCount: document.querySelectorAll('[onerror]').length,
+      pageScripts: page.querySelectorAll('script').length,
+      pageImgs: page.querySelectorAll('img').length,
+    };
+    "#,
+        "detail-inert",
+    );
+    assert_eq!(result["route"].as_str().unwrap(), "component");
+    assert_eq!(result["visible"].as_bool(), Some(true));
+    let text = result["text"].as_str().unwrap();
+    assert!(text.contains("<script>alert('descriptor')</script>"), "descriptor markup must stay text: {text}");
+    assert!(text.contains("<script>alert('payload')</script>"), "payload markup must stay text: {text}");
+    assert!(text.contains("<img src=x onerror=alert(1)>"), "payload markup must stay text: {text}");
+    assert_eq!(result["scriptCount"].as_u64().unwrap(), 1, "hostile script text must not become an element");
+    assert_eq!(result["imgCount"].as_u64().unwrap(), 0, "hostile img text must not become an element");
+    assert_eq!(result["onerrorCount"].as_u64().unwrap(), 0, "a hostile handler must not become an attribute");
+    assert_eq!(result["pageScripts"].as_u64().unwrap(), 0);
+    assert_eq!(result["pageImgs"].as_u64().unwrap(), 0);
+}
+
+#[test]
+fn cockpit_page_component_detail_unknown_plugin_is_not_registered() {
+    let plugin_id = "example.not-registered";
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        detail: vec![ok_value(&unknown_component_detail(plugin_id))],
+        ..Script::default()
+    });
+    let result = run_driver_at(
+        &server,
+        "#/components/example.not-registered",
+        r#"
+    const cockpit = startCockpit({ document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000 });
+    await cockpit.refresher.activeCycle;
+    const page = document.querySelector('[data-page="component"]');
+    return {
+      route: cockpit.state.route.name,
+      routeId: cockpit.state.route.params.id,
+      visible: !page.hidden,
+      text: page.textContent,
+    };
+    "#,
+        "detail-unknown",
+    );
+    assert_eq!(result["route"].as_str().unwrap(), "component");
+    assert_eq!(result["routeId"].as_str().unwrap(), plugin_id);
+    assert_eq!(result["visible"].as_bool(), Some(true));
+    let text = result["text"].as_str().unwrap();
+    assert!(
+        text.contains("This component is not registered in the hub registry."),
+        "an unknown plugin must render the explicit not-registered state: {text}"
+    );
+    assert!(!text.contains("No report envelopes."), "an unknown plugin must not render a healthy empty detail: {text}");
+    assert!(!text.contains("Component detail unknown."), "the page must resolve the projection: {text}");
+}
+
+#[test]
+fn cockpit_page_system_renders_status_facts() {
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        status: vec![ok_json(STATUS)],
+        ..Script::default()
+    });
+    let result = run_driver_at(
+        &server,
+        "#/system",
+        r#"
+    const cockpit = startCockpit({ document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000 });
+    await cockpit.refresher.activeCycle;
+    const page = document.querySelector('[data-page="system"]');
+    return {
+      visible: !page.hidden,
+      status: document.getElementById('status').textContent,
+      sources: document.getElementById('sources').textContent,
+    };
+    "#,
+        "system-facts",
+    );
+    assert_eq!(result["visible"].as_bool(), Some(true));
+    let status = result["status"].as_str().unwrap();
+    assert!(status.contains("Version: 0.1.0"), "status={status}");
+    assert!(status.contains("Health: ready"), "status={status}");
+    assert!(status.contains("Listener: ready"), "status={status}");
+    assert!(status.contains("http://127.0.0.1:8791"), "status={status}");
+    assert!(status.contains("Binding: ready"), "status={status}");
+    let sources = result["sources"].as_str().unwrap();
+    assert!(sources.contains("refresh:status"), "sources={sources}");
+    assert!(sources.contains("Interval: 60000 ms"), "sources={sources}");
+}
+
+#[test]
+fn cockpit_page_system_malformed_status_shows_bounded_error() {
+    let malformed = r#"{"format":"DashboardStatus/v1","version":"0.1.0","health_state":"ready"}"#;
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        status: vec![ok_json(malformed)],
+        ..Script::default()
+    });
+    let result = run_driver_at(
+        &server,
+        "#/system",
+        r#"
+    const cockpit = startCockpit({ document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000 });
+    await cockpit.refresher.activeCycle;
+    const page = document.querySelector('[data-page="system"]');
+    const status = document.getElementById('status').textContent;
+    return { visible: !page.hidden, status, pageText: page.textContent };
+    "#,
+        "system-malformed",
+    );
+    assert_eq!(result["visible"].as_bool(), Some(true));
+    let status = result["status"].as_str().unwrap();
+    assert!(
+        status.contains("status read unavailable") && status.contains("malformed"),
+        "a malformed status response must surface a visible bounded error: {status}"
+    );
+    assert!(status.len() <= 4200, "the error text must stay bounded: {} bytes", status.len());
+    assert!(!status.contains("Dashboard status unknown."), "the error is explicit, not unknown: {status}");
+    assert!(
+        result["pageText"].as_str().unwrap().contains("Dashboard health"),
+        "the system page must not be blank"
+    );
+}
+
+#[test]
+fn cockpit_page_pagehide_on_tasks_route_stops_timers_and_aborts() {
+    let (server, _state) = scripted_server(Script::default());
+    let body = format!(
+        r#"
+    let mode = 'ok';
+    let aborted = false;
+    let capturedSignal = null;
+    const overview = JSON.parse({overview});
+    const components = JSON.parse({components});
+    const api = {{
+      getOverview: ({{ signal }} = {{}}) => {{
+        if (mode === 'hang') {{
+          capturedSignal = signal;
+          return new Promise((resolve, reject) => {{
+            signal.addEventListener('abort', () => {{
+              aborted = true;
+              reject(new ApiError('aborted', 'aborted by page exit'));
+            }});
+          }});
+        }}
+        return Promise.resolve(validateOverview(overview));
+      }},
+      getComponents: ({{ signal }} = {{}}) => Promise.resolve(validateComponents(components)),
+      getFactory: ({{ signal }} = {{}}) => Promise.reject(new ApiError('unsupported', 'endpoint absent')),
+    }};
+    // A 60s interval sits well above Chrome's 8s virtual-time budget, so no
+    // periodic refresh can fire between the phases of this case.
+    const cockpit = startCockpit({{ document, root: document.getElementById('app'), api, intervalMs: 60000 }});
+    await cockpit.refresher.activeCycle;
+    const timerScheduled = cockpit.refresher.pendingTimer !== null;
+    const activePage = [...document.querySelectorAll('[data-page]')]
+      .filter((node) => !node.hidden).map((node) => node.dataset.page);
+    mode = 'hang';
+    const hanging = cockpit.refresh();
+    let guard = 0;
+    while ((capturedSignal === null || cockpit.refresher.controller === null) && guard < 1000) {{
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      guard += 1;
+    }}
+    const activeController = cockpit.refresher.controller;
+    const capturedBeforeExit = capturedSignal !== null && activeController !== null;
+    window.dispatchEvent(new Event('pagehide'));
+    return {{
+      route: cockpit.state.route.name,
+      activePage,
+      running: cockpit.refresher.running,
+      pendingTimer: cockpit.refresher.pendingTimer,
+      controller: cockpit.refresher.controller,
+      capturedBeforeExit,
+      controllerAborted: activeController ? activeController.signal.aborted : null,
+      savedSignalAborted: capturedSignal ? capturedSignal.aborted : null,
+      aborted,
+      timerScheduled,
+    }};
+    "#,
+        overview = serde_json::to_string(OVERVIEW).unwrap(),
+        components = serde_json::to_string(COMPONENTS).unwrap(),
+    );
+    let result = run_driver_at(&server, "#/tasks", &body, "pagehide-tasks");
+    assert_eq!(result["route"].as_str().unwrap(), "tasks");
+    assert_eq!(result["activePage"], serde_json::json!(["tasks"]));
+    assert!(result["timerScheduled"].as_bool().unwrap(), "a refresh timer must have been scheduled before exit");
+    assert!(
+        result["capturedBeforeExit"].as_bool().unwrap(),
+        "the hanging read must be in flight before pagehide"
+    );
+    assert_eq!(result["running"].as_bool(), Some(false), "pagehide must stop the refresher on a non-overview route");
+    assert_eq!(result["pendingTimer"], serde_json::Value::Null, "pagehide must clear the pending timer");
+    assert_eq!(result["controller"], serde_json::Value::Null, "pagehide must clear the active controller");
+    assert_eq!(result["controllerAborted"].as_bool(), Some(true), "the active controller must be aborted");
+    assert_eq!(result["savedSignalAborted"].as_bool(), Some(true), "the saved abort signal must be aborted");
+    assert_eq!(result["aborted"].as_bool(), Some(true), "an in-flight request's abort signal must fire");
 }

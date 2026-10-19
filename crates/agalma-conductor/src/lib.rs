@@ -38,6 +38,7 @@ pub mod reconcile;
 pub mod review;
 pub mod routing;
 pub mod scope_guard;
+pub mod seal;
 pub mod session;
 pub mod status;
 pub mod stop;
@@ -104,6 +105,7 @@ pub async fn run() -> ExitCode {
         Command::Designer(args) => crate::designer::run_designer_command(&args),
         Command::Gc(args) => gc_command(&args),
         Command::Plugins(args) => crate::composition::run_plugin_host(&args).await,
+        Command::SealPackage(args) => crate::seal::run_seal_package(&args),
     }
 }
 

@@ -45,6 +45,26 @@ pub enum Command {
     Gc(GcArgs),
     /// Run the HP.3 plugin host: assemble/start/shutdown configured plugins.
     Plugins(PluginHostArgs),
+    /// Seal a plugin package plus binary into a discovery root (UI.1e).
+    SealPackage(SealPackageArgs),
+}
+
+/// Arguments for `agalma seal-package`.
+///
+/// Copies the source package tree (except `bin/`) and the supplied binary into
+/// `<root>/<plugin_id>`, pins the manifest inventory digest, and verifies the
+/// result through plugin discovery. No state dir, ledger, or network is used.
+#[derive(Debug, Args)]
+pub struct SealPackageArgs {
+    /// Source package directory containing `plugin-manifest.json`.
+    #[arg(long, value_name = "DIR")]
+    pub package: PathBuf,
+    /// Built executable copied to the manifest entrypoint path.
+    #[arg(long, value_name = "PATH")]
+    pub binary: PathBuf,
+    /// Plugin discovery root receiving `<plugin_id>`.
+    #[arg(long, value_name = "DIR")]
+    pub root: PathBuf,
 }
 
 /// Arguments for `agalma work`.

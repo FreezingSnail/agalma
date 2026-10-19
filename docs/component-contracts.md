@@ -285,6 +285,8 @@ Invariants for every owner row:
   missing component.
 - Observations are bounded, come from the owner's own contract, and identify
   their scope and selection window; a truncated list is not a global count.
+- Status reports are durable owner observations; plugin health heartbeats are
+  transient and never replace them.
 - Credentials, authorization, request headers/bodies, prompts, secret-bearing
   URLs and raw environments never enter a report payload.
 - The hub owns authorization, registration and routing; producers do not

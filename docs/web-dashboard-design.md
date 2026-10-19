@@ -1309,6 +1309,21 @@ rather than guessed. Package/manifest declaration is a CV deliverable; column
 | `component:execution` (proposed; not a current builtin) | `ExecutionApi` / selected kernel or process owner | Not declared; CV.1 + CV.3 open | `component:execution.status` | Installed generation of the selected execution owner |
 | `agalma.web-dashboard` | Dashboard `RuntimeStatus` + local status endpoint | Installed today | `agalma.web-dashboard.status` | Existing dashboard binding pin (`RuntimeStatus::binding_pin`) |
 
+Durability, display and file scope: every owner profile publishes its status
+observation with `Durability::Durable`; transient heartbeats remain
+`PluginHealth` observations and never replace the durable report. Coalescing
+limits a binding to at most one sealed publication per observation window, so
+durable publication does not create an unbounded event stream. Display meaning
+follows the declared view kind: Status = availability/readiness, Metrics = exact
+counts, Table = bounded rows, Timeline = supplied observation order; undeclared
+fields remain Details-only and are never inferred. Permitted files are only the
+owner's own implementation and package files named by its CV task at dispatch
+(ledger implementation/bootstrap; workspace/taskqueue adapter and package; harness
+adapter/package; selected execution owner; dashboard package under
+`crates/agalma-web-dashboard`). CW.0 authorizes no file change, and the final
+path list is revalidated against the delivered CV handoff before any producer
+dispatch.
+
 **Dashboard (existing contract, no changes to field names).** Fields `listener`
 (`"ready"`/`"unavailable"`), `binding` (`"ready"`/`"unavailable"`), `url`
 (string or null). Provenance: `RuntimeStatus`. View `status` (Status) already

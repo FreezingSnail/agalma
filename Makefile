@@ -8,6 +8,7 @@
 #   make test-peers                local process smokes (ledger/workspace/...)
 #   make test-full                 workspace tests
 #   make check-noop-rebuild        agalma-ipc build-script no-op regression guard
+#   make start [PORT=<n>]          fixture-backed cockpit preview (not live state)
 #   make report                    build-artifact sizes (no changes)
 #   make sweep / sweep-apply       classify / remove orphaned worktree caches
 #   make worktree-remove BEAD=<id> remove a merged bead's worktree and cache
@@ -40,6 +41,7 @@
 #                Required by test-focused. Passed as written; never evaluate
 #                untrusted text here.
 #   JOBS         Concurrent make jobs, forwarded to Cargo where relevant.
+#   PORT         Local TCP port for `make start`; default 8791.
 CARGO ?= cargo
 CARGO_FLAGS ?= --offline --locked
 CARGO_INCREMENTAL ?= 0
@@ -48,6 +50,9 @@ export CARGO_INCREMENTAL
 BEAD ?= manual
 RUN_ID ?= $(shell date -u +%Y%m%dT%H%M%S)
 RUN_DIR ?= target/test-runs/$(BEAD)/$(RUN_ID)
+
+# Local port for the fixture-backed cockpit preview (`make start`).
+PORT ?= 8791
 
 # Native Cargo workspace discovery: --workspace selects every member of
 # Cargo.toml's [workspace] table, so new members need no Makefile edits.
@@ -85,7 +90,7 @@ TEST_RUNNER := $(shell if [ -x scripts/test.sh ]; then echo scripts/test.sh; fi)
 .DEFAULT_GOAL := all
 
 .PHONY: all build release help test test-focused test-peers test-full \
-        check-noop-rebuild report sweep sweep-apply worktree-remove docs-html clean-build clean-caches
+        check-noop-rebuild start report sweep sweep-apply worktree-remove docs-html clean-build clean-caches
 
 all: build
 
@@ -156,6 +161,32 @@ docs-html:
 	@node scripts/md-to-html.mjs
 
 # ---------------------------------------------------------------------------
+# Cockpit preview. Serves the dashboard assets with fixture JSON instead of a
+# live hub: a fixture-backed serving root is regenerated under target/start/
+# on every run, so no repository file and no other target/ content changes.
+# This is a preview of the UI with recorded fixture data, not live state.
+# Ctrl-C stops the server; a command-line PORT overrides the default 8791.
+# ---------------------------------------------------------------------------
+
+start:
+	@set -eu; \
+	if ! command -v python3 >/dev/null 2>&1; then \
+		echo "error: 'make start' needs python3 (http.server) on PATH; none found" >&2; \
+		exit 2; \
+	fi; \
+	rm -rf target/start; \
+	mkdir -p target/start/api/v1; \
+	cp crates/agalma-web-dashboard/assets/* target/start/; \
+	cp fixtures/cockpit/overview.json target/start/api/v1/overview; \
+	cp fixtures/cockpit/components-page.json target/start/api/v1/components; \
+	cp fixtures/cockpit/factory-runtime.json target/start/api/v1/factory; \
+	url="http://127.0.0.1:$(PORT)/"; \
+	echo "Agalma cockpit PREVIEW: fixture data from fixtures/cockpit (not live hub state)"; \
+	echo "AGALMA_COCKPIT_URL $$url"; \
+	if command -v open >/dev/null 2>&1; then open "$$url"; fi; \
+	exec python3 -m http.server "$(PORT)" --bind 127.0.0.1 --directory target/start
+
+# ---------------------------------------------------------------------------
 # Build-artifact hygiene. target/test-runs holds retained evidence and is never
 # swept; a registered, dirty, or unmerged worktree and its cache are preserved.
 # ---------------------------------------------------------------------------
@@ -203,6 +234,12 @@ help:
 	@echo "  Raw logs and exit status land in target/test-runs/<BEAD>/<RUN_ID>/."
 	@echo "  Set BEAD=<id> to label evidence for a task; default BEAD=manual."
 	@echo ""
+	@echo "Preview target (fixture data, not live hub state):"
+	@echo "  make start [PORT=<n>]  Serve a fixture-backed cockpit preview from"
+	@echo "                         target/start/ on 127.0.0.1 (default port 8791),"
+	@echo "                         print AGALMA_COCKPIT_URL, open the page in the"
+	@echo "                         default browser, and stop on Ctrl-C."
+	@echo ""
 	@echo "Artifact hygiene targets:"
 	@echo "  make report          Sizes of target/ consumers (no changes)."
 	@echo "  make sweep           Classify worktree caches: keep / orphaned / merged."
@@ -219,8 +256,8 @@ help:
 	@echo "edits. The standalone spikes under spikes/ and the fixture packages under"
 	@echo "fixtures/ are excluded from the product workspace and are not built here."
 	@echo ""
-	@echo "Behavior: compiles and runs the selected checks. It does not start"
-	@echo "long-running services or invoke paid providers. Cargo runs --offline"
+	@echo "Behavior: compiles and runs the selected checks; make start serves a"
+	@echo "local fixture preview until Ctrl-C. Neither invokes paid providers. Cargo runs --offline"
 	@echo "--locked by default, so it downloads no crates by default; overriding"
 	@echo "CARGO_FLAGS does not authorize dependency downloads or lockfile changes --"
 	@echo "those still require the repository's dependency authorization."
@@ -244,4 +281,5 @@ help:
 	@echo "                      target/worktree-caches/<bead>/target."
 	@echo "  BEAD=<id> RUN_ID=<name>"
 	@echo "                      Evidence path label under target/test-runs/."
+	@echo "  PORT=<n>            Local port for make start (default: 8791)."
 	@echo "  SELECTION=<cargo args>, JOBS=<n> as described above."

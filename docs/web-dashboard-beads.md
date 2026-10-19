@@ -228,3 +228,16 @@ User directive: `make start` must be live. Two follow-on tasks under
 dispatches eligible work; it uses the conductor's existing state-directory
 resolution. Acceptance for UI.1f runs isolated (scratch repo/backlog + scratch
 state) and never touches the operator state directory.
+
+Delivery 2026-10-19: `agalma-82f.6` (seal tool) and `agalma-82f.7` (live start
+target) were reviewed by DeepSeek and merged; `make start` now builds the
+conductor and dashboard, seals the package into `target/live/plugins`
+(default), launches the real `agalma work --watch` runtime and opens its live
+loopback URL. `make preview` keeps the offline fixture flow. Evidence:
+`target/test-runs/agalma-82f.6/20261019T135727Z-48008/` (45/0) and
+`target/test-runs/agalma-82f.7/20261019T140946/` (live status 200
+`DashboardStatus/v1`, overview 200 `ControlPlaneRead/v1`, components 200 with
+`agalma.web-dashboard`, factory 200 `FactoryRuntime/v1` Idle/empty, clean
+SIGINT, no claims; isolated scratch repo/state). The live target intentionally
+builds `--workspace --bins` because the runtime resolves its component servers
+as sibling binaries.

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plugin-pack load report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["items", "ready"],
+  "properties": {
+    "items": { "type": "integer", "minimum": 0 },
+    "ready": { "type": "boolean" }
+  }
+}

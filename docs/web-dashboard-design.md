@@ -567,3 +567,43 @@ h1 and `#app` root) is frozen in the UI.1a bead design and is normative for all
 four beads. Human gates: `agalma-5fv` (UI.1a), `agalma-ee0` (UI.1b),
 `agalma-9ur` (UI.2a), `agalma-2be` (UI.1c); compact index in
 [web-dashboard-beads.md](web-dashboard-beads.md).
+
+## Live start amendment: real cockpit by default
+
+User directive 2026-10-19: `make start` must show live factory state, not
+fixtures. The fixture preview remains available as `make preview` for offline UI
+work. Live operation uses the existing production runtime; no new observation
+mode and no mocked route is added.
+
+| Target | Behavior |
+|---|---|
+| `make start` | builds `agalma` + `agalma-web-dashboard`, seals the dashboard package into `target/live/plugins` (default), then runs the real `agalma work --watch --repo <repo> --plugin-root <root>` runtime; it prints `DASHBOARD_URL`/`AGALMA_COCKPIT_URL` and opens the live cockpit |
+| `make preview` | unchanged fixture preview (renamed from the previous `make start`): static assets + recorded `fixtures/cockpit` JSON, stdlib server, offline |
+
+Live semantics:
+
+- `make start` **is the dispatching factory**: the watch runtime claims and
+  executes eligible backlog work, so it must not be run concurrently with
+  another factory owner for the same repository/state.
+- State directory follows the conductor resolution (`--state-dir` >
+  `AGALMA_STATE_DIR` > default). `make start STATE_DIR=...` overrides. The
+  runtime's admission lock and single-owner rules are unchanged.
+- Capabilities stay capability-class, not plugin-id: a configured-root package
+  requesting `factory.read/v1` is auto-approved read-only and requested
+  running; `factory.control/v1` is never auto-approved, so cockpit controls stay
+  disabled unless a durable explicit control pin exists (`CONTROL_PLUGIN`
+  passthrough selects it).
+- Sealing is a production tool, `agalma seal-package --package <dir> --binary
+  <path> --root <dir>`: it stages the package tree, installs the built binary
+  at the manifest entrypoint, recomputes `package_inventory_digest`, verifies
+  via discovery, and prints `SEALED <plugin_id> <digest>`. Idempotent resealing
+  keeps the same package digest and therefore the same hub generation.
+- No fixtures, browser automation or python server participate in live start;
+  the loopback URL is the real supervised dashboard. `make clean-build` removes
+  the sealed plugin root as build output.
+
+Task mapping: seal tool `agalma-82f.6`, live target `agalma-82f.7` (blocked by
+the tool). Evidence for the live target is an isolated end-to-end run (scratch
+repo/backlog and scratch state) proving live `DashboardStatus/v1`,
+`ControlPlaneRead/v1`, the real dashboard component and `FactoryRuntime/v1`
+with no claims; the operator state directory is never used for test runs.

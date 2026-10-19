@@ -212,3 +212,19 @@ Evidence rules are unchanged: focused runner via `make test-focused
 SELECTION=...`, installed `CHROME_BIN`, raw logs under
 `target/test-runs/<bead>/<run-id>/`, stop at accepted evidence or one
 blocker/30-minute bounded diagnosis.
+
+## Live start amendment (2026-10-19)
+
+User directive: `make start` must be live. Two follow-on tasks under
+`agalma-82f`; the fixture preview is renamed `make preview`. Canonical design:
+[web-dashboard-design.md](web-dashboard-design.md) "Live start amendment".
+
+| Bead | Outcome | Prerequisite | Review |
+|---|---|---|---|
+| `agalma-82f.6` | `agalma seal-package` production subcommand (digest sealing + discovery verification) | None | DeepSeek |
+| `agalma-82f.7` | `make start` live runtime target + `make preview` rename + launcher script | `agalma-82f.6` | DeepSeek |
+
+`make start` launches the real `agalma work --watch` runtime and therefore
+dispatches eligible work; it uses the conductor's existing state-directory
+resolution. Acceptance for UI.1f runs isolated (scratch repo/backlog + scratch
+state) and never touches the operator state directory.

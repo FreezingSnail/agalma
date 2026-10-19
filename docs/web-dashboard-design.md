@@ -547,7 +547,23 @@ webfonts/downloads/frameworks. New fixtures `component-detail.json` and
 `status.json`; `make start` previews every route offline with a committed
 stdlib-only preview server. Browser acceptance extends the retained
 `browser_support` harness; Rust route cases extend the `package_lifecycle`
-patterns and one `agalma-ipc` focused check covers the exposed validator. Task
-mapping: UI.1 `agalma-82f.1`, UI.2 `agalma-82f.2` (blocked by UI.1), human
-gates `agalma-5fv`/`agalma-9ur`; compact index in
+patterns and one `agalma-ipc` focused check covers the exposed validator.
+
+### Task mapping and waves
+
+Four beads under epic `agalma-82f`, split by exclusive file ownership so wave 1
+runs three sessions in parallel (the dispatch cap):
+
+| Wave | Bead | Owned surface |
+|---|---|---|
+| 1 (parallel) | UI.1a `agalma-82f.1` | every browser JS/HTML file: shell, router, nav, `ui.js`, six pages, `api.js` validators |
+| 1 (parallel) | UI.1b `agalma-82f.3` | `dashboard.css` only |
+| 1 (parallel) | UI.2a `agalma-82f.2` | the two read routes, pub validator, fixtures, preview server, route tests |
+| 2 | UI.1c `agalma-82f.4` | browser suites (`cockpit_page`, `first_launch`); the single verification gate; blocked by all three wave-1 beads |
+
+The client module contract (router/ui exports, CSS class list, retained
+`Cockpit`/`startCockpit`/`boundedText`/`formatTimestamp`/limits exports, brand
+h1 and `#app` root) is frozen in the UI.1a bead design and is normative for all
+four beads. Human gates: `agalma-5fv` (UI.1a), `agalma-ee0` (UI.1b),
+`agalma-9ur` (UI.2a), `agalma-2be` (UI.1c); compact index in
 [web-dashboard-beads.md](web-dashboard-beads.md).

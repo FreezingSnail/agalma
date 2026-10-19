@@ -172,25 +172,32 @@ checks, not implementation/build/browser acceptance.
 
 Accepted user instruction, 2026-10-18: after M1/M2 delivery the cockpit gains
 multi-page navigation, the component registry with health, task/project views
-and a visual design pass. New epic `agalma-82f` with two sequential children;
-data scope unchanged (existing reads only). Canonical design:
-[web-dashboard-design.md](web-dashboard-design.md) "UI v2 amendment". Planning
-artifacts: `target/test-runs/cockpit-ui-v2-plan/`.
+and a visual design pass. New epic `agalma-82f` with four children split by
+exclusive file ownership: wave 1 runs three sessions in parallel (the dispatch
+cap), wave 2 is the single browser acceptance gate. Data scope unchanged
+(existing reads only). Canonical design: [web-dashboard-design.md]
+(web-dashboard-design.md) "UI v2 amendment". Planning artifacts:
+`target/test-runs/cockpit-ui-v2-plan/`.
 
 | Bead | Outcome / owned surface | Direct prerequisite | Review |
 |---|---|---|---|
-| `agalma-82f.1` | Multi-page hash-routed shell, Overview/Components/Tasks/Projects pages, CSS design pass; assets + browser suites only | None (after approval) | DeepSeek |
-| `agalma-82f.2` | Component detail + `/api/v1/status` routes, detail/System pages, fixtures, preview; server + assets + route tests | `agalma-82f.1` | DeepSeek |
+| `agalma-82f.1` | Client shell, hash router, nav, `ui.js`, six pages, `api.js` validators (all browser JS/HTML) | None (after approval) | DeepSeek |
+| `agalma-82f.3` | `dashboard.css` design system pass only | None (after approval) | DeepSeek |
+| `agalma-82f.2` | Detail + status routes, pub validator, fixtures, preview server, route tests | None (after approval) | DeepSeek |
+| `agalma-82f.4` | Browser suites + `first_launch`; integration gate; gap findings go back to owning beads | `agalma-82f.1`, `agalma-82f.2`, `agalma-82f.3` | DeepSeek |
 
-Execution state: both children carry an individual unresolved native human
-execution-approval gate (`agalma-5fv`, `agalma-9ur`) and are not dispatchable
-until explicitly resolved. No implementation was dispatched by this planning;
-no code, fixture or server file changed.
+Execution state: each child carries an individual unresolved native human
+execution-approval gate (`agalma-5fv`, `agalma-ee0`, `agalma-9ur`,
+`agalma-2be`) and is not dispatchable until explicitly resolved. No
+implementation was dispatched by this planning; no code, fixture or server
+file changed.
 
 | Task | Required named target(s) |
 |---|---|
-| UI.1 | dashboard `cockpit_page`; `cockpit_queue` expected unchanged (brand/loose assertions); `first_launch` updated for route navigation |
-| UI.2 | dashboard `package_lifecycle` (route cases), `cockpit_page` (detail/System cases), ipc `control_plane_client` (pub validator regression) |
+| UI.1a | none alone (no npm pipeline); verified by UI.1c |
+| UI.1b | none alone; visual checklist + UI.1c browser pass |
+| UI.2a | dashboard `package_lifecycle` (route cases), ipc `control_plane_client` (pub validator regression), curl preview proof |
+| UI.1c | dashboard `cockpit_page`, `cockpit_queue` (must pass unchanged), `first_launch` (navigation-aware) |
 
 Evidence rules are unchanged: focused runner via `make test-focused
 SELECTION=...`, installed `CHROME_BIN`, raw logs under

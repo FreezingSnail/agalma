@@ -164,14 +164,16 @@ docs-html:
 # Cockpit preview. Serves the dashboard assets with fixture JSON instead of a
 # live hub: a fixture-backed serving root is regenerated under target/start/
 # on every run, so no repository file and no other target/ content changes.
-# This is a preview of the UI with recorded fixture data, not live state.
-# Ctrl-C stops the server; a command-line PORT overrides the default 8791.
+# scripts/cockpit-preview.py (stdlib only) serves the exact-file routes plus
+# GET /api/v1/components/<plugin_id> and GET /api/v1/status. This is a preview
+# of the UI with recorded fixture data, not live state. Ctrl-C stops the
+# server; a command-line PORT overrides the default 8791.
 # ---------------------------------------------------------------------------
 
 start:
 	@set -eu; \
 	if ! command -v python3 >/dev/null 2>&1; then \
-		echo "error: 'make start' needs python3 (http.server) on PATH; none found" >&2; \
+		echo "error: 'make start' needs python3 on PATH; none found" >&2; \
 		exit 2; \
 	fi; \
 	rm -rf target/start; \
@@ -180,11 +182,13 @@ start:
 	cp fixtures/cockpit/overview.json target/start/api/v1/overview; \
 	cp fixtures/cockpit/components-page.json target/start/api/v1/components; \
 	cp fixtures/cockpit/factory-runtime.json target/start/api/v1/factory; \
+	cp fixtures/cockpit/component-detail.json target/start/api/v1/component-detail.json; \
+	cp fixtures/cockpit/status.json target/start/api/v1/status.json; \
 	url="http://127.0.0.1:$(PORT)/"; \
 	echo "Agalma cockpit PREVIEW: fixture data from fixtures/cockpit (not live hub state)"; \
 	echo "AGALMA_COCKPIT_URL $$url"; \
 	if command -v open >/dev/null 2>&1; then open "$$url"; fi; \
-	exec python3 -m http.server "$(PORT)" --bind 127.0.0.1 --directory target/start
+	exec python3 scripts/cockpit-preview.py "$(PORT)" target/start
 
 # ---------------------------------------------------------------------------
 # Build-artifact hygiene. target/test-runs holds retained evidence and is never

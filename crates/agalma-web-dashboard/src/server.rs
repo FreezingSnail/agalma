@@ -21,20 +21,21 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use agalma_contracts::control_plane::ReadPageRequest;
 use agalma_contracts::{
-    failure_code, BrowserWire, FailureCode, ReadCursor, CONTROL_PLANE_READ_CAPABILITY,
+    failure_code, BrowserWire, FailureCode, HealthState, ReadCursor, CONTROL_PLANE_READ_CAPABILITY,
     FACTORY_CONTROL_CAPABILITY, FACTORY_READ_CAPABILITY,
 };
 use agalma_ipc::{
-    parse_capability_bindings, plugin_server_info, register_factory_routes, register_plugin,
-    CapabilityBindings, ControlAuthority, ControlPlaneReadClient, FactoryRuntimeClient, IpcError,
-    LoopbackListener, RevocableControl, Server, SharedFactoryClient, WebApp, WebHandler,
-    WebRequest, WebResponse, PLUGIN_CAPABILITY_BINDINGS_ENV,
+    check_component_id, parse_capability_bindings, plugin_server_info, register_factory_routes,
+    register_plugin, CapabilityBindings, ControlAuthority, ControlPlaneReadClient,
+    FactoryRuntimeClient, IpcError, LoopbackListener, RevocableControl, Server, SharedFactoryClient,
+    WebApp, WebHandler, WebRequest, WebResponse, PLUGIN_CAPABILITY_BINDINGS_ENV,
 };
 use http::StatusCode;
+use serde::Serialize;
 use tokio::sync::Mutex;
 
 use crate::config::{ConfigError, DashboardConfig};
@@ -425,7 +426,12 @@ fn build_app(config: &DashboardConfig, shared: Arc<Shared>) -> Result<WebApp, Da
         .asset("/", content_type, bytes.to_vec())
         .assets(inventory)
         .get("/api/v1/overview", overview_handler(shared.clone()))
-        .get("/api/v1/components", components_handler(shared.clone()));
+        .get("/api/v1/components", components_handler(shared.clone()))
+        .get(
+            "/api/v1/components/{plugin_id}",
+            component_detail_handler(shared.clone()),
+        )
+        .get("/api/v1/status", status_handler(shared.clone()));
     // The typed factory routes are mounted only when an actual explicit
     // `factory.read/v1` binding exists; otherwise the factory endpoint is
     // absent (honest unavailable, never a fabricated control surface). The
@@ -453,6 +459,20 @@ fn components_handler(shared: Arc<Shared>) -> impl WebHandler {
     move |request: WebRequest| {
         let shared = shared.clone();
         async move { serve_components(shared, request).await }
+    }
+}
+
+fn component_detail_handler(shared: Arc<Shared>) -> impl WebHandler {
+    move |request: WebRequest| {
+        let shared = shared.clone();
+        async move { serve_component_detail(shared, request).await }
+    }
+}
+
+fn status_handler(shared: Arc<Shared>) -> impl WebHandler {
+    move |_request: WebRequest| {
+        let shared = shared.clone();
+        async move { serve_status(shared) }
     }
 }
 
@@ -492,43 +512,10 @@ async fn serve_overview(shared: Arc<Shared>) -> WebResponse {
 }
 
 async fn serve_components(shared: Arc<Shared>, request: WebRequest) -> WebResponse {
-    let limit = match request.query_param("limit") {
-        None => None,
-        Some(raw) => match decode_query_component(raw)
-            .ok()
-            .and_then(|value| value.parse::<u32>().ok())
-        {
-            Some(limit) => Some(limit),
-            None => {
-                return WebResponse::error(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_request",
-                    "invalid components request",
-                )
-            }
-        },
+    let page_request = match parse_page_request(&request) {
+        Ok(page_request) => page_request,
+        Err(response) => return response,
     };
-    let cursor = match request.query_param("cursor") {
-        None => None,
-        Some(raw) => match decode_query_component(raw) {
-            Ok(cursor) if ReadCursor::decode(&cursor).is_ok() => Some(cursor),
-            _ => {
-                return WebResponse::error(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_request",
-                    "invalid components request",
-                )
-            }
-        },
-    };
-    let page_request = ReadPageRequest { limit, cursor };
-    if page_request.effective_limit().is_err() {
-        return WebResponse::error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "invalid components request",
-        );
-    }
 
     let mut slot = shared.read.lock().await;
     let result = match slot.client().await {
@@ -579,6 +566,179 @@ async fn serve_components(shared: Arc<Shared>, request: WebRequest) -> WebRespon
             }
         },
     }
+}
+
+/// Parse and validate the bounded `limit`/`cursor` query grammar shared by the
+/// components page and the component-detail page. A malformed value is refused
+/// before any hub RPC with the bounded `invalid_request` body.
+fn parse_page_request(request: &WebRequest) -> Result<ReadPageRequest, WebResponse> {
+    let limit = match request.query_param("limit") {
+        None => None,
+        Some(raw) => match decode_query_component(raw)
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+        {
+            Some(limit) => Some(limit),
+            None => return Err(invalid_request("invalid components request")),
+        },
+    };
+    let cursor = match request.query_param("cursor") {
+        None => None,
+        Some(raw) => match decode_query_component(raw) {
+            Ok(cursor) if ReadCursor::decode(&cursor).is_ok() => Some(cursor),
+            _ => return Err(invalid_request("invalid components request")),
+        },
+    };
+    let page_request = ReadPageRequest { limit, cursor };
+    if page_request.effective_limit().is_err() {
+        return Err(invalid_request("invalid components request"));
+    }
+    Ok(page_request)
+}
+
+fn invalid_request(message: &'static str) -> WebResponse {
+    WebResponse::error(StatusCode::BAD_REQUEST, "invalid_request", message)
+}
+
+/// `GET /api/v1/components/{plugin_id}`: the exact bounded `ReadComponent`
+/// browser-wire projection.
+///
+/// A valid but unknown plugin id is not a 404: the hub answers a
+/// `ReadComponent` whose metadata sources state `missing`, and that honest
+/// projection is served as 200 so the page can render "not registered".
+async fn serve_component_detail(shared: Arc<Shared>, request: WebRequest) -> WebResponse {
+    let Some(plugin_id) = request.param("plugin_id") else {
+        return invalid_request("invalid component request");
+    };
+    // The transport already percent-decoded the segment and refused a smuggled
+    // separator or NUL. Reuse the single shared component-id rule for the rest.
+    if check_component_id(plugin_id).is_err() {
+        return invalid_request("invalid component request");
+    }
+    let page_request = match parse_page_request(&request) {
+        Ok(page_request) => page_request,
+        Err(response) => return response,
+    };
+
+    let mut slot = shared.read.lock().await;
+    let result = match slot.client().await {
+        Ok(client) => client.read_component(plugin_id, &page_request).await,
+        Err(()) => {
+            shared
+                .status
+                .binding_unavailable("hub read binding unavailable");
+            return unavailable();
+        }
+    };
+    match result {
+        Ok(component) => match component.to_wire_json() {
+            Ok(text) => {
+                shared.status.binding_ready();
+                WebResponse::bytes(StatusCode::OK, "application/json", text.into_bytes())
+            }
+            Err(error) => {
+                let _ = error;
+                shared
+                    .status
+                    .binding_unavailable("hub read response unavailable");
+                projection_error()
+            }
+        },
+        Err(error) => match request_error_kind(&error) {
+            RequestErrorKind::Invalid => invalid_request("invalid component request"),
+            RequestErrorKind::RevisionConflict => WebResponse::error(
+                StatusCode::CONFLICT,
+                "cursor_conflict",
+                "cursor revision is no longer current",
+            ),
+            RequestErrorKind::DeadlineExceeded => WebResponse::error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "read_timeout",
+                "hub read request timed out",
+            ),
+            RequestErrorKind::Unavailable => {
+                slot.failed();
+                shared
+                    .status
+                    .binding_unavailable("hub read binding unavailable");
+                unavailable()
+            }
+        },
+    }
+}
+
+/// `DashboardStatus/v1`: local process facts only, never hub data and never
+/// the read binding.
+#[derive(Serialize)]
+struct DashboardStatus {
+    format: &'static str,
+    version: &'static str,
+    health_state: &'static str,
+    listener: ListenerStatus,
+    binding: BindingStatus,
+    detail: Option<String>,
+    observed_at_unix_ms: String,
+}
+
+#[derive(Serialize)]
+struct ListenerStatus {
+    state: &'static str,
+    url: String,
+}
+
+#[derive(Serialize)]
+struct BindingStatus {
+    state: &'static str,
+}
+
+/// Maximum characters of the health detail surface copied into the status
+/// projection. The detail is a local failure reason, never a private launch
+/// input; the bound keeps the response small even if a producer misbehaves.
+const STATUS_DETAIL_MAX_CHARS: usize = 512;
+
+fn serve_status(shared: Arc<Shared>) -> WebResponse {
+    let snapshot = shared.status.snapshot();
+    let health_state = match snapshot.state() {
+        HealthState::Ready => "ready",
+        HealthState::Degraded => "degraded",
+        HealthState::Unavailable => "unavailable",
+    };
+    let status = DashboardStatus {
+        format: "DashboardStatus/v1",
+        version: crate::PACKAGE_VERSION,
+        health_state,
+        listener: ListenerStatus {
+            state: readiness_word(snapshot.listener),
+            url: snapshot.url.clone().unwrap_or_default(),
+        },
+        binding: BindingStatus {
+            state: readiness_word(snapshot.binding),
+        },
+        detail: snapshot
+            .detail
+            .as_deref()
+            .map(|detail| detail.chars().take(STATUS_DETAIL_MAX_CHARS).collect()),
+        observed_at_unix_ms: now_unix_ms().to_string(),
+    };
+    match serde_json::to_string(&status) {
+        Ok(text) => WebResponse::bytes(StatusCode::OK, "application/json", text.into_bytes()),
+        Err(_) => projection_error(),
+    }
+}
+
+fn readiness_word(ready: bool) -> &'static str {
+    if ready {
+        "ready"
+    } else {
+        "unavailable"
+    }
+}
+
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

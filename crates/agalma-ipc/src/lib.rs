@@ -85,7 +85,7 @@ pub use client::Client;
 pub use command::CommandSpec;
 pub use connect::{serve_wire, ConnectClient, IpcDispatcher, Wire, PARENT_DEATH_STDIN_ENV, WIRE_ENV};
 pub use control_plane_client::{
-    ControlPlaneReadClient, CONNECT_TIMEOUT, CONTROL_PLANE_READ_API,
+    check_component_id, ControlPlaneReadClient, CONNECT_TIMEOUT, CONTROL_PLANE_READ_API,
 };
 pub use factory_client::{
     capability_bindings_from_env, parse_capability_bindings, register_factory_routes,

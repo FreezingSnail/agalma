@@ -186,11 +186,20 @@ cap), wave 2 is the single browser acceptance gate. Data scope unchanged
 | `agalma-82f.2` | Detail + status routes, pub validator, fixtures, preview server, route tests | None (after approval) | DeepSeek |
 | `agalma-82f.4` | Browser suites + `first_launch`; integration gate; gap findings go back to owning beads | `agalma-82f.1`, `agalma-82f.2`, `agalma-82f.3` | DeepSeek |
 
-Execution state: each child carries an individual unresolved native human
-execution-approval gate (`agalma-5fv`, `agalma-ee0`, `agalma-9ur`,
-`agalma-2be`) and is not dispatchable until explicitly resolved. No
-implementation was dispatched by this planning; no code, fixture or server
-file changed.
+Execution state: delivered 2026-10-19. All four children were implemented in the
+planned waves, reviewed by DeepSeek, repaired where drift was found, committed
+and merged: UI.1a `69851bd`, UI.1b `09b53bd`, UI.2a `c098a9c`, UI.1c `3396a6a`,
+plus preview repair UI.1d `agalma-82f.5` (`88ca44f`, nested asset-tree copy).
+Review findings repaired before merge: status validator types, ReportEnvelope
+exact-u64 identities, reduced-motion cascade order. Evidence: wave-1 focused
+runs under `target/test-runs/agalma-82f.{1,2,3}/`; integration gate
+`target/test-runs/agalma-82f.4/gate3` (18/0: cockpit_page 15, cockpit_queue 2,
+first_launch 1); post-merge `package_lifecycle` 9/0
+(`target/test-runs/agalma-82f.4/post-merge-package3`). Remaining acceptance:
+human visual review of `make start` for the CSS pass, then epic closure.
+Runner defect discovered during post-merge evidence (`scripts/test.sh` relative
+RUN_ROOT from the primary checkout) is filed separately as `agalma-dns` with an
+absolute-RUN_ROOT workaround; it is not part of this increment.
 
 | Task | Required named target(s) |
 |---|---|

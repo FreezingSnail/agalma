@@ -18,6 +18,7 @@
 export const OVERVIEW_FORMAT = 'ControlPlaneRead/v1';
 export const FACTORY_RUNTIME_FORMAT = 'FactoryRuntime/v1';
 export const FACTORY_CONTROL_FORMAT = 'FactoryControl/v1';
+export const STATUS_FORMAT = 'DashboardStatus/v1';
 
 export const READ_PAGE_MAX_ENTRIES = 100;
 export const FACTORY_PAGE_MAX_ENTRIES = 100;
@@ -203,6 +204,115 @@ export function validateControl(value) {
   return value;
 }
 
+function viewList(views) {
+  must(Array.isArray(views), 'descriptors is not an array');
+  must(views.length <= READ_PAGE_MAX_ENTRIES, 'descriptor list exceeds 100');
+  for (const view of views) {
+    must(isObject(view), 'descriptor is not an object');
+    must(typeof view.view_id === 'string', 'view_id is not a string');
+    must(typeof view.schema_namespace === 'string', 'schema_namespace is not a string');
+    must(typeof view.kind === 'string', 'view kind is not a string');
+    must(typeof view.title === 'string', 'view title is not a string');
+    must(Number.isInteger(view.schema_version), 'view schema_version is not an integer');
+    must(
+      Array.isArray(view.fields) && view.fields.every((field) => typeof field === 'string'),
+      'view fields are malformed',
+    );
+  }
+  return views;
+}
+
+function envelopeList(entries) {
+  must(Array.isArray(entries), 'report entries is not an array');
+  must(entries.length <= READ_PAGE_MAX_ENTRIES, 'report page exceeds 100 entries');
+  for (const entry of entries) {
+    must(isObject(entry), 'report envelope is not an object');
+    must(typeof entry.format === 'string', 'envelope format is not a string');
+    must(typeof entry.plugin_id === 'string', 'envelope plugin_id is not a string');
+    must(typeof entry.schema_namespace === 'string', 'envelope schema_namespace is not a string');
+    must(Number.isInteger(entry.schema_version), 'envelope schema_version is not an integer');
+    must(isExactU64(entry.sequence), 'envelope sequence is not an exact u64 string');
+    must(isExactU64(entry.reported_at_unix_ms), 'envelope reported_at is not an exact u64 string');
+    must(isExactU64(entry.observed_at_unix_ms), 'envelope observed_at is not an exact u64 string');
+    must(
+      entry.execution_id === null || typeof entry.execution_id === 'string',
+      'envelope execution_id is malformed',
+    );
+    must(typeof entry.durability === 'string', 'envelope durability is not a string');
+    must(typeof entry.payload_digest === 'string', 'envelope payload_digest is not a string');
+    must(isObject(entry.binding), 'envelope binding is not an object');
+  }
+  return entries;
+}
+
+/**
+ * Validate a `read_component` BrowserWire projection. Family/version gate,
+ * bounds, exact strings and the binding pin are all checked before any value
+ * reaches the renderer.
+ */
+export function validateComponentDetail(value) {
+  must(isObject(value), 'component detail is not an object');
+  const sources = sourceList(value.metadata);
+  must(isObject(value.binding), 'component detail binding is not an object');
+  must(typeof value.binding.binding_id === 'string', 'binding_id is not a string');
+  must(
+    typeof value.binding.generation === 'number' || isExactU64(value.binding.generation),
+    'binding.generation is neither a number nor an exact u64 string',
+  );
+  const descriptors = viewList(value.descriptors);
+  const entries = envelopeList(value.entries);
+  must(
+    value.next_cursor === null || typeof value.next_cursor === 'string',
+    'component detail next_cursor is malformed',
+  );
+  return {
+    metadata: value.metadata,
+    sources,
+    binding: value.binding,
+    descriptors,
+    entries,
+    next_cursor: value.next_cursor,
+  };
+}
+
+const STATUS_HEALTH = new Set(['ready', 'degraded', 'unavailable']);
+const STATUS_VERSION_MAX = 64;
+
+/** Whether `value` is a bounded, control-character-free token string. */
+function isBoundedToken(value, max) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > max) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) return false;
+  }
+  return true;
+}
+
+/**
+ * Validate a strict `DashboardStatus/v1` payload (local process facts only).
+ * Private launch inputs are absent by contract and are never accepted here.
+ */
+export function validateStatus(value) {
+  must(isObject(value), 'status is not an object');
+  must(value.format === STATUS_FORMAT, `unsupported status family ${value.format}`);
+  must(
+    isBoundedToken(value.version, STATUS_VERSION_MAX),
+    'status version is not a bounded nonempty string',
+  );
+  must(
+    typeof value.health_state === 'string' && STATUS_HEALTH.has(value.health_state.toLowerCase()),
+    `unknown status health_state ${value.health_state}`,
+  );
+  must(isObject(value.listener), 'status listener is not an object');
+  must(typeof value.listener.state === 'string', 'listener.state is not a string');
+  must(value.listener.url === null || typeof value.listener.url === 'string', 'listener.url is not null or a string');
+  must(isObject(value.binding), 'status binding is not an object');
+  must(typeof value.binding.state === 'string', 'binding.state is not a string');
+  must(value.detail === null || typeof value.detail === 'string', 'status detail is not null or a string');
+  must(isExactU64(value.observed_at_unix_ms), 'status observed_at_unix_ms is not an exact u64 string');
+  return value;
+}
+
 function decodeBodyKind(status) {
   if (status === 400) return ApiErrorKind.MALFORMED;
   if (status === 404) return ApiErrorKind.NOT_FOUND;
@@ -277,6 +387,41 @@ export class DashboardApi {
     if (typeof cursor === 'string') query.set('cursor', cursor);
     const suffix = query.toString() === '' ? '' : `?${query.toString()}`;
     return this.#request('GET', `/api/v1/components${suffix}`, { signal }).then(validateComponents);
+  }
+
+  getComponentDetail(pluginId, { limit, cursor, signal } = {}) {
+    if (typeof pluginId !== 'string' || pluginId === '') {
+      return Promise.reject(new ApiError(ApiErrorKind.MALFORMED, 'invalid component id'));
+    }
+    const query = new URLSearchParams();
+    if (typeof limit === 'number') query.set('limit', String(limit));
+    if (typeof cursor === 'string') query.set('cursor', cursor);
+    const suffix = query.toString() === '' ? '' : `?${query.toString()}`;
+    return this.#request('GET', `/api/v1/components/${encodeURIComponent(pluginId)}${suffix}`, { signal }).then(
+      validateComponentDetail,
+      (error) => {
+        // The detail route is optional in wave 1. An absent 404 is an
+        // unsupported endpoint, not a malformed successful page. A valid but
+        // unknown plugin id answers 200 with missing-source metadata instead.
+        if (error instanceof ApiError && error.kind === ApiErrorKind.NOT_FOUND) {
+          throw new ApiError(ApiErrorKind.UNSUPPORTED, 'component detail endpoint absent');
+        }
+        throw error;
+      },
+    );
+  }
+
+  getStatus({ signal } = {}) {
+    return this.#request('GET', '/api/v1/status', { signal }).then(
+      validateStatus,
+      (error) => {
+        // The status route is optional in wave 1; an absent 404 is explicit.
+        if (error instanceof ApiError && error.kind === ApiErrorKind.NOT_FOUND) {
+          throw new ApiError(ApiErrorKind.UNSUPPORTED, 'status endpoint absent');
+        }
+        throw error;
+      },
+    );
   }
 
   getFactory({ signal } = {}) {

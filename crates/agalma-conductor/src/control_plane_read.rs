@@ -1311,14 +1311,19 @@ impl ControlPlaneReadService {
                 let request = ReadPageRequest { limit, cursor };
                 to_value(&self.list_components(&request)?)?
             }
-            // The cockpit-first increment supports overview and component
-            // summaries only. Report-envelope and artifact reads are deferred
-            // to the browser-platform epic: fail before any payload or file
-            // read, and never dispatch a client-selected ledger method.
-            ControlPlaneReadRequest::ReadComponent { .. }
-            | ControlPlaneReadRequest::ReadArtifactChunk { .. } => {
+            ControlPlaneReadRequest::ReadComponent {
+                plugin_id,
+                limit,
+                cursor,
+            } => {
+                let request = ReadPageRequest { limit, cursor };
+                to_value(&self.read_component(&plugin_id, &request)?)?
+            }
+            // Artifact byte reads remain deferred: fail before any payload or
+            // file read, and never dispatch a client-selected ledger method.
+            ControlPlaneReadRequest::ReadArtifactChunk { .. } => {
                 return Err(ContractError::UnsupportedCapability(format!(
-                    "control-plane read operation is deferred to the browser-platform epic ({CONTROL_PLANE_READ_CAPABILITY})"
+                    "control-plane read artifact operation is deferred to the browser-platform epic ({CONTROL_PLANE_READ_CAPABILITY})"
                 )));
             }
         };

@@ -98,8 +98,14 @@ export function render(cockpit) {
     return outer;
   }
 
-  const missing = (data.metadata?.sources ?? []).some((entry) => entry.state === 'missing');
-  if (missing) {
+  // Registration is a registry fact only. Report-source availability does not
+  // decide whether the component exists: a builtin with no reports still has a
+  // real binding and descriptors, and an unreadable/unknown registry is not the
+  // same as an absent component. Only an explicit registry `missing` state is
+  // rendered as not registered.
+  const sources = data.metadata?.sources ?? [];
+  const registry = sources.find((entry) => entry.source === 'registry');
+  if (registry && registry.state === 'missing') {
     page.appendChild(emptyState(doc, 'This component is not registered in the hub registry.'));
     return outer;
   }

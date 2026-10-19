@@ -41,7 +41,8 @@ use agalma_conductor::plugin_manifest::{
     discover_plugins, package_inventory_digest, PluginRoot, PLUGIN_MANIFEST_FILE,
 };
 use agalma_conductor::plugin_registry::{
-    persist_registry_generations, DesiredState, HubInstallStore, LifecycleState, PluginRegistry,
+    persist_registry_generations, ComponentOrigin, DesiredState, HubInstallStore, LifecycleState,
+    PluginRegistry,
 };
 use agalma_conductor::plugin_supervisor::HealthProbe;
 use agalma_conductor::plugin_reports::{
@@ -67,6 +68,8 @@ use agalma_testkit::ScratchDir;
 const PROPERTY_SEED: u64 = 0x5745_4202;
 /// Recorded property-test case budget (source states and bounded collections).
 const PROPERTY_CASES: u64 = 128;
+/// Deterministic component-detail property budget (exhaustive table + grants).
+const DETAIL_PROPERTY_CASES: u64 = 40;
 /// Start of the injected hub clock (milliseconds).
 const START_MS: u64 = 1_791_820_800_000;
 /// The fixture reporting plugin id.
@@ -199,6 +202,31 @@ impl ComponentProjection for FailingProjection {
         Err(ContractError::KnownFailure(
             "registry checkpoint corrupt".to_string(),
         ))
+    }
+}
+
+/// A deterministic in-memory component set for detail property cases.
+struct StaticComponents(Vec<ProjectedComponent>);
+
+impl ComponentProjection for StaticComponents {
+    fn components(&self) -> Result<Vec<ProjectedComponent>, ContractError> {
+        Ok(self.0.clone())
+    }
+}
+
+fn static_component(
+    plugin_id: &str,
+    generation: u64,
+    origin: ComponentOrigin,
+) -> ProjectedComponent {
+    ProjectedComponent {
+        plugin_id: plugin_id.to_string(),
+        origin,
+        observed: LifecycleState::Ready,
+        generation: Some(generation),
+        implementation_version: "1.0.0".to_string(),
+        config_digest: sha256_digest(b""),
+        views: Vec::new(),
     }
 }
 
@@ -775,6 +803,391 @@ fn production_routing_lists_components_with_accurate_source_states() {
 }
 
 #[test]
+fn production_routing_dispatches_component_detail_with_canonical_wire() {
+    let harness = harness("cp-read-component-routing");
+    harness.publish_health(HealthState::Ready);
+    harness
+        .publish(1, NS_STATUS, 1, json!({"ready": true}))
+        .expect("publish status");
+
+    let mut router = CapabilityRouter::new(
+        Box::new(agalma_conductor::plugin_router::InMemoryOperationJournal::new()),
+        Arc::new(RunningStop),
+    )
+    .with_clock(harness.clock.clock());
+    router.register_adapter(harness.service());
+    let grant = read_grant(START_MS + 60_000);
+    router.install_grant(&grant);
+    let service = agalma_conductor::plugin_router::RouterService::new(router);
+
+    let call = read_call(
+        &grant,
+        "component-detail-1",
+        input(&ControlPlaneReadRequest::ReadComponent {
+            plugin_id: PLUGIN_ID.to_string(),
+            limit: Some(1),
+            cursor: None,
+        }),
+        START_MS,
+    );
+    let value = service
+        .invoke_capability(serde_json::to_value(&call).unwrap())
+        .expect("production component detail routed");
+    let page = ReadComponent::from_wire_value(&value).expect("canonical component wire");
+    assert_eq!(page.binding.binding_id, PLUGIN_ID);
+    assert_eq!(page.binding.generation, harness.generation);
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].schema_namespace, NS_STATUS);
+    assert_eq!(page.entries[0].sequence, 1);
+    // Identity-bearing u64 fields are exact decimal strings in the actual
+    // response bytes, never JSON numbers.
+    assert_eq!(
+        value["binding"]["generation"],
+        Value::String(harness.generation.to_string())
+    );
+    assert_eq!(
+        value["entries"][0]["sequence"],
+        Value::String("1".to_string())
+    );
+    assert_eq!(
+        value["entries"][0]["observed_at_unix_ms"],
+        Value::String(START_MS.to_string())
+    );
+}
+
+#[test]
+fn component_detail_property_identities_bounds_cursors_and_grants() {
+    // Deterministic exhaustive table: fixed identities/generations crossed with
+    // the contract limit boundary, cursor states and grant states. The case
+    // budget is asserted below; no wall clock or random sampling is involved.
+    let harness = harness("cp-read-component-property");
+    for (index, namespace) in NS_VIEWS.iter().enumerate().take(5) {
+        harness
+            .publish(
+                index as u64 + 1,
+                namespace,
+                1,
+                json!({"ready": true, "index": index}),
+            )
+            .expect("publish");
+    }
+    let ledger = LedgerHandle::in_process(harness.dir.path()).expect("isolated ledger");
+    let service = harness
+        .service()
+        .with_projection(Arc::new(StaticComponents(vec![
+            static_component(PLUGIN_ID, u64::MAX, ComponentOrigin::Discovered),
+            static_component("component:harness", 0, ComponentOrigin::BuiltIn),
+            static_component("alpha.reader", 50, ComponentOrigin::Discovered),
+        ])))
+        .with_domains(Arc::new(ledger.clone()));
+    let mut cases = 0u64;
+
+    let valid = [
+        (PLUGIN_ID, u64::MAX),
+        ("component:harness", 0),
+        ("alpha.reader", 50),
+    ];
+    for (plugin_id, generation) in valid {
+        for limit in [None, Some(1), Some(50), Some(100)] {
+            let page = service
+                .read_component(plugin_id, &agalma_contracts::ReadPageRequest {
+                    limit,
+                    cursor: None,
+                })
+                .expect("valid component detail");
+            assert_eq!(page.binding.binding_id, plugin_id);
+            assert_eq!(page.binding.generation, generation);
+            let wire = page.to_wire_value().expect("canonical wire");
+            assert_eq!(
+                wire["binding"]["generation"],
+                Value::String(generation.to_string()),
+                "generation {generation} is not an exact decimal string for {plugin_id}"
+            );
+            if plugin_id == PLUGIN_ID {
+                let expected = limit.unwrap_or(50).min(5) as usize;
+                assert_eq!(page.entries.len(), expected, "limit={limit:?}");
+                assert_eq!(page.entries[0].sequence, 1);
+            } else {
+                assert!(page.entries.is_empty());
+                assert_eq!(
+                    page.metadata
+                        .sources
+                        .iter()
+                        .find(|source| source.source == "registry")
+                        .expect("registry source")
+                        .state,
+                    SourceState::Available
+                );
+            }
+            cases += 1;
+        }
+        for limit in [Some(0), Some(101)] {
+            let error = service
+                .read_component(plugin_id, &agalma_contracts::ReadPageRequest {
+                    limit,
+                    cursor: None,
+                })
+                .expect_err("out-of-range limit refused");
+            assert!(error.to_string().contains("InvalidRecord"), "{error}");
+            cases += 1;
+        }
+    }
+
+    for plugin_id in ["missing.one", "missing:two"] {
+        for limit in [None, Some(1), Some(50), Some(100)] {
+            let page = service
+                .read_component(plugin_id, &agalma_contracts::ReadPageRequest {
+                    limit,
+                    cursor: None,
+                })
+                .expect("unknown valid id is explicit data");
+            assert!(page.entries.is_empty());
+            assert!(page.descriptors.is_empty());
+            assert_eq!(page.binding.generation, 0);
+            assert_eq!(
+                page.metadata
+                    .sources
+                    .iter()
+                    .find(|source| source.source == "registry")
+                    .expect("registry source")
+                    .state,
+                SourceState::Missing
+            );
+            cases += 1;
+        }
+        for limit in [Some(0), Some(101)] {
+            let error = service
+                .read_component(plugin_id, &agalma_contracts::ReadPageRequest {
+                    limit,
+                    cursor: None,
+                })
+                .expect_err("out-of-range limit refused");
+            assert!(error.to_string().contains("InvalidRecord"), "{error}");
+            cases += 1;
+        }
+    }
+
+    let first = service
+        .read_component(
+            PLUGIN_ID,
+            &agalma_contracts::ReadPageRequest {
+                limit: Some(2),
+                cursor: None,
+            },
+        )
+        .expect("first page");
+    let cursor = first.next_cursor.clone().expect("continuation cursor");
+    let second = service
+        .read_component(
+            PLUGIN_ID,
+            &agalma_contracts::ReadPageRequest {
+                limit: Some(2),
+                cursor: Some(cursor.clone()),
+            },
+        )
+        .expect("second page");
+    assert_eq!(
+        first.entries.iter().map(|entry| entry.sequence).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert_eq!(
+        second.entries.iter().map(|entry| entry.sequence).collect::<Vec<_>>(),
+        vec![3, 4]
+    );
+    cases += 2;
+
+    let error = service
+        .read_component(
+            PLUGIN_ID,
+            &agalma_contracts::ReadPageRequest {
+                limit: Some(2),
+                cursor: Some("not-a-cursor".to_string()),
+            },
+        )
+        .expect_err("malformed cursor refused");
+    assert!(error.to_string().contains("InvalidRecord"), "{error}");
+    cases += 1;
+
+    harness
+        .publish(6, NS_VIEWS[5], 1, json!({"ready": true, "index": 5}))
+        .expect("publish sixth");
+    let error = service
+        .read_component(
+            PLUGIN_ID,
+            &agalma_contracts::ReadPageRequest {
+                limit: Some(2),
+                cursor: Some(cursor),
+            },
+        )
+        .expect_err("stale cursor refused");
+    assert!(error.to_string().contains("RevisionConflict"), "{error}");
+    cases += 1;
+
+    let wire = service
+        .read_component(
+            PLUGIN_ID,
+            &agalma_contracts::ReadPageRequest {
+                limit: Some(1),
+                cursor: None,
+            },
+        )
+        .expect("wire page")
+        .to_wire_value()
+        .expect("canonical wire");
+    assert_eq!(
+        wire["entries"][0]["observed_at_unix_ms"],
+        Value::String(START_MS.to_string())
+    );
+    assert_eq!(
+        wire["entries"][0]["reported_at_unix_ms"],
+        Value::String(START_MS.to_string())
+    );
+    assert_eq!(
+        wire["entries"][0]["sequence"],
+        Value::String("1".to_string())
+    );
+    cases += 1;
+
+    // Every detail read is observation-only: no journal entry, action intent,
+    // task claim or ledger execution is created.
+    assert!(
+        ledger.pending_intents().expect("pending intents").is_empty(),
+        "component reads create no operation intents"
+    );
+    assert!(
+        LedgerApi::executions(&ledger).expect("executions").is_empty(),
+        "component reads create no task claims"
+    );
+
+    let mut router = CapabilityRouter::new(
+        Box::new(agalma_conductor::plugin_router::InMemoryOperationJournal::new()),
+        Arc::new(RunningStop),
+    )
+    .with_clock(harness.clock.clock());
+    router.register_adapter(service.clone());
+
+    let wrong_ns = LaunchGrant::for_capability(
+        "web.dashboard",
+        binding("web.dashboard", 1),
+        METHOD_INVOKE_CAPABILITY,
+        "ledger.read/v1",
+        START_MS + 60_000,
+        None,
+    )
+    .expect("wrong-namespace grant");
+    router.install_grant(&wrong_ns);
+    let error = router
+        .invoke_read(&read_call(
+            &wrong_ns,
+            "detail-wrong-ns",
+            input(&ControlPlaneReadRequest::ReadComponent {
+                plugin_id: PLUGIN_ID.to_string(),
+                limit: None,
+                cursor: None,
+            }),
+            START_MS,
+        ))
+        .expect_err("unauthorized namespace refused");
+    assert!(error.to_string().contains("grant authorizes"), "{error}");
+    cases += 1;
+
+    let expired = read_grant(START_MS);
+    router.install_grant(&expired);
+    let error = router
+        .invoke_read(&read_call(
+            &expired,
+            "detail-expired",
+            input(&ControlPlaneReadRequest::ReadComponent {
+                plugin_id: PLUGIN_ID.to_string(),
+                limit: None,
+                cursor: None,
+            }),
+            START_MS,
+        ))
+        .expect_err("expired grant refused");
+    assert!(error.to_string().contains("expired"), "{error}");
+    cases += 1;
+
+    let revoked = read_grant(START_MS + 60_000);
+    let fingerprint = router.install_grant(&revoked);
+    assert!(router.revoke_grant(&fingerprint));
+    let error = router
+        .invoke_read(&read_call(
+            &revoked,
+            "detail-revoked",
+            input(&ControlPlaneReadRequest::ReadComponent {
+                plugin_id: PLUGIN_ID.to_string(),
+                limit: None,
+                cursor: None,
+            }),
+            START_MS,
+        ))
+        .expect_err("revoked grant refused");
+    assert!(error.to_string().contains("revoked"), "{error}");
+    cases += 1;
+
+    let deadline_grant = read_grant(START_MS + 60_000);
+    router.install_grant(&deadline_grant);
+    let mut call = read_call(
+        &deadline_grant,
+        "detail-deadline",
+        input(&ControlPlaneReadRequest::ReadComponent {
+            plugin_id: PLUGIN_ID.to_string(),
+            limit: None,
+            cursor: None,
+        }),
+        START_MS,
+    );
+    call.deadline_unix_ms = START_MS;
+    let error = router
+        .invoke_read(&call)
+        .expect_err("expired deadline refused");
+    assert!(error.to_string().contains("deadline"), "{error}");
+    cases += 1;
+
+    assert_eq!(
+        router.journaled_operations(),
+        0,
+        "component detail reads never journal an operation"
+    );
+
+    // Exact u64 timestamp boundary: a hub observation at u64::MAX is projected
+    // as an exact decimal string, never a rounded/truncated JSON number.
+    harness.clock.set(u64::MAX);
+    harness
+        .publish(7, NS_VIEWS[5], 1, json!({"ready": true, "index": 6}))
+        .expect("publish at the u64 boundary");
+    let wire = service
+        .read_component(
+            PLUGIN_ID,
+            &agalma_contracts::ReadPageRequest {
+                limit: Some(100),
+                cursor: None,
+            },
+        )
+        .expect("boundary page")
+        .to_wire_value()
+        .expect("canonical wire");
+    let boundary = wire["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["sequence"] == Value::String("7".to_string()))
+        .expect("boundary entry");
+    assert_eq!(
+        boundary["observed_at_unix_ms"],
+        Value::String(u64::MAX.to_string())
+    );
+    assert_eq!(
+        boundary["reported_at_unix_ms"],
+        Value::String(START_MS.to_string())
+    );
+    cases += 1;
+
+    assert_eq!(cases, DETAIL_PROPERTY_CASES, "property case budget changed");
+}
+
+#[test]
 fn unknown_plugin_returns_explicit_unavailable_data_not_an_error() {
     let harness = harness("cp-read-unknown");
     let service = harness.service();
@@ -1043,8 +1456,11 @@ fn expired_deadline_is_refused_for_reads() {
 }
 
 #[test]
-fn deferred_component_and_artifact_operations_fail_explicitly() {
+fn deferred_artifact_operation_fails_explicitly_while_component_reads_dispatch() {
     let harness = harness("cp-read-deferred");
+    harness
+        .publish(1, NS_STATUS, 1, json!({"ready": true}))
+        .expect("publish status");
     let mut router = CapabilityRouter::new(
         Box::new(agalma_conductor::plugin_router::InMemoryOperationJournal::new()),
         Arc::new(RunningStop),
@@ -1053,27 +1469,40 @@ fn deferred_component_and_artifact_operations_fail_explicitly() {
     router.register_adapter(harness.service());
     let grant = read_grant(START_MS + 60_000);
     router.install_grant(&grant);
-    for operation in [
-        ControlPlaneReadRequest::ReadComponent {
-            plugin_id: PLUGIN_ID.to_string(),
-            limit: None,
-            cursor: None,
-        },
-        ControlPlaneReadRequest::ReadArtifactChunk {
-            plugin_id: PLUGIN_ID.to_string(),
-            digest: sha256_digest(b"x"),
-            offset: None,
-            max_bytes: None,
-        },
-    ] {
-        let error = router
-            .invoke_read(&read_call(&grant, "deferred", input(&operation), START_MS))
-            .expect_err("deferred operation refused");
-        assert!(
-            error.to_string().contains("unsupported capability"),
-            "{error}"
-        );
-    }
+
+    // ReadComponent is dispatched by the production capability router.
+    let value = router
+        .invoke_read(&read_call(
+            &grant,
+            "component-now-served",
+            input(&ControlPlaneReadRequest::ReadComponent {
+                plugin_id: PLUGIN_ID.to_string(),
+                limit: None,
+                cursor: None,
+            }),
+            START_MS,
+        ))
+        .expect("component detail routed");
+    ReadComponent::from_wire_value(&value).expect("canonical component wire");
+
+    // Artifact reads remain explicitly deferred.
+    let error = router
+        .invoke_read(&read_call(
+            &grant,
+            "artifact-deferred",
+            input(&ControlPlaneReadRequest::ReadArtifactChunk {
+                plugin_id: PLUGIN_ID.to_string(),
+                digest: sha256_digest(b"x"),
+                offset: None,
+                max_bytes: None,
+            }),
+            START_MS,
+        ))
+        .expect_err("deferred artifact operation refused");
+    assert!(
+        error.to_string().contains("unsupported capability"),
+        "{error}"
+    );
 }
 
 #[test]

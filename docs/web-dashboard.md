@@ -68,7 +68,19 @@ Read routes:
 |---|---|
 | `GET /api/v1/overview` | `ControlPlaneRead/v1` overview (stop, executions, economics, timeline, sources) |
 | `GET /api/v1/components?limit=&cursor=` | `ControlPlaneRead/v1` component page, default 50 / bound 100, opaque cursor |
+| `GET /api/v1/components/{plugin_id}?limit=&cursor=` | `ControlPlaneRead/v1` component detail for a listed or built-in identity; a valid unknown id is `200` with explicit `missing` sources |
 | `GET /api/v1/factory` | optional factory runtime snapshot (see below) |
+
+Component detail is delivered through the same production
+`control-plane.read/v1` service and router as the list. It reuses the bounded page
+contract (default 50, maximum 100) and the existing cursor rules: malformed
+cursors are refused and a stale revision is a `409 cursor_conflict` so the page
+restarts once. Artifact chunk reads remain explicitly deferred and are not part
+of the detail contract. Registration is determined only by the `registry` source:
+only its `missing` state renders “not registered”. A known component with
+`missing`, `empty`, `unknown` or `unreadable` reports still renders its binding
+and declared views with an honest no-report state, and an `unreadable`/`unknown`
+registry is never reported as absent.
 
 ### Read capability approval
 
@@ -198,23 +210,29 @@ CHROME_BIN='<installed chrome>' make test-focused \
   SELECTION='-p agalma-web-dashboard --test first_launch'
 ```
 
-`cockpit_page` runs six focused regressions in the installed browser against a
-real loopback fixture server with independent `fixtures/cockpit` JSON: bounded
+`cockpit_page` runs the retained focused regressions in the installed browser
+against a real loopback fixture server with independent `fixtures/cockpit` JSON:
+bounded
 safe rendering with exact identities; inert injected text; stale-source
 retention and conflict reload; bounded component paging; permission-gated
 controls with receipt lookup and no automatic replay; and page-exit timer and
-request-abort cleanup. The broader generated/out-of-order state-machine corpus
-is not part of WEB.6 release acceptance.
+request-abort cleanup. Its component-detail coverage includes a deterministic
+12-case registry (available/missing/unreadable) x reports
+(available/empty/missing/unknown) source-state matrix and a concrete
+`component:harness` no-report binding regression. The broader generated/
+out-of-order state-machine corpus is not part of WEB.6 release acceptance.
 
 `first_launch` is the real production smoke: an isolated established ledger, the
 sealed installed package, the assembled production hub
 (`PluginHost::assemble_with_ledger`) serving the real `control-plane.read/v1`
 router, the real supervised dashboard process, and the installed browser opening
-the printed URL. It asserts real component data renders, the factory endpoint is
-honestly unavailable with controls disabled, a lost read source surfaces as
-`503` rather than a healthy empty page, and viewing creates no control intent or
-task claim (the child holds exactly `control-plane.read/v1`; no control route
-exists).
+the printed URL. It asserts real component data renders, the installed
+dashboard's encoded detail route renders its binding and declared views, the
+conductor built-in `component:harness` and a valid unknown id return the honest
+detail projection, the factory endpoint is honestly unavailable with controls
+disabled, a lost read source surfaces as `503` rather than a healthy empty page,
+and viewing creates no control intent or task claim (the child holds exactly
+`control-plane.read/v1`; no control route exists).
 
 Run artifacts are written under `target/test-runs/agalma-rwn.6/<run-id>/` and are
 never deleted. `browser_support/` is the shared harness; later WEB.5/7/8 readers

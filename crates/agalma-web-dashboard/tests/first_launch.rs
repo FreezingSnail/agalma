@@ -255,6 +255,31 @@ fn unused_loopback_port() -> u16 {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     listener.local_addr().unwrap().port()
 }
+
+/// Percent-encode a component id the same way the browser route does.
+fn encode_component_id(plugin_id: &str) -> String {
+    let mut out = String::new();
+    for byte in plugin_id.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+fn component_detail_body(port: u16, plugin_id: &str) -> Value {
+    let path = format!(
+        "/api/v1/components/{}?limit=50",
+        encode_component_id(plugin_id)
+    );
+    let response = http_request(port, "GET", &path);
+    assert_eq!(response.status, 200, "{}: {}", plugin_id, response.body);
+    let body: Value = serde_json::from_str(&response.body).expect("detail json");
+    assert_eq!(body["metadata"]["format"], "ControlPlaneRead/v1");
+    body
+}
 // ---------------------------------------------------------------------------
 // The acceptance
 // ---------------------------------------------------------------------------
@@ -385,5 +410,200 @@ fn first_launch_production_page_renders_real_data_and_zero_effects() {
     eprintln!(
         "first_launch: ok url={url} capabilities={capabilities:?} ledger_state={}",
         scratch.child("state").display()
+    );
+}
+
+#[test]
+fn first_launch_production_component_detail_uses_real_hub_and_zero_effects() {
+    let chrome = resolve_chrome().expect("installed Chrome (CHROME_BIN) is required");
+    eprintln!(
+        "first_launch_detail: chrome={} version={}",
+        chrome.display(),
+        chrome_version(&chrome)
+    );
+
+    let scratch = ScratchDir::new("web6-first-launch-detail");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let package = seal_dashboard_package(scratch.path());
+    let mut launched = launch_production_dashboard(&runtime, &scratch, &package);
+
+    let (health, capabilities) = dashboard_health(&runtime, &launched.plugin_socket);
+    assert_eq!(health.state, HealthState::Ready, "detail: {}", health.detail);
+    let url = detail_field(&health, "url").expect("actual URL reported").to_string();
+    assert!(url.starts_with("http://127.0.0.1:"), "url={url}");
+    let port: u16 = url.rsplit(':').next().unwrap().parse().expect("port");
+    assert_eq!(capabilities, vec![READ_CAPABILITY.to_string()]);
+
+    // The installed dashboard and the conductor's built-in harness must both be
+    // present in the real live registry projection before detail routing.
+    let components = http_request(port, "GET", "/api/v1/components?limit=50");
+    assert_eq!(components.status, 200, "{}", components.body);
+    let components_body: Value = serde_json::from_str(&components.body).unwrap();
+    let listed: Vec<&str> = components_body["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["plugin_id"].as_str())
+        .collect();
+    assert!(listed.contains(&PLUGIN_ID), "listed={listed:?}");
+    assert!(listed.contains(&"component:harness"), "listed={listed:?}");
+
+    // Known installed plugin detail through the real hub router and host.
+    let dashboard = component_detail_body(port, PLUGIN_ID);
+    assert_eq!(dashboard["binding"]["binding_id"], PLUGIN_ID);
+    assert!(
+        dashboard["descriptors"].as_array().is_some_and(|views| !views.is_empty()),
+        "installed plugin declared views must project: {dashboard}"
+    );
+    assert!(
+        dashboard["metadata"]["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|source| source["state"] != "unreadable"),
+        "real host sources must not be unreadable: {dashboard}"
+    );
+
+    // The conductor built-in `component:harness` is a first-class colon identity
+    // from the actual host live-component projection, not a per-id exemption.
+    let harness_detail = component_detail_body(port, "component:harness");
+    assert_eq!(harness_detail["binding"]["binding_id"], "component:harness");
+    assert_eq!(harness_detail["binding"]["generation"], "0");
+    assert!(
+        harness_detail["metadata"]["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|source| source["source"] == "registry" && source["state"] == "available"),
+        "harness must be an available registry identity: {harness_detail}"
+    );
+
+    // A valid but unknown id is honest 200 missing metadata, never 503/404.
+    let unknown = component_detail_body(port, "missing:valid.component");
+    assert!(unknown["entries"].as_array().unwrap().is_empty());
+    assert!(
+        unknown["metadata"]["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|source| source["source"] == "registry" && source["state"] == "missing"),
+        "unknown id must report missing registry data: {unknown}"
+    );
+
+    // Real browser: the encoded dashboard detail route renders production data.
+    let dashboard_url = format!("{url}#/components/{}", encode_component_id(PLUGIN_ID));
+    let dashboard_browser = run_browser(&chrome, &dashboard_url, BROWSER_BUDGET_MS, "first-launch-detail");
+    assert!(dashboard_browser.status.success(), "browser failed: {}", dashboard_browser.stderr);
+    let dom = &dashboard_browser.dom;
+    assert!(dom.contains("Component detail"), "detail page missing: {dom}");
+    assert!(dom.contains(PLUGIN_ID), "detail id missing: {dom}");
+    assert!(dom.contains("Binding"), "binding section missing: {dom}");
+    assert!(dom.contains("Declared views"), "declared views section missing: {dom}");
+    assert!(
+        !dom.contains("not registered in the hub registry"),
+        "a registered dashboard must not render the not-registered state: {dom}"
+    );
+    assert!(
+        !dom.contains("detail read unavailable") && !dom.contains("read_unavailable"),
+        "detail read must not be unavailable: {dom}"
+    );
+
+    // The colon identity route must not collapse into the generic unavailable
+    // error or an unknown-route notice.
+    let harness_url = format!("{url}#/components/{}", encode_component_id("component:harness"));
+    let harness_browser = run_browser(&chrome, &harness_url, BROWSER_BUDGET_MS, "first-launch-detail-harness");
+    assert!(harness_browser.status.success(), "browser failed: {}", harness_browser.stderr);
+    assert!(
+        harness_browser.dom.contains("Component detail")
+            && harness_browser.dom.contains("component:harness"),
+        "colon identity detail route did not render: {}",
+        harness_browser.dom
+    );
+    assert!(
+        harness_browser.dom.contains("Binding")
+            && harness_browser.dom.contains("Declared views")
+            && harness_browser.dom.contains("No declared views.")
+            && harness_browser.dom.contains("No report envelopes."),
+        "builtin binding/descriptors/no-report state missing: {}",
+        harness_browser.dom
+    );
+    assert!(
+        !harness_browser.dom.contains("not registered in the hub registry"),
+        "a registered builtin with no reports must not render absent: {}",
+        harness_browser.dom
+    );
+    assert!(
+        !harness_browser.dom.contains("detail read unavailable")
+            && !harness_browser.dom.contains("read_unavailable"),
+        "colon identity detail read must not be unavailable: {}",
+        harness_browser.dom
+    );
+
+    // Unknown valid id renders the explicit not-registered state, not an error.
+    let unknown_url = format!(
+        "{url}#/components/{}",
+        encode_component_id("missing:valid.component")
+    );
+    let unknown_browser = run_browser(&chrome, &unknown_url, BROWSER_BUDGET_MS, "first-launch-detail-unknown");
+    assert!(unknown_browser.status.success(), "browser failed: {}", unknown_browser.stderr);
+    assert!(
+        unknown_browser.dom.contains("not registered in the hub registry"),
+        "unknown id must render explicit missing state: {}",
+        unknown_browser.dom
+    );
+    assert!(
+        !unknown_browser.dom.contains("Binding")
+            && !unknown_browser.dom.contains("No report envelopes."),
+        "an absent registry identity must not render a healthy detail: {}",
+        unknown_browser.dom
+    );
+    assert!(!unknown_browser.dom.contains("read_unavailable"));
+
+    // Observation-only: browsing detail creates no control authority, intent,
+    // task claim or second privilege.
+    let (_, capabilities_after) = dashboard_health(&runtime, &launched.plugin_socket);
+    assert_eq!(capabilities_after, vec![READ_CAPABILITY.to_string()]);
+    assert!(launched.host.ledger().is_some(), "real ledger stays attached");
+    let pause = http_request(port, "POST", "/api/v1/factory/pause");
+    assert!(
+        pause.status == 404 || pause.status == 405,
+        "no control route may exist, got {}",
+        pause.status
+    );
+
+    // Lose the real hub source: shutting down the runtime drops the hub socket
+    // and every accepted connection. The component-detail route itself must
+    // surface 503, never a stale identity or a healthy ControlPlaneRead/v1 body.
+    runtime.shutdown_background();
+    let mut unavailable = None;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let detail_path = format!(
+        "/api/v1/components/{}?limit=50",
+        encode_component_id(PLUGIN_ID)
+    );
+    while Instant::now() < deadline {
+        let read = http_request(port, "GET", &detail_path);
+        if read.status == 503 {
+            unavailable = Some(read);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let read = unavailable.expect(
+        "the lost hub source must make component detail 503, never a healthy empty page",
+    );
+    assert!(read.body.contains("read_unavailable"), "body={}", read.body);
+    assert!(
+        !read.body.contains("ControlPlaneRead/v1"),
+        "a failed detail read must not return a success projection: {}",
+        read.body
+    );
+
+    eprintln!(
+        "first_launch_detail: ok url={url} listed={listed:?} capabilities={capabilities:?}"
     );
 }

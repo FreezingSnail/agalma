@@ -11,7 +11,8 @@
 //! 3. navigation between all routes generates zero POSTs;
 //! 4. `aria-current` marks the active route;
 //! 5. the component-detail descriptors and envelopes render as inert text;
-//! 6. an unknown plugin id renders the explicit not-registered state;
+//! 6. only a registry-source `missing` state renders the explicit not-registered
+//!    state; report gaps on a known component render its binding/descriptors;
 //! 7. the system page renders status facts and a malformed response yields a
 //!    visible bounded error;
 //! 8. page exit on a non-overview route stops timers and aborts the active read;
@@ -970,6 +971,86 @@ fn unknown_component_detail(plugin_id: &str) -> serde_json::Value {
     })
 }
 
+/// Build one detail projection with independent registry and report source
+/// states. Registration is the registry source's fact; reports are separate.
+fn component_detail_with_sources(
+    plugin_id: &str,
+    registry_state: &str,
+    reports_state: &str,
+) -> serde_json::Value {
+    let registry_present = registry_state != "missing";
+    let descriptors = if registry_present {
+        serde_json::json!([{
+            "view_id": "status",
+            "schema_namespace": format!("{plugin_id}.status"),
+            "kind": "Status",
+            "title": "State fixture",
+            "schema_version": 1,
+            "fields": ["ready"]
+        }])
+    } else {
+        serde_json::json!([])
+    };
+    let entries = if reports_state == "available" {
+        serde_json::json!([{
+            "format": "ReportEnvelope/v1",
+            "plugin_id": plugin_id,
+            "binding": {
+                "binding_id": plugin_id,
+                "api": "plugin",
+                "api_version": 1,
+                "implementation_version": "fixture-state",
+                "generation": "7",
+                "config_digest": sha256_placeholder()
+            },
+            "schema_namespace": format!("{plugin_id}.status"),
+            "schema_version": 1,
+            "sequence": "1",
+            "reported_at_unix_ms": "1791820800000",
+            "observed_at_unix_ms": "1791820800001",
+            "execution_id": null,
+            "durability": "durable",
+            "payload": {"ready": true},
+            "payload_digest": "sha256:b342fc286d0216cc212e0d7ba234894e2e7283ddf14f959adf0fe7fd5924308a"
+        }])
+    } else {
+        serde_json::json!([])
+    };
+    serde_json::json!({
+        "metadata": {
+            "format": "ControlPlaneRead/v1",
+            "collected_at_unix_ms": 1791820800005i64,
+            "registry_revision": "9007199254740993",
+            "report_watermark": null,
+            "sources": [
+                {
+                    "source": "registry",
+                    "state": registry_state,
+                    "detail": format!("registry fixture state {registry_state}"),
+                    "observed_at_unix_ms": 1791820800005i64
+                },
+                {
+                    "source": "reports",
+                    "state": reports_state,
+                    "detail": format!("reports fixture state {reports_state}"),
+                    "observed_at_unix_ms": 1791820800005i64
+                }
+            ]
+        },
+        "binding": {
+            "binding_id": plugin_id,
+            "api": "plugin",
+            "api_version": 1,
+            "implementation_version": "fixture-state",
+            "generation": "7",
+            "config_digest": sha256_placeholder()
+        },
+        "descriptors": descriptors,
+        "entries": entries,
+        "next_cursor": null
+    })
+}
+
 /// The shared driver prelude for route navigation through the real router.
 const NAVIGATE_PRELUDE: &str = r#"
     const cockpit = startCockpit({
@@ -1269,6 +1350,136 @@ fn cockpit_page_component_detail_unknown_plugin_is_not_registered() {
     );
     assert!(!text.contains("No report envelopes."), "an unknown plugin must not render a healthy empty detail: {text}");
     assert!(!text.contains("Component detail unknown."), "the page must resolve the projection: {text}");
+}
+
+#[test]
+fn cockpit_page_component_detail_source_state_property_has_no_false_absence() {
+    const REGISTRY_STATES: [&str; 3] = ["available", "missing", "unreadable"];
+    const REPORT_STATES: [&str; 4] = ["available", "empty", "missing", "unknown"];
+
+    // Deterministic 3 x 4 matrix: 12 cases, one browser launch.
+    let mut detail = Vec::new();
+    let mut cases = Vec::new();
+    for registry_state in REGISTRY_STATES {
+        for reports_state in REPORT_STATES {
+            let plugin_id = format!("case.{registry_state}.{reports_state}");
+            detail.push(ok_value(&component_detail_with_sources(
+                &plugin_id,
+                registry_state,
+                reports_state,
+            )));
+            cases.push(serde_json::json!({
+                "id": plugin_id,
+                "registry": registry_state,
+                "reports": reports_state,
+            }));
+        }
+    }
+    assert_eq!(cases.len(), 12, "registry x reports property budget");
+
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        detail,
+        ..Script::default()
+    });
+    let first = cases[0]["id"].as_str().unwrap();
+    let body = format!(
+        r#"
+    {prelude}
+    const cases = {cases};
+    const results = [];
+    for (const item of cases) {{
+      await navigate(`#/components/${{item.id}}`);
+      const page = document.querySelector('[data-page="component"]');
+      results.push({{ id: item.id, registry: item.registry, reports: item.reports, text: page.textContent }});
+    }}
+    return {{ results }};
+    "#,
+        prelude = NAVIGATE_PRELUDE,
+        cases = serde_json::to_string(&cases).unwrap(),
+    );
+    let result = run_driver_at(
+        &server,
+        &format!("#/components/{first}"),
+        &body,
+        "detail-source-state-property",
+    );
+    let results = result["results"].as_array().unwrap();
+    assert_eq!(results.len(), 12, "all matrix cases must render");
+
+    for item in results {
+        let registry_state = item["registry"].as_str().unwrap();
+        let reports_state = item["reports"].as_str().unwrap();
+        let plugin_id = item["id"].as_str().unwrap();
+        let text = item["text"].as_str().unwrap();
+        if registry_state == "missing" {
+            assert!(
+                text.contains("This component is not registered in the hub registry."),
+                "registry missing must render absent: {plugin_id} {text}"
+            );
+            assert!(
+                !text.contains("Binding")
+                    && !text.contains("Declared views")
+                    && !text.contains("No report envelopes."),
+                "registry missing must not render a healthy detail: {plugin_id} {text}"
+            );
+        } else {
+            assert!(
+                !text.contains("not registered in the hub registry"),
+                "registry {registry_state} must not be falsely absent: {plugin_id} {text}"
+            );
+            assert!(
+                text.contains("Binding") && text.contains("Declared views"),
+                "registry {registry_state} must render binding/descriptors: {plugin_id} {text}"
+            );
+            if reports_state == "available" {
+                assert!(
+                    text.contains(&format!("{plugin_id}.status")),
+                    "available reports must render the entry: {plugin_id} {text}"
+                );
+            } else {
+                assert!(
+                    text.contains("No report envelopes."),
+                    "reports {reports_state} must render the honest empty state: {plugin_id} {text}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn cockpit_page_component_detail_builtin_without_reports_renders_binding() {
+    let plugin_id = "component:harness";
+    let mut detail = component_detail_with_sources(plugin_id, "available", "missing");
+    detail["descriptors"] = serde_json::json!([]);
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        detail: vec![ok_value(&detail)],
+        ..Script::default()
+    });
+    let result = run_driver_at(
+        &server,
+        "#/components/component:harness",
+        r#"
+    const cockpit = startCockpit({ document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000 });
+    await cockpit.refresher.activeCycle;
+    const page = document.querySelector('[data-page="component"]');
+    return { text: page.textContent };
+    "#,
+        "detail-builtin-no-reports",
+    );
+    let text = result["text"].as_str().unwrap();
+    assert!(text.contains("Plugin: component:harness"), "plugin identity missing: {text}");
+    assert!(text.contains("Binding") && text.contains("component:harness"), "builtin binding missing: {text}");
+    assert!(text.contains("Declared views"), "builtin descriptor section missing: {text}");
+    assert!(text.contains("No declared views."), "builtin descriptor empty state missing: {text}");
+    assert!(text.contains("No report envelopes."), "builtin no-report state missing: {text}");
+    assert!(
+        !text.contains("not registered in the hub registry"),
+        "a registered builtin must not render absent: {text}"
+    );
 }
 
 #[test]

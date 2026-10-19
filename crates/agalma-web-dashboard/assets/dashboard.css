@@ -198,7 +198,9 @@ summary:focus-visible,
 }
 
 .nav a {
-  display: block;
+  display: flex;
+  align-items: center;
+  min-height: 2.5rem;
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm);
   color: var(--muted);
@@ -268,6 +270,384 @@ summary:focus-visible,
   gap: var(--space-4);
   align-items: start;
 }
+
+/* ---------------------------------------------------- UI.3 shared header */
+
+.cockpit-header {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1.1fr) minmax(10rem, 0.7fr) minmax(18rem, 2fr);
+  gap: var(--space-4);
+  align-items: start;
+  padding: var(--space-4);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-1);
+}
+
+.header-identity,
+.header-runtime,
+.header-refresh {
+  min-width: 0;
+}
+
+.header-eyebrow {
+  margin: 0 0 var(--space-1);
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.header-repository {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.header-state {
+  margin: var(--space-1) 0 0;
+}
+
+.header-page-title {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-lg);
+  font-weight: 650;
+}
+
+.header-runtime-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.header-runtime-state {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.source-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  list-style: none;
+}
+
+.source-state {
+  min-width: 0;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-raised);
+}
+
+.source-state--not_loaded,
+.source-state--unknown {
+  border-style: dashed;
+}
+
+.source-state--stale {
+  border-color: var(--stale);
+}
+
+.source-state--unavailable {
+  border-color: var(--bad);
+}
+
+.source-name,
+.source-label,
+.source-time {
+  display: block;
+}
+
+.source-name {
+  font-weight: 650;
+}
+
+.source-label {
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
+.source-time {
+  color: var(--muted);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.source-state--stale .source-label,
+.source-state--unavailable .source-label {
+  font-weight: 650;
+}
+
+.source-state--stale .source-label {
+  color: color-mix(in srgb, var(--stale) 72%, var(--text));
+}
+
+.source-state--unavailable .source-label {
+  color: color-mix(in srgb, var(--bad) 72%, var(--text));
+}
+
+/* --------------------------------------------------- UI.3 Overview cards */
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.summary-card {
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius);
+  overflow-wrap: anywhere;
+}
+
+.summary-card--failed,
+.summary-card--unavailable {
+  border-left-color: var(--bad);
+}
+
+.summary-card--warning,
+.summary-card--degraded {
+  border-left-color: var(--warn);
+}
+
+.summary-card--unknown,
+.summary-card--idle {
+  border-left-color: var(--border-strong);
+  border-left-style: dashed;
+}
+
+.summary-label {
+  margin: 0 0 var(--space-1);
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.summary-value {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 700;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.summary-detail {
+  margin: var(--space-1) 0 0;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(18rem, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.overview-main,
+.overview-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.panel--dominant {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-2);
+}
+
+.panel--dominant > h2 {
+  font-size: var(--text-lg);
+}
+
+.panel--compact {
+  padding: var(--space-3) var(--space-4);
+}
+
+.panel--diagnostic {
+  margin-top: var(--space-2);
+}
+
+.current-none {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 650;
+}
+
+.exact-time {
+  color: var(--muted);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.inline-action {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.5rem;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+a.component-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.5rem;
+  font-weight: 600;
+  text-underline-offset: 2px;
+}
+
+/* Attention list: explicit text label plus a colored edge. */
+.attention-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.attention-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-2);
+  padding: var(--space-2) 0 var(--space-2) var(--space-2);
+  border-inline-start: 3px solid var(--border-strong);
+  overflow-wrap: anywhere;
+}
+
+.attention-item--error {
+  border-inline-start-color: var(--bad);
+}
+
+.attention-item--warning {
+  border-inline-start-color: var(--warn);
+}
+
+.attention-item--unknown {
+  border-inline-start-color: var(--unknown);
+  border-inline-start-style: dashed;
+}
+
+.attention-severity {
+  align-self: start;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.attention-item--error .attention-severity {
+  color: color-mix(in srgb, var(--bad) 72%, var(--text));
+  border-color: var(--bad);
+}
+
+.attention-item--warning .attention-severity {
+  color: color-mix(in srgb, var(--warn) 72%, var(--text));
+  border-color: var(--warn);
+}
+
+.attention-title {
+  margin: 0;
+  font-weight: 650;
+}
+
+.attention-detail {
+  margin: var(--space-1) 0 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.attention-empty {
+  margin: 0;
+  color: var(--text);
+}
+
+/* --------------------------------------------------- UI.3 activity list */
+
+.activity-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.activity-item {
+  display: grid;
+  grid-template-columns: minmax(7rem, auto) minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: var(--space-1) 0 var(--space-1) var(--space-3);
+  border-inline-start: 2px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.activity-time {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.activity-relative {
+  font-weight: 650;
+}
+
+.activity-kind {
+  color: var(--muted);
+}
+
+/* Native disclosures (technical details, activity expansion, coverage). */
+details.technical {
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+details.technical > summary {
+  display: flex;
+  align-items: center;
+  min-height: 2.5rem;
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+details.technical pre {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2);
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
 
 /* --------------------------------------------------------------- component */
 
@@ -482,6 +862,7 @@ div.time {
 /* Pager button (opaque-cursor Next control). */
 .pager {
   margin-top: var(--space-2);
+  min-height: 2.5rem;
   padding: var(--space-1) var(--space-4);
   font: inherit;
   font-size: var(--text-sm);
@@ -553,6 +934,7 @@ div.time {
 }
 
 .controls button {
+  min-height: 2.5rem;
   padding: var(--space-1) var(--space-4);
   font: inherit;
   font-size: var(--text-sm);
@@ -589,6 +971,25 @@ div.time {
 }
 
 /* --------------------------------------------------------------- responsive */
+
+/* 721-1199px: two summary cards per row, one content column, a two-row header. */
+@media (max-width: 1199px) {
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .overview-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cockpit-header {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .header-refresh {
+    grid-column: 1 / -1;
+  }
+}
 
 /* Below 720px the fixed sidebar collapses to a sticky horizontal top bar. */
 @media (max-width: 720px) {
@@ -644,6 +1045,27 @@ div.time {
 
   .grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cockpit-header {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .header-refresh {
+    grid-column: auto;
+  }
+
+  .source-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .summary-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .activity-item {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-1);
   }
 }
 

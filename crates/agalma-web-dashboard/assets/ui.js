@@ -29,6 +29,83 @@ export function formatTimestamp(value) {
   }
 }
 
+/**
+ * One render-time timestamp model: relative label, exact ISO text, and an
+ * explicit future/unknown flag. `now` is the single value captured by the
+ * caller for this render; the helper never reads the clock itself.
+ */
+export function timestampModel(value, now) {
+  const reference = Number.isInteger(now) && now >= 0 && now <= SAFE_DATE_MAX ? now : null;
+  if (!Number.isInteger(value) || value < 0 || value > SAFE_DATE_MAX) {
+    return { valid: false, future: false, relative: 'time unknown', exact: null, iso: null };
+  }
+  const exact = formatTimestamp(value);
+  if (exact === 'unknown' || reference === null) {
+    return { valid: false, future: false, relative: 'time unknown', exact: null, iso: null };
+  }
+  if (value > reference) {
+    return { valid: true, future: true, relative: 'in the future', exact, iso: exact };
+  }
+  const delta = reference - value;
+  let relative;
+  if (delta < 5000) relative = 'just now';
+  else if (delta < 60000) relative = `${Math.floor(delta / 1000)}s ago`;
+  else if (delta < 3600000) relative = `${Math.floor(delta / 60000)}m ago`;
+  else if (delta < 86400000) relative = `${Math.floor(delta / 3600000)}h ago`;
+  else relative = `${Math.floor(delta / 86400000)}d ago`;
+  return { valid: true, future: false, relative, exact, iso: exact };
+}
+
+/** A `<time>` element carrying the relative label and an exact ISO title. */
+export function timeNode(doc, value, now, className) {
+  const model = timestampModel(value, now);
+  const node = el(doc, 'time', className);
+  node.textContent = model.relative;
+  if (model.iso) {
+    node.setAttribute('datetime', model.iso);
+    node.setAttribute('title', model.exact);
+  }
+  return { node, model };
+}
+
+/** Visible exact-time text beside a relative label, or an explicit unknown. */
+export function exactTimeText(doc, model) {
+  const node = el(doc, 'span', 'exact-time mono', model.exact ?? 'time unknown');
+  if (model.exact) node.setAttribute('title', model.exact);
+  return node;
+}
+
+/** A bounded anchor whose text is the exact (bounded) label. */
+export function anchor(doc, href, label, className) {
+  const node = el(doc, 'a', className);
+  node.setAttribute('href', href);
+  node.appendChild(textNode(doc, 'span', label));
+  return node;
+}
+
+/** A native disclosure. The caller owns persistence and focus keys. */
+export function disclosure(doc, key, summaryText) {
+  const details = el(doc, 'details', 'technical');
+  details.dataset.disclosureKey = key;
+  const summary = el(doc, 'summary', null, summaryText);
+  summary.dataset.focusKey = `disclosure:${key}`;
+  details.appendChild(summary);
+  return details;
+}
+
+/** A compact outlined summary card. */
+export function summaryCard(doc, id, label, value, detail, tone, notice) {
+  const card = el(doc, 'section', `summary-card${tone ? ` summary-card--${tone}` : ''}`);
+  if (id) card.id = id;
+  card.appendChild(el(doc, 'h3', 'summary-label', label));
+  card.appendChild(textNode(doc, 'p', value, 'summary-value'));
+  if (detail !== null && detail !== undefined) {
+    card.appendChild(textNode(doc, 'p', detail, 'summary-detail'));
+  }
+  if (notice) card.appendChild(notice);
+  return card;
+}
+
 /** Create one element with an optional class and exact text. */
 export function el(doc, tag, className, text) {
   const node = doc.createElement(tag);

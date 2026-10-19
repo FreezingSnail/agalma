@@ -20,23 +20,32 @@ import { ControlPanel, RESUME_CONFIRMATION } from './controls.js';
 import { ROUTES, NAV_ROUTES, parseHash, formatHash, startRouter } from './router.js';
 import {
   boundedText, formatTimestamp, FIELD_TEXT_LIMIT, LIST_ROW_LIMIT, el, panel, pill,
+  timestampModel, exactTimeText,
 } from './ui.js';
+import {
+  sourceFreshnessModel, runtimeModel, repositoryIdentity, summaryCards, currentWorkModel,
+  costModel, componentPageModel, componentSeverity, deriveAttention, coverageGaps,
+  timelineModel, formatHash as formatComponentHash,
+} from './pages/overview.js';
 
 export { boundedText, formatTimestamp, FIELD_TEXT_LIMIT, LIST_ROW_LIMIT };
+export {
+  sourceFreshnessModel, runtimeModel, repositoryIdentity, summaryCards, currentWorkModel,
+  costModel, componentPageModel, componentSeverity, deriveAttention, coverageGaps,
+  timelineModel, formatComponentHash,
+};
 
 export const COMPONENT_PAGE_LIMIT = 50;
 export const DETAIL_PAGE_LIMIT = 50;
 
-/** Map a typed factory runtime status onto a pill state (unknown stays unknown). */
-const RUNTIME_PILL = {
-  Starting: 'degraded',
-  Recovering: 'degraded',
-  Idle: 'idle',
-  Running: 'running',
-  Paused: 'paused',
-  Failed: 'failed',
-  Unavailable: 'unavailable',
-};
+/** One bounded text line for header/status text. */
+function textLine(doc, value, className) {
+  const node = el(doc, 'p', className);
+  const { text, truncated } = boundedText(value);
+  node.appendChild(doc.createTextNode(text));
+  if (truncated) node.appendChild(doc.createTextNode(' …[truncated]'));
+  return node;
+}
 
 /**
  * Default operator confirmation-phrase provider for a Resume click.
@@ -71,6 +80,10 @@ export class Cockpit {
     // Injectable operator phrase provider; production defaults to the browser
     // prompt/confirm surface and returns null when none is available.
     this.confirmPhrase = options.confirmPhrase ?? defaultConfirmPhrase;
+    // One clock source for relative/age presentation. `renderNow` is captured
+    // once per render so every age calculation in that frame agrees.
+    this.now = options.now ?? (() => Date.now());
+    this.renderNow = this.now();
     this.state = {
       route: parseHash(this.#initialHash()),
       components: { cursor: null, page: null, reloadNote: null, rows: new Map() },
@@ -78,6 +91,9 @@ export class Cockpit {
       status: null,
       lastRenderError: null,
       renderCount: 0,
+      disclosures: new Map(),
+      identityKey: null,
+      renderNow: this.renderNow,
     };
     this.controls = new ControlPanel({
       api: this.api,
@@ -89,7 +105,7 @@ export class Cockpit {
       intervalMs: this.intervalMs,
       onUpdate: (snapshot) => this.render(snapshot),
       onError: (error) => this.renderError(error),
-      now: options.now,
+      now: this.now,
       setTimer: options.setTimer,
       clearTimer: options.clearTimer,
     });
@@ -193,8 +209,9 @@ export class Cockpit {
     this.root.appendChild(this.nav);
 
     this.content = el(doc, 'div', 'content');
-    this.runtimePillHost = el(doc, 'div', 'kv');
-    this.content.appendChild(this.runtimePillHost);
+    this.header = el(doc, 'header', 'cockpit-header');
+    this.header.id = 'cockpit-header';
+    this.content.appendChild(this.header);
     this.routeNotice = el(doc, 'p', 'empty');
     this.routeNotice.id = 'route-notice';
     this.routeNotice.hidden = true;
@@ -280,17 +297,21 @@ export class Cockpit {
   /** Render one refresh snapshot. Never throws into the timer loop. */
   render(snapshot = this.refresher.snapshot()) {
     // A background refresh rebuilds the shell. Capture the focused control's
-    // bounded identity first and restore it afterwards so polling does not
-    // steal keyboard focus from the operator.
+    // bounded identity and every disclosure's open state first, then restore
+    // them afterwards so polling never steals focus or collapses a disclosure.
+    this.renderNow = this.now();
     const focus = this.#captureFocus();
+    this.#captureDisclosures();
     try {
+      this.#syncIdentity(snapshot);
       // The typed runtime observation drives control availability. Update it
       // without re-entering render (the control panel's own onChange notifies
       // only for explicit user interactions).
       this.controls.setRuntime(this.#factorySource(snapshot).data ?? null, false);
-      this.#renderRuntimePill(snapshot);
+      this.#renderHeader(snapshot);
       this.#renderNav();
       this.#renderRouteNotice();
+      snapshot.renderNow = this.renderNow;
       this.#renderPages();
       this.#renderError();
       this.state.renderCount += 1;
@@ -299,6 +320,33 @@ export class Cockpit {
     } finally {
       this.#restoreFocus(focus);
     }
+  }
+
+  /** Persist one native disclosure's open state under a semantic key. */
+  bindDisclosure(node, key, defaultOpen = false) {
+    if (!node) return;
+    if (!this.state.disclosures.has(key)) this.state.disclosures.set(key, defaultOpen);
+    node.open = this.state.disclosures.get(key) === true;
+    node.addEventListener('toggle', () => {
+      this.state.disclosures.set(key, node.open === true);
+    });
+  }
+
+  #captureDisclosures() {
+    for (const node of this.root.querySelectorAll('details[data-disclosure-key]')) {
+      this.state.disclosures.set(node.dataset.disclosureKey, node.open === true);
+    }
+  }
+
+  #syncIdentity(snapshot) {
+    const identity = repositoryIdentity(snapshot);
+    if (!identity.known) return;
+    if (this.state.identityKey !== null && this.state.identityKey !== identity.key) {
+      // Contextual disclosures belong to one repository/state identity; never
+      // carry plugin-derived expansion to a different runtime.
+      this.state.disclosures.clear();
+    }
+    this.state.identityKey = identity.key;
   }
 
   #captureFocus() {
@@ -331,16 +379,57 @@ export class Cockpit {
     }
   }
 
-  #renderRuntimePill(snapshot) {
-    const host = this.runtimePillHost;
+  #renderHeader(snapshot) {
+    const host = this.header;
     while (host.firstChild) host.removeChild(host.firstChild);
-    const factory = this.#factorySource(snapshot);
-    let state = 'unknown';
-    if (factory.error) state = 'unavailable';
-    else if (factory.data) state = RUNTIME_PILL[factory.data.status] ?? 'unknown';
-    host.appendChild(el(this.doc, 'span', 'key', 'Runtime'));
-    host.appendChild(this.doc.createTextNode(': '));
-    host.appendChild(pill(this.doc, state));
+    const doc = this.doc;
+    const identity = repositoryIdentity(snapshot);
+    const active = this.state.route?.name === 'component' ? 'component' : (this.state.route?.name ?? 'overview');
+    const routeTitle = ROUTES[active]?.title ?? 'Overview';
+
+    const identityBlock = el(doc, 'div', 'header-identity');
+    identityBlock.appendChild(el(doc, 'p', 'header-eyebrow', 'Repository'));
+    identityBlock.appendChild(el(doc, 'p', 'header-repository', identity.repository_id ?? 'Repository identity unknown'));
+    if (identity.state_id !== null) identityBlock.appendChild(el(doc, 'p', 'header-state note', `State ${identity.state_id}`));
+    identityBlock.appendChild(el(doc, 'p', 'header-page-title', routeTitle));
+    host.appendChild(identityBlock);
+
+    const runtime = runtimeModel(snapshot);
+    const runtimeBlock = el(doc, 'div', 'header-runtime');
+    runtimeBlock.appendChild(el(doc, 'p', 'header-eyebrow', 'Runtime'));
+    const runtimeLine = el(doc, 'p', 'header-runtime-line');
+    runtimeLine.appendChild(pill(doc, runtime.pill));
+    runtimeLine.appendChild(doc.createTextNode(' '));
+    runtimeLine.appendChild(el(doc, 'span', 'header-runtime-state', runtime.state));
+    runtimeBlock.appendChild(runtimeLine);
+    if (runtime.reason) runtimeBlock.appendChild(textLine(doc, runtime.reason, 'note'));
+    host.appendChild(runtimeBlock);
+
+    const refreshBlock = el(doc, 'div', 'header-refresh');
+    refreshBlock.id = 'refresh-status';
+    refreshBlock.appendChild(el(doc, 'p', 'header-eyebrow', 'Refresh state'));
+    const list = el(doc, 'ul', 'source-list');
+    for (const item of sourceFreshnessModel(snapshot, this.renderNow)) {
+      const row = el(doc, 'li', `source-state source-state--${item.state}`);
+      row.dataset.source = item.name;
+      row.appendChild(el(doc, 'span', 'source-name', item.title));
+      row.appendChild(el(doc, 'span', 'source-label', item.label));
+      if (item.exact) {
+        const model = timestampModel(item.source?.lastSuccessAt, this.renderNow);
+        const time = el(doc, 'span', 'source-time');
+        time.appendChild(el(doc, 'span', 'source-relative', model.relative));
+        time.appendChild(doc.createTextNode(' '));
+        time.appendChild(exactTimeText(doc, model));
+        row.appendChild(time);
+      }
+      list.appendChild(row);
+    }
+    refreshBlock.appendChild(list);
+    const systemLink = el(doc, 'a', 'inline-action', 'System diagnostics');
+    systemLink.setAttribute('href', '#/system');
+    systemLink.dataset.focusKey = 'header:system';
+    refreshBlock.appendChild(systemLink);
+    host.appendChild(refreshBlock);
   }
 
   #renderNav() {

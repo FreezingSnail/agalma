@@ -103,6 +103,53 @@ The page distinguishes unknown from healthy/zero/stopped:
   last success time and the current error. The first failure of a source with no
   prior success is `unknown`/unavailable.
 
+## Overview information hierarchy (UI.3)
+
+The shared header appears on every route. It names the repository/state identity
+from authoritative `factory.repository_id`/`state_id`, the typed runtime state,
+the active page and the independent refresh state of the overview, factory and
+components sources. Each source shows its own last-success relative age with the
+exact ISO time; a retained failure is labelled stale, a first-read failure is
+unavailable, and an unread source is not loaded. One successful endpoint never
+claims the others are fresh.
+
+Overview presents four compact cards (factory state, exact eligible total, health
+**in the observed component page**, observed cost), then a two-column desktop grid
+with dominant Current work, Needs attention, Eligible work, Economics details and
+one Overview controls region. Current work uses only authoritative
+`factory.current_execution`; a known null says “No current execution reported”,
+an unavailable first read stays unknown, and a historical execution is never
+substituted. Attempt information joins only on an exact execution-id **and**
+generation match. Eligible work is a bounded five-entry preview in server order,
+explicitly not a promised dispatch order, with the exact source total or an
+unknown label.
+
+Needs attention is deterministic display derived from source failures/unknowns,
+typed factory state/stop, and observed components. Entries are deduplicated and
+ordered error, warning, unknown; at most ten show with an exact additional count.
+Component entries say they are page-scoped. Empty observations are described as
+empty, coverage gaps stay separate, and read-only control permission is an
+explanation beside the controls rather than a failure. Recent activity sorts
+newest first, shows ten relative timestamps with exact ISO text, and expands to
+the 100-entry bound. Technical IDs and execution history live in native
+expansions whose open state survives polling and resets only when repository or
+state identity changes.
+
+Component names in the registry link to the existing encoded
+`#/components/<plugin_id>` detail route and the detail back link returns to the
+registry. Navigation, cards, disclosures and refresh submit no mutation. Control
+permission, confirmation, action-id, pending, receipt and no-replay behavior are
+unchanged.
+
+UI.3 evidence adds generated `cockpit_information_*` cases to the `cockpit_page`
+target: a 4x3x3 source/total/page state matrix, exact-decimal cases, six encoded
+identity cases, eight disclosure/refresh sequences and a 4x2x3 viewport/theme
+state matrix. The same focused run captures eight real browser screenshots
+(populated Overview at 390/1280/1920 in dark and light, plus stale and
+unavailable at 1280 dark) under the persistent evidence root. See
+`docs/web-dashboard-design.md` section “Information and appearance increment
+(2026-10-19)” for the canonical data rules.
+
 ## Refresh
 
 One serial cycle runs at a time; the default interval is 1s, configurable

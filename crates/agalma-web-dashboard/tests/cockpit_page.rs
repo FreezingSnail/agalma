@@ -25,11 +25,13 @@
 
 mod browser_support;
 
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use browser_support::{driver_page, resolve_chrome, FixtureServer, Response, Router};
 
-const BUDGET_MS: u64 = 8000;
+const BUDGET_MS: u64 = 15000;
 
 const OVERVIEW: &str = include_str!("../../../fixtures/cockpit/overview.json");
 const COMPONENTS: &str = include_str!("../../../fixtures/cockpit/components-page.json");
@@ -247,6 +249,91 @@ fn run_driver_at_size(
         "driver {label} threw: {result}"
     );
     result
+}
+
+/// Run one driver page at an explicit viewport and emulated color scheme.
+fn run_driver_at_size_theme(
+    server: &FixtureServer,
+    hash: &str,
+    body: &str,
+    label: &str,
+    width: u32,
+    height: u32,
+    theme: &str,
+) -> serde_json::Value {
+    server.register(
+        "/harness.html",
+        Response::text(200, "text/html; charset=utf-8", driver_page(body)),
+    );
+    let (path, launch_width) = if width < 500 {
+        server.register(
+            "/frame.html",
+            Response::text(
+                200,
+                "text/html; charset=utf-8",
+                viewport_frame_page(width, height, hash),
+            ),
+        );
+        ("/frame.html", 500)
+    } else {
+        ("/harness.html", width)
+    };
+    let url = if width < 500 {
+        format!("{}{path}", server.base_url())
+    } else {
+        format!("{}{path}{hash}", server.base_url())
+    };
+    let chrome = resolve_chrome().expect("installed Chrome (CHROME_BIN) is required");
+    let (outcome, result) = browser_support::run_browser_result_sized_theme(
+        &chrome,
+        &url,
+        BUDGET_MS,
+        label,
+        launch_width,
+        height,
+        theme,
+    );
+    assert!(
+        outcome.status.success(),
+        "browser run {label} failed: status={:?} stderr={}",
+        outcome.status,
+        outcome.stderr
+    );
+    assert!(
+        result.get("harnessError").is_none(),
+        "driver {label} threw: {result}"
+    );
+    result
+}
+
+/// A screenshot-only page: the production shell without the harness result
+/// element, so the captured image shows the operator surface only.
+fn screenshot_page() -> String {
+    r#"<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Agalma cockpit</title>
+<link rel="stylesheet" href="/dashboard.css"></head>
+<body><main id="app"><noscript>This local cockpit requires JavaScript.</noscript></main>
+<script type="module">
+import { startCockpit } from '/app.js';
+const mode = new URLSearchParams(location.search).get('mode') ?? 'populated';
+const cockpit = startCockpit({ document, root: document.getElementById('app'), intervalMs: 60000 });
+await cockpit.refresher.activeCycle;
+if (mode === 'stale') await cockpit.refresh();
+</script></body></html>
+"#
+    .to_string()
+}
+
+fn screenshot_frame_page(width: u32, height: u32, query: &str) -> String {
+    let offset = 500u32.saturating_sub(width) / 2;
+    format!(
+        r#"<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>viewport</title>
+<style>html,body{{margin:0;border:0;background:#000}} iframe{{display:block;border:0;margin-left:{offset}px;width:{width}px;height:{height}px}}</style>
+</head><body><iframe src="/screenshot.html{query}"></iframe></body></html>
+"#
+    )
 }
 
 /// Parent page that gives the driver an exact CSS-pixel iframe viewport and
@@ -1717,3 +1804,878 @@ fn cockpit_page_refresh_preserves_keyboard_focus() {
     assert_eq!(server.post_count(), 0);
 }
 
+// ---------------------------------------------------------------------------
+// UI.3 information, appearance and navigation properties
+// ---------------------------------------------------------------------------
+
+/// Deterministic property matrix: 4 source observation states x 3 exact queue
+/// totals x 3 component-page shapes = 36 independent model scenarios. The
+/// generation is the fixed cross product below; there is no random seed.
+#[test]
+fn cockpit_information_state_property_matrix() {
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        factory: vec![ok_json(FACTORY_RUNTIME)],
+        ..Script::default()
+    });
+    let body = format!(
+        r#"
+    const NOW = 1791820805000;
+    const STATES = ['known', 'empty', 'first_read_unavailable', 'retained_stale'];
+    const TOTALS = ['0', null, '18446744073709551615'];
+    const SHAPES = ['empty', 'populated_final', 'populated_continuation'];
+    const failures = [];
+    const check = (id, condition, detail) => {{ if (!condition) failures.push({{ id, detail }}); }};
+    const entry = (suffix, health, freshness, completeness, available) => ({{
+      plugin_id: `example.${{suffix}}`, name: `Example ${{suffix}}`, generation: String(10 + suffix.length),
+      health, freshness, completeness, available, views: [],
+    }});
+    const entriesFor = (shape) => {{
+      if (shape === 'empty') return [];
+      return [
+        entry('ready', 'ready', 'fresh', 'Complete', true),
+        entry('down', 'unavailable', 'stale', 'Partial', false),
+        entry('unknown', 'unknown', 'unknown', 'Unknown', true),
+      ];
+    }};
+    const source = (data, state) => {{
+      if (state === 'first_read_unavailable') {{
+        return {{ data: null, lastSuccessAt: null, lastAttemptAt: NOW, error: {{ kind: 'unavailable', message: 'down' }}, status: 'failed', stale: false }};
+      }}
+      if (state === 'retained_stale') {{
+        return {{ data, lastSuccessAt: NOW - 60000, lastAttemptAt: NOW, error: {{ kind: 'unavailable', message: 'down' }}, status: 'failed', stale: true }};
+      }}
+      return {{ data, lastSuccessAt: NOW - 1000, lastAttemptAt: NOW, error: null, status: 'available', stale: false }};
+    }};
+    const scenarios = [];
+    for (const state of STATES) {{
+      for (let totalIndex = 0; totalIndex < TOTALS.length; totalIndex += 1) {{
+        const total = TOTALS[totalIndex];
+        for (const shape of SHAPES) {{
+          const id = `state=${{state}};total=${{totalIndex}};shape=${{shape}}`;
+          const executions = [
+            {{ execution_id: 'exec:current', task_id: 'task-current', generation: '8', phase: 'Build', state: 'Running', attempt: '99', updated_at_unix_ms: NOW - 1000 }},
+            {{ execution_id: 'exec:current', task_id: 'task-current', generation: '7', phase: 'Build', state: 'Running', attempt: '7', updated_at_unix_ms: NOW - 1000 }},
+          ];
+          const emptyState = state === 'empty';
+          const currentExecution = emptyState ? null : {{
+            execution_id: 'exec:current', task_id: 'task-current', generation: '7', phase: 'Build', state: 'Running',
+            updated_at_unix_ms: NOW - 1000,
+          }};
+          const overview = {{
+            metadata: {{ sources: [{{ source: 'ledger', state: 'available', detail: '', observed_at_unix_ms: NOW }}] }},
+            factory: {{ stopped: false, reason: null, observed_at_unix_ms: NOW }},
+            executions: emptyState ? [] : executions,
+            economics: {{ completeness: 'Complete', usage: '123456789012345.678901', usage_unit: 'tokens', cost: '0.000000000000000001', allowance: '5.00', cost_unit: 'usd', observed_at_unix_ms: NOW }},
+            timeline: emptyState ? [] : [{{ at_unix_ms: NOW - 2000, kind: 'note', title: 'Observed', detail: 'fixture' }}],
+          }};
+          const factory = {{
+            repository_id: 'repo-a', state_id: 'state-a', status: 'Running', reason: null,
+            stop: {{ stopped: false, reason: null, observed_at_unix_ms: NOW }},
+            current_execution: currentExecution,
+            eligible: {{ entries: emptyState ? [] : [{{ task_id: 'alpha', title: 'Alpha', priority: 'normal', family: 'feature' }}], revision: 'rev-1', total, next_cursor: null }},
+            permissions: {{ pause: true, resume: true }},
+          }};
+          const page = {{ entries: entriesFor(shape), next_cursor: shape === 'populated_continuation' ? 'cp:next' : null }};
+          const snapshot = {{
+            renderNow: NOW,
+            sources: {{
+              overview: source(overview, state),
+              factory: source(factory, state),
+              components: source(page, state),
+            }},
+          }};
+          const cards = summaryCards(snapshot);
+          const byId = Object.fromEntries(cards.map((card) => [card.id, card]));
+          const current = currentWorkModel(snapshot);
+          const componentPage = componentPageModel(snapshot);
+          const attention = deriveAttention(snapshot);
+          const keys = attention.items.map((item) => item.key);
+          const unique = new Set(keys).size === keys.length;
+          const rank = {{ error: 0, warning: 1, unknown: 2 }};
+          let ordered = true;
+          for (let index = 1; index < attention.items.length; index += 1) {{
+            const a = attention.items[index - 1];
+            const b = attention.items[index];
+            if (rank[a.severity] > rank[b.severity]) ordered = false;
+            if (rank[a.severity] === rank[b.severity] && a.key > b.key) ordered = false;
+          }}
+
+          const unavailable = state === 'first_read_unavailable';
+          check(id + ':cards', cards.length === 4);
+          check(
+            id + ':eligible-total',
+            byId['summary-eligible'].value === (unavailable || total === null ? 'unknown' : total),
+            byId['summary-eligible'],
+          );
+          check(
+            id + ':cost-exact',
+            unavailable
+              ? byId['summary-cost'].value === 'unknown'
+              : byId['summary-cost'].value === '0.000000000000000001 usd',
+          );
+          check(id + ':component-sums', componentPage.ready + componentPage.attention + componentPage.unknown === componentPage.observed);
+          check(
+            id + ':component-page-scope',
+            unavailable
+              ? componentPage.continuation === false
+              : componentPage.continuation === (shape === 'populated_continuation'),
+          );
+          check(id + ':attention-bounded', attention.items.length <= 10 && attention.hiddenCount === Math.max(0, attention.total - 10));
+          check(id + ':attention-deduped', unique);
+          check(id + ':attention-order', ordered);
+          check(id + ':no-post', true);
+
+          if (state === 'first_read_unavailable') {{
+            check(id + ':unknown-factory', byId['summary-factory'].value !== 'Running' && byId['summary-factory'].value !== 'Idle');
+            check(id + ':unknown-eligible', byId['summary-eligible'].value === 'unknown');
+            check(id + ':unknown-cost', byId['summary-cost'].value === 'unknown');
+            check(id + ':unknown-components', byId['summary-components'].value === 'unknown');
+            check(id + ':unknown-current', current.kind === 'unknown');
+            check(id + ':no-empty-current-fabrication', current.label !== 'No current execution reported');
+            check(id + ':three-source-errors', attention.items.filter((item) => item.severity === 'error' && item.key.startsWith('source:')).length === 3);
+          }} else if (state === 'retained_stale') {{
+            check(id + ':stale-sources', sourceFreshnessModel(snapshot, NOW).every((item) => item.state === 'stale'));
+            check(id + ':stale-warning-once', attention.items.filter((item) => item.key.startsWith('source:')).length === 3);
+            check(id + ':retained-factory', byId['summary-factory'].value === 'Running');
+            check(id + ':retained-cost', byId['summary-cost'].value === '0.000000000000000001 usd');
+            check(id + ':known-current', current.kind === 'execution' && current.attempt === '7');
+          }} else {{
+            check(id + ':fresh-sources', sourceFreshnessModel(snapshot, NOW).every((item) => item.state === 'available'));
+            const sourceWarnings = attention.items.filter((item) => item.key.startsWith('source:'));
+            check(id + ':no-source-failure', sourceWarnings.length === 0, sourceWarnings);
+            if (emptyState) {{
+              check(id + ':known-null-current', current.kind === 'none' && current.label === 'No current execution reported');
+            }} else {{
+              check(id + ':current-attempt', current.kind === 'execution' && current.execution_id === 'exec:current' && current.generation === '7' && current.attempt === '7', current);
+            }}
+          }}
+          scenarios.push(id);
+        }}
+      }}
+    }}
+    return {{ scenarios, failures }};
+    "#
+    );
+    let result = run_driver(&server, &body, "information-matrix");
+    let failures = result["failures"].as_array().unwrap();
+    assert!(failures.is_empty(), "information matrix failures: {failures:?}");
+    let scenarios = result["scenarios"].as_array().unwrap();
+    assert_eq!(scenarios.len(), 36, "the fixed cross product must execute all 36 scenarios");
+    let unique: std::collections::BTreeSet<_> = scenarios.iter().map(|value| value.as_str().unwrap()).collect();
+    assert_eq!(unique.len(), 36, "scenario IDs must be unique");
+    for id in &unique {
+        eprintln!("cockpit_information state scenario: {id}");
+    }
+    let scenario_dir = persistent_evidence_dir();
+    fs::create_dir_all(&scenario_dir).expect("create scenario evidence directory");
+    fs::write(
+        scenario_dir.join("state-scenarios.txt"),
+        unique.iter().map(|id| format!("{id}\n")).collect::<String>(),
+    )
+    .expect("record state scenario IDs");
+    assert_eq!(server.post_count(), 0, "model properties and viewing must never POST");
+}
+
+/// Exact-decimal cases at zero/subcent/large/unknown. Amounts stay exact
+/// strings; no `Number` conversion, rounding or derived remaining budget.
+#[test]
+fn cockpit_information_decimal_properties() {
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        factory: vec![ok_json(FACTORY_RUNTIME)],
+        ..Script::default()
+    });
+    let body = r#"
+    const NOW = 1791820805000;
+    const cases = ['0', '0.000000000000000001', '18446744073709551615.99', null];
+    const failures = [];
+    for (const cost of cases) {
+      const snapshot = {
+        renderNow: NOW,
+        sources: {
+          overview: {
+            data: {
+              metadata: { sources: [] }, factory: { stopped: false }, executions: [], timeline: [],
+              economics: { completeness: 'Complete', usage: cost, usage_unit: 'tokens', cost, allowance: cost, cost_unit: 'usd', observed_at_unix_ms: NOW },
+            },
+            lastSuccessAt: NOW, error: null, status: 'available', stale: false,
+          },
+          factory: { data: { status: 'Idle', repository_id: 'r', state_id: 's', stop: { stopped: false }, current_execution: null, eligible: { entries: [], total: '0', revision: 'r', next_cursor: null }, permissions: { pause: false, resume: false } }, lastSuccessAt: NOW, error: null, status: 'available', stale: false },
+          components: { data: { entries: [], next_cursor: null }, lastSuccessAt: NOW, error: null, status: 'available', stale: false },
+        },
+      };
+      const model = costModel(snapshot);
+      const card = summaryCards(snapshot).find((entry) => entry.id === 'summary-cost');
+      if (cost === null) {
+        if (model.known || card.value !== 'unknown') failures.push({ cost, model, card });
+      } else {
+        if (!model.known || model.cost !== cost || typeof model.cost !== 'string') failures.push({ cost, model });
+        if (card.value !== `${cost} usd`) failures.push({ cost, card });
+        if (model.usage !== cost || model.allowance !== cost) failures.push({ cost, model });
+      }
+    }
+    return { cases, failures };
+    "#;
+    let result = run_driver(&server, body, "decimals");
+    let failures = result["failures"].as_array().unwrap();
+    assert!(failures.is_empty(), "decimal property failures: {failures:?}");
+    assert_eq!(result["cases"].as_array().unwrap().len(), 4);
+    for case in result["cases"].as_array().unwrap() {
+        eprintln!("cockpit_information decimal case: {case}");
+    }
+    let scenario_dir = persistent_evidence_dir();
+    fs::create_dir_all(&scenario_dir).expect("create scenario evidence directory");
+    fs::write(
+        scenario_dir.join("decimal-cases.txt"),
+        result["cases"].as_array().unwrap().iter().map(|case| format!("{case}\n")).collect::<String>(),
+    )
+    .expect("record decimal cases");
+    assert_eq!(server.post_count(), 0);
+}
+
+/// Component identity links: unicode/slash/percent/space/injection IDs encode
+/// into the existing detail route and decode exactly; the detail back link
+/// returns to the registry through navigation only.
+#[test]
+fn cockpit_information_component_identity_links() {
+    let ids = [
+        "example.plain",
+        "example/with/slash",
+        "example.percent%name",
+        "example with space",
+        "example.注入",
+        "example.<script>alert('x')</script>",
+    ];
+    let entries: Vec<serde_json::Value> = ids
+        .iter()
+        .enumerate()
+        .map(|(index, id)| {
+            serde_json::json!({
+                "plugin_id": id,
+                "name": format!("Component {index}"),
+                "binding": {
+                    "binding_id": format!("fixture.gen-{index}"),
+                    "api": "plugin",
+                    "api_version": 1,
+                    "implementation_version": "fixture-gen",
+                    "generation": index + 1,
+                    "config_digest": sha256_placeholder(),
+                },
+                "generation": (index + 1).to_string(),
+                "health": "ready",
+                "freshness": "fresh",
+                "completeness": "Complete",
+                "available": true,
+                "views": [],
+            })
+        })
+        .collect();
+    let page = serde_json::json!({
+        "metadata": {
+            "format": "ControlPlaneRead/v1",
+            "collected_at_unix_ms": 1791820800001i64,
+            "registry_revision": "1",
+            "report_watermark": null,
+            "sources": [{ "source": "registry", "state": "available", "detail": "", "observed_at_unix_ms": 1791820800001i64 }],
+        },
+        "entries": entries,
+        "next_cursor": null,
+    });
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_value(&page)],
+        factory: vec![ok_json(FACTORY_RUNTIME)],
+        detail: vec![ok_value(&unknown_component_detail("example.unknown"))],
+        ..Script::default()
+    });
+    let body = format!(
+        r#"
+    const expected = {expected};
+    {prelude}
+    const links = [...document.querySelectorAll('a[data-focus-key^="component:"]')];
+    const hrefs = links.map((node) => node.getAttribute('href'));
+    const decoded = hrefs.map((href) => parseHash(href).params.id);
+    const mismatches = expected.filter((id, index) => decoded[index] !== id);
+    const injection = expected[5];
+    await navigate(formatHash({{ name: 'component', params: {{ id: injection }} }}));
+    const injectionRoute = cockpit.state.route.params.id;
+    const detailPage = document.querySelector('[data-page="component"]');
+    const back = detailPage.querySelector('a');
+    const backText = back ? back.textContent : null;
+    const backHref = back ? back.getAttribute('href') : null;
+    await navigate(backHref);
+    const visibleAfterBack = visiblePages();
+    return {{
+      count: links.length, hrefs, decoded, mismatches, injectionRoute, backText, backHref,
+      visibleAfterBack, scriptCount: document.querySelectorAll('script').length,
+      imgCount: document.querySelectorAll('img').length,
+      pageScripts: detailPage.querySelectorAll('script').length,
+      pageImgs: detailPage.querySelectorAll('img').length,
+    }};
+    "#,
+        expected = serde_json::to_string(&ids).unwrap(),
+        prelude = NAVIGATE_PRELUDE,
+    );
+    let result = run_driver_at(&server, "#/components", &body, "component-links");
+    assert_eq!(result["count"].as_u64().unwrap(), 6);
+    assert_eq!(result["mismatches"], serde_json::json!([]), "decoded={:?}", result["decoded"]);
+    assert_eq!(result["injectionRoute"].as_str().unwrap(), ids[5]);
+    assert_eq!(result["backText"].as_str().unwrap(), "← Components");
+    assert_eq!(result["backHref"].as_str().unwrap(), "#/components");
+    assert_eq!(result["visibleAfterBack"], serde_json::json!(["components"]));
+    assert_eq!(result["scriptCount"].as_u64().unwrap(), 1, "injected text must not become an element");
+    assert_eq!(result["imgCount"].as_u64().unwrap(), 0);
+    assert_eq!(result["pageScripts"].as_u64().unwrap(), 0);
+    assert_eq!(result["pageImgs"].as_u64().unwrap(), 0);
+    assert_eq!(server.post_count(), 0, "navigation must never POST");
+    let requests = server.requests();
+    assert!(
+        requests.iter().any(|request| request.path.contains("example.%3Cscript%3E")),
+        "the detail request must encode the plugin id exactly once: {requests:?}"
+    );
+}
+
+/// Retained data stays visibly stale in every section that displays it, and the
+/// coverage disclosure is bound: default closed, user-open survives refresh,
+/// user-close survives refresh.
+#[test]
+fn cockpit_information_stale_notices_and_coverage_disclosure() {
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW), Response::unavailable("source lost")],
+        components: vec![ok_json(COMPONENTS)],
+        factory: vec![ok_json(FACTORY_RUNTIME), Response::unavailable("source lost")],
+        status: vec![ok_json(STATUS)],
+        ..Script::default()
+    });
+    let body = r#"
+    const cockpit = new Cockpit({ document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000 });
+    await cockpit.refresh();
+    await cockpit.refresh();
+    const text = (id) => document.getElementById(id)?.textContent ?? null;
+    const notice = (id) => document.querySelector(`#${id} [data-stale-source]`);
+    const sources = ['summary-factory', 'summary-eligible', 'summary-cost', 'current-work', 'eligible', 'economics', 'timeline', 'runtime'];
+    const notices = Object.fromEntries(sources.map((id) => [id, notice(id)?.textContent ?? null]));
+    const componentsCardNotice = notice('summary-components')?.textContent ?? null;
+
+    let coverage = document.querySelector('details[data-disclosure-key="overview:coverage"]');
+    const coveragePresent = coverage !== null;
+    const coverageClosedInitially = coverage ? coverage.open === false : null;
+    if (coverage) coverage.open = true;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await cockpit.refresh();
+    coverage = document.querySelector('details[data-disclosure-key="overview:coverage"]');
+    const coverageOpenAfterRefresh = coverage ? coverage.open === true : false;
+    coverage.open = false;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await cockpit.refresh();
+    coverage = document.querySelector('details[data-disclosure-key="overview:coverage"]');
+    const coverageClosedAfterRefresh = coverage ? coverage.open === false : false;
+    return {
+      notices,
+      componentsCardNotice,
+      coveragePresent,
+      coverageClosedInitially,
+      coverageOpenAfterRefresh,
+      coverageClosedAfterRefresh,
+      posts: 0,
+    };
+    "#;
+    let result = run_driver(&server, body, "stale-notices");
+    assert_eq!(result["componentsCardNotice"], serde_json::Value::Null, "components source is not stale here");
+    for id in ["summary-factory", "summary-eligible", "summary-cost", "current-work", "eligible", "economics", "timeline", "runtime"] {
+        let text = result["notices"][id]
+            .as_str()
+            .unwrap_or_else(|| panic!("missing stale notice in {id}: {}", result["notices"]));
+        assert!(text.contains("Showing stale data from"), "{id}: {text}");
+        assert!(
+            text.contains("T") && text.contains("Z") && !text.contains("unknown"),
+            "{id} must name the exact retained observation time: {text}"
+        );
+    }
+    assert_eq!(result["coveragePresent"].as_bool(), Some(true), "coverage gaps must be disclosed");
+    assert_eq!(result["coverageClosedInitially"].as_bool(), Some(true), "coverage starts closed");
+    assert_eq!(result["coverageOpenAfterRefresh"].as_bool(), Some(true), "an opened coverage disclosure survives refresh");
+    assert_eq!(result["coverageClosedAfterRefresh"].as_bool(), Some(true), "a closed coverage disclosure stays closed after refresh");
+    assert_eq!(server.post_count(), 0, "stale notices and disclosures must never POST");
+}
+
+/// More than ten attention entries show ten plus the exact remainder, and a
+/// known null current execution is not replaced by non-empty overview history.
+#[test]
+fn cockpit_information_attention_limit_and_current_history_separation() {
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        factory: vec![ok_json(FACTORY_RUNTIME)],
+        ..Script::default()
+    });
+    let body = format!(
+        r#"
+    const overview = JSON.parse({overview});
+    overview.economics.completeness = 'Complete';
+    overview.metadata.sources = overview.metadata.sources.filter((source) => source.source !== 'budget');
+    const components = JSON.parse({components});
+    components.entries = Array.from({{ length: 14 }}, (_, index) => ({{
+      plugin_id: `example.bad-${{index}}`,
+      name: `Bad ${{index}}`,
+      binding: {{
+        binding_id: `fixture.bad-${{index}}`, api: 'plugin', api_version: 1,
+        implementation_version: 'fixture-bad', generation: index + 1,
+        config_digest: 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+      }},
+      generation: String(index + 1),
+      health: 'unavailable', freshness: 'stale', completeness: 'Partial', available: false, views: [],
+    }}));
+    components.next_cursor = null;
+    const factory = JSON.parse({factory});
+    factory.current_execution = null;
+    factory.stop = {{ stopped: false, reason: null, observed_at_unix_ms: 1791820803000 }};
+    const api = {{
+      getOverview: () => Promise.resolve(validateOverview(overview)),
+      getComponents: () => Promise.resolve(validateComponents(components)),
+      getFactory: () => Promise.resolve(validateFactory(factory)),
+    }};
+    const first = new Cockpit({{ document, root: document.getElementById('app'), api, intervalMs: 60000, now: () => 1791820805000 }});
+    await first.refresh();
+    const items = [...document.querySelectorAll('.attention-item')];
+    const keys = items.map((node) => node.dataset.attentionKey);
+    const remainder = document.querySelector('#attention .note')?.textContent ?? null;
+    const model = deriveAttention(first.snapshot());
+    const total = model.total;
+    const hidden = model.hiddenCount;
+    first.stop();
+
+    const second = new Cockpit({{ document, root: document.getElementById('app'), api, intervalMs: 60000, now: () => 1791820805000 }});
+    await second.refresh();
+    const currentWork = document.getElementById('current-work').textContent;
+    const history = document.getElementById('executions').textContent;
+    const attentionAfter = document.querySelectorAll('.attention-item').length;
+    return {{
+      itemCount: items.length, keys, remainder, total, hidden, attentionAfter,
+      currentWork, history,
+    }};
+    "#,
+        overview = serde_json::to_string(OVERVIEW).unwrap(),
+        components = serde_json::to_string(COMPONENTS).unwrap(),
+        factory = serde_json::to_string(FACTORY_RUNTIME).unwrap(),
+    );
+    let result = run_driver_at_size(&server, "#/overview", &body, "attention-limit", 1280, 1000);
+    assert_eq!(result["itemCount"].as_u64().unwrap(), 10, "attention list is bounded to ten");
+    assert_eq!(result["total"].as_u64().unwrap(), 14);
+    assert_eq!(result["hidden"].as_u64().unwrap(), 4);
+    assert_eq!(result["remainder"].as_str().unwrap(), "…and 4 additional attention entries.");
+    let keys: Vec<&str> = result["keys"].as_array().unwrap().iter().map(|value| value.as_str().unwrap()).collect();
+    assert_eq!(keys.iter().collect::<std::collections::BTreeSet<_>>().len(), 10, "keys must be unique");
+    assert!(keys.iter().all(|key| key.starts_with("component:")), "only observed components are unhealthy here: {keys:?}");
+    let current = result["currentWork"].as_str().unwrap();
+    assert!(current.contains("No current execution reported"), "current={current}");
+    assert!(!current.contains("exec:cabinets-are-not-shelves:1"), "history must not become current work: {current}");
+    assert!(!current.contains("Attempt"), "an unmatched history attempt must not be shown: {current}");
+    assert!(
+        result["history"].as_str().unwrap().contains("exec:cabinets-are-not-shelves:1"),
+        "the overview history remains visible only in diagnostics"
+    );
+    assert_eq!(server.post_count(), 0);
+}
+
+/// Eight disclosure/focus/refresh/navigation sequences. Disclosure state is
+/// keyed semantically in Cockpit memory, survives refresh and route changes,
+/// resets only when repository/state identity changes, and never posts.
+#[test]
+fn cockpit_information_expand_refresh_navigation_sequences() {
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        factory: vec![ok_json(FACTORY_RUNTIME)],
+        ..Script::default()
+    });
+    let body = format!(
+        r#"
+    const overview = JSON.parse({overview});
+    overview.timeline = Array.from({{ length: 15 }}, (_, index) => ({{
+      at_unix_ms: 1791820805000 - index * 1000, kind: 'note', title: `Entry ${{index}}`, detail: 'fixture',
+    }}));
+    overview.executions = [];
+    const components = JSON.parse({components});
+    const factory = JSON.parse({factory});
+    factory.current_execution = null;
+    let identity = {{ repository_id: 'repo-a', state_id: 'state-a' }};
+    const api = {{
+      getOverview: () => Promise.resolve(validateOverview(overview)),
+      getComponents: () => Promise.resolve(validateComponents(components)),
+      getFactory: () => Promise.resolve(validateFactory({{ ...factory, ...identity }})),
+    }};
+    const cockpit = new Cockpit({{ document, root: document.getElementById('app'), api, intervalMs: 60000, now: () => 1791820805000 }});
+    await cockpit.refresh();
+    const details = (key) => document.querySelector(`details[data-disclosure-key="${{key}}"]`);
+    const isOpen = (key) => details(key)?.open === true;
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const navigate = async (hash) => {{
+      if (location.hash === hash) return;
+      const changed = new Promise((resolve) => window.addEventListener('hashchange', resolve, {{ once: true }}));
+      location.hash = hash;
+      await changed;
+      await settle();
+    }};
+    const sequences = {{}};
+    const record = (id, value) => {{ sequences[id] = value; }};
+
+    let timeline = details('overview:timeline');
+    timeline.open = true;
+    await settle();
+    await cockpit.refresh();
+    record('timeline-open-survives-refresh', isOpen('overview:timeline'));
+
+    let diagnostics = details('overview:diagnostics');
+    diagnostics.open = true;
+    await settle();
+    await cockpit.refresh();
+    record('diagnostics-open-survives-refresh', isOpen('overview:diagnostics'));
+
+    document.querySelector('[data-focus-key="overview:tasks"]').focus();
+    await cockpit.refresh();
+    record('tasks-link-focus-survives-refresh', document.activeElement?.dataset?.focusKey === 'overview:tasks');
+
+    document.querySelector('summary[data-focus-key="disclosure:overview:timeline"]').focus();
+    await cockpit.refresh();
+    record('summary-focus-survives-refresh', document.activeElement?.dataset?.focusKey === 'disclosure:overview:timeline');
+
+    details('overview:timeline').open = true;
+    await settle();
+    await navigate('#/components');
+    await navigate('#/overview');
+    record('open-survives-navigation', isOpen('overview:timeline'));
+
+    await navigate('#/tasks');
+    const hashBefore = location.hash;
+    await cockpit.refresh();
+    record('hash-stays-stable', location.hash === hashBefore);
+
+    await navigate('#/overview');
+    window.scrollTo(0, 120);
+    const scrollBefore = window.scrollY;
+    await cockpit.refresh();
+    record('scroll-stays-stable', Math.abs(window.scrollY - scrollBefore) < 2);
+    window.scrollTo(0, 0);
+
+    details('overview:timeline').open = true;
+    await settle();
+    identity = {{ repository_id: 'repo-b', state_id: 'state-b' }};
+    await cockpit.refresh();
+    const resetOnIdentity = !isOpen('overview:timeline');
+    details('overview:timeline').open = true;
+    await settle();
+    await cockpit.refresh();
+    record('identity-change-resets-then-new-identity-persists', resetOnIdentity && isOpen('overview:timeline'));
+
+    return {{ sequences }};
+    "#,
+        overview = serde_json::to_string(OVERVIEW).unwrap(),
+        components = serde_json::to_string(COMPONENTS).unwrap(),
+        factory = serde_json::to_string(FACTORY_RUNTIME).unwrap(),
+    );
+    let result = run_driver_at_size(&server, "#/overview", &body, "expand-sequences", 1280, 1000);
+    let sequences = result["sequences"].as_object().unwrap();
+    assert_eq!(sequences.len(), 8, "all eight sequences must execute: {sequences:?}");
+    let scenario_dir = persistent_evidence_dir();
+    fs::create_dir_all(&scenario_dir).expect("create scenario evidence directory");
+    let mut sequence_log = String::new();
+    for (name, value) in sequences {
+        eprintln!("cockpit_information sequence: {name}={value}");
+        sequence_log.push_str(&format!("{name}={value}\n"));
+        assert_eq!(value.as_bool(), Some(true), "sequence {name} failed");
+    }
+    fs::write(scenario_dir.join("expand-sequences.txt"), sequence_log).expect("record sequences");
+    assert_eq!(server.post_count(), 0, "disclosures, focus, refresh and navigation must never POST");
+}
+
+/// Layout/theme matrix: 4 widths x 2 themes x 3 Overview states = 24. The real
+/// compiled stylesheet supplies the geometry; the theme is Chrome's emulated
+/// preferred color scheme.
+#[test]
+fn cockpit_information_layout_theme_matrix() {
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        factory: vec![ok_json(FACTORY_RUNTIME)],
+        ..Script::default()
+    });
+    let body = format!(
+        r#"
+    const overview = JSON.parse({overview});
+    const components = JSON.parse({components});
+    const factory = JSON.parse({factory});
+    const failures = [];
+    const check = (id, condition, detail) => {{ if (!condition) failures.push({{ id, detail }}); }};
+    const scenarios = [];
+    const rect = (node) => {{ const r = node.getBoundingClientRect(); return {{ left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height }}; }};
+    const hit = (node) => {{
+      const r = node.getBoundingClientRect();
+      const found = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return !!found && (found === node || node.contains(found));
+    }};
+    const modes = ['populated', 'stale', 'unavailable'];
+    for (const mode of modes) {{
+      let calls = 0;
+      let ok = false;
+      const api = {{
+        getOverview: () => {{
+          if (mode === 'unavailable') return Promise.reject(new ApiError('unavailable', 'down'));
+          if (mode === 'stale') {{
+            calls += 1;
+            if (calls === 1) return Promise.resolve(validateOverview(overview));
+            return Promise.reject(new ApiError('unavailable', 'down'));
+          }}
+          ok = true;
+          return Promise.resolve(validateOverview(overview));
+        }},
+        getComponents: () => Promise.resolve(validateComponents(components)),
+        getFactory: () => {{
+          if (mode === 'unavailable') return Promise.reject(new ApiError('unavailable', 'down'));
+          return Promise.resolve(validateFactory(factory));
+        }},
+      }};
+      const cockpit = new Cockpit({{ document, root: document.getElementById('app'), api, intervalMs: 60000, now: () => 1791820805000 }});
+      await cockpit.refresh();
+      if (mode === 'stale') await cockpit.refresh();
+      const id = `width=${{innerWidth}};theme=${{matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'}};state=${{mode}}`;
+      scenarios.push(id);
+      const themeLight = matchMedia('(prefers-color-scheme: light)').matches;
+      check(id + ':theme', themeLight === (window.__expectedTheme === 'light'), {{ expected: window.__expectedTheme, themeLight }});
+      check(id + ':width', Math.abs(innerWidth - window.__expectedWidth) <= 1, {{ innerWidth, expected: window.__expectedWidth }});
+      check(id + ':no-horizontal-overflow', document.documentElement.scrollWidth <= innerWidth + 1, document.documentElement.scrollWidth);
+      const cards = [...document.querySelectorAll('.summary-card')];
+      const expectedColumns = innerWidth >= 1200 ? 4 : (innerWidth > 720 ? 2 : 1);
+      const cardLefts = [...new Set(cards.map((node) => Math.round(node.getBoundingClientRect().left)))];
+      check(id + ':card-columns', cardLefts.length === expectedColumns, cardLefts);
+      check(id + ':four-cards', cards.length === 4);
+      const main = document.querySelector('.overview-main');
+      const side = document.querySelector('.overview-side');
+      if (innerWidth >= 1200) {{
+        check(id + ':two-column-overview', Math.abs(rect(main).top - rect(side).top) < 2 && rect(main).right <= rect(side).left + 1);
+      }} else {{
+        check(id + ':one-column-overview', rect(side).top >= rect(main).bottom - 1);
+      }}
+      if (innerWidth === 1280 && mode === 'populated') {{
+        const heading = document.querySelector('#current-work h2');
+        check(id + ':current-heading-visible', rect(heading).top >= 0 && rect(heading).bottom <= innerHeight, {{ innerHeight, heading: rect(heading) }});
+        check(id + ':header-visible', rect(document.getElementById('cockpit-header')).bottom <= innerHeight);
+        check(id + ':cards-visible', rect(document.querySelector('.summary-grid')).bottom <= innerHeight);
+      }}
+      const pause = document.querySelector('[data-action="pause"]');
+      const resume = document.querySelector('[data-action="resume"]');
+      pause.scrollIntoView({{ block: 'center' }});
+      const controlsHit = hit(pause) && hit(resume);
+      window.scrollTo(0, 0);
+      check(id + ':controls-hit-testable', controlsHit);
+      check(id + ':control-target-height', rect(pause).height >= 40 && rect(resume).height >= 40);
+      for (const page of document.querySelectorAll('[data-page]')) {{
+        if (page.dataset.page !== 'overview') {{
+          check(id + ':hidden-page-' + page.dataset.page, page.hidden && rect(page).width === 0 && rect(page).height === 0);
+        }}
+      }}
+      if (mode === 'unavailable') {{
+        check(id + ':unknown-cards', document.getElementById('summary-cost').textContent.includes('unknown'));
+        check(id + ':unknown-current', document.getElementById('current-work').textContent.includes('unavailable'));
+      }}
+      if (mode === 'stale') {{
+        check(id + ':stale-header', document.querySelector('.source-state--stale') !== null);
+      }}
+      cockpit.stop();
+    }}
+    return {{ scenarios, failures, cssLoaded: getComputedStyle(document.querySelector('.summary-grid')).display === 'grid' }};
+    "#,
+        overview = serde_json::to_string(OVERVIEW).unwrap(),
+        components = serde_json::to_string(COMPONENTS).unwrap(),
+        factory = serde_json::to_string(FACTORY_RUNTIME).unwrap(),
+    );
+    let widths = [390u32, 720, 1280, 1920];
+    let themes = ["light", "dark"];
+    let mut executed = Vec::new();
+    for width in widths {
+        for theme in themes {
+            let script = format!(
+                "window.__expectedWidth = {width}; window.__expectedTheme = '{theme}';\n{body}"
+            );
+            let height = if width == 1280 { 800 } else { 1000 };
+            let mut result = run_driver_at_size_theme(
+                &server,
+                "#/overview",
+                &script,
+                &format!("layout-{width}-{theme}"),
+                width,
+                height,
+                theme,
+            );
+            if result["cssLoaded"].as_bool() != Some(true) {
+                // A launch that serialized before the compiled stylesheet
+                // applied cannot answer geometry questions; retry that launch
+                // once with a fresh profile. A real CSS regression repeats.
+                result = run_driver_at_size_theme(
+                    &server,
+                    "#/overview",
+                    &script,
+                    &format!("layout-{width}-{theme}-retry"),
+                    width,
+                    height,
+                    theme,
+                );
+            }
+            assert_eq!(
+                result["cssLoaded"].as_bool(),
+                Some(true),
+                "{width}px {theme}: compiled stylesheet did not apply"
+            );
+            let failures = result["failures"].as_array().unwrap();
+            assert!(failures.is_empty(), "{width}px {theme} layout failures: {failures:?}");
+            for scenario in result["scenarios"].as_array().unwrap() {
+                executed.push(scenario.as_str().unwrap().to_string());
+            }
+        }
+    }
+    assert_eq!(executed.len(), 24, "4 widths x 2 themes x 3 states must execute");
+    assert_eq!(
+        executed.iter().collect::<std::collections::BTreeSet<_>>().len(),
+        24,
+        "layout scenario IDs must be unique"
+    );
+    for id in &executed {
+        eprintln!("cockpit_information layout scenario: {id}");
+    }
+    let scenario_dir = persistent_evidence_dir();
+    fs::create_dir_all(&scenario_dir).expect("create scenario evidence directory");
+    fs::write(
+        scenario_dir.join("layout-scenarios.txt"),
+        executed.iter().map(|id| format!("{id}\n")).collect::<String>(),
+    )
+    .expect("record layout scenario IDs");
+    assert_eq!(server.post_count(), 0, "layout and theme checks must never POST");
+}
+
+fn persistent_evidence_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("AGALMA_SCREENSHOT_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    let worktree = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("worktree root");
+    let target = worktree.parent().and_then(Path::parent);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
+    let leaf = format!("screenshots-{stamp}-{}", std::process::id());
+    match target {
+        Some(target) if worktree.ends_with("target/worktrees/agalma-82f.8") => {
+            target.join("test-runs/agalma-82f.8").join(leaf)
+        }
+        _ => worktree.join("target/test-runs/agalma-82f.8").join(leaf),
+    }
+}
+
+fn assert_png(path: &Path) {
+    let bytes = fs::read(path).unwrap_or_else(|error| panic!("read screenshot {}: {error}", path.display()));
+    assert!(bytes.len() > 1000, "screenshot {} is unexpectedly small ({} bytes)", path.display(), bytes.len());
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "screenshot {} is not a PNG", path.display());
+}
+
+/// Eight real browser screenshots for visual review: populated Overview at
+/// 390/1280/1920 in both themes, plus stale and unavailable at 1280 dark.
+#[test]
+fn cockpit_information_captures_eight_screenshots() {
+    let chrome = resolve_chrome().expect("installed Chrome (CHROME_BIN) is required");
+    let dir = persistent_evidence_dir();
+    fs::create_dir_all(&dir).expect("create screenshot evidence directory");
+
+    let mut populated_factory: serde_json::Value = serde_json::from_str(FACTORY_RUNTIME).unwrap();
+    let overview_value: serde_json::Value = serde_json::from_str(OVERVIEW).unwrap();
+    populated_factory["current_execution"] = overview_value["executions"][0].clone();
+    populated_factory["stop"] = serde_json::json!({
+        "stopped": false,
+        "reason": null,
+        "observed_at_unix_ms": 1791820803000u64,
+    });
+    populated_factory["sources"][3]["state"] = serde_json::json!("available");
+    let populated_factory_text = populated_factory.to_string();
+
+    let (populated_server, _) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        factory: vec![ok_json(&populated_factory_text)],
+        status: vec![ok_json(STATUS)],
+        ..Script::default()
+    });
+    let (stale_server, _) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW), Response::unavailable("source lost")],
+        components: vec![ok_json(COMPONENTS)],
+        factory: vec![ok_json(&populated_factory_text)],
+        status: vec![ok_json(STATUS)],
+        ..Script::default()
+    });
+    let (unavailable_server, _) = scripted_server(Script {
+        overview: vec![Response::unavailable("source lost")],
+        components: vec![ok_json(COMPONENTS)],
+        factory: vec![Response::unavailable("source lost")],
+        status: vec![ok_json(STATUS)],
+        ..Script::default()
+    });
+
+    let page = screenshot_page();
+    for server in [&populated_server, &stale_server, &unavailable_server] {
+        server.register("/screenshot.html", Response::text(200, "text/html; charset=utf-8", page.clone()));
+    }
+    stale_server.register(
+        "/screenshot-frame.html",
+        Response::text(200, "text/html; charset=utf-8", screenshot_frame_page(390, 844, "?mode=stale")),
+    );
+    populated_server.register(
+        "/screenshot-frame.html",
+        Response::text(200, "text/html; charset=utf-8", screenshot_frame_page(390, 844, "?mode=populated")),
+    );
+
+    let mut shots = Vec::new();
+    for theme in ["dark", "light"] {
+        for width in [390u32, 1280, 1920] {
+            let (server, mode, height) = if width == 390 {
+                (&populated_server, "populated", 844)
+            } else {
+                (&populated_server, "populated", if width == 1280 { 800 } else { 1080 })
+            };
+            let name = format!("overview-{width}-{theme}.png");
+            let path = dir.join(&name);
+            let url = if width == 390 {
+                format!("{}/screenshot-frame.html", server.base_url())
+            } else {
+                format!("{}/screenshot.html?mode={mode}", server.base_url())
+            };
+            let outcome = browser_support::capture_screenshot(
+                &chrome, &url, &path, BUDGET_MS, &format!("shot-{width}-{theme}"), width, height, theme,
+            );
+            assert!(outcome.status.success(), "screenshot {name} failed: {}", outcome.stderr);
+            assert_png(&path);
+            shots.push(path);
+        }
+    }
+    for (mode, server) in [("stale", &stale_server), ("unavailable", &unavailable_server)] {
+        let name = format!("overview-1280-dark-{mode}.png");
+        let path = dir.join(&name);
+        let url = format!("{}/screenshot.html?mode={mode}", server.base_url());
+        let outcome = browser_support::capture_screenshot(
+            &chrome, &url, &path, BUDGET_MS, &format!("shot-1280-dark-{mode}"), 1280, 800, "dark",
+        );
+        assert!(outcome.status.success(), "screenshot {name} failed: {}", outcome.stderr);
+        assert_png(&path);
+        shots.push(path);
+    }
+    assert_eq!(shots.len(), 8, "eight screenshots must be captured");
+    for path in &shots {
+        eprintln!("cockpit_information screenshot: {}", path.display());
+    }
+    assert_eq!(populated_server.post_count() + stale_server.post_count() + unavailable_server.post_count(), 0);
+}

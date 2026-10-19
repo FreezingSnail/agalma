@@ -365,8 +365,8 @@ pub fn run_browser(chrome: &Path, url: &str, budget_ms: u64, label: &str) -> Bro
     run_browser_sized(chrome, url, budget_ms, label, 1280, 2000)
 }
 
-/// Run headless Chrome with an explicit viewport so responsive layout checks
-/// use the real CSS engine instead of a simulated width.
+/// Run the installed Chrome headless with an explicit viewport so responsive
+/// layout checks use the real CSS engine instead of a simulated width.
 pub fn run_browser_sized(
     chrome: &Path,
     url: &str,
@@ -374,6 +374,29 @@ pub fn run_browser_sized(
     label: &str,
     width: u32,
     height: u32,
+) -> BrowserOutcome {
+    run_browser_sized_theme(chrome, url, budget_ms, label, width, height, None)
+}
+
+/// Deterministic theme args: Chrome's Blink setting accepts an explicit
+/// preferred color scheme even when the host desktop is the other theme.
+pub fn theme_args(theme: &str) -> Vec<&'static str> {
+    match theme {
+        "light" => vec!["--blink-settings=preferredColorScheme=1"],
+        "dark" => vec!["--blink-settings=preferredColorScheme=0"],
+        _ => Vec::new(),
+    }
+}
+
+/// Sized run with an explicit `light`/`dark` emulated color scheme.
+pub fn run_browser_sized_theme(
+    chrome: &Path,
+    url: &str,
+    budget_ms: u64,
+    label: &str,
+    width: u32,
+    height: u32,
+    theme: Option<&str>,
 ) -> BrowserOutcome {
     let _launch_guard = BROWSER_LAUNCH_LOCK
         .lock()
@@ -385,18 +408,22 @@ pub fn run_browser_sized(
     ));
     let _ = std::fs::remove_dir_all(&profile);
     std::fs::create_dir_all(&profile).expect("create browser profile dir");
-    let output = Command::new(chrome)
-        .args([
-            "--headless=new",
-            "--disable-gpu",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-extensions",
-            "--disable-background-networking",
-            "--disable-sync",
-            "--mute-audio",
-            "--hide-scrollbars",
-        ])
+    let mut command = Command::new(chrome);
+    command.args([
+        "--headless=new",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-sync",
+        "--mute-audio",
+        "--hide-scrollbars",
+    ]);
+    for arg in theme_args(theme.unwrap_or("")) {
+        command.arg(arg);
+    }
+    let output = command
         .arg(format!("--window-size={width},{height}"))
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg(format!("--virtual-time-budget={budget_ms}"))
@@ -405,6 +432,88 @@ pub fn run_browser_sized(
         .expect("spawn installed Chrome");
     BrowserOutcome {
         dom: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        status: output.status,
+        profile,
+    }
+}
+
+/// Capture one real browser screenshot (inspection artifact, not a pixel
+/// snapshot). Chrome's headless viewport has a 500 CSS px minimum for `innerWidth`;
+/// narrow (<500 px) artifacts are therefore captured through the harness iframe
+/// and cropped to the requested CSS width with the installed `sips` tool.
+pub fn capture_screenshot(
+    chrome: &Path,
+    url: &str,
+    path: &Path,
+    budget_ms: u64,
+    label: &str,
+    width: u32,
+    height: u32,
+    theme: &str,
+) -> BrowserOutcome {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create screenshot directory");
+    }
+    let launch_width = width.max(500);
+    let _launch_guard = BROWSER_LAUNCH_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let seq = BROWSER_PROFILE_SEQ.fetch_add(1, Ordering::SeqCst);
+    let profile = std::env::temp_dir().join(format!(
+        "agalma-web6-shot-{label}-{}-{seq}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&profile);
+    std::fs::create_dir_all(&profile).expect("create browser profile dir");
+    let mut command = Command::new(chrome);
+    command.args([
+        "--headless=new",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-sync",
+        "--mute-audio",
+        "--hide-scrollbars",
+    ]);
+    for arg in theme_args(theme) {
+        command.arg(arg);
+    }
+    let output = command
+        .arg(format!("--window-size={launch_width},{height}"))
+        .arg(format!("--user-data-dir={}", profile.display()))
+        .arg(format!("--virtual-time-budget={budget_ms}"))
+        .arg(format!("--screenshot={}", path.display()))
+        .arg(url)
+        .output()
+        .expect("spawn installed Chrome for screenshot");
+    if width < 500 && path.is_file() {
+        // The iframe page lays the cockpit out at the exact CSS width; crop the
+        // unused 500 px gutter so the artifact is exactly the requested width.
+        let cropped = path.with_extension("cropped.png");
+        let status = Command::new("sips")
+            .args([
+                "-c",
+                &height.to_string(),
+                &width.to_string(),
+                "--cropOffset",
+                "0",
+                &format!("{}", (launch_width - width) / 2),
+                &path.to_string_lossy().into_owned(),
+                "--out",
+                &cropped.to_string_lossy().into_owned(),
+            ])
+            .status();
+        if matches!(status, Ok(value) if value.success()) {
+            let _ = std::fs::rename(&cropped, path);
+        } else {
+            let _ = std::fs::remove_file(&cropped);
+        }
+    }
+    BrowserOutcome {
+        dom: String::new(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         status: output.status,
         profile,
@@ -434,15 +543,29 @@ pub fn run_browser_result_sized(
     width: u32,
     height: u32,
 ) -> (BrowserOutcome, serde_json::Value) {
+    run_browser_result_sized_theme(chrome, url, budget_ms, label, width, height, "")
+}
+
+/// Sized result run with an explicit emulated color scheme.
+pub fn run_browser_result_sized_theme(
+    chrome: &Path,
+    url: &str,
+    budget_ms: u64,
+    label: &str,
+    width: u32,
+    height: u32,
+    theme: &str,
+) -> (BrowserOutcome, serde_json::Value) {
     let mut last_error = String::new();
     for attempt in 0..2 {
-        let outcome = run_browser_sized(
+        let outcome = run_browser_sized_theme(
             chrome,
             url,
             budget_ms,
             &format!("{label}-{attempt}"),
             width,
             height,
+            Some(theme),
         );
         match outcome.try_result_json() {
             Ok(value) => return (outcome, value),
@@ -472,10 +595,12 @@ pub fn driver_page(body: &str) -> String {
 <link rel="stylesheet" href="/dashboard.css"></head>
 <body><main id="app"></main><pre id="harness-result"></pre>
 <script type="module">
-import {{ startCockpit, Cockpit, boundedText, formatTimestamp, FIELD_TEXT_LIMIT, LIST_ROW_LIMIT }} from '/app.js';
+import {{ startCockpit, Cockpit, boundedText, formatTimestamp, FIELD_TEXT_LIMIT, LIST_ROW_LIMIT, sourceFreshnessModel, runtimeModel, repositoryIdentity, summaryCards, currentWorkModel, costModel, componentPageModel, componentSeverity, deriveAttention, coverageGaps, timelineModel, formatComponentHash }} from '/app.js';
 import {{ DashboardApi, validateOverview, validateComponents, validateFactory, validateControl, ApiError, isExactU64, isAmount }} from '/api.js';
 import {{ Refresher }} from '/refresh.js';
 import {{ ControlPanel, RESUME_CONFIRMATION }} from '/controls.js';
+import {{ timestampModel }} from '/ui.js';
+import {{ parseHash, formatHash }} from '/router.js';
 const setResult = (value) => {{ document.getElementById('harness-result').textContent = JSON.stringify(value); }};
 try {{
   const result = await (async () => {{

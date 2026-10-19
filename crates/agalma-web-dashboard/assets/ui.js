@@ -126,6 +126,7 @@ export function textNode(doc, tag, value, className) {
 const PILL_STATES = new Set([
   'ready', 'degraded', 'unavailable', 'unknown', 'stale',
   'running', 'idle', 'paused', 'failed',
+  'ok', 'healthy', 'info', 'warn', 'warning', 'error', 'critical',
 ]);
 
 /** One status/health pill. An unrecognized state renders as `unknown`, never
@@ -165,7 +166,7 @@ export function kv(doc, label, value, className = 'value') {
  * already-built node (for example a `pill`). Rows beyond [`LIST_ROW_LIMIT`] are
  * dropped and reported with an explicit footer marker.
  */
-export function table(doc, headings, rows) {
+export function table(doc, headings, rows, limit = LIST_ROW_LIMIT) {
   const root = el(doc, 'table', 'table');
   const head = el(doc, 'thead');
   const headRow = el(doc, 'tr');
@@ -173,7 +174,7 @@ export function table(doc, headings, rows) {
   head.appendChild(headRow);
   root.appendChild(head);
   const body = el(doc, 'tbody');
-  const bounded = rows.slice(0, LIST_ROW_LIMIT);
+  const bounded = rows.slice(0, limit);
   for (const row of bounded) {
     const tr = el(doc, 'tr');
     for (const cell of row) {
@@ -188,12 +189,12 @@ export function table(doc, headings, rows) {
     body.appendChild(tr);
   }
   root.appendChild(body);
-  if (rows.length > LIST_ROW_LIMIT) {
+  if (rows.length > limit) {
     const foot = el(doc, 'tfoot');
     const marker = el(doc, 'tr');
     const cell = el(doc, 'td');
     cell.colSpan = headings.length;
-    cell.appendChild(doc.createTextNode(`…and ${rows.length - LIST_ROW_LIMIT} more rows.`));
+    cell.appendChild(doc.createTextNode(`…and ${rows.length - limit} more rows.`));
     marker.appendChild(cell);
     foot.appendChild(marker);
     root.appendChild(foot);

@@ -87,7 +87,10 @@ export class Cockpit {
     this.state = {
       route: parseHash(this.#initialHash()),
       components: { cursor: null, page: null, reloadNote: null, rows: new Map() },
-      detail: { pluginId: null, cursor: null, page: null },
+      // The detail page is pinned to one route subject and epoch. `page` is
+      // committed only by a response for the still-current pin, so a late
+      // response after navigation can never become another target's data.
+      detail: { pluginId: null, cursor: null, page: null, epoch: 0 },
       status: null,
       lastRenderError: null,
       renderCount: 0,
@@ -169,9 +172,21 @@ export class Cockpit {
     this.state.components.rows = next;
   }
 
-  #loadDetail(signal) {
-    const route = this.state.route;
-    if (route?.name !== 'component' || !route.params?.id) return this.state.detail.page;
+  /**
+   * Pin the detail route subject/epoch.
+   *
+   * A subject change (or leaving the detail route) resets the opaque cursor and
+   * retained page and advances the epoch. Responses captured under an older
+   * epoch are never committed, even when they are for the same visible target.
+   */
+  #pinDetail(route) {
+    if (route?.name !== 'component' || !route.params?.id) {
+      this.state.detail.pluginId = null;
+      this.state.detail.cursor = null;
+      this.state.detail.page = null;
+      this.state.detail.epoch += 1;
+      return;
+    }
     const pluginId = route.params.id;
     if (pluginId !== this.state.detail.pluginId) {
       // A new target resets the opaque cursor; the previous page is dropped.
@@ -179,9 +194,29 @@ export class Cockpit {
       this.state.detail.cursor = null;
       this.state.detail.page = null;
     }
+    this.state.detail.epoch += 1;
+  }
+
+  #loadDetail(signal) {
+    const route = this.state.route;
+    if (route?.name !== 'component' || !route.params?.id) return null;
+    const pluginId = route.params.id;
+    if (pluginId !== this.state.detail.pluginId) this.#pinDetail(route);
+    const epoch = this.state.detail.epoch;
+    const cursor = this.state.detail.cursor;
     return this.api
-      .getComponentDetail(pluginId, { limit: DETAIL_PAGE_LIMIT, cursor: this.state.detail.cursor, signal })
+      .getComponentDetail(pluginId, { limit: DETAIL_PAGE_LIMIT, cursor, signal })
       .then((page) => {
+        const current = this.state.route;
+        if (
+          current?.name !== 'component'
+          || current.params?.id !== pluginId
+          || this.state.detail.pluginId !== pluginId
+          || this.state.detail.epoch !== epoch
+        ) {
+          // Never commit a response for another target or an older route epoch.
+          return null;
+        }
         this.state.detail.page = page;
         return page;
       });
@@ -237,6 +272,9 @@ export class Cockpit {
       || previous.name !== route.name
       || previous.params?.id !== route.params?.id;
     this.state.route = route;
+    // Pin only a real route transition; `#loadDetail` also pins when it first
+    // observes an uninitialized subject.
+    if (changed) this.#pinDetail(route);
     this.render();
     // Only a real route change triggers a read; the initial dispatch is
     // covered by `start()`'s first refresh cycle.

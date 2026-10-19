@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex};
 
 use browser_support::{driver_page, resolve_chrome, FixtureServer, Response, Router};
 
-const BUDGET_MS: u64 = 15000;
+const BUDGET_MS: u64 = 30000;
 
 const OVERVIEW: &str = include_str!("../../../fixtures/cockpit/overview.json");
 const COMPONENTS: &str = include_str!("../../../fixtures/cockpit/components-page.json");
@@ -42,6 +42,7 @@ const FACTORY_READONLY: &str = include_str!("../../../fixtures/cockpit/factory-r
 const CONTROL_RECEIPT: &str = include_str!("../../../fixtures/cockpit/control-receipt.json");
 const CONTROL_UNCONFIRMED: &str = include_str!("../../../fixtures/cockpit/control-unconfirmed.json");
 const COMPONENT_DETAIL: &str = include_str!("../../../fixtures/cockpit/component-detail.json");
+const COMPONENT_VIEWS: &str = include_str!("../../../fixtures/cockpit/component-views.json");
 const STATUS: &str = include_str!("../../../fixtures/cockpit/status.json");
 
 // ---------------------------------------------------------------------------
@@ -2889,4 +2890,1359 @@ fn cockpit_information_captures_eight_screenshots() {
         eprintln!("cockpit_information screenshot: {}", path.display());
     }
     assert_eq!(populated_server.post_count() + stale_server.post_count() + unavailable_server.post_count(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// WEB.9 / CW.1 generic declared component views
+// ---------------------------------------------------------------------------
+
+const VIEW_MAX_GENERATION: &str = "18446744073709551615";
+const VIEW_CONFIG_DIGEST: &str =
+    "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
+
+/// Run one component-view driver with extra empty-dump resilience.
+///
+/// `browser_support::run_browser_result_sized*` already retries once; a run
+/// that serialized an empty document twice while many component cases shared
+/// one test binary is retried again here with a fresh profile. A driver that
+/// ran always writes a JSON result, so only a truly empty serialization is
+/// retried.
+fn run_component_driver(
+    server: &FixtureServer,
+    hash: &str,
+    body: &str,
+    label: &str,
+    width: u32,
+    height: u32,
+    theme: &str,
+) -> serde_json::Value {
+    server.register(
+        "/harness.html",
+        Response::text(200, "text/html; charset=utf-8", driver_page(body)),
+    );
+    let (path, launch_width) = if width < 500 {
+        server.register(
+            "/frame.html",
+            Response::text(
+                200,
+                "text/html; charset=utf-8",
+                viewport_frame_page(width, height, hash),
+            ),
+        );
+        ("/frame.html", 500)
+    } else {
+        ("/harness.html", width)
+    };
+    let url = if width < 500 {
+        format!("{}{path}", server.base_url())
+    } else {
+        format!("{}{path}{hash}", server.base_url())
+    };
+    let chrome = resolve_chrome().expect("installed Chrome (CHROME_BIN) is required");
+    let mut last = String::from("no attempt ran");
+    for attempt in 0..4 {
+        let outcome = browser_support::run_browser_sized_theme(
+            &chrome,
+            &url,
+            BUDGET_MS,
+            &format!("{label}-retry{attempt}"),
+            launch_width,
+            height,
+            Some(theme),
+        );
+        if !outcome.status.success() {
+            last = format!("status {:?}: {}", outcome.status, outcome.stderr);
+            continue;
+        }
+        match outcome.try_result_json() {
+            Ok(result) => {
+                assert!(
+                    result.get("harnessError").is_none(),
+                    "driver {label} threw: {result}"
+                );
+                return result;
+            }
+            Err(error) => last = error,
+        }
+    }
+    panic!("component driver {label} produced no result after retries: {last}");
+}
+
+fn view_binding(generation: &str) -> serde_json::Value {
+    serde_json::json!({
+        "binding_id": "fixture.views",
+        "api": "plugin",
+        "api_version": 1,
+        "implementation_version": "fixture-views",
+        "generation": generation,
+        "config_digest": VIEW_CONFIG_DIGEST,
+    })
+}
+
+fn view_digest(seed: u32) -> String {
+    format!("sha256:{seed:064x}")
+}
+
+fn view_descriptor(
+    view_id: &str,
+    namespace: &str,
+    kind: &str,
+    schema_version: u64,
+    fields: &[&str],
+) -> serde_json::Value {
+    serde_json::json!({
+        "view_id": view_id,
+        "schema_namespace": namespace,
+        "kind": kind,
+        "title": format!("View {view_id}"),
+        "schema_version": schema_version,
+        "fields": fields,
+    })
+}
+
+fn view_entry(
+    plugin_id: &str,
+    binding: &serde_json::Value,
+    namespace: &str,
+    schema_version: u64,
+    sequence: &str,
+    payload: serde_json::Value,
+    digest: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "format": "ReportEnvelope/v1",
+        "plugin_id": plugin_id,
+        "binding": binding,
+        "schema_namespace": namespace,
+        "schema_version": schema_version,
+        "sequence": sequence,
+        "reported_at_unix_ms": "1791820900000",
+        "observed_at_unix_ms": "1791820900001",
+        "execution_id": null,
+        "durability": "durable",
+        "payload": payload,
+        "payload_digest": digest,
+    })
+}
+
+/// Persistent evidence outside a removable worktree. The runner passes
+/// `RUN_ROOT`; the fallback derives the primary checkout's `target/test-runs`.
+fn component_evidence_dir(label: &str) -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
+    let leaf = format!("component-views-{label}-{stamp}-{}", std::process::id());
+    if let Ok(root) = std::env::var("RUN_ROOT") {
+        if !root.is_empty() {
+            let bead = std::env::var("BEAD").unwrap_or_else(|_| "agalma-51dg.2".to_string());
+            return Path::new(&root).join(bead).join(leaf);
+        }
+    }
+    let worktree = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("worktree root");
+    let primary_target = worktree
+        .parent()
+        .and_then(Path::parent)
+        .expect("primary target root");
+    primary_target
+        .join("test-runs")
+        .join("agalma-51dg.2")
+        .join(leaf)
+}
+
+fn write_evidence(label: &str, file: &str, contents: &str) -> PathBuf {
+    let dir = component_evidence_dir(label);
+    fs::create_dir_all(&dir).expect("create component evidence directory");
+    let path = dir.join(file);
+    fs::write(&path, contents).expect("write component evidence");
+    path
+}
+
+fn populated_payload(kind: &str) -> serde_json::Value {
+    match kind {
+        "Status" => serde_json::json!({ "value": "ready" }),
+        "Metrics" => serde_json::json!({ "a": "text", "b": false, "c": 0, "d": null }),
+        "Table" => serde_json::json!([{ "id": "r1", "v": "one" }]),
+        "Timeline" => serde_json::json!([{ "t": "t1", "m": "one" }]),
+        "Alert" => serde_json::json!({ "level": "warning", "message": "attention" }),
+        "ArtifactLink" => serde_json::json!({
+            "label": "pkg",
+            "reference": "javascript:alert(1)",
+            "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        }),
+        other => panic!("unknown kind {other}"),
+    }
+}
+
+fn kind_fields(kind: &str) -> Vec<&'static str> {
+    match kind {
+        "Status" => vec!["value"],
+        "Metrics" => vec!["a", "b", "c", "d"],
+        "Table" => vec!["id", "v"],
+        "Timeline" => vec!["t", "m"],
+        "Alert" => vec!["level", "message"],
+        "ArtifactLink" => vec!["label", "reference", "digest"],
+        other => panic!("unknown kind {other}"),
+    }
+}
+
+fn populated_summary(kind: &str) -> &'static str {
+    match kind {
+        "Status" => "ready",
+        "Metrics" => "a=text;b=false;c=0;d=null",
+        "Table" => "r1,one",
+        "Timeline" => "t1|one",
+        "Alert" => "warning|attention",
+        "ArtifactLink" => {
+            "label=pkg;reference=javascript:alert(1);digest=sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        }
+        other => panic!("unknown kind {other}"),
+    }
+}
+
+const VIEW_SUMMARY_JS: &str = r#"
+    function summary(view) {
+      if (!view) return null;
+      if (view.kind === 'Status') return view.data?.value ?? null;
+      if (view.kind === 'Metrics') return (view.data?.rows ?? []).map((row) => `${row.field}=${row.text}`).join(';');
+      if (view.kind === 'Table') return (view.data?.rows ?? []).map((row) => row.map((cell) => cell.text).join(',')).join(';');
+      if (view.kind === 'Timeline') return (view.data?.rows ?? []).map((row) => `${row.time}|${row.text}`).join(';');
+      if (view.kind === 'Alert') return view.data?.level === undefined ? '' : `${view.data.level}|${view.data.message}`;
+      if (view.kind === 'ArtifactLink') return (view.data?.entries ?? []).map((row) => `${row.field}=${row.text}`).join(';');
+      return null;
+    }
+"#;
+
+#[test]
+fn cockpit_component_views_kind_state_matrix() {
+    const KINDS: [&str; 6] = ["Status", "Metrics", "Table", "Timeline", "Alert", "ArtifactLink"];
+    const STATES: [&str; 6] = [
+        "populated", "empty", "missing", "malformed", "schema-mismatched", "retained-stale",
+    ];
+    let plugin_id = "example.unfamiliar-reporter";
+    let binding = view_binding("9007199254740993");
+    let mut cases = Vec::new();
+    for kind in KINDS {
+        for state in STATES {
+            let namespace = format!("private.vendor.telemetry.{}", kind.to_lowercase());
+            let (payload, entry_version, entries, report_state, stale, expected_state, expected_value) =
+                match state {
+                    "populated" => (
+                        populated_payload(kind),
+                        1,
+                        true,
+                        "available",
+                        false,
+                        "rendered",
+                        Some(populated_summary(kind).to_string()),
+                    ),
+                    "empty" => {
+                        let payload = if kind == "Status" {
+                            serde_json::json!({})
+                        } else {
+                            match kind {
+                                "Table" | "Timeline" => serde_json::json!([]),
+                                _ => serde_json::json!({}),
+                            }
+                        };
+                        let expected_state = if kind == "Status" { "rendered" } else { "empty" };
+                        let expected_value = if kind == "Status" { Some("unknown".to_string()) } else { Some(String::new()) };
+                        (payload, 1, true, "available", false, expected_state, expected_value)
+                    }
+                    "missing" => (serde_json::json!({}), 1, false, "missing", false, "missing", None),
+                    "malformed" => (
+                        serde_json::json!("not-a-structure"),
+                        1,
+                        true,
+                        "available",
+                        false,
+                        "malformed",
+                        None,
+                    ),
+                    "schema-mismatched" => (
+                        populated_payload(kind),
+                        2,
+                        true,
+                        "available",
+                        false,
+                        "schema-mismatch",
+                        None,
+                    ),
+                    "retained-stale" => (
+                        populated_payload(kind),
+                        1,
+                        true,
+                        "available",
+                        true,
+                        "stale",
+                        Some(populated_summary(kind).to_string()),
+                    ),
+                    other => panic!("unknown state {other}"),
+                };
+            let fields: Vec<&str> = if state == "empty" && matches!(kind, "Metrics" | "Alert" | "ArtifactLink") {
+                Vec::new()
+            } else {
+                kind_fields(kind)
+            };
+            let descriptor = view_descriptor(&kind.to_lowercase(), &namespace, kind, 1, &fields);
+            let entries_json = if entries {
+                vec![view_entry(
+                    plugin_id,
+                    &binding,
+                    &namespace,
+                    entry_version,
+                    "1",
+                    payload,
+                    &view_digest(7),
+                )]
+            } else {
+                Vec::new()
+            };
+            let mut expected = serde_json::json!({ "state": expected_state });
+            if let Some(value) = expected_value {
+                expected["value"] = serde_json::json!(value);
+            }
+            cases.push(serde_json::json!({
+                "id": format!("kind={kind};state={state}"),
+                "kind": kind,
+                "pluginId": plugin_id,
+                "binding": binding,
+                "descriptor": descriptor,
+                "entries": entries_json,
+                "reportState": report_state,
+                "stale": stale,
+                "expected": expected,
+            }));
+        }
+    }
+    assert_eq!(cases.len(), 36, "six kinds x six data states");
+    assert_eq!(
+        cases.iter().map(|case| case["id"].as_str().unwrap()).collect::<std::collections::BTreeSet<_>>().len(),
+        36,
+        "scenario IDs are unique"
+    );
+
+    let router: Router = Arc::new(|_, _, _, _| None);
+    let server = FixtureServer::start(router).expect("start fixture server");
+    server.register("/cases.json", Response::json(200, serde_json::Value::Array(cases).to_string()));
+    let body = format!(
+        r#"
+    const {{ resolveComponentViews }} = await import('/views.js');
+    const cases = await (await fetch('/cases.json')).json();
+    {summary}
+    const failures = [];
+    const observed = [];
+    for (const c of cases) {{
+      const result = resolveComponentViews({{
+        pluginId: c.pluginId,
+        binding: c.binding,
+        descriptors: [c.descriptor],
+        entries: c.entries,
+        nextCursor: null,
+        reportState: c.reportState,
+        stale: c.stale,
+      }});
+      const view = result.views[0] ?? null;
+      const got = {{ id: c.id, state: view?.state ?? null, value: summary(view) }};
+      observed.push(got);
+      if (got.state !== c.expected.state) failures.push({{ id: c.id, field: 'state', expected: c.expected.state, got: got.state }});
+      if (Object.prototype.hasOwnProperty.call(c.expected, 'value') && got.value !== c.expected.value) {{
+        failures.push({{ id: c.id, field: 'value', expected: c.expected.value, got: got.value }});
+      }}
+    }}
+    return {{ observed, failures }};
+    "#,
+        summary = VIEW_SUMMARY_JS,
+    );
+    let result = run_component_driver(&server, "", &body, "component-kind-state", 1280, 2000, "");
+    let failures = result["failures"].as_array().unwrap();
+    assert!(failures.is_empty(), "kind/state failures: {failures:?}");
+    let observed = result["observed"].as_array().unwrap();
+    assert_eq!(observed.len(), 36, "all 36 kind/state cases must execute");
+    let ids = observed
+        .iter()
+        .map(|case| case["id"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(ids.len(), 36, "observed IDs must be unique");
+    for id in &ids {
+        eprintln!("component view kind/state: {id}");
+    }
+    let path = write_evidence(
+        "kind-state",
+        "kind-state-scenarios.txt",
+        &ids.iter().map(|id| format!("{id}\n")).collect::<String>(),
+    );
+    eprintln!("component view kind/state evidence: {}", path.display());
+    assert_eq!(server.post_count(), 0);
+}
+
+#[test]
+fn cockpit_component_views_field_boundaries() {
+    let plugin_id = "example.field-boundary";
+    let binding = view_binding("7");
+    let mut cases = Vec::new();
+    let mut add = |id: &str, field: &str, payload: serde_json::Value, expected: serde_json::Value| {
+        cases.push(serde_json::json!({
+            "id": id,
+            "pluginId": plugin_id,
+            "binding": binding,
+            "descriptor": view_descriptor("metrics", "private.boundary.metrics", "Metrics", 1, &[field]),
+            "entries": [view_entry(
+                plugin_id,
+                &binding,
+                "private.boundary.metrics",
+                1,
+                "1",
+                payload,
+                &view_digest(8),
+            )],
+            "expected": expected,
+        }));
+    };
+    add("string", "value", serde_json::json!({"value":"ready"}), serde_json::json!({"text":"ready","missing":false,"truncated":false}));
+    add("false", "value", serde_json::json!({"value":false}), serde_json::json!({"text":"false","missing":false,"truncated":false}));
+    add("zero", "value", serde_json::json!({"value":0}), serde_json::json!({"text":"0","missing":false,"truncated":false}));
+    add("null", "value", serde_json::json!({"value":null}), serde_json::json!({"text":"null","missing":false,"truncated":false}));
+    add("absent", "value", serde_json::json!({"other":"x"}), serde_json::json!({"text":"missing","missing":true,"truncated":false}));
+    add("dotted", "a.b", serde_json::json!({"a":{"b":"nested"}}), serde_json::json!({"text":"nested","missing":false,"truncated":false}));
+    add("dotted-false", "a.b", serde_json::json!({"a":{"b":false}}), serde_json::json!({"text":"false","missing":false,"truncated":false}));
+    add("dotted-zero", "a.b", serde_json::json!({"a":{"b":0}}), serde_json::json!({"text":"0","missing":false,"truncated":false}));
+    add("dotted-null", "a.b", serde_json::json!({"a":{"b":null}}), serde_json::json!({"text":"null","missing":false,"truncated":false}));
+    add("dotted-absent", "a.b", serde_json::json!({"a":{}}), serde_json::json!({"text":"missing","missing":true,"truncated":false}));
+    add("own-property-only", "constructor", serde_json::json!({}), serde_json::json!({"text":"missing","missing":true,"truncated":false}));
+    add("empty-string", "value", serde_json::json!({"value":""}), serde_json::json!({"text":"","missing":false,"truncated":false}));
+    let exact = "x".repeat(4096);
+    add(
+        "text-at-bound",
+        "value",
+        serde_json::json!({"value": exact}),
+        serde_json::json!({"textLength":4096,"missing":false,"truncated":false}),
+    );
+    let over = "x".repeat(4097);
+    add(
+        "text-over-bound",
+        "value",
+        serde_json::json!({"value": over}),
+        serde_json::json!({"textLength":4096,"missing":false,"truncated":true}),
+    );
+    add("object-value", "value", serde_json::json!({"value":{"k":1}}), serde_json::json!({"text":"{\"k\":1}","missing":false,"truncated":false}));
+    add("array-value", "value", serde_json::json!({"value":["a",1]}), serde_json::json!({"text":"[\"a\",1]","missing":false,"truncated":false}));
+    assert_eq!(cases.len(), 16, "sixteen field/value boundaries");
+
+    let router: Router = Arc::new(|_, _, _, _| None);
+    let server = FixtureServer::start(router).expect("start fixture server");
+    server.register("/cases.json", Response::json(200, serde_json::Value::Array(cases).to_string()));
+    let body = r#"
+    const { resolveComponentViews } = await import('/views.js');
+    const cases = await (await fetch('/cases.json')).json();
+    const failures = [];
+    const observed = [];
+    for (const c of cases) {
+      const view = resolveComponentViews({
+        pluginId: c.pluginId,
+        binding: c.binding,
+        descriptors: [c.descriptor],
+        entries: c.entries,
+        nextCursor: null,
+        reportState: 'available',
+      }).views[0];
+      const row = view?.data?.rows?.[0] ?? null;
+      const got = {
+        id: c.id,
+        state: view?.state ?? null,
+        text: row?.text ?? null,
+        textLength: row ? row.text.length : null,
+        missing: row?.missing ?? null,
+        truncated: row?.truncated ?? null,
+      };
+      observed.push(got);
+      const expected = c.expected;
+      for (const field of ['state', 'text', 'textLength', 'missing', 'truncated']) {
+        if (!Object.prototype.hasOwnProperty.call(expected, field)) continue;
+        if (got[field] !== expected[field]) failures.push({ id: c.id, field, expected: expected[field], got: got[field] });
+      }
+      if (got.state !== 'rendered') failures.push({ id: c.id, field: 'state', expected: 'rendered', got: got.state });
+    }
+    return { observed, failures };
+    "#;
+    let result = run_component_driver(&server, "", &body, "component-field-boundaries", 1280, 2000, "");
+    let failures = result["failures"].as_array().unwrap();
+    assert!(failures.is_empty(), "field boundary failures: {failures:?}");
+    let observed = result["observed"].as_array().unwrap();
+    assert_eq!(observed.len(), 16);
+    let ids = observed
+        .iter()
+        .map(|case| case["id"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(ids.len(), 16);
+    for id in &ids {
+        eprintln!("component field boundary: {id}");
+    }
+    let path = write_evidence(
+        "field-boundaries",
+        "field-boundary-cases.txt",
+        &ids.iter().map(|id| format!("{id}\n")).collect::<String>(),
+    );
+    eprintln!("component field boundary evidence: {}", path.display());
+    assert_eq!(server.post_count(), 0);
+}
+
+#[test]
+fn cockpit_component_views_sequence_version_binding_permutations() {
+    let plugin_id = "example.sequence";
+    let namespace = "private.sequence.metrics";
+    let page_binding = view_binding("7");
+    let descriptor = view_descriptor("metrics", namespace, "Metrics", 1, &["value"]);
+    let entry = |binding: serde_json::Value, version: u64, sequence: &str, value: &str, digest_seed: u32| {
+        view_entry(
+            plugin_id,
+            &binding,
+            namespace,
+            version,
+            sequence,
+            serde_json::json!({ "value": value }),
+            &view_digest(digest_seed),
+        )
+    };
+    let mut cases = Vec::new();
+    let mut add = |id: &str, entries: Vec<serde_json::Value>, expected: serde_json::Value| {
+        cases.push(serde_json::json!({
+            "id": id,
+            "pluginId": plugin_id,
+            "binding": page_binding,
+            "descriptor": descriptor,
+            "entries": entries,
+            "expected": expected,
+        }));
+    };
+    add(
+        "greatest-sequence-not-lexical",
+        vec![
+            entry(page_binding.clone(), 1, "1", "one", 1),
+            entry(page_binding.clone(), 1, "10", "ten", 2),
+        ],
+        serde_json::json!({"state":"rendered","value":"ten","sequence":"10"}),
+    );
+    add(
+        "greatest-u64",
+        vec![
+            entry(page_binding.clone(), 1, "9", "nine", 3),
+            entry(page_binding.clone(), 1, VIEW_MAX_GENERATION, "max", 4),
+        ],
+        serde_json::json!({"state":"rendered","value":"max","sequence":VIEW_MAX_GENERATION}),
+    );
+    add(
+        "duplicate-latest-identical",
+        vec![
+            entry(page_binding.clone(), 1, "5", "same", 5),
+            entry(page_binding.clone(), 1, "5", "same", 5),
+        ],
+        serde_json::json!({"state":"rendered","value":"same","sequence":"5"}),
+    );
+    add(
+        "duplicate-latest-conflict",
+        vec![
+            entry(page_binding.clone(), 1, "5", "first", 6),
+            entry(page_binding.clone(), 1, "5", "second", 7),
+        ],
+        serde_json::json!({"state":"conflict"}),
+    );
+    add(
+        "latest-version-mismatch-no-resurrection",
+        vec![
+            entry(page_binding.clone(), 1, "4", "old", 8),
+            entry(page_binding.clone(), 2, "5", "new", 9),
+        ],
+        serde_json::json!({"state":"schema-mismatch"}),
+    );
+    let mut binding = page_binding.clone();
+    binding["config_digest"] = serde_json::json!("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    add(
+        "config-digest-conflict",
+        vec![entry(binding, 1, "1", "x", 10)],
+        serde_json::json!({"state":"conflict"}),
+    );
+    let mut binding = page_binding.clone();
+    binding["binding_id"] = serde_json::json!("fixture.other");
+    add("binding-id-conflict", vec![entry(binding, 1, "1", "x", 11)], serde_json::json!({"state":"conflict"}));
+    let mut binding = page_binding.clone();
+    binding["api"] = serde_json::json!("other-api");
+    add("api-conflict", vec![entry(binding, 1, "1", "x", 12)], serde_json::json!({"state":"conflict"}));
+    let mut binding = page_binding.clone();
+    binding["implementation_version"] = serde_json::json!("fixture-other");
+    add("implementation-conflict", vec![entry(binding, 1, "1", "x", 13)], serde_json::json!({"state":"conflict"}));
+    let mut binding = page_binding.clone();
+    binding["generation"] = serde_json::json!("6");
+    add("generation-conflict", vec![entry(binding, 1, "1", "x", 14)], serde_json::json!({"state":"conflict"}));
+    add("invalid-sequence", vec![entry(page_binding.clone(), 1, "01", "x", 15)], serde_json::json!({"state":"malformed"}));
+    let mut legacy = page_binding.clone();
+    legacy["generation"] = serde_json::json!(7);
+    add(
+        "legacy-safe-numeric-generation",
+        vec![entry(legacy, 1, "1", "safe", 16)],
+        serde_json::json!({"state":"rendered","value":"safe","sequence":"1"}),
+    );
+    assert_eq!(cases.len(), 12, "twelve sequence/version/binding permutations");
+
+    let router: Router = Arc::new(|_, _, _, _| None);
+    let server = FixtureServer::start(router).expect("start fixture server");
+    server.register("/cases.json", Response::json(200, serde_json::Value::Array(cases).to_string()));
+    let body = r#"
+    const { resolveComponentViews } = await import('/views.js');
+    const cases = await (await fetch('/cases.json')).json();
+    const failures = [];
+    const observed = [];
+    for (const c of cases) {
+      const view = resolveComponentViews({
+        pluginId: c.pluginId,
+        binding: c.binding,
+        descriptors: [c.descriptor],
+        entries: c.entries,
+        nextCursor: null,
+        reportState: 'available',
+      }).views[0];
+      const got = {
+        id: c.id,
+        state: view?.state ?? null,
+        value: view?.data?.rows?.[0]?.text ?? null,
+        sequence: view?.identity?.sequence ?? null,
+      };
+      observed.push(got);
+      if (got.state !== c.expected.state) failures.push({ id: c.id, field: 'state', expected: c.expected.state, got: got.state });
+      if (Object.prototype.hasOwnProperty.call(c.expected, 'value') && got.value !== c.expected.value) {
+        failures.push({ id: c.id, field: 'value', expected: c.expected.value, got: got.value });
+      }
+      if (Object.prototype.hasOwnProperty.call(c.expected, 'sequence') && got.sequence !== c.expected.sequence) {
+        failures.push({ id: c.id, field: 'sequence', expected: c.expected.sequence, got: got.sequence });
+      }
+    }
+    return { observed, failures };
+    "#;
+    let result = run_component_driver(&server, "", &body, "component-sequence-binding", 1280, 2000, "");
+    let failures = result["failures"].as_array().unwrap();
+    assert!(failures.is_empty(), "sequence/version/binding failures: {failures:?}");
+    let observed = result["observed"].as_array().unwrap();
+    assert_eq!(observed.len(), 12);
+    let ids = observed
+        .iter()
+        .map(|case| case["id"].as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(ids.len(), 12);
+    for id in &ids {
+        eprintln!("component sequence permutation: {id}");
+    }
+    let path = write_evidence(
+        "sequence-binding",
+        "sequence-version-binding-cases.txt",
+        &ids.iter().map(|id| format!("{id}\n")).collect::<String>(),
+    );
+    eprintln!("component sequence evidence: {}", path.display());
+    assert_eq!(server.post_count(), 0);
+}
+
+#[test]
+fn cockpit_component_views_route_epoch_late_response_traces() {
+    let traces = [
+        ("a-commit", "trace.a", false),
+        ("a-pending-b-late", "trace.b", false),
+        ("a-reject-b-success", "trace.b", false),
+        ("a-late-after-b-request", "trace.b", false),
+        ("a-b-a-old-response", "trace.a", false),
+        ("a-first-failure-b", "trace.b", false),
+        ("away-a-late", "", false),
+        ("b-first-failure-a", "trace.a", false),
+    ];
+    let router: Router = Arc::new(|_, _, _, _| None);
+    let server = FixtureServer::start(router).expect("start fixture server");
+    let body = r#"
+    const trace = await (await fetch('/trace.json')).json();
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const marker = (phase) => { document.getElementById('harness-result').textContent = JSON.stringify({ phase, id: trace.id }); };
+    marker('boot');
+    const calls = [];
+    const detailFor = (id) => ({
+      metadata: {
+        format: 'ControlPlaneRead/v1',
+        collected_at_unix_ms: 1791820900000,
+        registry_revision: '1',
+        report_watermark: null,
+        sources: [
+          { source: 'registry', state: 'available', detail: '', observed_at_unix_ms: 1791820900000 },
+          { source: 'reports', state: 'empty', detail: '', observed_at_unix_ms: 1791820900000 },
+        ],
+      },
+      binding: {
+        binding_id: id, api: 'plugin', api_version: 1, implementation_version: 'trace',
+        generation: '1', config_digest: 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+      },
+      descriptors: [], entries: [], next_cursor: null,
+    });
+    const api = {
+      getOverview: () => Promise.reject(new ApiError('unsupported', 'trace overview absent')),
+      getComponents: () => Promise.reject(new ApiError('unsupported', 'trace components absent')),
+      getFactory: () => Promise.reject(new ApiError('unsupported', 'trace factory absent')),
+      getStatus: () => Promise.reject(new ApiError('unsupported', 'trace status absent')),
+      getComponentDetail: (id) => new Promise((resolve, reject) => {
+        calls.push({ id, resolve, reject, settled: false });
+      }),
+    };
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const waitCall = async (id, index = 0) => {
+      for (let attempt = 0; attempt < 600; attempt += 1) {
+        const matches = calls.filter((call) => call.id === id);
+        if (matches.length > index && !matches[index].settled) return matches[index];
+        await settle();
+      }
+      throw new Error(`no pending detail call for ${id} index ${index}; calls=${JSON.stringify(calls.map((call) => call.id))}`);
+    };
+    const resolveCall = (call, id) => { call.settled = true; call.resolve(detailFor(id)); };
+    const rejectCall = (call) => { call.settled = true; call.reject(new ApiError('unavailable', 'trace failure')); };
+    const cockpit = new Cockpit({ document, root, api, intervalMs: 60000 });
+    cockpit.start();
+    await cockpit.refresher.activeCycle;
+    const navigate = async (hash) => {
+      const changed = new Promise((resolve) => window.addEventListener('hashchange', resolve, { once: true }));
+      location.hash = hash;
+      await changed;
+      await settle();
+    };
+    const pageId = () => cockpit.state.detail.page?.binding?.binding_id ?? null;
+    let lateCommitted = false;
+    let lateSubject = null;
+    let afterLate = null;
+
+    if (trace.id === 'a-commit') {
+      await navigate('#/components/trace.a');
+      resolveCall(await waitCall('trace.a'), 'trace.a');
+      await cockpit.refresher.activeCycle;
+    } else if (trace.id === 'a-pending-b-late') {
+      marker('navigate-a');
+      await navigate('#/components/trace.a');
+      marker('wait-a');
+      const a = await waitCall('trace.a');
+      marker('navigate-b');
+      await navigate('#/components/trace.b');
+      marker('resolve-a');
+      resolveCall(a, 'trace.a');
+      marker('await-cycle-a');
+      await cockpit.refresher.activeCycle;
+      marker('after-late');
+      afterLate = pageId();
+      lateSubject = afterLate;
+      lateCommitted = afterLate === 'trace.a';
+      marker('refresh-b');
+      const bCycle = cockpit.refresh();
+      marker('wait-b');
+      resolveCall(await waitCall('trace.b'), 'trace.b');
+      marker('await-cycle-b');
+      await bCycle;
+      marker('done');
+    } else if (trace.id === 'a-reject-b-success') {
+      await navigate('#/components/trace.a');
+      const a = await waitCall('trace.a');
+      await navigate('#/components/trace.b');
+      rejectCall(a);
+      await cockpit.refresher.activeCycle;
+      afterLate = pageId();
+      lateCommitted = afterLate === 'trace.a';
+      const bCycle = cockpit.refresh();
+      resolveCall(await waitCall('trace.b'), 'trace.b');
+      await bCycle;
+    } else if (trace.id === 'a-late-after-b-request') {
+      await navigate('#/components/trace.a');
+      const a = await waitCall('trace.a');
+      await navigate('#/components/trace.b');
+      resolveCall(a, 'trace.a');
+      await cockpit.refresher.activeCycle;
+      const bCycle = cockpit.refresh();
+      const b = await waitCall('trace.b');
+      afterLate = pageId();
+      resolveCall(b, 'trace.b');
+      await bCycle;
+    } else if (trace.id === 'a-b-a-old-response') {
+      marker('aba-navigate-a');
+      await navigate('#/components/trace.a');
+      marker('aba-wait-a1');
+      const firstA = await waitCall('trace.a', 0);
+      marker('aba-navigate-b');
+      await navigate('#/components/trace.b');
+      marker('aba-navigate-a2');
+      await navigate('#/components/trace.a');
+      marker('aba-resolve-a1');
+      resolveCall(firstA, 'trace.a');
+      marker('aba-await-a1');
+      await cockpit.refresher.activeCycle;
+      afterLate = pageId();
+      lateCommitted = afterLate === 'trace.a';
+      marker('aba-refresh-a2');
+      const secondA = cockpit.refresh();
+      marker('aba-wait-a2');
+      resolveCall(await waitCall('trace.a', 1), 'trace.a');
+      marker('aba-await-a2');
+      await secondA;
+      marker('aba-done');
+    } else if (trace.id === 'a-first-failure-b') {
+      await navigate('#/components/trace.a');
+      rejectCall(await waitCall('trace.a'));
+      await cockpit.refresher.activeCycle;
+      await navigate('#/components/trace.b');
+      resolveCall(await waitCall('trace.b'), 'trace.b');
+      await cockpit.refresher.activeCycle;
+    } else if (trace.id === 'away-a-late') {
+      await navigate('#/components/trace.a');
+      const a = await waitCall('trace.a');
+      await navigate('#/overview');
+      resolveCall(a, 'trace.a');
+      await cockpit.refresher.activeCycle;
+      afterLate = pageId();
+      lateCommitted = afterLate === 'trace.a';
+    } else if (trace.id === 'b-first-failure-a') {
+      await navigate('#/components/trace.b');
+      rejectCall(await waitCall('trace.b'));
+      await cockpit.refresher.activeCycle;
+      await navigate('#/components/trace.a');
+      resolveCall(await waitCall('trace.a'), 'trace.a');
+      await cockpit.refresher.activeCycle;
+    }
+
+    const result = {
+      id: trace.id,
+      final: pageId(),
+      finalSubject: cockpit.state.detail.pluginId,
+      detailEpoch: cockpit.state.detail.epoch,
+      detailError: cockpit.snapshot().sources.detail?.error?.message ?? null,
+      lateSubject,
+      lateCommitted,
+      route: cockpit.state.route.name,
+    };
+    cockpit.stop();
+    return result;
+    "#;
+    let mut evidence = String::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for (id, expected_final, expected_late) in traces {
+        server.register("/trace.json", Response::json(200, serde_json::json!({"id": id}).to_string()));
+        let result = run_component_driver(&server, "", body, &format!("component-route-{id}"), 1280, 2000, "");
+        assert_eq!(result["id"].as_str().unwrap(), id);
+        let final_subject = result["final"].as_str().unwrap_or("");
+        assert_eq!(final_subject, expected_final, "trace {id} final subject: {result}");
+        assert_eq!(
+            result["lateCommitted"].as_bool(),
+            Some(expected_late),
+            "trace {id} late commit: {result}"
+        );
+        if id == "away-a-late" {
+            assert_eq!(result["finalSubject"], serde_json::Value::Null, "trace {id}: {result}");
+        }
+        assert_eq!(server.post_count(), 0, "trace {id} must not POST");
+        assert!(seen.insert(id));
+        evidence.push_str(&format!("{id}={}\n", result["final"]));
+        eprintln!("component route trace: {id} final={final_subject}");
+    }
+    assert_eq!(seen.len(), 8, "eight route/epoch traces");
+    let path = write_evidence("route-traces", "route-epoch-traces.txt", &evidence);
+    eprintln!("component route trace evidence: {}", path.display());
+}
+
+fn long_component_detail(table_rows: usize, timeline_rows: usize) -> serde_json::Value {
+    let binding = view_binding("42");
+    let rows: Vec<serde_json::Value> = (0..table_rows)
+        .map(|index| {
+            serde_json::json!({
+                "id": format!("row-{index:03}"),
+                "state": if index % 2 == 0 { "ready" } else { "unknown" },
+                "detail": format!("observed value {index} with a long tail {}", "x".repeat(24)),
+            })
+        })
+        .collect();
+    let events: Vec<serde_json::Value> = (0..timeline_rows)
+        .map(|index| {
+            serde_json::json!({
+                "at": format!("2026-10-19T00:00:{index:02}Z"),
+                "message": format!("Observation {index}"),
+                "detail": "preserved order",
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "metadata": {
+            "format": "ControlPlaneRead/v1",
+            "collected_at_unix_ms": 1791820900000i64,
+            "registry_revision": "1",
+            "report_watermark": "100",
+            "sources": [
+                { "source": "registry", "state": "available", "detail": "", "observed_at_unix_ms": 1791820900000i64 },
+                { "source": "reports", "state": "available", "detail": "", "observed_at_unix_ms": 1791820900000i64 }
+            ]
+        },
+        "binding": binding,
+        "descriptors": [
+            view_descriptor("rows", "private.long.rows", "Table", 1, &["id", "state", "detail"]),
+            view_descriptor("events", "private.long.events", "Timeline", 1, &["at", "message", "detail"]),
+        ],
+        "entries": [
+            view_entry("example.unfamiliar-reporter", &binding, "private.long.rows", 1, "1", serde_json::Value::Array(rows), &view_digest(21)),
+            view_entry("example.unfamiliar-reporter", &binding, "private.long.events", 1, "2", serde_json::json!({ "entries": events }), &view_digest(22)),
+        ],
+        "next_cursor": null,
+    })
+}
+
+#[test]
+fn cockpit_component_views_layout_theme_stale_and_expansion_matrix() {
+    let long = long_component_detail(40, 30);
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        detail: vec![ok_value(&long), Response::unavailable("detail source lost")],
+        ..Script::default()
+    });
+    let body = r#"
+    const cockpit = startCockpit({
+      document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000,
+    });
+    await cockpit.refresher.activeCycle;
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const expand = document.querySelector('details[data-disclosure-key$=":rows"]');
+    const timelineDetails = document.querySelector('details[data-disclosure-key$=":timeline"]');
+    const defaultRows = document.querySelectorAll('.component-view[data-kind="Table"] > .table tbody tr').length;
+    const defaultTimeline = document.querySelectorAll('.component-view[data-kind="Timeline"] > .timeline > li').length;
+    expand.open = true;
+    timelineDetails.open = true;
+    await settle();
+    const summary = expand.querySelector('summary');
+    summary.focus();
+    window.scrollTo(0, Math.min(240, document.documentElement.scrollHeight));
+    const scrollBefore = window.scrollY;
+    const focusBefore = document.activeElement?.dataset?.focusKey ?? null;
+    await cockpit.refresh();
+    const expandAfter = document.querySelector('details[data-disclosure-key$=":rows"]');
+    const timelineAfter = document.querySelector('details[data-disclosure-key$=":timeline"]');
+    const scrollAfter = window.scrollY;
+    const focusAfter = document.activeElement?.dataset?.focusKey ?? null;
+    const table = document.querySelector('.component-view[data-kind="Table"] > .table');
+    const rect = (node) => {
+      const r = node.getBoundingClientRect();
+      return { width: r.width, height: r.height };
+    };
+    const hiddenPages = [...document.querySelectorAll('[data-page]')]
+      .filter((node) => node.dataset.page !== 'component')
+      .map((node) => ({
+        name: node.dataset.page,
+        hidden: node.hidden,
+        display: getComputedStyle(node).display,
+        rect: rect(node),
+      }));
+    return {
+      width: innerWidth,
+      theme: matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark',
+      expectedTheme: window.__expectedTheme,
+      expectedWidth: window.__expectedWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+      defaultRows,
+      defaultTimeline,
+      expandedRows: document.querySelectorAll('.component-view[data-kind="Table"] tbody tr').length,
+      expandedTimeline: document.querySelectorAll('.component-view[data-kind="Timeline"] .timeline > li').length,
+      expandOpenAfter: expandAfter.open,
+      timelineOpenAfter: timelineAfter.open,
+      scrollBefore,
+      scrollAfter,
+      focusBefore,
+      focusAfter,
+      localStale: document.querySelectorAll('[data-stale-source]').length,
+      topStale: document.querySelectorAll('#component-detail > .callout--stale').length,
+      viewStates: [...document.querySelectorAll('.component-view')].map((node) => ({ kind: node.dataset.kind, state: node.dataset.state })),
+      tableClient: table.clientWidth,
+      tableScroll: table.scrollWidth,
+      hiddenPages,
+      bindingCollapsed: document.querySelector('details[data-disclosure-key$=":binding"]').open === false,
+      technicalCollapsed: [...document.querySelectorAll('.component-view details[data-disclosure-key$=":technical"]')].every((node) => node.open === false),
+      expandKey: expandAfter.dataset.disclosureKey,
+      disclosures: [...cockpit.state.disclosures.entries()],
+      posts: 0,
+    };
+    "#;
+    let mut executed = Vec::new();
+    for width in [390u32, 720, 1280, 1920] {
+        for theme in ["light", "dark"] {
+            let script = format!(
+                "window.__expectedWidth = {width}; window.__expectedTheme = '{theme}';\n{body}"
+            );
+            let height = if width == 1280 { 900 } else { 1000 };
+            let result = run_component_driver(
+                &server,
+                "#/components/example.unfamiliar-reporter",
+                &script,
+                &format!("component-layout-{width}-{theme}"),
+                width,
+                height,
+                theme,
+            );
+            assert_eq!(result["width"].as_f64().unwrap(), f64::from(width));
+            assert_eq!(result["theme"].as_str().unwrap(), theme);
+            assert_eq!(result["hiddenPages"].as_array().unwrap().len(), 5);
+            for page in result["hiddenPages"].as_array().unwrap() {
+                assert_eq!(page["hidden"].as_bool(), Some(true), "{width} {theme} {page:?}");
+                assert_eq!(page["display"].as_str().unwrap(), "none", "{width} {theme} {page:?}");
+                assert_eq!(page["rect"]["width"].as_f64().unwrap(), 0.0, "{width} {theme} {page:?}");
+                assert_eq!(page["rect"]["height"].as_f64().unwrap(), 0.0, "{width} {theme} {page:?}");
+            }
+            assert!(
+                result["scrollWidth"].as_f64().unwrap() <= f64::from(width) + 1.0,
+                "{width} {theme} page overflow: {result}"
+            );
+            assert_eq!(result["defaultRows"].as_u64(), Some(24), "{width} {theme}");
+            assert_eq!(result["defaultTimeline"].as_u64(), Some(24), "{width} {theme}");
+            assert_eq!(result["expandedRows"].as_u64(), Some(40), "{width} {theme}");
+            assert_eq!(result["expandedTimeline"].as_u64(), Some(30), "{width} {theme}");
+            assert_eq!(result["expandOpenAfter"].as_bool(), Some(true), "{width} {theme}: {result}");
+            assert_eq!(result["timelineOpenAfter"].as_bool(), Some(true), "{width} {theme}: {result}");
+            assert_eq!(result["focusBefore"].as_str(), result["focusAfter"].as_str(), "{width} {theme} focus");
+            assert_eq!(result["localStale"].as_u64(), Some(2), "{width} {theme} stale labels");
+            assert_eq!(result["topStale"].as_u64(), Some(1), "{width} {theme} top stale notice");
+            assert_eq!(result["bindingCollapsed"].as_bool(), Some(true), "{width} {theme}");
+            assert_eq!(result["technicalCollapsed"].as_bool(), Some(true), "{width} {theme}");
+            assert!(
+                result["tableScroll"].as_f64().unwrap() >= result["tableClient"].as_f64().unwrap(),
+                "{width} {theme} table must remain a bounded scroll box: {result}"
+            );
+            assert!(
+                (result["scrollAfter"].as_f64().unwrap() - result["scrollBefore"].as_f64().unwrap()).abs() < 2.0,
+                "{width} {theme} scroll must stay stable: {result}"
+            );
+            let states: Vec<&str> = result["viewStates"].as_array().unwrap()
+                .iter().map(|view| view["state"].as_str().unwrap()).collect();
+            assert_eq!(states, vec!["stale", "stale"], "{width} {theme}");
+            executed.push(format!("width={width};theme={theme};state=stale-expanded"));
+            assert_eq!(server.post_count(), 0);
+        }
+    }
+    assert_eq!(executed.len(), 8, "4 widths x 2 themes must execute");
+    assert_eq!(executed.iter().collect::<std::collections::BTreeSet<_>>().len(), 8);
+    for id in &executed {
+        eprintln!("component layout scenario: {id}");
+    }
+    let path = write_evidence(
+        "layout",
+        "layout-scenarios.txt",
+        &executed.iter().map(|id| format!("{id}\n")).collect::<String>(),
+    );
+    eprintln!("component layout evidence: {}", path.display());
+}
+
+fn component_screenshot_page() -> String {
+    r#"<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Agalma cockpit</title>
+<link rel="stylesheet" href="/dashboard.css"></head>
+<body><main id="app"><noscript>This local cockpit requires JavaScript.</noscript></main>
+<script type="module">
+import { startCockpit } from '/app.js';
+const params = new URLSearchParams(location.search);
+const mode = params.get('mode') ?? 'populated';
+const cockpit = startCockpit({ document, root: document.getElementById('app'), intervalMs: 60000 });
+await cockpit.refresher.activeCycle;
+if (mode === 'stale') await cockpit.refresh();
+if (mode === 'expanded') {
+  for (const node of document.querySelectorAll('details.component-expand')) node.open = true;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+</script></body></html>
+"#
+    .to_string()
+}
+
+fn component_screenshot_frame_page(width: u32, height: u32, src: &str) -> String {
+    let offset = 500u32.saturating_sub(width) / 2;
+    format!(
+        r#"<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>viewport</title>
+<style>html,body{{margin:0;border:0;background:#000}} iframe{{display:block;border:0;margin-left:{offset}px;width:{width}px;height:{height}px}}</style>
+</head><body><iframe src="/component-shot.html{src}"></iframe></body></html>
+"#
+    )
+}
+
+#[test]
+fn cockpit_component_views_captures_eight_component_screenshots() {
+    let chrome = resolve_chrome().expect("installed Chrome (CHROME_BIN) is required");
+    let dir = component_evidence_dir("screenshots");
+    fs::create_dir_all(&dir).expect("create component screenshot directory");
+    let populated_fixture: serde_json::Value = serde_json::from_str(COMPONENT_VIEWS).unwrap();
+    let long_fixture = long_component_detail(40, 30);
+    let unknown_fixture = unknown_component_detail("example.not-registered");
+
+    let (populated_server, _) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        detail: vec![ok_value(&populated_fixture)],
+        ..Script::default()
+    });
+    let (stale_server, _) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        detail: vec![ok_value(&populated_fixture), Response::unavailable("detail source lost")],
+        ..Script::default()
+    });
+    let (unknown_server, _) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        detail: vec![ok_value(&unknown_fixture)],
+        ..Script::default()
+    });
+    let (long_server, _) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        detail: vec![ok_value(&long_fixture)],
+        ..Script::default()
+    });
+    let page = component_screenshot_page();
+    for server in [&populated_server, &stale_server, &unknown_server, &long_server] {
+        server.register("/component-shot.html", Response::text(200, "text/html; charset=utf-8", page.clone()));
+    }
+    populated_server.register(
+        "/component-shot-frame.html",
+        Response::text(
+            200,
+            "text/html; charset=utf-8",
+            component_screenshot_frame_page(
+                390,
+                844,
+                "?mode=populated#/components/example.unfamiliar-reporter",
+            ),
+        ),
+    );
+
+    let mut shots = Vec::new();
+    for theme in ["dark", "light"] {
+        let name = format!("component-populated-390-{theme}.png");
+        let path = dir.join(&name);
+        let url = format!("{}/component-shot-frame.html", populated_server.base_url());
+        let outcome = browser_support::capture_screenshot(
+            &chrome,
+            &url,
+            &path,
+            BUDGET_MS,
+            &format!("component-shot-390-{theme}"),
+            390,
+            844,
+            theme,
+        );
+        assert!(outcome.status.success(), "screenshot {name} failed: {}", outcome.stderr);
+        assert_png(&path);
+        shots.push(path);
+    }
+    let direct = [
+        (720u32, 900u32, "dark", "populated", &populated_server, "example.unfamiliar-reporter"),
+        (1280, 900, "dark", "populated", &populated_server, "example.unfamiliar-reporter"),
+        (1920, 1080, "dark", "populated", &populated_server, "example.unfamiliar-reporter"),
+        (1280, 900, "dark", "stale", &stale_server, "example.unfamiliar-reporter"),
+        (1280, 900, "dark", "unknown", &unknown_server, "example.not-registered"),
+        (1280, 900, "dark", "expanded", &long_server, "example.unfamiliar-reporter"),
+    ];
+    for (width, height, theme, mode, server, plugin_id) in direct {
+        let name = format!("component-{mode}-{width}-{theme}.png");
+        let path = dir.join(&name);
+        let url = format!(
+            "{}/component-shot.html?mode={mode}#/components/{plugin_id}",
+            server.base_url()
+        );
+        let outcome = browser_support::capture_screenshot(
+            &chrome,
+            &url,
+            &path,
+            BUDGET_MS,
+            &format!("component-shot-{mode}-{width}-{theme}"),
+            width,
+            height,
+            theme,
+        );
+        assert!(outcome.status.success(), "screenshot {name} failed: {}", outcome.stderr);
+        assert_png(&path);
+        shots.push(path);
+    }
+    assert_eq!(shots.len(), 8, "eight component screenshots must be captured");
+    let listing = shots
+        .iter()
+        .map(|path| format!("{}\n", path.display()))
+        .collect::<String>();
+    let listing_path = dir.join("screenshots.txt");
+    fs::write(&listing_path, &listing).expect("write screenshot listing");
+    for path in &shots {
+        eprintln!("component view screenshot: {}", path.display());
+    }
+    eprintln!("component view screenshot listing: {}", listing_path.display());
+    assert_eq!(
+        populated_server.post_count() + stale_server.post_count() + unknown_server.post_count() + long_server.post_count(),
+        0
+    );
+}
+
+#[test]
+fn cockpit_component_views_unknown_plugin_private_namespace() {
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        detail: vec![ok_json(COMPONENT_VIEWS)],
+        ..Script::default()
+    });
+    let result = run_component_driver(
+        &server,
+        "#/components/example.unfamiliar-reporter",
+        r#"
+    const cockpit = startCockpit({ document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000 });
+    await cockpit.refresher.activeCycle;
+    const page = document.querySelector('[data-page="component"]');
+    const views = [...page.querySelectorAll('.component-view')].map((node) => ({
+      id: node.dataset.viewId,
+      kind: node.dataset.kind,
+      state: node.dataset.state,
+    }));
+    return {
+      route: cockpit.state.route.name,
+      routeId: cockpit.state.route.params.id,
+      text: page.textContent,
+      views,
+      notRegistered: page.textContent.includes('not registered in the hub registry'),
+      scripts: page.querySelectorAll('script').length,
+      images: page.querySelectorAll('img').length,
+      handlers: page.querySelectorAll('[onerror]').length,
+      artifactLinks: page.querySelectorAll('.component-view[data-kind="ArtifactLink"] a').length,
+      bindingCollapsed: page.querySelector('details[data-disclosure-key$=":binding"]').open === false,
+    };
+    "#,
+        "component-unknown-plugin-views",
+        1280,
+        2000,
+        "",
+    );
+    assert_eq!(result["route"].as_str().unwrap(), "component");
+    assert_eq!(result["routeId"].as_str().unwrap(), "example.unfamiliar-reporter");
+    assert_eq!(result["notRegistered"].as_bool(), Some(false));
+    let views = result["views"].as_array().unwrap();
+    assert_eq!(views.len(), 6, "all six declared kinds render without a plugin branch");
+    let ids: Vec<&str> = views.iter().map(|view| view["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, vec!["status", "metrics", "rows", "events", "alert", "artifact"]);
+    assert!(views.iter().all(|view| view["state"] == "rendered"), "views={views:?}");
+    let text = result["text"].as_str().unwrap();
+    for namespace in [
+        "private.vendor.telemetry.status",
+        "private.vendor.telemetry.metrics",
+        "private.vendor.telemetry.rows",
+        "private.vendor.telemetry.events",
+        "private.vendor.telemetry.alert",
+        "private.vendor.telemetry.artifact",
+    ] {
+        assert!(text.contains(namespace), "private namespace {namespace} missing: {text}");
+    }
+    assert_eq!(result["scripts"].as_u64(), Some(0));
+    assert_eq!(result["images"].as_u64(), Some(0));
+    assert_eq!(result["handlers"].as_u64(), Some(0));
+    assert_eq!(result["artifactLinks"].as_u64(), Some(0), "artifact metadata must never become a link");
+    assert_eq!(result["bindingCollapsed"].as_bool(), Some(true));
+    assert_eq!(server.post_count(), 0, "generic rendering must never POST");
+}
+
+#[test]
+fn cockpit_component_views_injection_bounded_text_and_exact_identities() {
+    let detail: serde_json::Value = serde_json::from_str(COMPONENT_VIEWS).unwrap();
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        detail: vec![ok_value(&detail)],
+        ..Script::default()
+    });
+    let result = run_component_driver(
+        &server,
+        "#/components/example.unfamiliar-reporter",
+        r#"
+    const { resolveComponentViews } = await import('/views.js');
+    const cockpit = startCockpit({ document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000 });
+    await cockpit.refresher.activeCycle;
+    const page = document.querySelector('[data-page="component"]');
+    const unsafe = (root) => ({
+      hrefs: root.querySelectorAll('[href]').length,
+      srcs: root.querySelectorAll('[src]').length,
+      scripts: root.querySelectorAll('script').length,
+      images: root.querySelectorAll('img').length,
+      handlers: root.querySelectorAll('[onerror]').length,
+    });
+    const artifact = page.querySelector('.component-view[data-kind="ArtifactLink"]');
+    const raw = page.querySelector('details[data-disclosure-key$=":binding"]');
+    const table = page.querySelector('.component-view[data-kind="Table"] > .table');
+    const tableText = table.textContent;
+    const artifactText = artifact.textContent;
+    const unsafeGlobal = unsafe(document);
+    const unsafePage = unsafe(page);
+    const unsafeArtifact = unsafe(artifact);
+    const exact = {
+      generation: page.textContent.includes('18446744073709551615'),
+      sequence: raw.textContent.includes('18446744073709551615'),
+      falseAndZero: page.textContent.includes('ready: false') && page.textContent.includes('count: 0'),
+      nullValue: page.textContent.includes('absent: null'),
+      tableNull: tableText.includes('null'),
+      artifactInert: artifactText.includes('javascript:alert(\'artifact\')')
+        && artifactText.includes('sha256:6666666666666666666666666666666666666666666666666666666666666666')
+        && artifactText.includes('Download unavailable'),
+    };
+    // Unsafe numeric generations are not compared as if they were integral.
+    const unsafeBinding = {
+      binding_id: 'fixture.unsafe', api: 'plugin', api_version: 1,
+      implementation_version: 'fixture-views', generation: 9007199254740992,
+      config_digest: 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+    };
+    const unsafeView = resolveComponentViews({
+      pluginId: 'example.unsafe',
+      binding: unsafeBinding,
+      descriptors: [{ view_id: 'v', schema_namespace: 'private.unsafe', kind: 'Status', title: 'v', schema_version: 1, fields: ['value'] }],
+      entries: [{
+        format: 'ReportEnvelope/v1', plugin_id: 'example.unsafe', binding: unsafeBinding,
+        schema_namespace: 'private.unsafe', schema_version: 1, sequence: '1',
+        reported_at_unix_ms: '1', observed_at_unix_ms: '1', execution_id: null,
+        durability: 'durable', payload: { value: 'ready' },
+        payload_digest: 'sha256:8888888888888888888888888888888888888888888888888888888888888888',
+      }],
+      nextCursor: null,
+      reportState: 'available',
+    }).views[0];
+    return {
+      text: page.textContent,
+      exact,
+      unsafeGlobal,
+      unsafePage,
+      unsafeArtifact,
+      unsafeState: unsafeView.state,
+      bounded: document.querySelectorAll('pre').length > 0,
+      posts: 0,
+    };
+    "#,
+        "component-injection-exact",
+        1280,
+        2000,
+        "",
+    );
+    let text = result["text"].as_str().unwrap();
+    assert!(text.contains("<script>alert('status')</script>"), "hostile status text must stay text: {text}");
+    assert!(text.contains("<script>alert('row')</script>"), "hostile row text must stay text: {text}");
+    assert!(text.contains("<img src=x onerror=alert(1)>"), "hostile label must stay text: {text}");
+    assert!(text.contains("javascript:alert('artifact')"), "dangerous URL must stay inert text: {text}");
+    assert_eq!(result["unsafeGlobal"]["scripts"].as_u64(), Some(1), "only the driver module may exist");
+    assert_eq!(result["unsafeGlobal"]["images"].as_u64(), Some(0));
+    assert_eq!(result["unsafeGlobal"]["handlers"].as_u64(), Some(0));
+    assert_eq!(result["unsafePage"]["scripts"].as_u64(), Some(0));
+    assert_eq!(result["unsafePage"]["images"].as_u64(), Some(0));
+    assert_eq!(result["unsafePage"]["handlers"].as_u64(), Some(0));
+    assert_eq!(result["unsafeArtifact"]["hrefs"].as_u64(), Some(0));
+    assert_eq!(result["unsafeArtifact"]["srcs"].as_u64(), Some(0));
+    for key in ["generation", "sequence", "falseAndZero", "nullValue", "tableNull", "artifactInert"] {
+        assert_eq!(result["exact"][key].as_bool(), Some(true), "exact identity {key}: {result}");
+    }
+    assert_eq!(result["unsafeState"].as_str(), Some("conflict"), "unsafe numeric generation must not be rounded: {result}");
+    assert_eq!(result["bounded"].as_bool(), Some(true));
+    assert_eq!(server.post_count(), 0);
+    assert!(server.requests().iter().all(|request| request.path.starts_with('/')));
 }

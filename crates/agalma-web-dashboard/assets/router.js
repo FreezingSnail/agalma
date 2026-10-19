@@ -38,7 +38,9 @@ export function parseHash(raw) {
   const hash = raw === null || raw === undefined ? '' : String(raw);
   const body = hash.startsWith('#') ? hash.slice(1) : hash;
   const path = body.startsWith('/') ? body.slice(1) : body;
-  if (path === '') return { name: 'overview', params: {}, valid: false };
+  // A bare URL is the valid default landing route. Only a malformed nonempty
+  // hash falls back with the visible unknown-route notice.
+  if (path === '') return { name: 'overview', params: {}, valid: true };
   const segments = path.split('/');
   const [head, ...rest] = segments;
   if (head === 'components') {

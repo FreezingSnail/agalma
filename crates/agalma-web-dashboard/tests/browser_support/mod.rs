@@ -362,6 +362,19 @@ static BROWSER_PROFILE_SEQ: AtomicUsize = AtomicUsize::new(0);
 /// `budget_ms` is the virtual-time budget: timers and awaited fetches run to
 /// completion quickly while `--dump-dom` still serializes the settled DOM.
 pub fn run_browser(chrome: &Path, url: &str, budget_ms: u64, label: &str) -> BrowserOutcome {
+    run_browser_sized(chrome, url, budget_ms, label, 1280, 2000)
+}
+
+/// Run headless Chrome with an explicit viewport so responsive layout checks
+/// use the real CSS engine instead of a simulated width.
+pub fn run_browser_sized(
+    chrome: &Path,
+    url: &str,
+    budget_ms: u64,
+    label: &str,
+    width: u32,
+    height: u32,
+) -> BrowserOutcome {
     let _launch_guard = BROWSER_LAUNCH_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -383,8 +396,8 @@ pub fn run_browser(chrome: &Path, url: &str, budget_ms: u64, label: &str) -> Bro
             "--disable-sync",
             "--mute-audio",
             "--hide-scrollbars",
-            "--window-size=1280,2000",
         ])
+        .arg(format!("--window-size={width},{height}"))
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg(format!("--virtual-time-budget={budget_ms}"))
         .args(["--dump-dom", url])
@@ -409,9 +422,28 @@ pub fn run_browser_result(
     budget_ms: u64,
     label: &str,
 ) -> (BrowserOutcome, serde_json::Value) {
+    run_browser_result_sized(chrome, url, budget_ms, label, 1280, 2000)
+}
+
+/// Sized variant used by responsive shell assertions.
+pub fn run_browser_result_sized(
+    chrome: &Path,
+    url: &str,
+    budget_ms: u64,
+    label: &str,
+    width: u32,
+    height: u32,
+) -> (BrowserOutcome, serde_json::Value) {
     let mut last_error = String::new();
     for attempt in 0..2 {
-        let outcome = run_browser(chrome, url, budget_ms, &format!("{label}-{attempt}"));
+        let outcome = run_browser_sized(
+            chrome,
+            url,
+            budget_ms,
+            &format!("{label}-{attempt}"),
+            width,
+            height,
+        );
         match outcome.try_result_json() {
             Ok(value) => return (outcome, value),
             Err(error) => last_error = format!("{error} (attempt {attempt})"),

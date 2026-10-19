@@ -184,20 +184,57 @@ fn run_driver_at(
     body: &str,
     label: &str,
 ) -> serde_json::Value {
+    run_driver_at_size(server, hash, body, label, 1280, 2000)
+}
+
+/// Run one driver page at an explicit viewport. Layout assertions read real
+/// computed geometry from the compiled stylesheet.
+fn run_driver_at_size(
+    server: &FixtureServer,
+    hash: &str,
+    body: &str,
+    label: &str,
+    width: u32,
+    height: u32,
+) -> serde_json::Value {
     server.register(
         "/harness.html",
         Response::text(200, "text/html; charset=utf-8", driver_page(body)),
     );
+    // Chrome's new headless mode clamps the outer window to 500 CSS px. The
+    // 390 px acceptance viewport is therefore a same-origin iframe of exactly
+    // 390 CSS px, which still runs the real stylesheet and media queries; the
+    // wrapper copies the driver's JSON result into the dumped parent document.
+    let (path, launch_width) = if width < 500 {
+        server.register(
+            "/frame.html",
+            Response::text(
+                200,
+                "text/html; charset=utf-8",
+                viewport_frame_page(width, height, hash),
+            ),
+        );
+        ("/frame.html", 500)
+    } else {
+        ("/harness.html", width)
+    };
+    let url = if width < 500 {
+        format!("{}{path}", server.base_url())
+    } else {
+        format!("{}{path}{hash}", server.base_url())
+    };
     let chrome = resolve_chrome().expect("installed Chrome (CHROME_BIN) is required");
     // An empty serialized result means the module never executed (Chrome dumped
     // before the module ran), so the fixture endpoints saw no request and a
     // fresh-profile retry is side-effect free. A driver that ran always writes
     // a JSON result or a harness error, which is never retried.
-    let (outcome, result) = browser_support::run_browser_result(
+    let (outcome, result) = browser_support::run_browser_result_sized(
         &chrome,
-        &format!("{}/harness.html{hash}", server.base_url()),
+        &url,
         BUDGET_MS,
         label,
+        launch_width,
+        height,
     );
     assert!(
         outcome.status.success(),
@@ -210,6 +247,38 @@ fn run_driver_at(
         "driver {label} threw: {result}"
     );
     result
+}
+
+/// Parent page that gives the driver an exact CSS-pixel iframe viewport and
+/// copies its JSON result so `--dump-dom` can observe it.
+fn viewport_frame_page(width: u32, height: u32, hash: &str) -> String {
+    format!(
+        r#"<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>viewport</title>
+<style>html,body{{margin:0;border:0}} iframe{{display:block;border:0;width:{width}px;height:{height}px}}</style>
+</head><body>
+<iframe id="frame" src="/harness.html{hash}"></iframe>
+<pre id="harness-result"></pre>
+<script>
+const frame = document.getElementById('frame');
+const result = document.getElementById('harness-result');
+const pump = () => {{
+  try {{
+    const driver = frame.contentDocument && frame.contentDocument.getElementById('harness-result');
+    const text = driver ? driver.textContent : '';
+    if (text.trim() !== '') {{ result.textContent = text; return; }}
+  }} catch (error) {{
+    result.textContent = JSON.stringify({{ harnessError: String(error) }});
+    return;
+  }}
+  setTimeout(pump, 10);
+}};
+frame.addEventListener('load', pump);
+pump();
+</script>
+</body></html>
+"#
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -927,7 +996,7 @@ fn cockpit_page_unknown_hash_falls_back_to_overview_with_notice() {
         r#"
     const cockpit = startCockpit({ document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000 });
     await cockpit.refresher.activeCycle;
-    const notice = [...document.getElementById('app').children].find((node) => node.tagName === 'P');
+    const notice = document.getElementById('route-notice');
     const visible = [...document.querySelectorAll('[data-page]')].filter((node) => !node.hidden).map((node) => node.dataset.page);
     const current = [...document.querySelectorAll('nav a[aria-current]')].map((node) => node.getAttribute('href'));
     return {
@@ -1259,3 +1328,392 @@ fn cockpit_page_pagehide_on_tasks_route_stops_timers_and_aborts() {
     assert_eq!(result["savedSignalAborted"].as_bool(), Some(true), "the saved abort signal must be aborted");
     assert_eq!(result["aborted"].as_bool(), Some(true), "an in-flight request's abort signal must fire");
 }
+
+// ---------------------------------------------------------------------------
+// Shell geometry, visibility and lifecycle repair regressions
+// ---------------------------------------------------------------------------
+
+/// Deterministic property matrix: every route state at every accepted viewport
+/// class. The case budget is four browser launches x (bare URL + six routes).
+/// There is no random seed; the generation is the fixed width/route cross
+/// product below.
+#[test]
+fn cockpit_page_shell_viewport_route_property_matrix() {
+    const VIEWPORTS: [u32; 4] = [390, 720, 1280, 1920];
+    const ROUTES: [(&str, &str, bool); 6] = [
+        ("#/overview", "overview", true),
+        ("#/components", "components", true),
+        ("#/tasks", "tasks", true),
+        ("#/projects", "projects", true),
+        ("#/system", "system", true),
+        ("#/not-a-route", "overview", false),
+    ];
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        factory: vec![ok_json(FACTORY_RUNTIME)],
+        detail: vec![ok_json(COMPONENT_DETAIL)],
+        status: vec![ok_json(STATUS)],
+        ..Script::default()
+    });
+    let body = r#"
+    const cockpit = startCockpit({
+      document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000,
+    });
+    await cockpit.refresher.activeCycle;
+    const rect = (node) => {
+      const r = node.getBoundingClientRect();
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+    };
+    const hit = (node) => {
+      const r = node.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return false;
+      const found = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return !!found && (found === node || node.contains(found));
+    };
+    const snapshot = () => {
+      const pages = [...document.querySelectorAll('[data-page]')].map((node) => ({
+        name: node.dataset.page,
+        hidden: node.hidden,
+        display: getComputedStyle(node).display,
+        rect: rect(node),
+      }));
+      const notice = document.getElementById('route-notice');
+      const error = document.getElementById('errors');
+      const pause = document.querySelector('[data-action="pause"]');
+      const resume = document.querySelector('[data-action="resume"]');
+      return {
+        route: cockpit.state.route.name,
+        valid: cockpit.state.route.valid,
+        innerWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+        bodyScrollWidth: document.body.scrollWidth,
+        overflowing: [...document.querySelectorAll('body *')]
+          .filter((node) => {
+            const r = node.getBoundingClientRect();
+            return r.width > 0 && (r.left < -1 || r.right > innerWidth + 1);
+          })
+          .slice(0, 12)
+          .map((node) => ({
+            tag: node.tagName,
+            id: node.id,
+            cls: String(node.className || ''),
+            rect: rect(node),
+          })),
+        nav: rect(document.querySelector('nav')),
+        content: rect(document.querySelector('.content')),
+        pages,
+        notice: {
+          hidden: notice.hidden,
+          display: getComputedStyle(notice).display,
+          rect: rect(notice),
+          text: notice.textContent,
+        },
+        error: {
+          hidden: error.hidden,
+          display: getComputedStyle(error).display,
+          rect: rect(error),
+        },
+        pause: pause ? { hidden: pause.hidden, rect: rect(pause), hit: hit(pause), disabled: pause.disabled } : null,
+        resume: resume ? { hidden: resume.hidden, rect: rect(resume), hit: hit(resume), disabled: resume.disabled } : null,
+      };
+    };
+    const navigate = async (hash) => {
+      if (location.hash === hash) return;
+      const changed = new Promise((resolve) => window.addEventListener('hashchange', resolve, { once: true }));
+      location.hash = hash;
+      await changed;
+      if (cockpit.refresher.activeCycle) await cockpit.refresher.activeCycle;
+    };
+    const observations = { initial: snapshot(), routes: {} };
+    for (const hash of ['#/overview', '#/components', '#/tasks', '#/projects', '#/system', '#/not-a-route']) {
+      await navigate(hash);
+      observations.routes[hash] = snapshot();
+    }
+    return observations;
+    "#;
+
+    for width in VIEWPORTS {
+        let result = run_driver_at_size(
+            &server,
+            "",
+            body,
+            &format!("shell-matrix-{width}"),
+            width,
+            2000,
+        );
+        assert_eq!(
+            result["initial"]["innerWidth"].as_f64().unwrap(),
+            f64::from(width),
+            "Chrome must honour the requested viewport"
+        );
+        // Bare URL: valid Overview landing without the unknown-route notice.
+        assert_eq!(result["initial"]["route"].as_str().unwrap(), "overview");
+        assert_eq!(result["initial"]["valid"].as_bool(), Some(true), "a bare URL is the valid default");
+        assert_eq!(result["initial"]["notice"]["hidden"].as_bool(), Some(true));
+        assert_eq!(result["initial"]["notice"]["display"].as_str().unwrap(), "none");
+
+        for (hash, expected, valid) in ROUTES {
+            let observation = &result["routes"][hash];
+            assert_eq!(observation["route"].as_str().unwrap(), expected, "{width}px {hash}");
+            assert_eq!(observation["valid"].as_bool(), Some(valid), "{width}px {hash}");
+            assert!(
+                observation["scrollWidth"].as_f64().unwrap() <= f64::from(width) + 1.0,
+                "{width}px {hash} must not overflow the page: scrollWidth={} overflowing={}",
+                observation["scrollWidth"],
+                observation["overflowing"]
+            );
+            assert!(
+                observation["bodyScrollWidth"].as_f64().unwrap() <= f64::from(width) + 1.0,
+                "{width}px {hash} body must not overflow: bodyScrollWidth={}",
+                observation["bodyScrollWidth"]
+            );
+
+            let pages = observation["pages"].as_array().unwrap();
+            let visible: Vec<&str> = pages
+                .iter()
+                .filter(|page| page["display"].as_str() != Some("none"))
+                .map(|page| page["name"].as_str().unwrap())
+                .collect();
+            assert_eq!(visible, vec![expected], "{width}px {hash} renders only the active page");
+            for page in pages {
+                let name = page["name"].as_str().unwrap();
+                if name != expected {
+                    assert_eq!(page["display"].as_str().unwrap(), "none", "{width}px {hash}: {name} must be display:none");
+                    assert_eq!(page["rect"]["width"].as_f64().unwrap(), 0.0, "{width}px {hash}: {name} occupies width");
+                    assert_eq!(page["rect"]["height"].as_f64().unwrap(), 0.0, "{width}px {hash}: {name} occupies height");
+                }
+            }
+
+            // Unknown notice only on the malformed hash. Hidden notices and
+            // errors occupy no layout space.
+            if valid {
+                assert_eq!(observation["notice"]["hidden"].as_bool(), Some(true), "{width}px {hash}");
+                assert_eq!(observation["notice"]["display"].as_str().unwrap(), "none", "{width}px {hash}");
+                assert_eq!(
+                    observation["notice"]["rect"]["height"].as_f64().unwrap(),
+                    0.0,
+                    "{width}px {hash} hidden notice takes space"
+                );
+            } else {
+                assert_eq!(observation["notice"]["hidden"].as_bool(), Some(false), "{width}px {hash}");
+                assert_eq!(
+                    observation["notice"]["text"].as_str().unwrap(),
+                    "Unknown route; showing Overview."
+                );
+            }
+            assert_eq!(observation["error"]["hidden"].as_bool(), Some(true), "{width}px {hash}");
+            assert_eq!(observation["error"]["display"].as_str().unwrap(), "none", "{width}px {hash}");
+            assert_eq!(observation["error"]["rect"]["height"].as_f64().unwrap(), 0.0, "{width}px {hash} hidden error takes space");
+
+            let nav = &observation["nav"];
+            let content = &observation["content"];
+            if width >= 1280 {
+                assert!(
+                    content["left"].as_f64().unwrap() >= nav["right"].as_f64().unwrap() - 0.5,
+                    "{width}px {hash}: content must clear the fixed sidebar: nav={nav:?} content={content:?}"
+                );
+            } else {
+                assert!(
+                    nav["left"].as_f64().unwrap() >= -0.5
+                        && content["left"].as_f64().unwrap() >= -0.5,
+                    "{width}px {hash}: navigation and content stay inside the viewport"
+                );
+            }
+            assert!(
+                content["right"].as_f64().unwrap() <= f64::from(width) + 1.0,
+                "{width}px {hash}: content must stay inside the viewport"
+            );
+
+            if hash == "#/overview" || hash == "#/not-a-route" {
+                for action in ["pause", "resume"] {
+                    let control = &observation[action];
+                    assert_eq!(control["hidden"].as_bool(), Some(false), "{width}px {hash}: {action}");
+                    assert_eq!(control["disabled"].as_bool(), Some(false), "{width}px {hash}: {action} permission");
+                    let rect = &control["rect"];
+                    assert!(
+                        rect["left"].as_f64().unwrap() >= content["left"].as_f64().unwrap() - 0.5
+                            && rect["right"].as_f64().unwrap() <= content["right"].as_f64().unwrap() + 0.5,
+                        "{width}px {hash}: {action} must remain inside the content column: {rect:?}"
+                    );
+                    assert_eq!(control["hit"].as_bool(), Some(true), "{width}px {hash}: {action} must be hit-testable");
+                }
+            }
+        }
+    }
+    assert_eq!(server.post_count(), 0, "layout, route and refresh checks must never POST");
+}
+
+#[test]
+fn cockpit_page_visibility_and_persisted_pageshow_resume_one_loop() {
+    let (server, _state) = scripted_server(Script::default());
+    let body = r#"
+    let visibility = 'visible';
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility });    let overviewCalls = 0;
+    let componentsCalls = 0;
+    let factoryCalls = 0;
+    let mode = 'ok';
+    let aborted = false;
+    let capturedSignal = null;
+    const api = {
+      getOverview: ({ signal } = {}) => {
+        if (mode === 'hang') {
+          capturedSignal = signal;
+          return new Promise((resolve, reject) => {
+            signal.addEventListener('abort', () => {
+              aborted = true;
+              reject(new ApiError('aborted', 'hidden'));
+            });
+          });
+        }
+        overviewCalls += 1;
+        return Promise.resolve({ economics: null, timeline: [] });
+      },
+      getComponents: () => { componentsCalls += 1; return Promise.resolve({ entries: [], next_cursor: null }); },
+      getFactory: () => { factoryCalls += 1; return Promise.reject(new ApiError('unsupported', 'endpoint absent')); },
+    };
+    const cockpit = startCockpit({ document, root: document.getElementById('app'), api, intervalMs: 60000 });
+    await cockpit.refresher.activeCycle;
+    const start = { overview: overviewCalls, running: cockpit.refresher.running, timer: cockpit.refresher.pendingTimer !== null };
+
+    // Hide while an active read is in flight: the read must abort, not linger.
+    mode = 'hang';
+    const hanging = cockpit.refresh();
+    let guard = 0;
+    while ((capturedSignal === null || cockpit.refresher.controller === null) && guard < 1000) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      guard += 1;
+    }
+    const activeController = cockpit.refresher.controller;
+    visibility = 'hidden';
+    document.dispatchEvent(new Event('visibilitychange'));
+    await hanging;
+    const hidden = {
+      overview: overviewCalls,
+      running: cockpit.refresher.running,
+      timer: cockpit.refresher.pendingTimer,
+      controller: cockpit.refresher.controller,
+      controllerAborted: activeController ? activeController.signal.aborted : null,
+      savedSignalAborted: capturedSignal ? capturedSignal.aborted : null,
+      aborted,
+    };
+
+    mode = 'ok';
+    visibility = 'visible';
+    document.dispatchEvent(new Event('visibilitychange'));
+    await cockpit.refresher.activeCycle;
+    const visible = { overview: overviewCalls, running: cockpit.refresher.running, timer: cockpit.refresher.pendingTimer !== null };
+
+    // A duplicate visible event must not start a second loop or read.
+    document.dispatchEvent(new Event('visibilitychange'));
+    await Promise.resolve();
+    const duplicate = { overview: overviewCalls, running: cockpit.refresher.running };
+
+    window.dispatchEvent(new Event('pagehide'));
+    const pageHidden = {
+      overview: overviewCalls,
+      running: cockpit.refresher.running,
+      timer: cockpit.refresher.pendingTimer,
+      controller: cockpit.refresher.controller,
+    };
+
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    await cockpit.refresher.activeCycle;
+    const pageShown = { overview: overviewCalls, running: cockpit.refresher.running, timer: cockpit.refresher.pendingTimer !== null };
+    return { start, hidden, visible, duplicate, pageHidden, pageShown, componentsCalls, factoryCalls };
+    "#;
+    let result = run_driver_at_size(&server, "", body, "lifecycle", 1280, 2000);
+
+    assert_eq!(result["start"]["running"].as_bool(), Some(true));
+    assert_eq!(result["start"]["timer"].as_bool(), Some(true));
+    let first = result["start"]["overview"].as_u64().unwrap();
+
+    assert_eq!(result["hidden"]["running"].as_bool(), Some(false), "hidden pages stop polling");
+    assert_eq!(result["hidden"]["timer"], serde_json::Value::Null, "hidden pages clear the timer");
+    assert_eq!(result["hidden"]["controller"], serde_json::Value::Null, "hidden pages abort the active read");
+    assert_eq!(
+        result["hidden"]["controllerAborted"].as_bool(),
+        Some(true),
+        "hiding must abort the active controller"
+    );
+    assert_eq!(
+        result["hidden"]["savedSignalAborted"].as_bool(),
+        Some(true),
+        "the in-flight read's signal must abort on hide"
+    );
+    assert_eq!(result["hidden"]["aborted"].as_bool(), Some(true));
+    assert_eq!(result["hidden"]["overview"].as_u64().unwrap(), first, "hiding must not read");
+
+    assert_eq!(result["visible"]["running"].as_bool(), Some(true), "visible pages resume polling");
+    assert_eq!(result["visible"]["timer"].as_bool(), Some(true));
+    assert_eq!(
+        result["visible"]["overview"].as_u64().unwrap(),
+        first + 1,
+        "becoming visible reads immediately exactly once"
+    );
+    assert_eq!(
+        result["duplicate"]["overview"].as_u64().unwrap(),
+        first + 1,
+        "a duplicate visible event must not create another loop"
+    );
+    assert_eq!(result["duplicate"]["running"].as_bool(), Some(true));
+
+    window_assert_stopped(&result["pageHidden"], "pagehide");
+    assert_eq!(
+        result["pageShown"]["overview"].as_u64().unwrap(),
+        first + 2,
+        "persisted pageshow resumes exactly one read"
+    );
+    assert_eq!(result["pageShown"]["running"].as_bool(), Some(true));
+    assert_eq!(result["pageShown"]["timer"].as_bool(), Some(true));
+    assert!(result["componentsCalls"].as_u64().unwrap() >= 1);
+    assert!(result["factoryCalls"].as_u64().unwrap() >= 1);
+    assert_eq!(server.post_count(), 0, "lifecycle and refresh must never POST");
+}
+
+fn window_assert_stopped(value: &serde_json::Value, label: &str) {
+    assert_eq!(value["running"].as_bool(), Some(false), "{label} must stop polling");
+    assert_eq!(value["timer"], serde_json::Value::Null, "{label} must clear the timer");
+    assert_eq!(value["controller"], serde_json::Value::Null, "{label} must abort the active read");
+}
+
+#[test]
+fn cockpit_page_refresh_preserves_keyboard_focus() {
+    let (server, _state) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(COMPONENTS)],
+        factory: vec![ok_json(FACTORY_RUNTIME)],
+        ..Script::default()
+    });
+    let body = r#"
+    const cockpit = startCockpit({
+      document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000,
+    });
+    await cockpit.refresher.activeCycle;
+    const pause = document.querySelector('[data-action="pause"]');
+    pause.focus();
+    const pauseFocusedBefore = document.activeElement === pause;
+    await cockpit.refresh();
+    const pauseFocusedAfter = document.activeElement?.dataset?.action === 'pause';
+
+    const componentsLink = document.querySelector('nav a[data-focus-key="nav:components"]');
+    componentsLink.focus();
+    const navFocusedBefore = document.activeElement === componentsLink;
+    await cockpit.refresh();
+    const navFocusedAfter = document.activeElement?.dataset?.focusKey === 'nav:components';
+    return {
+      pauseFocusedBefore,
+      pauseFocusedAfter,
+      navFocusedBefore,
+      navFocusedAfter,
+      activeTag: document.activeElement?.tagName ?? null,
+    };
+    "#;
+    let result = run_driver_at_size(&server, "", body, "focus", 1280, 2000);
+    assert_eq!(result["pauseFocusedBefore"].as_bool(), Some(true));
+    assert_eq!(result["pauseFocusedAfter"].as_bool(), Some(true), "a refresh must keep focus on the rendered Pause control");
+    assert_eq!(result["navFocusedBefore"].as_bool(), Some(true));
+    assert_eq!(result["navFocusedAfter"].as_bool(), Some(true), "a refresh must keep focus on the same navigation link");
+    assert_eq!(server.post_count(), 0);
+}
+

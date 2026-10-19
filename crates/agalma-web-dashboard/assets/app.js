@@ -182,19 +182,29 @@ export class Cockpit {
   #buildStaticShell() {
     const doc = this.doc;
     while (this.root.firstChild) this.root.removeChild(this.root.firstChild);
-    this.root.appendChild(el(doc, 'h1', null, 'Agalma cockpit'));
+    // The shell is the `.app` grid: a reserved desktop navigation column plus
+    // one content host. Keeping every content child inside the host is what
+    // keeps the fixed sidebar from covering runtime, notices and pages.
+    this.root.classList.add('app');
     this.nav = el(doc, 'nav', 'nav');
+    this.nav.appendChild(el(doc, 'h1', 'brand', 'Agalma cockpit'));
+    this.navLinks = el(doc, 'div', 'nav-links');
+    this.nav.appendChild(this.navLinks);
     this.root.appendChild(this.nav);
+
+    this.content = el(doc, 'div', 'content');
     this.runtimePillHost = el(doc, 'div', 'kv');
-    this.root.appendChild(this.runtimePillHost);
+    this.content.appendChild(this.runtimePillHost);
     this.routeNotice = el(doc, 'p', 'empty');
+    this.routeNotice.id = 'route-notice';
     this.routeNotice.hidden = true;
-    this.root.appendChild(this.routeNotice);
+    this.content.appendChild(this.routeNotice);
     this.pageHost = doc.createElement('div');
-    this.root.appendChild(this.pageHost);
+    this.content.appendChild(this.pageHost);
     this.errorSection = panel(doc, 'Error', 'errors');
     this.errorSection.hidden = true;
-    this.root.appendChild(this.errorSection);
+    this.content.appendChild(this.errorSection);
+    this.root.appendChild(this.content);
   }
 
   start() {
@@ -269,6 +279,10 @@ export class Cockpit {
 
   /** Render one refresh snapshot. Never throws into the timer loop. */
   render(snapshot = this.refresher.snapshot()) {
+    // A background refresh rebuilds the shell. Capture the focused control's
+    // bounded identity first and restore it afterwards so polling does not
+    // steal keyboard focus from the operator.
+    const focus = this.#captureFocus();
     try {
       // The typed runtime observation drives control availability. Update it
       // without re-entering render (the control panel's own onChange notifies
@@ -282,6 +296,38 @@ export class Cockpit {
       this.state.renderCount += 1;
     } catch (error) {
       this.renderError(error);
+    } finally {
+      this.#restoreFocus(focus);
+    }
+  }
+
+  #captureFocus() {
+    const active = this.doc.activeElement;
+    if (!active || active === this.doc.body || active === this.root) return null;
+    const focusKey = active.dataset?.focusKey;
+    if (focusKey) return { focusKey };
+    if (active.id) return { id: active.id };
+    const action = active.dataset?.action;
+    if (action) return { action };
+    return null;
+  }
+
+  #restoreFocus(token) {
+    if (!token) return;
+    let node = null;
+    if (token.focusKey) {
+      node = [...this.root.querySelectorAll('[data-focus-key]')]
+        .find((candidate) => candidate.dataset.focusKey === token.focusKey) ?? null;
+    } else if (token.id) {
+      node = this.doc.getElementById(token.id);
+    } else if (token.action) {
+      node = this.root.querySelector(`[data-action="${token.action}"]`);
+    }
+    if (!node || node === this.doc.activeElement || typeof node.focus !== 'function') return;
+    try {
+      node.focus({ preventScroll: true });
+    } catch {
+      // An unavailable focus target is not a render failure.
     }
   }
 
@@ -298,7 +344,7 @@ export class Cockpit {
   }
 
   #renderNav() {
-    const nav = this.nav;
+    const nav = this.navLinks;
     while (nav.firstChild) nav.removeChild(nav.firstChild);
     const active = this.state.route?.name === 'component' ? 'components' : this.state.route?.name;
     for (const name of NAV_ROUTES) {
@@ -306,6 +352,7 @@ export class Cockpit {
       if (!spec) continue;
       const link = el(this.doc, 'a', null, spec.title);
       link.setAttribute('href', formatHash({ name, params: {} }));
+      link.dataset.focusKey = `nav:${name}`;
       if (name === active) link.setAttribute('aria-current', 'page');
       nav.appendChild(link);
     }
@@ -340,12 +387,18 @@ export function startCockpit(options = {}) {
     document: doc,
     api: options.api ?? new DashboardApi({ baseUrl: options.baseUrl ?? '', fetchImpl: options.fetchImpl }),
   });
-  // Page exit stops timers and aborts the active read. These listeners stay
-  // attached so a driver page can dispatch `pagehide` on the view directly.
+  // Page exit stops timers and aborts the active read. Persisted pageshow and
+  // becoming visible again restart one refresh loop; `start()` is idempotent,
+  // so duplicate events never create overlapping cycles or timers.
   const view = doc.defaultView ?? globalThis;
   view.addEventListener('pagehide', () => cockpit.stop());
+  view.addEventListener('pageshow', () => cockpit.start());
   doc.addEventListener('visibilitychange', () => {
-    if (doc.visibilityState === 'hidden') cockpit.stop();
+    if (doc.visibilityState === 'hidden') {
+      cockpit.stop();
+    } else {
+      cockpit.start();
+    }
   });
   cockpit.start();
   return cockpit;

@@ -218,12 +218,29 @@ summary:focus-visible,
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
-.page {
+.nav-links {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* The single in-flow content column of the `.app` grid. The fixed desktop nav
+   overlays grid column one, so the content host starts in column two and never
+   renders underneath the sidebar. */
+.content {
   grid-column: 2;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+}
+
+.page {
   width: 100%;
   max-width: var(--content-max);
   min-width: 0;
-  padding: var(--space-5);
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
@@ -453,6 +470,15 @@ summary:focus-visible,
   white-space: nowrap;
 }
 
+/* The Overview timeline renders each entry as a `div.time` container while
+   the timestamp gutter uses `span.time`; only the timestamp itself must stay
+   on one line, otherwise long entry text forces whole-page horizontal
+   overflow on narrow viewports. */
+div.time {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 /* Pager button (opaque-cursor Next control). */
 .pager {
   margin-top: var(--space-2);
@@ -600,14 +626,32 @@ summary:focus-visible,
     white-space: nowrap;
   }
 
-  .page {
+  .nav-links {
+    flex-direction: row;
+    flex-wrap: wrap;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .content {
     grid-column: 1;
     padding: var(--space-4);
+  }
+
+  .page {
+    padding: 0;
   }
 
   .grid {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* Inactive pages, route notices and panels carry the `hidden` attribute. The
+   author display rules above (.page is flex) would otherwise override the UA
+   `[hidden]` rule, so hidden regions must be explicitly removed from layout. */
+[hidden] {
+  display: none !important;
 }
 
 /* ------------------------------------------------------------------ motion */

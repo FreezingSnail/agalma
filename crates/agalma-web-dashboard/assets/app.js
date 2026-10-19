@@ -1,88 +1,42 @@
-// WEB.6 cockpit shell renderer.
+// WEB.6 cockpit shell for the multi-page cockpit (UI v2).
 //
-// One page renders factory/worker status, eligible queue summaries, executions,
-// component health and the existing economics/timeline. Navigation is ordinary
-// component paging with an explicit Next control and an opaque server cursor;
-// there is no per-task dispatch button. Plugin-derived text is written with
-// `textContent`/`createTextNode` only, bounded to 4 KiB with an explicit
-// truncation marker. Lists are bounded to 100 rows per page with an explicit
-// additional-content indicator.
+// The shell keeps the retained DOM contract (`#app` root, `h1` brand "Agalma
+// cockpit") and the retained module exports the browser acceptance driver
+// imports. It renders the navigation from `ROUTES`, one page player per module,
+// the runtime pill and the global error section, and moves the control panel to
+// the Overview page unchanged in behavior.
 //
-// Unknown is never rendered as healthy, zero, empty or stopped: absent runtime,
-// health, cost, stop and source states all carry their own explicit label. A
-// failed source keeps its last successful data visible as stale and shows the
-// last success time and the current error. A renderer exception becomes a
-// visible bounded error instead of a blank page.
+// Read registration: overview, factory and components stay always-on; the
+// component-detail read is route-active (its loader fetches only while its
+// route is active and otherwise returns the last successful page). Navigation,
+// hash change, reload and refresh never submit a control POST. Plugin-derived
+// text is written with `textContent`/`createTextNode` only, bounded to 4 KiB
+// with an explicit truncation marker; lists are bounded to 100 rows per page.
+// Unknown is never rendered as healthy, zero, empty or stopped.
 
 import { ApiError, ApiErrorKind, DashboardApi } from './api.js';
 import { Refresher, DEFAULT_INTERVAL_MS } from './refresh.js';
 import { ControlPanel, RESUME_CONFIRMATION } from './controls.js';
+import { ROUTES, NAV_ROUTES, parseHash, formatHash, startRouter } from './router.js';
+import {
+  boundedText, formatTimestamp, FIELD_TEXT_LIMIT, LIST_ROW_LIMIT, el, panel, pill,
+} from './ui.js';
 
-export const FIELD_TEXT_LIMIT = 4096;
-export const LIST_ROW_LIMIT = 100;
+export { boundedText, formatTimestamp, FIELD_TEXT_LIMIT, LIST_ROW_LIMIT };
+
 export const COMPONENT_PAGE_LIMIT = 50;
-const SAFE_DATE_MAX = 8640000000000000;
+export const DETAIL_PAGE_LIMIT = 50;
 
-/** Bound plugin text to 4 KiB, reporting whether it was truncated. */
-export function boundedText(value, limit = FIELD_TEXT_LIMIT) {
-  const text = value === null || value === undefined ? '' : String(value);
-  if (text.length <= limit) return { text, truncated: false };
-  return { text: text.slice(0, limit), truncated: true };
-}
-
-/** Format a timestamp only inside the safe `Date` range; otherwise unknown. */
-export function formatTimestamp(value) {
-  if (!Number.isInteger(value) || value < 0 || value > SAFE_DATE_MAX) return 'unknown';
-  try {
-    return new Date(value).toISOString();
-  } catch {
-    return 'unknown';
-  }
-}
-
-function el(doc, tag, className, text) {
-  const node = doc.createElement(tag);
-  if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
-}
-
-function textNode(doc, tag, value, className) {
-  const { text, truncated } = boundedText(value);
-  const node = el(doc, tag, className);
-  node.appendChild(doc.createTextNode(text));
-  if (truncated) {
-    node.appendChild(doc.createTextNode(' …[truncated]'));
-  }
-  return node;
-}
-
-function section(doc, title, id) {
-  const root = el(doc, 'section', 'panel');
-  root.id = id;
-  root.appendChild(el(doc, 'h2', null, title));
-  return root;
-}
-
-function kv(doc, label, value, className = 'value') {
-  const row = el(doc, 'div', 'kv');
-  row.appendChild(el(doc, 'span', 'key', label));
-  row.appendChild(doc.createTextNode(': '));
-  row.appendChild(el(doc, 'span', className, value));
-  return row;
-}
-
-const SOURCE_LABELS = {
-  available: 'available',
-  empty: 'empty (no entries)',
-  missing: 'missing',
-  unreadable: 'unreadable',
-  unknown: 'unknown',
+/** Map a typed factory runtime status onto a pill state (unknown stays unknown). */
+const RUNTIME_PILL = {
+  Starting: 'degraded',
+  Recovering: 'degraded',
+  Idle: 'idle',
+  Running: 'running',
+  Paused: 'paused',
+  Failed: 'failed',
+  Unavailable: 'unavailable',
 };
-
-function sourceLabel(state) {
-  return SOURCE_LABELS[state] ?? `unknown source state (${String(state)})`;
-}
 
 /**
  * Default operator confirmation-phrase provider for a Resume click.
@@ -118,7 +72,10 @@ export class Cockpit {
     // prompt/confirm surface and returns null when none is available.
     this.confirmPhrase = options.confirmPhrase ?? defaultConfirmPhrase;
     this.state = {
+      route: parseHash(this.#initialHash()),
       components: { cursor: null, page: null, reloadNote: null, rows: new Map() },
+      detail: { pluginId: null, cursor: null, page: null },
+      status: null,
       lastRenderError: null,
       renderCount: 0,
     };
@@ -136,8 +93,15 @@ export class Cockpit {
       setTimer: options.setTimer,
       clearTimer: options.clearTimer,
     });
+    this.routerStop = null;
     this.#registerSources();
     this.#buildStaticShell();
+    this.render();
+  }
+
+  #initialHash() {
+    const view = this.doc.defaultView ?? globalThis;
+    return view.location?.hash ?? '';
   }
 
   #registerSources() {
@@ -146,6 +110,11 @@ export class Cockpit {
     if (this.factoryEnabled) {
       this.refresher.register('factory', (signal) => this.api.getFactory({ signal }));
     }
+    // Route-active reads: the loaders fetch only while their route is active
+    // and otherwise short-circuit to the last successful value, so the refresh
+    // module itself needs no change.
+    this.refresher.register('detail', (signal) => this.#loadDetail(signal));
+    this.refresher.register('status', (signal) => this.#loadStatus(signal));
   }
 
   async #loadComponents(signal) {
@@ -184,34 +153,74 @@ export class Cockpit {
     this.state.components.rows = next;
   }
 
+  #loadDetail(signal) {
+    const route = this.state.route;
+    if (route?.name !== 'component' || !route.params?.id) return this.state.detail.page;
+    const pluginId = route.params.id;
+    if (pluginId !== this.state.detail.pluginId) {
+      // A new target resets the opaque cursor; the previous page is dropped.
+      this.state.detail.pluginId = pluginId;
+      this.state.detail.cursor = null;
+      this.state.detail.page = null;
+    }
+    return this.api
+      .getComponentDetail(pluginId, { limit: DETAIL_PAGE_LIMIT, cursor: this.state.detail.cursor, signal })
+      .then((page) => {
+        this.state.detail.page = page;
+        return page;
+      });
+  }
+
+  #loadStatus(signal) {
+    if (this.state.route?.name !== 'system') return this.state.status;
+    return this.api.getStatus({ signal }).then((value) => {
+      this.state.status = value;
+      return value;
+    });
+  }
+
   #buildStaticShell() {
     const doc = this.doc;
     while (this.root.firstChild) this.root.removeChild(this.root.firstChild);
     this.root.appendChild(el(doc, 'h1', null, 'Agalma cockpit'));
-    this.runtimeSection = section(doc, 'Factory / worker status', 'runtime');
-    this.queueSection = section(doc, 'Eligible queue (automatic operation)', 'queue');
-    this.execSection = section(doc, 'Executions', 'executions');
-    this.componentsSection = section(doc, 'Components', 'components');
-    this.economicsSection = section(doc, 'Economics', 'economics');
-    this.timelineSection = section(doc, 'Timeline', 'timeline');
-    this.sourcesSection = section(doc, 'Read sources', 'sources');
-    this.controlsSection = section(doc, 'Controls', 'controls');
-    this.errorSection = section(doc, 'Error', 'errors');
+    this.nav = el(doc, 'nav', 'nav');
+    this.root.appendChild(this.nav);
+    this.runtimePillHost = el(doc, 'div', 'kv');
+    this.root.appendChild(this.runtimePillHost);
+    this.routeNotice = el(doc, 'p', 'empty');
+    this.routeNotice.hidden = true;
+    this.root.appendChild(this.routeNotice);
+    this.pageHost = doc.createElement('div');
+    this.root.appendChild(this.pageHost);
+    this.errorSection = panel(doc, 'Error', 'errors');
     this.errorSection.hidden = true;
-    for (const part of [
-      this.runtimeSection, this.controlsSection, this.queueSection, this.execSection,
-      this.componentsSection, this.economicsSection, this.timelineSection, this.sourcesSection,
-      this.errorSection,
-    ]) {
-      this.root.appendChild(part);
-    }
+    this.root.appendChild(this.errorSection);
   }
 
   start() {
+    if (!this.routerStop) {
+      this.routerStop = startRouter({ onRoute: (route) => this.#onRoute(route) });
+    }
     return this.refresher.start();
   }
 
+  #onRoute(route) {
+    const previous = this.state.route;
+    const changed = !previous
+      || previous.name !== route.name
+      || previous.params?.id !== route.params?.id;
+    this.state.route = route;
+    this.render();
+    // Only a real route change triggers a read; the initial dispatch is
+    // covered by `start()`'s first refresh cycle.
+    if (changed && previous) this.refresh();
+  }
+
   stop() {
+    if (this.routerStop) {
+      this.routerStop();
+      this.routerStop = null;
+    }
     this.refresher.stop();
   }
 
@@ -222,8 +231,16 @@ export class Cockpit {
   /** Advance the component page using the opaque server cursor. */
   nextComponentPage() {
     const page = this.state.components.page;
-    if (!page || page.next_cursor === null) return Promise.resolve();
+    if (!page || page.next_cursor === null || page.next_cursor === undefined) return Promise.resolve();
     this.state.components.cursor = page.next_cursor;
+    return this.refresh();
+  }
+
+  /** Advance the component-detail page using the opaque server cursor. */
+  nextDetailPage() {
+    const page = this.state.detail.page;
+    if (!page || page.next_cursor === null || page.next_cursor === undefined) return Promise.resolve();
+    this.state.detail.cursor = page.next_cursor;
     return this.refresh();
   }
 
@@ -257,280 +274,61 @@ export class Cockpit {
       // without re-entering render (the control panel's own onChange notifies
       // only for explicit user interactions).
       this.controls.setRuntime(this.#factorySource(snapshot).data ?? null, false);
-      this.#renderRuntime(snapshot);
-      this.#renderControls();
-      this.#renderQueue(snapshot);
-      this.#renderExecutions(snapshot);
-      this.#renderComponents(snapshot);
-      this.#renderEconomics(snapshot);
-      this.#renderTimeline(snapshot);
-      this.#renderSources(snapshot);
+      this.#renderRuntimePill(snapshot);
+      this.#renderNav();
+      this.#renderRouteNotice();
+      this.#renderPages();
+      this.#renderError();
       this.state.renderCount += 1;
     } catch (error) {
       this.renderError(error);
     }
   }
 
+  #renderRuntimePill(snapshot) {
+    const host = this.runtimePillHost;
+    while (host.firstChild) host.removeChild(host.firstChild);
+    const factory = this.#factorySource(snapshot);
+    let state = 'unknown';
+    if (factory.error) state = 'unavailable';
+    else if (factory.data) state = RUNTIME_PILL[factory.data.status] ?? 'unknown';
+    host.appendChild(el(this.doc, 'span', 'key', 'Runtime'));
+    host.appendChild(this.doc.createTextNode(': '));
+    host.appendChild(pill(this.doc, state));
+  }
+
+  #renderNav() {
+    const nav = this.nav;
+    while (nav.firstChild) nav.removeChild(nav.firstChild);
+    const active = this.state.route?.name === 'component' ? 'components' : this.state.route?.name;
+    for (const name of NAV_ROUTES) {
+      const spec = ROUTES[name];
+      if (!spec) continue;
+      const link = el(this.doc, 'a', null, spec.title);
+      link.setAttribute('href', formatHash({ name, params: {} }));
+      if (name === active) link.setAttribute('aria-current', 'page');
+      nav.appendChild(link);
+    }
+  }
+
+  #renderRouteNotice() {
+    const valid = this.state.route?.valid !== false;
+    this.routeNotice.hidden = valid;
+    this.routeNotice.textContent = valid ? '' : 'Unknown route; showing Overview.';
+  }
+
+  #renderPages() {
+    const active = this.state.route?.name ?? 'overview';
+    while (this.pageHost.firstChild) this.pageHost.removeChild(this.pageHost.firstChild);
+    for (const [name, spec] of Object.entries(ROUTES)) {
+      const page = spec.render(this);
+      page.hidden = name !== active;
+      this.pageHost.appendChild(page);
+    }
+  }
+
   #factorySource(snapshot) {
     return snapshot.sources.factory ?? { data: null, error: null, status: 'absent', stale: false, lastSuccessAt: null };
-  }
-
-  #runtimeLabel(snapshot) {
-    const factory = this.#factorySource(snapshot);
-    if (factory.error) {
-      return factory.error.kind === ApiErrorKind.UNSUPPORTED
-        ? 'Unavailable (endpoint absent)'
-        : 'Unavailable';
-    }
-    if (!factory.data) return 'Unknown';
-    return factory.data.status;
-  }
-
-  #renderRuntime(snapshot) {
-    const section = this.runtimeSection;
-    while (section.firstChild) section.removeChild(section.firstChild);
-    section.appendChild(el(this.doc, 'h2', null, 'Factory / worker status'));
-    const label = this.#runtimeLabel(snapshot);
-    section.appendChild(kv(this.doc, 'Runtime', label));
-    const factory = this.#factorySource(snapshot);
-    if (factory.data) {
-      const stop = factory.data.stop;
-      section.appendChild(kv(this.doc, 'Stop', stop ? (stop.stopped ? 'stopped' : 'not stopped') : 'unknown'));
-      for (const source of factory.data.sources) {
-        section.appendChild(kv(this.doc, `source:${source.source}`, sourceLabel(source.state)));
-      }
-    } else {
-      section.appendChild(kv(this.doc, 'Stop', 'unknown'));
-      section.appendChild(kv(this.doc, 'Note', 'factory runtime endpoint is not available in this slice'));
-    }
-  }
-
-  #renderControls() {
-    const section = this.controlsSection;
-    while (section.firstChild) section.removeChild(section.firstChild);
-    section.appendChild(el(this.doc, 'h2', null, 'Controls'));
-    const state = this.controls.state();
-    const note = state.known
-      ? (state.readOnly ? 'read-only: no control permission advertised' : 'typed permissions advertised')
-      : 'controls disabled: runtime unknown or offline';
-    section.appendChild(kv(this.doc, 'Permission', state.readOnly ? 'read-only' : (state.known ? 'available' : 'disabled')));
-    section.appendChild(this.doc.createTextNode(note));
-    const buttons = el(this.doc, 'div', 'controls');
-    this.pauseButton = el(this.doc, 'button', null, 'Pause');
-    this.pauseButton.type = 'button';
-    this.pauseButton.disabled = !state.enabled.pause;
-    this.pauseButton.dataset.action = 'pause';
-    if (state.enabled.pause) {
-      this.pauseButton.addEventListener('click', () => {
-        this.controls.pause();
-      });
-    }
-    this.resumeButton = el(this.doc, 'button', null, 'Resume');
-    this.resumeButton.type = 'button';
-    this.resumeButton.disabled = !state.enabled.resume;
-    this.resumeButton.dataset.action = 'resume';
-    if (state.enabled.resume) {
-      this.resumeButton.addEventListener('click', () => {
-        const phrase = this.confirmPhrase();
-        if (phrase !== RESUME_CONFIRMATION) return;
-        this.controls.resume(phrase);
-      });
-    }
-    buttons.appendChild(this.pauseButton);
-    buttons.appendChild(this.resumeButton);
-    section.appendChild(buttons);
-    if (state.pending) section.appendChild(kv(this.doc, 'Pending', String(state.pendingAction)));
-    if (state.lastResult) {
-      section.appendChild(kv(this.doc, 'Result', state.lastResult.kind === 'receipt' ? (state.lastResult.outcome ?? 'receipt') : state.lastResult.kind));
-      if (state.lastResult.kind === 'unconfirmed') {
-        section.appendChild(kv(this.doc, 'EffectUnconfirmed', state.lastResult.reason ?? 'effect unknown'));
-      }
-      if (state.lastResult.actionId) section.appendChild(kv(this.doc, 'Action ID', state.lastResult.actionId));
-    }
-  }
-
-  #renderQueue(snapshot) {
-    const section = this.queueSection;
-    while (section.firstChild) section.removeChild(section.firstChild);
-    section.appendChild(el(this.doc, 'h2', null, 'Eligible queue (automatic operation)'));
-    section.appendChild(this.doc.createTextNode('Work is consumed automatically; there is no per-task dispatch button.'));
-    const factory = this.#factorySource(snapshot);
-    if (!factory.data) {
-      section.appendChild(el(this.doc, 'p', null, 'Eligible work is unknown (factory runtime unavailable).'));
-      return;
-    }
-    const eligible = factory.data.eligible;
-    const entries = eligible.entries.slice(0, LIST_ROW_LIMIT);
-    if (entries.length === 0) {
-      section.appendChild(el(this.doc, 'p', null, 'No eligible work in this observation.'));
-    } else {
-      const table = el(this.doc, 'table');
-      const head = el(this.doc, 'tr');
-      for (const heading of ['Task', 'Title', 'Priority', 'Family']) head.appendChild(el(this.doc, 'th', null, heading));
-      table.appendChild(head);
-      for (const entry of entries) {
-        const row = el(this.doc, 'tr');
-        row.appendChild(textNode(this.doc, 'td', entry.task_id));
-        row.appendChild(textNode(this.doc, 'td', entry.title));
-        row.appendChild(textNode(this.doc, 'td', entry.priority));
-        row.appendChild(textNode(this.doc, 'td', entry.family));
-        table.appendChild(row);
-      }
-      section.appendChild(table);
-    }
-    const shown = entries.length;
-    const total = eligible.total ?? 'unknown';
-    section.appendChild(el(this.doc, 'p', 'note', `Showing ${shown} of ${total}.`));
-    this.#pager(section, eligible.next_cursor, 'next-queue', () => this.refresh());
-  }
-
-  #renderExecutions(snapshot) {
-    const section = this.execSection;
-    while (section.firstChild) section.removeChild(section.firstChild);
-    section.appendChild(el(this.doc, 'h2', null, 'Executions'));
-    const overview = snapshot.sources.overview?.data;
-    const executions = overview?.executions ?? [];
-    if (executions.length === 0) {
-      section.appendChild(el(this.doc, 'p', null, overview ? 'No executions recorded.' : 'Executions unknown.'));
-    } else {
-      const table = el(this.doc, 'table');
-      const head = el(this.doc, 'tr');
-      for (const heading of ['Execution', 'Task', 'Generation', 'Phase', 'State', 'Updated']) {
-        head.appendChild(el(this.doc, 'th', null, heading));
-      }
-      table.appendChild(head);
-      for (const execution of executions.slice(0, LIST_ROW_LIMIT)) {
-        const row = el(this.doc, 'tr');
-        row.appendChild(textNode(this.doc, 'td', execution.execution_id));
-        row.appendChild(textNode(this.doc, 'td', execution.task_id));
-        row.appendChild(textNode(this.doc, 'td', execution.generation));
-        row.appendChild(textNode(this.doc, 'td', execution.phase));
-        row.appendChild(textNode(this.doc, 'td', execution.state));
-        row.appendChild(textNode(this.doc, 'td', formatTimestamp(execution.updated_at_unix_ms)));
-        table.appendChild(row);
-      }
-      section.appendChild(table);
-      if (executions.length > LIST_ROW_LIMIT) {
-        section.appendChild(el(this.doc, 'p', 'truncation', `…and ${executions.length - LIST_ROW_LIMIT} more executions.`));
-      }
-    }
-  }
-
-  #renderComponents(snapshot) {
-    const section = this.componentsSection;
-    while (section.firstChild) section.removeChild(section.firstChild);
-    section.appendChild(el(this.doc, 'h2', null, 'Components'));
-    const source = snapshot.sources.components ?? {};
-    const page = source.data ?? this.state.components.page;
-    if (source.error && page) {
-      section.appendChild(el(this.doc, 'p', 'stale', `Showing stale component data from ${formatTimestamp(source.lastSuccessAt)} because the last refresh failed.`));
-    }
-    if (this.state.components.reloadNote) {
-      section.appendChild(el(this.doc, 'p', 'reload', this.state.components.reloadNote));
-    }
-    if (!page) {
-      section.appendChild(el(this.doc, 'p', null, 'Components unknown.'));
-      return;
-    }
-    if (page.entries.length === 0) {
-      section.appendChild(el(this.doc, 'p', null, 'No components in this page.'));
-    } else {
-      const table = el(this.doc, 'table');
-      const head = el(this.doc, 'tr');
-      for (const heading of ['Plugin', 'Name', 'Health', 'Freshness', 'Available', 'Generation']) {
-        head.appendChild(el(this.doc, 'th', null, heading));
-      }
-      table.appendChild(head);
-      for (const entry of page.entries.slice(0, LIST_ROW_LIMIT)) {
-        const row = el(this.doc, 'tr');
-        row.appendChild(textNode(this.doc, 'td', entry.plugin_id));
-        row.appendChild(textNode(this.doc, 'td', entry.name));
-        row.appendChild(textNode(this.doc, 'td', entry.health));
-        row.appendChild(textNode(this.doc, 'td', entry.freshness ?? 'unknown'));
-        row.appendChild(textNode(this.doc, 'td', entry.available ? 'true' : 'false'));
-        row.appendChild(textNode(this.doc, 'td', entry.generation));
-        table.appendChild(row);
-      }
-      section.appendChild(table);
-    }
-    this.#pager(section, page.next_cursor, 'next-components', () => this.nextComponentPage());
-  }
-
-  #pager(parent, nextCursor, id, onClick) {
-    const button = el(this.doc, 'button', 'pager', 'Next');
-    button.id = id;
-    button.disabled = nextCursor === null || nextCursor === undefined;
-    button.dataset.nextCursor = nextCursor ?? '';
-    button.addEventListener('click', onClick);
-    parent.appendChild(button);
-    if (nextCursor === null || nextCursor === undefined) {
-      parent.appendChild(el(this.doc, 'span', 'note', ' (last page)'));
-    } else {
-      parent.appendChild(el(this.doc, 'span', 'note', ' (more available)'));
-    }
-  }
-
-  #renderEconomics(snapshot) {
-    const section = this.economicsSection;
-    while (section.firstChild) section.removeChild(section.firstChild);
-    section.appendChild(el(this.doc, 'h2', null, 'Economics'));
-    const economics = snapshot.sources.overview?.data?.economics;
-    if (!economics) {
-      section.appendChild(el(this.doc, 'p', null, 'Economics unknown.'));
-      return;
-    }
-    section.appendChild(kv(this.doc, 'Completeness', economics.completeness ?? 'unknown'));
-    section.appendChild(kv(this.doc, 'Usage', economics.usage === null || economics.usage === undefined ? 'unknown' : `${economics.usage} ${economics.usage_unit}`));
-    section.appendChild(kv(this.doc, 'Cost', economics.cost === null || economics.cost === undefined ? 'unknown' : `${economics.cost} ${economics.cost_unit}`));
-    section.appendChild(kv(this.doc, 'Allowance', economics.allowance === null || economics.allowance === undefined ? 'unknown' : `${economics.allowance} ${economics.cost_unit}`));
-  }
-
-  #renderTimeline(snapshot) {
-    const section = this.timelineSection;
-    while (section.firstChild) section.removeChild(section.firstChild);
-    section.appendChild(el(this.doc, 'h2', null, 'Timeline'));
-    const timeline = snapshot.sources.overview?.data?.timeline;
-    if (!timeline) {
-      section.appendChild(el(this.doc, 'p', null, 'Timeline unknown.'));
-      return;
-    }
-    if (timeline.length === 0) {
-      section.appendChild(el(this.doc, 'p', null, 'No timeline entries.'));
-      return;
-    }
-    const list = el(this.doc, 'ul');
-    for (const entry of timeline.slice(0, LIST_ROW_LIMIT)) {
-      const item = el(this.doc, 'li');
-      item.appendChild(textNode(this.doc, 'span', `${formatTimestamp(entry.at_unix_ms)} ${entry.kind}: `, 'time'));
-      item.appendChild(textNode(this.doc, 'span', entry.title));
-      item.appendChild(this.doc.createTextNode(' — '));
-      item.appendChild(textNode(this.doc, 'span', entry.detail));
-      list.appendChild(item);
-    }
-    section.appendChild(list);
-  }
-
-  #renderSources(snapshot) {
-    const section = this.sourcesSection;
-    while (section.firstChild) section.removeChild(section.firstChild);
-    section.appendChild(el(this.doc, 'h2', null, 'Read sources'));
-    const overviewSources = snapshot.sources.overview?.data?.metadata?.sources ?? null;
-    if (overviewSources) {
-      for (const source of overviewSources) {
-        section.appendChild(kv(this.doc, source.source, sourceLabel(source.state)));
-      }
-    }
-    for (const [name, source] of Object.entries(snapshot.sources)) {
-      const status = source.error
-        ? `${source.error.kind}${source.data ? ' (stale)' : ''}`
-        : source.status;
-      const row = kv(this.doc, `refresh:${name}`, status);
-      if (source.lastSuccessAt !== null) {
-        row.appendChild(this.doc.createTextNode(` last success ${formatTimestamp(source.lastSuccessAt)}`));
-      }
-      section.appendChild(row);
-    }
-    section.appendChild(kv(this.doc, 'Interval', `${snapshot.intervalMs ?? this.intervalMs} ms`));
   }
 }
 

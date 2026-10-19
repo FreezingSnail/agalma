@@ -14,6 +14,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command as ProcessCommand, Output};
 
 use clap::Parser;
 use serde_json::{json, Value};
@@ -1011,5 +1012,302 @@ fn property_empty_media_type_refuses() {
         seal_package(&package_dir, &manifest, &standard_files());
         let err = discover(&[required(&root)]).unwrap_err();
         assert_eq!(code(&err), FailureCode::InvalidRecord, "case {case}");
+    }
+}
+
+// --- seal-package (UI.1e) ---------------------------------------------------
+
+/// Placeholder binary bytes: sealing copies content, it does not execute it.
+const SEALED_BINARY_BYTES: &[u8] = b"#!/bin/sh\nexit 0\n";
+
+/// Repository root (`<root>/crates/agalma-conductor` → `<root>`).
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("conductor lives under <root>/crates/")
+        .to_path_buf()
+}
+
+/// The committed dashboard package used as the production source fixture.
+fn dashboard_source() -> PathBuf {
+    repo_root().join("crates/agalma-web-dashboard/package")
+}
+
+/// Recursively copy a fixture package tree (regular files and directories).
+fn copy_tree(source: &Path, dest: &Path) {
+    fs::create_dir_all(dest).unwrap();
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&from, &to);
+        } else {
+            fs::copy(&from, &to).unwrap();
+        }
+    }
+}
+
+/// Write the placeholder binary under `dir` and return its path.
+fn write_binary(dir: &Path) -> PathBuf {
+    fs::create_dir_all(dir).unwrap();
+    let path = dir.join("placeholder-binary");
+    fs::write(&path, SEALED_BINARY_BYTES).unwrap();
+    path
+}
+
+/// Run the production CLI seal subcommand.
+fn run_seal(package: &Path, binary: &Path, root: &Path) -> Output {
+    ProcessCommand::new(env!("CARGO_BIN_EXE_agalma"))
+        .arg("seal-package")
+        .arg("--package")
+        .arg(package)
+        .arg("--binary")
+        .arg(binary)
+        .arg("--root")
+        .arg(root)
+        .output()
+        .expect("run agalma seal-package")
+}
+
+fn stdout_of(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn stderr_of(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).trim().to_string()
+}
+
+#[test]
+fn seal_package_seals_committed_dashboard_package() {
+    let scratch = fresh("hp-manifest-seal-dashboard");
+    let source = scratch.path().join("source");
+    copy_tree(&dashboard_source(), &source);
+    let binary = write_binary(scratch.path());
+    let root = scratch.path().join("plugins");
+
+    let out = run_seal(&source, &binary, &root);
+    assert!(out.status.success(), "seal failed: {}", stderr_of(&out));
+    assert!(
+        stderr_of(&out).is_empty(),
+        "unexpected stderr: {}",
+        stderr_of(&out)
+    );
+
+    let report = discover(&[required(&root)]).unwrap();
+    let package = report
+        .package("agalma.web-dashboard")
+        .expect("sealed package discovered");
+    assert_eq!(
+        stdout_of(&out),
+        format!("SEALED agalma.web-dashboard {}", package.package_digest)
+    );
+
+    let recomputed = package_inventory_digest(&package.package_dir, &package.manifest).unwrap();
+    assert_eq!(package.package_digest, recomputed);
+
+    let entrypoint = package.package_dir.join(&package.manifest.entrypoint.path);
+    assert_eq!(fs::read(&entrypoint).unwrap(), SEALED_BINARY_BYTES);
+    assert_eq!(
+        package.entrypoint_path,
+        fs::canonicalize(&entrypoint).unwrap()
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&entrypoint).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+    }
+}
+
+#[test]
+fn sealing_twice_is_idempotent_and_removes_stale_files() {
+    let scratch = fresh("hp-manifest-seal-idempotent");
+    let source = scratch.path().join("source");
+    copy_tree(&dashboard_source(), &source);
+    let binary = write_binary(scratch.path());
+    let root = scratch.path().join("plugins");
+
+    let first = run_seal(&source, &binary, &root);
+    assert!(first.status.success(), "first seal: {}", stderr_of(&first));
+    let first_digest = discover(&[required(&root)])
+        .unwrap()
+        .package("agalma.web-dashboard")
+        .unwrap()
+        .package_digest
+        .clone();
+
+    // A stale object left in the destination disappears on re-seal.
+    let destination = root.join("agalma.web-dashboard");
+    fs::write(destination.join("stale-object.txt"), b"stale").unwrap();
+
+    let second = run_seal(&source, &binary, &root);
+    assert!(
+        second.status.success(),
+        "second seal: {}",
+        stderr_of(&second)
+    );
+    assert_eq!(stdout_of(&first), stdout_of(&second));
+    assert!(!destination.join("stale-object.txt").exists());
+
+    let report = discover(&[required(&root)]).unwrap();
+    let package = report.package("agalma.web-dashboard").unwrap();
+    assert_eq!(package.package_digest, first_digest);
+
+    // No staging residue: the root holds exactly the sealed package.
+    let mut names: Vec<String> = fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["agalma.web-dashboard".to_string()]);
+}
+
+#[test]
+fn tampering_with_a_sealed_object_fails_discovery() {
+    let scratch = fresh("hp-manifest-seal-tamper");
+    let source = scratch.path().join("source");
+    copy_tree(&dashboard_source(), &source);
+    let binary = write_binary(scratch.path());
+    let root = scratch.path().join("plugins");
+
+    let out = run_seal(&source, &binary, &root);
+    assert!(out.status.success(), "seal: {}", stderr_of(&out));
+
+    let object = root
+        .join("agalma.web-dashboard")
+        .join("objects/config-schema.json");
+    fs::write(&object, b"{}\n").unwrap();
+
+    let err = discover(&[required(&root)]).unwrap_err();
+    assert_eq!(code(&err), FailureCode::IntegrityMismatch);
+}
+
+#[test]
+fn seal_refuses_invalid_input_without_touching_the_destination() {
+    let scratch = fresh("hp-manifest-seal-refusals");
+    let binary = write_binary(scratch.path());
+
+    // Missing manifest: refused before the root is created.
+    let missing_manifest = scratch.child("missing-manifest");
+    fs::write(missing_manifest.join("object.json"), b"{}").unwrap();
+    let root_missing_manifest = scratch.path().join("root-missing-manifest");
+    let out = run_seal(&missing_manifest, &binary, &root_missing_manifest);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stdout_of(&out).is_empty());
+    assert!(stderr_of(&out).contains("plugin-manifest"));
+    assert!(!root_missing_manifest.exists());
+
+    // Missing binary: destination absent.
+    let source = scratch.path().join("valid-source");
+    copy_tree(&dashboard_source(), &source);
+    let absent_binary = scratch.path().join("absent-binary");
+    let root_missing_binary = scratch.path().join("root-missing-binary");
+    let out = run_seal(&source, &absent_binary, &root_missing_binary);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stdout_of(&out).is_empty());
+    assert!(stderr_of(&out).contains("binary"));
+    assert!(!root_missing_binary.join("agalma.web-dashboard").exists());
+
+    // Escaping entrypoint: destination absent.
+    let escaping = scratch.path().join("escaping-source");
+    copy_tree(&dashboard_source(), &escaping);
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(escaping.join(PLUGIN_MANIFEST_FILE)).unwrap()).unwrap();
+    manifest["entrypoint"]["path"] = json!("../outside-binary");
+    fs::write(
+        escaping.join(PLUGIN_MANIFEST_FILE),
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    let root_escaping = scratch.path().join("root-escaping");
+    let out = run_seal(&escaping, &binary, &root_escaping);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stdout_of(&out).is_empty());
+    assert!(!root_escaping.join("agalma.web-dashboard").exists());
+
+    // A pre-existing destination is byte-for-byte unchanged on refusal.
+    let root_existing = scratch.path().join("root-existing");
+    let destination = root_existing.join("agalma.web-dashboard");
+    fs::create_dir_all(&destination).unwrap();
+    fs::write(destination.join("marker.txt"), b"keep").unwrap();
+    let out = run_seal(&source, &absent_binary, &root_existing);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(fs::read(destination.join("marker.txt")).unwrap(), b"keep");
+
+    // A root that exists as a non-directory is refused and left intact.
+    let file_root = scratch.path().join("root-is-a-file");
+    fs::write(&file_root, b"not a directory").unwrap();
+    let out = run_seal(&source, &binary, &file_root);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(fs::read(&file_root).unwrap(), b"not a directory");
+}
+
+#[test]
+fn source_bin_directory_is_not_copied() {
+    let scratch = fresh("hp-manifest-seal-source-bin");
+    let source = scratch.path().join("source");
+    copy_tree(&dashboard_source(), &source);
+    // A pre-existing bin tree must never contribute sealed bytes.
+    fs::create_dir_all(source.join("bin")).unwrap();
+    fs::write(source.join("bin/poison"), b"poison").unwrap();
+    fs::create_dir_all(source.join("objects/bin")).unwrap();
+    fs::write(source.join("objects/bin/nested.txt"), b"nested").unwrap();
+
+    let binary = write_binary(scratch.path());
+    let root = scratch.path().join("plugins");
+    let out = run_seal(&source, &binary, &root);
+    assert!(out.status.success(), "seal: {}", stderr_of(&out));
+
+    let destination = root.join("agalma.web-dashboard");
+    assert!(!destination.join("bin/poison").exists());
+    assert!(!destination.join("objects/bin").exists());
+    let entrypoint = destination.join("bin/agalma-web-dashboard");
+    assert_eq!(fs::read(&entrypoint).unwrap(), SEALED_BINARY_BYTES);
+    assert_eq!(fs::read_dir(destination.join("bin")).unwrap().count(), 1);
+}
+
+#[test]
+fn property_seal_recomputes_digest_for_generated_packages() {
+    let scratch = fresh("hp-manifest-prop-seal");
+    let mut rng = XorShift64::new(PROPERTY_SEED ^ 0x5ea1);
+    let budget = 6;
+    for case in 0..budget {
+        let plugin_id = format!("example.sealed-{case}");
+        let mut files: Vec<(String, Vec<u8>)> = standard_files();
+        for index in 0..(1 + rng.below(4)) {
+            let len = rng.below(32) as usize;
+            let bytes: Vec<u8> = (0..len).map(|_| rng.next_u64() as u8).collect();
+            files.push((format!("data/{case}/file-{index}.bin"), bytes));
+        }
+        let source = scratch.child(&format!("case-{case}/source"));
+        write_files(&source, &files);
+        fs::write(
+            source.join(PLUGIN_MANIFEST_FILE),
+            serde_json::to_vec_pretty(&base_manifest(&plugin_id)).unwrap(),
+        )
+        .unwrap();
+        let binary = write_binary(&scratch.child(&format!("case-{case}")));
+        let root = scratch.path().join(format!("case-{case}/root"));
+
+        let first = run_seal(&source, &binary, &root);
+        assert!(first.status.success(), "case {case}: {}", stderr_of(&first));
+
+        let report = discover(&[required(&root)]).unwrap();
+        let package = report
+            .package(&plugin_id)
+            .unwrap_or_else(|| panic!("case {case}: sealed package not discovered"));
+        let recomputed = package_inventory_digest(&package.package_dir, &package.manifest).unwrap();
+        assert_eq!(package.package_digest, recomputed, "case {case}");
+
+        let second = run_seal(&source, &binary, &root);
+        assert!(
+            second.status.success(),
+            "case {case}: {}",
+            stderr_of(&second)
+        );
+        assert_eq!(stdout_of(&first), stdout_of(&second), "case {case}");
     }
 }

@@ -13,6 +13,9 @@ factory's runtime routing table, task-release authority, or promotion policy.
 - Sol may edit documentation, designs, agent instructions, and beads directly.
   Sol may inspect code and run existing, scoped checks to resolve a concrete
   review question.
+  When authorized by the user, Luna Codex subagents may draft or revise bounded
+  planning fields under Sol review. That delegation grants no implementation,
+  release, spending, or promotion authority.
 - All code implementation goes to GPT-6 Luna or DeepSeek Flash through OpenCode.
   This includes source, implementation tests, scripts, build configuration,
   generated code, debugging helpers, and small fixes. Sol specifies the change;
@@ -27,6 +30,17 @@ factory's runtime routing table, task-release authority, or promotion policy.
   and tests -> DeepSeek Flash reviews routine work (Sol reviews high-difficulty
   work) -> the implementer repairs findings -> close when the agreed acceptance
   is satisfied.
+- Reuse one implementer session and task worktree through implementation,
+  repairs, and delivery. Keep the assigned reviewer independent and reuse its
+  review session where available. Replace an unavailable session only after
+  reconciling pending work and recording the ownership handoff.
+- Return one consolidated blocking-findings list per review round against the
+  accepted scope. After two unsuccessful repair rounds, Sol diagnoses missing
+  design, missed requirements, implementation defects, or scope changes before
+  another attempt. Diagnosis does not waive acceptance or authorize extra spend.
+- Update beads at meaningful transitions: started, blocked, ready for review,
+  changes requested, and delivered. Ordinary tool calls stay in session/run
+  logs. Keep one current handoff; reuse automatically retained test evidence.
 - Implementation and repair take place in a named Git worktree on a task branch,
   with the bead ID in the worktree name: `target/worktrees/<bead>` on
   `task/<bead>`, with its redirected Cargo cache at
@@ -207,6 +221,11 @@ factory's runtime routing table, task-release authority, or promotion policy.
   retrying. Bound bridge diagnosis to one reproducible failure and a stated
   effort limit. If the route remains unavailable, retain the handoff and report
   the blocker; do not turn dispatch into unbounded infrastructure investigation.
+- Follow the development workflow's Gangway protocol: check advertised tool
+  capabilities, assign a stable request ID per exact submitted operation, use
+  bounded waits, and allow only one outstanding operation per session. A repair
+  uses a new request ID in the same session. Unknown delivery never authorizes
+  resubmission or a replacement session; observe/reconcile before any retry.
 - Report dispatched work with bead ID, session ID, model, directory, and observed
   status. Queue readiness, authorization, claimed state, successful dispatch,
   and completed acceptance are distinct; never present one as proof of another.

@@ -12,7 +12,9 @@ role prompts or its machine output contracts.
 
 ## Authority and boundaries
 
-- Own architecture, scope, contracts, acceptance, planning, and review.
+- Own architecture, scope, contracts, acceptance, planning, and high-difficulty
+  review. Assign routine implementation review to DeepSeek Flash in an
+  independent session, unless the user explicitly requests Sol review.
 - Edit documentation, designs, agent instructions, and beads directly.
 - Inspect implementation and run existing scoped checks when they resolve a
   specific uncertainty. Use native commands and existing repository tools.
@@ -64,6 +66,10 @@ fields and map critical requirements to observable production checks. Prepare
 later tasks when their predecessor APIs are available; preserve active repair
 scope and frozen history.
 
+When the user authorizes Luna Codex planning delegation, give each subagent
+bounded bead/file ownership and review its revisions. Keep implementation and
+release authority separate from that planning assignment.
+
 ## Context discipline
 
 Follow AGENTS.md's context and tool-output rules. For planning, start with compact
@@ -81,6 +87,10 @@ process/log/search results and compact dispatch status; preserve raw evidence
 in existing artifacts. On unavailable MCP/model routing, reconcile any uncertain
 dispatch once and stop at the stated diagnosis boundary with a usable handoff.
 Do not infer an active implementation session from an in-progress bead.
+Follow the workflow's Gangway request-ID and bounded-wait protocol. Keep the
+implementer session through repairs and delivery, use one outstanding operation
+per session, and reconcile uncertain delivery before any retry. Record meaningful
+bead transitions and one current handoff rather than individual tool actions.
 
 ## Review
 
@@ -88,6 +98,9 @@ Read the agreed design, supplied diff, and implementation results. Check behavio
 contract preservation, scope, and evidence. Each material finding names the file,
 observable failure or contract violation, and the smallest required correction.
 Do not fix it yourself or redesign the task during review.
+Return findings together per round and reuse the assigned review session where
+available. After two unsuccessful repair rounds, diagnose the unresolved cause
+and specify the bounded next correction before dispatching another attempt.
 
 Say what was implemented, what the checks establish, and what remains unresolved.
 Keep reported results separate from checks you ran. Request an additional check

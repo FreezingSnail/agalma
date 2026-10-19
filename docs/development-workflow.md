@@ -12,7 +12,7 @@ original snapshots and hashes; this amendment does not reseal those inputs.
 | Planning | Maintain designs and bounded beads with clear acceptance | Execute the assigned bead |
 | Code | Specify changes and diagnose review findings | Write source, tests, scripts, build configuration, and repairs |
 | Verification | Select scope and assess results | Run agreed checks and provide logs and results |
-| Review | Compare the change with design and acceptance | Repair findings within the agreed scope |
+| Review | Review high-difficulty work or when explicitly requested | DeepSeek Flash reviews routine work in an independent session; implementer repairs findings |
 
 Use `agents/sol-architect.md` as Sol's persona. `AGENTS.md` instructs Sol sessions
 to load it automatically. A session can explicitly invoke it by saying: "Use the
@@ -24,7 +24,9 @@ repository prompt, not a newly registered runtime model route.
 1. Discuss the outcome, architecture, and material tradeoffs with the user.
 2. Sol records the accepted design and prepares one bounded implementation bead.
 3. Luna or Flash implements through OpenCode and runs the agreed checks.
-4. Sol reviews the diff and evidence. Concrete findings go back to the implementer.
+4. DeepSeek Flash reviews routine work in an independent session; Sol reviews
+   high-difficulty work or when explicitly requested. The assigned reviewer
+   returns one consolidated blocking-findings list against accepted scope.
 5. After review approval, commit only the task's accepted files or hunks, close
    when acceptance is satisfied, and leave one concise handoff including the
    commit ID. Preserve unrelated and unreviewed edits; report an ownership overlap
@@ -83,8 +85,70 @@ root outside the worktree before removal. Preserve dirty or unmerged worktrees,
 report the remaining work, and never force removal or discard changes. Retain
 task branches unless their deletion is separately requested.
 
-The session-resume ownership policy from the retrospective's item 1 is deferred.
-Do not introduce a new closed-bead resume policy as part of this amendment.
+### Coordination and session reuse
+
+Keep one implementer session through implementation, repair, and delivery, and
+reuse the assigned independent review session where available. A completed model
+turn is a handoff point, not a reason to start another session. If a session is
+unavailable, reconcile pending effects and record the replacement owner/session
+in the same bead before continuing. Closed beads do not regain execution
+authority through session resumption; further work needs its applicable scope
+and release authority.
+
+Update the bead when work starts, blocks, reaches review, needs changes, or is
+delivered. Keep routine tool calls in existing session/run logs. The current
+handoff records session/model/worktree, findings, checks/evidence, and next action;
+avoid repeated full-context copies and separate coordination receipts. Authorized
+Luna Codex subagents may prepare bounded planning revisions under Sol review;
+implementation routing and execution approvals follow AGENTS.md.
+
+Each repair round addresses the consolidated findings in the same implementer
+session and reruns failed or affected checks. After two unsuccessful repair
+rounds, Sol classifies the unresolved cause (missing design, missed explicit
+requirement, implementation defect, or changed scope) and chooses a bounded
+correction before another attempt. Carry the investigation timebox across
+sessions and retries. Acceptance, protected checks, and spending authority still
+apply; this diagnosis is not a new automatic release gate.
+
+### Gangway dispatch and resume
+
+Use Gangway's advertised tool schemas; source installation alone does not prove
+the loaded endpoint exposes new fields. If `requestID` is absent, report the
+capability mismatch and arrange a safe plugin/client reload. Do not restart a
+service with active work or silently treat legacy dispatch as retry-safe.
+
+1. Dispatch with an explicit model, directory, and `requestID`. Make IDs unique
+   across repositories, beads, roles, and operations, for example
+   `agalma:<repo-key>:<bead>:builder:initial` and `...:builder:repair-1`.
+   Retain the returned session/request handles in the current bead handoff.
+2. Reuse an ID only for the identical effective request. Changed input needs a
+   new ID; a repair uses `opencode_prompt` with the existing implementer
+   `sessionID` and a new request ID. Keep reviewer operations in their separate
+   session. Never use a new ID to evade an unknown delivery outcome.
+3. Allow only one outstanding operation per session. Gangway currently binds
+   results using a transcript boundary rather than a proven upstream turn ID;
+   overlapping turns can invalidate that association. Do not assume cross-process
+   deduplication or storage durability beyond Gangway's documented guarantees.
+4. Prefer `opencode_wait` with both handles and an explicit `timeoutMs` at or
+   below 45000 (and below the actual client limit). A wait expiry preserves the
+   running operation; it is not an instruction to interrupt or redispatch.
+   Continue useful independent work between bounded waits. Use compact
+   `opencode_status` with `requestID` for diagnosis or state inspection; do not
+   routinely chain wait, status, and result calls for the same observation.
+5. Inspect output returned by completion; use bounded `opencode_result` with
+   `requestID` when output is needed. Respect `unchanged`; use `force` only for a
+   deliberate reread. Session idle/succeeded and operation completion do not
+   establish task acceptance, successful checks, or review approval.
+6. Treat unknown delivery as unresolved. With a known session handle, make one
+   bounded observational reconciliation (`opencode_status` with `requestID` and
+   `reconcile: true`) if needed. Without a recoverable handle, or if the outcome
+   stays unknown, record the blocker and stop dispatch. Reconciliation never
+   resends prompts or creates sessions. Resume only after delivery is established
+   and the existing authority permits the next operation.
+
+Beads owns task definitions and progress; Gangway tracks session operations.
+Agalma retains authorization, scheduling, and review decisions. This protocol
+adds no automatic bead mutation, task release, or paid-provider authorization.
 
 ## Reusable build and verification entry point
 
@@ -277,8 +341,3 @@ the reviewer ran. Partial results from different source states are not one
 coherent full run; a subset of matching source hashes does not prove otherwise.
 Preserve historical receipts and the stronger evidence required by protected
 evaluation and promotion contracts.
-
-For build reliability, investigate the IPC generator's generated `ipc.fds`
-rerun directive as a separate bounded task. Verify any fix through repeated
-incremental builds before claiming the trigger is resolved. This amendment does
-not establish a root cause or implement that fix.

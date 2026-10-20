@@ -75,6 +75,92 @@ export function exactTimeText(doc, model) {
   return node;
 }
 
+const STATUS_ORIGINS = new Set(['built-in', 'discovered']);
+const STATUS_DESIRED = new Set(['running', 'stopped']);
+const STATUS_LIFECYCLES = new Set([
+  'installed', 'starting', 'ready', 'draining', 'failed', 'retired',
+]);
+const STATUS_HEALTH = new Set(['ready', 'degraded', 'unavailable']);
+const STATUS_REPORTING = new Set(['fresh', 'stale', 'unavailable', 'unknown']);
+
+/**
+ * Convert a status timestamp decimal string to a display-safe millisecond
+ * number. Identity is never required to be numeric here: an out-of-range value
+ * is simply shown as time unknown.
+ */
+function statusMillis(value) {
+  if (typeof value !== 'string' || !/^(0|[1-9][0-9]*)$/.test(value)) return null;
+  if (value.length > 16) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed <= SAFE_DATE_MAX ? parsed : null;
+}
+
+/**
+ * Normalize the optional evidence-bearing status projection for rendering.
+ *
+ * A missing object is "unknown", never healthy. Explicit null health is
+ * `Unknown`, absent reports are `Not reporting`, and a stale observation is
+ * labelled separately from its original heartbeat/lifecycle value.
+ */
+export function componentStatusModel(status) {
+  const known = status !== null && typeof status === 'object';
+  const value = known ? status : {};
+  const origin = STATUS_ORIGINS.has(value.origin) ? value.origin : null;
+  const generation = typeof value.generation === 'string' ? value.generation : null;
+  const desired = STATUS_DESIRED.has(value.desired) ? value.desired : null;
+  const lifecycle = STATUS_LIFECYCLES.has(value.lifecycle) ? value.lifecycle : null;
+  const lifecycleSource = value.lifecycle_source === 'live-registry'
+    ? 'live-registry'
+    : value.lifecycle_source === 'none' ? 'none' : null;
+  const health = STATUS_HEALTH.has(value.health) ? value.health : null;
+  const reporting = STATUS_REPORTING.has(value.reporting) ? value.reporting : 'unknown';
+  const lifecycleAt = statusMillis(value.lifecycle_observed_at_unix_ms);
+  const healthAt = statusMillis(value.health_observed_at_unix_ms);
+  let lastObservation = null;
+  if (lifecycleAt !== null && (healthAt === null || lifecycleAt >= healthAt)) {
+    lastObservation = { at: lifecycleAt, source: 'lifecycle' };
+  } else if (healthAt !== null) {
+    lastObservation = { at: healthAt, source: 'health' };
+  }
+  return {
+    known,
+    origin,
+    originLabel: origin === 'built-in' ? 'Built-in' : origin === 'discovered' ? 'Discovered' : 'Unknown',
+    generation,
+    generationLabel: generation !== null
+      ? generation
+      : origin === 'built-in' ? 'none (built-in)' : 'Unknown',
+    desired,
+    desiredLabel: desired === 'running' ? 'Running (desired)'
+      : desired === 'stopped' ? 'Stopped (desired)' : 'Unknown',
+    lifecycle,
+    lifecycleSource,
+    lifecycleLabel: lifecycle !== null ? lifecycle
+      : origin === 'built-in' ? 'Embedded component; lifecycle not observed' : 'Not observed',
+    lifecycleAt,
+    health,
+    healthLabel: health !== null ? health : 'Unknown',
+    healthAt,
+    healthDetail: typeof value.health_detail === 'string' && value.health_detail !== ''
+      ? value.health_detail : null,
+    lastError: typeof value.last_error === 'string' && value.last_error !== ''
+      ? value.last_error : null,
+    reporting,
+    reportingLabel: reporting === 'unavailable' ? 'Not reporting'
+      : reporting === 'fresh' ? 'Fresh'
+        : reporting === 'stale' ? 'Stale'
+          : 'Unknown',
+    stale: reporting === 'stale',
+    incomplete: value.incomplete === true,
+    lastObservation,
+    issue: typeof value.last_error === 'string' && value.last_error !== ''
+      ? value.last_error
+      : typeof value.health_detail === 'string' && value.health_detail !== ''
+        ? value.health_detail
+        : value.incomplete === true ? 'Report data has a visible gap.' : null,
+  };
+}
+
 /** A bounded anchor whose text is the exact (bounded) label. */
 export function anchor(doc, href, label, className) {
   const node = el(doc, 'a', className);
@@ -124,7 +210,7 @@ export function textNode(doc, tag, value, className) {
 }
 
 const PILL_STATES = new Set([
-  'ready', 'degraded', 'unavailable', 'unknown', 'stale',
+  'ready', 'degraded', 'unavailable', 'unknown', 'stale', 'fresh',
   'running', 'idle', 'paused', 'failed',
   'ok', 'healthy', 'info', 'warn', 'warning', 'error', 'critical',
 ]);

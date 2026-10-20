@@ -37,14 +37,15 @@ pub use budget::{
     ReservationState, SpendState, UsageObservation, NUSD_PER_USD, TOKENS_PER_PRICE_UNIT,
 };
 pub use control_plane::{
-    check_cursor, resolve_field_selector, BrowserWire, ComponentSummary, ExactAmount, ExactU64,
-    ExecutionSummary, FactoryStop, FieldResolution, Freshness, ListComponents, ReadArtifactChunk,
+    check_cursor, resolve_field_selector, BrowserWire, ComponentLifecycle, ComponentStatus,
+    ComponentStatusOrigin, ComponentSummary, ExactAmount, ExactU64, ExecutionSummary, FactoryStop,
+    FieldResolution, Freshness, LifecycleSource, ListComponents, ReadArtifactChunk,
     ReadArtifactChunkRequest, ReadComponent, ReadCursor, ReadMetadata, ReadOverview, ReadPage,
-    ReadPageRequest, SourceAvailability, SourceState, TimelineEntry, UsageCost,
-    ARTIFACT_CHUNK_MAX_BYTES, ARTIFACT_TOTAL_MAX_BYTES, CONTROL_PLANE_READ_CAPABILITY,
+    ReadPageRequest, ReportingState, SourceAvailability, SourceState, StatusDesired, TimelineEntry,
+    UsageCost, ARTIFACT_CHUNK_MAX_BYTES, ARTIFACT_TOTAL_MAX_BYTES, CONTROL_PLANE_READ_CAPABILITY,
     CONTROL_PLANE_READ_FAMILY, CONTROL_PLANE_READ_FORMAT, READ_CURSOR_PREFIX,
     READ_PAGE_DEFAULT_LIMIT, READ_PAGE_MAX_BYTES, READ_PAGE_MAX_ENTRIES, READ_PAGE_MAX_LIMIT,
-    READ_PAGE_MIN_LIMIT,
+    READ_PAGE_MIN_LIMIT, STATUS_TEXT_MAX_CHARS,
 };
 pub use decision::{
     DecisionApi, DecisionAttempt, DecisionKind, DecisionOption, DecisionOutcome, DecisionPin,

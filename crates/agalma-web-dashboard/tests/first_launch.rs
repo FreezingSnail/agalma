@@ -708,6 +708,53 @@ fn first_launch_production_component_detail_uses_real_hub_and_zero_effects() {
         .collect();
     assert!(listed.contains(&PLUGIN_ID), "listed={listed:?}");
     assert!(listed.contains(&"component:harness"), "listed={listed:?}");
+    let pinned_generation = launched
+        .host
+        .pinned_binding(PLUGIN_ID)
+        .unwrap()
+        .generation;
+    let listed_entry = |id: &str| {
+        components_body["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["plugin_id"] == id)
+            .unwrap_or_else(|| panic!("{id} missing from the real list"))
+    };
+    // The real adapter must carry the evidence-bearing status projection for
+    // both a discovered generation and a generation-less builtin.
+    let dashboard_list_status = &listed_entry(PLUGIN_ID)["status"];
+    assert_eq!(dashboard_list_status["origin"], "discovered");
+    assert_eq!(
+        dashboard_list_status["generation"],
+        pinned_generation.to_string()
+    );
+    assert_eq!(dashboard_list_status["lifecycle_source"], "live-registry");
+    assert!(
+        ["installed", "starting", "ready", "draining", "failed", "retired"].contains(
+            &dashboard_list_status["lifecycle"].as_str().unwrap_or("")
+        ),
+        "live supervisor lifecycle: {dashboard_list_status}"
+    );
+    assert!(
+        ["fresh", "stale", "unavailable", "unknown"].contains(
+            &dashboard_list_status["reporting"].as_str().unwrap_or("")
+        ),
+        "reporting state: {dashboard_list_status}"
+    );
+    if dashboard_list_status["health"].is_null() {
+        assert!(dashboard_list_status["health_observed_at_unix_ms"].is_null());
+    } else {
+        assert!(dashboard_list_status["health_observed_at_unix_ms"].is_string());
+    }
+    let harness_list_status = &listed_entry("component:harness")["status"];
+    assert_eq!(harness_list_status["origin"], "built-in");
+    assert!(harness_list_status["generation"].is_null(), "no synthetic zero");
+    assert!(harness_list_status["lifecycle"].is_null());
+    assert_eq!(harness_list_status["lifecycle_source"], "none");
+    assert!(harness_list_status["lifecycle_observed_at_unix_ms"].is_null());
+    assert!(harness_list_status["health"].is_null());
+    assert_eq!(harness_list_status["reporting"], "unavailable");
 
     // Known installed plugin detail through the real hub router and host.
     let dashboard = component_detail_body(port, PLUGIN_ID);
@@ -734,13 +781,11 @@ fn first_launch_production_component_detail_uses_real_hub_and_zero_effects() {
     assert_eq!(status_entry["payload"], reported);
     assert_eq!(
         status_entry["binding"]["generation"],
-        launched
-            .host
-            .pinned_binding(PLUGIN_ID)
-            .unwrap()
-            .generation
-            .to_string()
+        pinned_generation.to_string()
     );
+    let detail_status = &dashboard["status"];
+    assert_eq!(detail_status, dashboard_list_status, "list/detail status agree");
+    assert_eq!(detail_status["generation"], pinned_generation.to_string());
 
     // The conductor built-in `component:harness` is a first-class colon identity
     // from the actual host live-component projection, not a per-id exemption.
@@ -755,6 +800,7 @@ fn first_launch_production_component_detail_uses_real_hub_and_zero_effects() {
             .any(|source| source["source"] == "registry" && source["state"] == "available"),
         "harness must be an available registry identity: {harness_detail}"
     );
+    assert_eq!(harness_detail["status"], *harness_list_status);
 
     // A valid but unknown id is honest 200 missing metadata, never 503/404.
     let unknown = component_detail_body(port, "missing:valid.component");
@@ -766,6 +812,28 @@ fn first_launch_production_component_detail_uses_real_hub_and_zero_effects() {
             .iter()
             .any(|source| source["source"] == "registry" && source["state"] == "missing"),
         "unknown id must report missing registry data: {unknown}"
+    );
+
+    // Real browser list: compiled assets render the status columns from the
+    // actual adapter, including the builtin's honest no-report state.
+    let list_browser = run_browser(
+        &chrome,
+        &format!("{url}#/components"),
+        BROWSER_BUDGET_MS,
+        "first-launch-status-list",
+    );
+    assert!(
+        list_browser.status.success(),
+        "browser failed: {}",
+        list_browser.stderr
+    );
+    assert!(
+        list_browser.dom.contains("Reported health")
+            && list_browser.dom.contains("Reporting")
+            && list_browser.dom.contains("Not reporting")
+            && list_browser.dom.contains("component:harness"),
+        "real list status rendering missing: {}",
+        list_browser.dom
     );
 
     // Real browser: the encoded dashboard detail route renders production data.

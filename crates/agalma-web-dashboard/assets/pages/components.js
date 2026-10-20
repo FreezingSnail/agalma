@@ -1,8 +1,10 @@
-// WEB.6/UI.3 Components page: the hub registry table, name links and the
-// opaque-cursor pager.
+// WEB.6/UI.3 Components page: the evidence-bearing status table, name links and
+// the opaque-cursor pager.
 //
-// Reads: components. Exact plugin generations (u64 decimal strings) are rendered
-// verbatim and never coerced through `Number`. Component names link to the
+// Reads: components. Every identity/generation/timestamp comes from the
+// validated status projection; legacy inferred health is never used. A missing
+// status object renders explicit unknown values. Generation-less built-ins do
+// not display the legacy synthetic generation zero. Component names link to the
 // existing encoded detail route, including unicode, slash, percent, space and
 // unknown plugin IDs. A revision conflict resets the collection once and shows
 // the reload notice; a failed refresh keeps the last successful page visible as
@@ -10,6 +12,7 @@
 
 import {
   panel, table, pager, emptyState, staleNotice, pill, textNode, el, boundedText,
+  componentStatusModel, timeNode,
 } from '../ui.js';
 import { formatHash } from '../router.js';
 
@@ -25,6 +28,54 @@ function nameLink(doc, entry) {
   link.appendChild(doc.createTextNode(text));
   if (truncated) link.appendChild(doc.createTextNode(' …[truncated]'));
   return link;
+}
+
+function nameCell(doc, entry) {
+  const wrapper = el(doc, 'div', 'component-name');
+  wrapper.appendChild(nameLink(doc, entry));
+  wrapper.appendChild(textNode(
+    doc,
+    'span',
+    typeof entry.plugin_id === 'string' ? entry.plugin_id : '',
+    'note mono component-id',
+  ));
+  return wrapper;
+}
+
+/** Reported health, with stale/unavailable observations never shown as a
+ * current unqualified healthy badge. */
+function healthCell(doc, model) {
+  if (model.health === null) {
+    return textNode(doc, 'span', 'Unknown', 'note');
+  }
+  if (model.stale || model.reporting === 'unavailable' || model.incomplete) {
+    const qualifier = model.stale
+      ? 'stale observation'
+      : model.incomplete ? 'incomplete report' : 'report unavailable';
+    return textNode(doc, 'span', `${model.health} (${qualifier})`, 'value value--missing');
+  }
+  return pill(doc, model.health);
+}
+
+function reportingCell(doc, model) {
+  if (model.incomplete) {
+    return textNode(doc, 'span', `${model.reportingLabel} (incomplete)`, 'note');
+  }
+  if (model.reporting === 'fresh') return pill(doc, 'fresh');
+  if (model.reporting === 'stale') return pill(doc, 'stale');
+  if (model.reporting === 'unavailable') {
+    return textNode(doc, 'span', 'Not reporting', 'note');
+  }
+  return textNode(doc, 'span', 'Unknown', 'note');
+}
+
+function observationCell(doc, model, now) {
+  if (!model.lastObservation) return textNode(doc, 'span', 'Unknown', 'note');
+  const { node } = timeNode(doc, model.lastObservation.at, now, 'mono');
+  const cell = el(doc, 'span', 'component-observation');
+  cell.appendChild(node);
+  cell.appendChild(doc.createTextNode(` (${model.lastObservation.source})`));
+  return cell;
 }
 
 /** Render the Components page. */
@@ -52,17 +103,25 @@ export function render(cockpit) {
   if (data.entries.length === 0) {
     page.appendChild(emptyState(doc, 'No components in this page.'));
   } else {
-    const headings = ['Plugin', 'Name', 'Generation', 'Health', 'Freshness', 'Completeness', 'Available', 'Views'];
-    const rows = data.entries.map((entry) => [
-      entry.plugin_id,
-      nameLink(doc, entry),
-      entry.generation,
-      pill(doc, entry.health),
-      entry.freshness ?? 'unknown',
-      entry.completeness ?? 'unknown',
-      entry.available ? 'true' : 'false',
-      String(entry.views.length),
-    ]);
+    const headings = [
+      'Name', 'Origin', 'Generation', 'Lifecycle', 'Reported health',
+      'Reporting', 'Last observation', 'Issue',
+    ];
+    const now = snapshot.renderNow ?? cockpit.renderNow;
+    const rows = data.entries.map((entry) => {
+      const model = componentStatusModel(entry.status);
+      const issue = model.issue ?? '—';
+      return [
+        nameCell(doc, entry),
+        model.originLabel,
+        model.generationLabel,
+        model.lifecycleLabel,
+        healthCell(doc, model),
+        reportingCell(doc, model),
+        observationCell(doc, model, now),
+        issue,
+      ];
+    });
     page.appendChild(table(doc, headings, rows));
   }
   page.appendChild(pager(doc, data.next_cursor, 'next-components', () => cockpit.nextComponentPage()));

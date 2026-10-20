@@ -55,10 +55,11 @@ use agalma_conductor::plugin_router::{
 use agalma_conductor::stop::{StopControl, StopDecision};
 use agalma_contracts::digest::{canonical_json, sha256_digest};
 use agalma_contracts::{
-    BrowserWire, BindingPin, ComponentSummary, ContractError, Durability, ExactU64, HealthState,
-    LedgerApi, PluginHealth, PluginInstallation, PluginManifest, ReadComponent, ReadCursor,
-    ReadMetadata, ReadOverview, ReadPage, ReportEnvelope, SourceState,
-    CONTROL_PLANE_READ_CAPABILITY, CONTROL_PLANE_READ_FORMAT, READ_PAGE_MAX_BYTES,
+    BrowserWire, BindingPin, ComponentLifecycle, ComponentStatusOrigin,
+    ComponentSummary, ContractError, Durability, ExactU64, HealthState, LedgerApi,
+    LifecycleSource, PluginHealth, PluginInstallation, PluginManifest, ReadComponent, ReadCursor,
+    ReadMetadata, ReadOverview, ReadPage, ReportingState, ReportEnvelope, SourceState,
+    StatusDesired, CONTROL_PLANE_READ_CAPABILITY, CONTROL_PLANE_READ_FORMAT, READ_PAGE_MAX_BYTES,
 };
 use agalma_ipc::plugin_server::{HubHandler, METHOD_INVOKE_CAPABILITY};
 use agalma_ledger::SqliteLedger;
@@ -223,6 +224,10 @@ fn static_component(
         plugin_id: plugin_id.to_string(),
         origin,
         observed: LifecycleState::Ready,
+        raw_lifecycle: Some(LifecycleState::Ready),
+        lifecycle_observed_at_ms: Some(START_MS),
+        desired: Some(DesiredState::Running),
+        last_error: None,
         generation: Some(generation),
         implementation_version: "1.0.0".to_string(),
         config_digest: sha256_digest(b""),
@@ -2822,6 +2827,7 @@ fn wire_projection_keeps_nested_identity_u64_exact() {
         descriptors: Vec::new(),
         entries: vec![envelope],
         next_cursor: None,
+        status: None,
     };
     let wire = page.to_wire_value().expect("browser wire projection");
     assert_eq!(wire["binding"]["generation"], json!("9007199254740993"));
@@ -3277,4 +3283,402 @@ fn mixed_supported_and_recovered_snapshot_rows_are_unknown() {
             .any(|entry| entry.schema_namespace == NS_STATUS),
         "recovered rows stay unsupported"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Status MVP: one evidence-bearing projection for list and detail
+// (agalma-51dg.12)
+// ---------------------------------------------------------------------------
+
+fn status_projection(
+    origin: ComponentOrigin,
+    generation: Option<u64>,
+    lifecycle: Option<LifecycleState>,
+    lifecycle_observed_at_ms: Option<u64>,
+    desired: DesiredState,
+    last_error: Option<String>,
+) -> ProjectedComponent {
+    ProjectedComponent {
+        plugin_id: PLUGIN_ID.to_string(),
+        origin,
+        observed: lifecycle.unwrap_or(LifecycleState::Installed),
+        raw_lifecycle: lifecycle,
+        lifecycle_observed_at_ms,
+        desired: Some(desired),
+        last_error,
+        generation,
+        implementation_version: "1.0.0".to_string(),
+        config_digest: sha256_digest(b""),
+        views: Vec::new(),
+    }
+}
+
+fn status_entry(service: &ControlPlaneReadService) -> ComponentSummary {
+    service
+        .list_components(&agalma_contracts::ReadPageRequest::default())
+        .expect("component list")
+        .entries
+        .into_iter()
+        .find(|entry| entry.plugin_id == PLUGIN_ID)
+        .expect("reporting plugin listed")
+}
+
+fn status_detail(service: &ControlPlaneReadService) -> ReadComponent {
+    service
+        .read_component(PLUGIN_ID, &agalma_contracts::ReadPageRequest::default())
+        .expect("component detail")
+}
+
+#[test]
+fn component_status_mvp_list_and_detail_share_exact_evidence() {
+    let harness = harness("cp-status-shared");
+    harness.publish_health(HealthState::Ready);
+    harness
+        .publish(1, NS_STATUS, 1, json!({"ready": true}))
+        .expect("publish status");
+    let service = harness.service();
+
+    let entry = status_entry(&service);
+    let detail = status_detail(&service);
+    let status = entry.status.clone().expect("summary carries status");
+    assert_eq!(Some(status.clone()), detail.status, "list/detail agree");
+    assert_eq!(status.origin, ComponentStatusOrigin::Discovered);
+    assert_eq!(
+        status.generation.as_ref().map(ExactU64::as_u64).transpose().unwrap(),
+        Some(harness.generation)
+    );
+    // The fixture package was installed but never explicitly desired running.
+    assert_eq!(status.desired, Some(StatusDesired::Stopped));
+    assert_eq!(status.lifecycle, Some(ComponentLifecycle::Ready));
+    assert_eq!(status.lifecycle_source, LifecycleSource::LiveRegistry);
+    assert_eq!(
+        status.lifecycle_observed_at_unix_ms.as_ref().map(ExactU64::as_u64).transpose().unwrap(),
+        Some(START_MS)
+    );
+    assert_eq!(status.health, Some(HealthState::Ready));
+    assert_eq!(
+        status.health_observed_at_unix_ms.as_ref().map(ExactU64::as_u64).transpose().unwrap(),
+        Some(START_MS)
+    );
+    assert_eq!(status.health_detail.as_deref(), Some("fixture"));
+    assert_eq!(status.last_error, None);
+    assert_eq!(status.reporting, ReportingState::Fresh);
+    assert!(!status.incomplete);
+}
+
+#[test]
+fn component_status_mvp_generationless_builtin_is_not_observed() {
+    let harness = harness("cp-status-builtin");
+    let service = harness.service();
+    let page = service
+        .list_components(&agalma_contracts::ReadPageRequest::default())
+        .expect("component list");
+    let builtin = page
+        .entries
+        .iter()
+        .find(|entry| entry.plugin_id == "builtin.core")
+        .expect("builtin listed");
+    let status = builtin.status.as_ref().expect("builtin status");
+    assert_eq!(status.origin, ComponentStatusOrigin::BuiltIn);
+    assert_eq!(status.generation, None, "no synthetic installed generation");
+    assert_eq!(status.lifecycle, None);
+    assert_eq!(status.lifecycle_source, LifecycleSource::None);
+    assert_eq!(status.lifecycle_observed_at_unix_ms, None);
+    assert_eq!(status.health, None);
+    assert_eq!(status.health_observed_at_unix_ms, None);
+    assert_eq!(status.reporting, ReportingState::Unavailable);
+    // The legacy synthetic binding zero and placeholder Ready remain legacy
+    // fields only; the status projection never promotes them to evidence.
+    assert_eq!(builtin.generation.as_u64().unwrap(), 0);
+    assert_eq!(builtin.binding.generation, 0);
+}
+
+#[test]
+fn component_status_mvp_live_failure_overrides_older_ready_heartbeat() {
+    let harness = harness("cp-status-crash");
+    harness.publish_health(HealthState::Ready);
+    let live = Arc::new(Mutex::new(Vec::new()));
+    let service = harness.service().with_live_cell(Arc::clone(&live));
+    let refresh = |live: &Arc<Mutex<Vec<ProjectedComponent>>>| {
+        let reports = harness.reports.lock().unwrap();
+        let registry = harness.registry.lock().unwrap();
+        *live.lock().unwrap() = live_components(&registry, Some(&reports));
+    };
+    refresh(&live);
+    harness
+        .registry
+        .lock()
+        .unwrap()
+        .mark_failed(PLUGIN_ID, "child crashed", START_MS + 1)
+        .expect("record crash");
+    refresh(&live);
+
+    let status = status_entry(&service).status.expect("status");
+    assert_eq!(status.lifecycle, Some(ComponentLifecycle::Failed));
+    assert_eq!(status.lifecycle_source, LifecycleSource::LiveRegistry);
+    assert_eq!(status.last_error.as_deref(), Some("child crashed"));
+    // The heartbeat is still an actual, separately labelled observation; it is
+    // never promoted into an overall healthy component.
+    assert_eq!(status.health, Some(HealthState::Ready));
+    assert_eq!(
+        status.health_observed_at_unix_ms.as_ref().map(ExactU64::as_u64).transpose().unwrap(),
+        Some(START_MS)
+    );
+    let detail = status_detail(&service);
+    assert_eq!(Some(status), detail.status);
+}
+
+#[test]
+fn component_status_mvp_durable_fallback_has_no_invented_lifecycle() {
+    let harness = harness("cp-status-durable");
+    harness.publish_health(HealthState::Ready);
+    let projection = status_projection(
+        ComponentOrigin::Discovered,
+        Some(harness.generation),
+        None,
+        None,
+        DesiredState::Stopped,
+        None,
+    );
+    let service = harness
+        .service()
+        .with_projection(Arc::new(StaticComponents(vec![projection])));
+
+    let status = status_entry(&service).status.expect("status");
+    assert_eq!(status.lifecycle, None);
+    assert_eq!(status.lifecycle_source, LifecycleSource::None);
+    assert_eq!(status.lifecycle_observed_at_unix_ms, None);
+    assert_eq!(status.desired, Some(StatusDesired::Stopped));
+    // An actual heartbeat is still reported, but it is not lifecycle evidence.
+    assert_eq!(status.health, Some(HealthState::Ready));
+    assert_eq!(status.reporting, ReportingState::Fresh);
+    assert_eq!(Some(status), status_detail(&service).status);
+}
+
+#[test]
+fn component_status_mvp_mismatched_generation_never_contributes_health() {
+    let harness = harness("cp-status-mismatch");
+    harness.publish_health(HealthState::Ready);
+    let projection = status_projection(
+        ComponentOrigin::Discovered,
+        Some(harness.generation + 1),
+        Some(LifecycleState::Ready),
+        Some(START_MS + 5),
+        DesiredState::Running,
+        None,
+    );
+    let service = harness
+        .service()
+        .with_projection(Arc::new(StaticComponents(vec![projection])));
+
+    let status = status_entry(&service).status.expect("status");
+    assert_eq!(status.generation.as_ref().map(ExactU64::as_u64).transpose().unwrap(), Some(harness.generation + 1));
+    assert_eq!(status.health, None, "other generation's heartbeat is not current health");
+    assert_eq!(status.health_observed_at_unix_ms, None);
+    assert_eq!(status.health_detail, None);
+    assert_eq!(status.reporting, ReportingState::Unavailable);
+    assert!(!status.incomplete);
+    assert_eq!(Some(status), status_detail(&service).status);
+}
+
+#[test]
+fn component_status_mvp_stale_and_incomplete_are_explicit() {
+    let stale = harness("cp-status-stale");
+    stale.publish_health(HealthState::Ready);
+    stale.clock.set(START_MS + 2_000);
+    let status = status_entry(&stale.service()).status.expect("status");
+    assert_eq!(status.health, Some(HealthState::Ready));
+    assert_eq!(status.reporting, ReportingState::Stale);
+    assert_eq!(
+        status.health_observed_at_unix_ms.as_ref().map(ExactU64::as_u64).transpose().unwrap(),
+        Some(START_MS),
+        "the source observation time is preserved, not request time"
+    );
+
+    let incomplete = harness("cp-status-incomplete");
+    incomplete.publish_health(HealthState::Ready);
+    // Missing sequence 1 makes the active view visibly incomplete.
+    incomplete
+        .publish(2, NS_STATUS, 1, json!({"ready": true}))
+        .expect("gap report is queued");
+    let status = status_entry(&incomplete.service()).status.expect("status");
+    assert!(status.incomplete);
+    assert_eq!(status.reporting, ReportingState::Fresh);
+    assert_eq!(status.health, Some(HealthState::Ready));
+
+    let missing = harness("cp-status-unavailable");
+    missing.publish_health(HealthState::Ready);
+    missing.clock.set(START_MS + 4_000);
+    let status = status_entry(&missing.service()).status.expect("status");
+    assert_eq!(status.reporting, ReportingState::Unavailable);
+    assert_eq!(
+        status.health_observed_at_unix_ms.as_ref().map(ExactU64::as_u64).transpose().unwrap(),
+        Some(START_MS)
+    );
+}
+
+#[test]
+fn component_status_mvp_error_text_is_bounded_and_inert() {
+    let harness = harness("cp-status-error-bound");
+    harness.publish_health(HealthState::Ready);
+    let projection = status_projection(
+        ComponentOrigin::Discovered,
+        Some(harness.generation),
+        Some(LifecycleState::Failed),
+        Some(START_MS),
+        DesiredState::Running,
+        Some(format!("first\n{}", "x".repeat(600))),
+    );
+    let service = harness
+        .service()
+        .with_projection(Arc::new(StaticComponents(vec![projection])));
+    let status = status_entry(&service).status.expect("status");
+    let error = status.last_error.expect("actual error present");
+    assert_eq!(error.chars().count(), agalma_contracts::STATUS_TEXT_MAX_CHARS);
+    assert!(error.ends_with('…'));
+    assert!(!error.contains('\n'), "control text is escaped: {error}");
+    assert!(error.contains("\\n"), "escaped newline is explicit: {error}");
+}
+
+#[test]
+fn component_status_mvp_deterministic_evidence_matrix() {
+    // Fixed generator scheme: exhaustive index bits over origin, generation
+    // class, lifecycle class, heartbeat/freshness/completeness class, desired
+    // state and error presence. Budget: 128 combinations. Seed not needed: the
+    // case index is the generator, so a failure names its exact replay input.
+    const CASES: usize = 128;
+    let harnesses = [
+        harness("cp-status-matrix-0"),
+        harness("cp-status-matrix-1"),
+        harness("cp-status-matrix-2"),
+        harness("cp-status-matrix-3"),
+        harness("cp-status-matrix-4"),
+        harness("cp-status-matrix-5"),
+    ];
+    harnesses[1].publish_health(HealthState::Ready);
+    harnesses[2].publish_health(HealthState::Ready);
+    harnesses[2].clock.set(START_MS + 2_000);
+    harnesses[3].publish_health(HealthState::Unavailable);
+    harnesses[3].clock.set(START_MS + 4_000);
+    harnesses[4].publish_health(HealthState::Ready);
+    harnesses[4]
+        .publish(2, NS_STATUS, 1, json!({"ready": true}))
+        .expect("gap report");
+    harnesses[5].publish_health(HealthState::Degraded);
+
+    let mut executed = 0usize;
+    for case in 0..CASES {
+        let origin = if case % 2 == 0 {
+            ComponentOrigin::Discovered
+        } else {
+            ComponentOrigin::BuiltIn
+        };
+        let generation = match (case / 2) % 4 {
+            0 => None,
+            1 => Some(harnesses[0].generation),
+            2 => Some(harnesses[0].generation + 1),
+            _ => Some(u64::MAX),
+        };
+        let lifecycle = match (case / 8) % 4 {
+            0 => None,
+            1 => Some(LifecycleState::Ready),
+            2 => Some(LifecycleState::Failed),
+            _ => Some(LifecycleState::Retired),
+        };
+        let observed_at = lifecycle.map(|_| START_MS + case as u64);
+        let desired = if case % 3 == 0 {
+            DesiredState::Stopped
+        } else {
+            DesiredState::Running
+        };
+        let last_error = (case % 4 == 0).then(|| format!("case-{case} error"));
+        let harness_index = case % 6;
+        let projection = status_projection(
+            origin,
+            generation,
+            lifecycle,
+            observed_at,
+            desired,
+            last_error.clone(),
+        );
+        let service = harnesses[harness_index]
+            .service()
+            .with_projection(Arc::new(StaticComponents(vec![projection])));
+
+        let summary = status_entry(&service);
+        let detail = status_detail(&service);
+        let status = summary.status.clone().expect("status");
+        assert_eq!(Some(status.clone()), detail.status, "case {case}: list/detail divergence");
+
+        let expected_origin = if case % 2 == 0 {
+            ComponentStatusOrigin::Discovered
+        } else {
+            ComponentStatusOrigin::BuiltIn
+        };
+        assert_eq!(status.origin, expected_origin, "case {case}");
+        assert_eq!(
+            status.generation.as_ref().map(ExactU64::as_u64).transpose().unwrap(),
+            generation,
+            "case {case}: exact generation"
+        );
+        assert_eq!(status.lifecycle, lifecycle.map(|lifecycle| match lifecycle {
+            LifecycleState::Installed => ComponentLifecycle::Installed,
+            LifecycleState::Starting => ComponentLifecycle::Starting,
+            LifecycleState::Ready => ComponentLifecycle::Ready,
+            LifecycleState::Draining => ComponentLifecycle::Draining,
+            LifecycleState::Failed => ComponentLifecycle::Failed,
+            LifecycleState::Retired => ComponentLifecycle::Retired,
+        }), "case {case}: lifecycle is actual");
+        assert_eq!(
+            status.lifecycle_source,
+            if lifecycle.is_some() { LifecycleSource::LiveRegistry } else { LifecycleSource::None },
+            "case {case}"
+        );
+        assert_eq!(
+            status.lifecycle_observed_at_unix_ms.as_ref().map(ExactU64::as_u64).transpose().unwrap(),
+            observed_at,
+            "case {case}: no invented lifecycle time"
+        );
+        assert_eq!(
+            status.desired,
+            Some(if desired == DesiredState::Stopped { StatusDesired::Stopped } else { StatusDesired::Running }),
+            "case {case}: desired is separate"
+        );
+        assert_eq!(status.last_error, last_error.map(|error| error.chars().take(agalma_contracts::STATUS_TEXT_MAX_CHARS).collect()), "case {case}");
+
+        let matched = generation == Some(harnesses[0].generation);
+        let (expected_health, expected_reporting, expected_incomplete) = if !matched {
+            (None, ReportingState::Unavailable, false)
+        } else {
+            match harness_index {
+                0 => (None, ReportingState::Unavailable, false),
+                1 => (Some(HealthState::Ready), ReportingState::Fresh, false),
+                2 => (Some(HealthState::Ready), ReportingState::Stale, false),
+                3 => (Some(HealthState::Unavailable), ReportingState::Unavailable, false),
+                4 => (Some(HealthState::Ready), ReportingState::Fresh, true),
+                _ => (Some(HealthState::Degraded), ReportingState::Fresh, false),
+            }
+        };
+        assert_eq!(status.health, expected_health, "case {case}: actual heartbeat only");
+        assert_eq!(status.reporting, expected_reporting, "case {case}: freshness/completeness");
+        assert_eq!(status.incomplete, expected_incomplete, "case {case}");
+        if status.health.is_some() {
+            assert_eq!(
+                status.health_observed_at_unix_ms.as_ref().map(ExactU64::as_u64).transpose().unwrap(),
+                Some(START_MS),
+                "case {case}: actual heartbeat time"
+            );
+        } else {
+            assert_eq!(status.health_observed_at_unix_ms, None, "case {case}");
+            assert_eq!(status.health_detail, None, "case {case}");
+        }
+        // A failed/retired lifecycle is always explicit, even with an older
+        // Ready heartbeat; the UI uses lifecycle to reject an overall healthy
+        // presentation.
+        if matches!(lifecycle, Some(LifecycleState::Failed | LifecycleState::Retired)) {
+            assert!(matches!(status.lifecycle, Some(ComponentLifecycle::Failed | ComponentLifecycle::Retired)));
+        }
+        executed += 1;
+    }
+    assert_eq!(executed, CASES, "all 128 evidence combinations ran");
 }

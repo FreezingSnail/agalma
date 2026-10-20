@@ -18,13 +18,14 @@ use serde_json::{json, Value};
 use agalma_contracts::digest::{canonical_json, failure_code, FailureCode};
 use agalma_contracts::plugin::{Durability, HealthState, ReportEnvelope, View, ViewKind};
 use agalma_contracts::{
-    check_cursor, resolve_field_selector, BindingPin, BrowserWire, Completeness, ComponentSummary,
-    ContractError, ExactAmount, ExactU64, FieldResolution, Freshness, ListComponents,
-    PackageArtifactRef, ReadArtifactChunk, ReadArtifactChunkRequest, ReadComponent, ReadCursor,
-    ReadMetadata, ReadOverview, ReadPageRequest, SourceState, UsageCost, ARTIFACT_CHUNK_MAX_BYTES,
-    ARTIFACT_TOTAL_MAX_BYTES, CONTROL_PLANE_READ_CAPABILITY, CONTROL_PLANE_READ_FORMAT,
-    READ_CURSOR_PREFIX, READ_PAGE_DEFAULT_LIMIT, READ_PAGE_MAX_BYTES, READ_PAGE_MAX_ENTRIES,
-    READ_PAGE_MAX_LIMIT,
+    check_cursor, resolve_field_selector, BindingPin, BrowserWire, Completeness, ComponentLifecycle,
+    ComponentStatus, ComponentStatusOrigin, ComponentSummary, ContractError, ExactAmount, ExactU64,
+    FieldResolution, Freshness, LifecycleSource, ListComponents, PackageArtifactRef,
+    ReadArtifactChunk, ReadArtifactChunkRequest, ReadComponent, ReadCursor, ReadMetadata,
+    ReadOverview, ReadPageRequest, ReportingState, SourceState, StatusDesired, UsageCost,
+    ARTIFACT_CHUNK_MAX_BYTES, ARTIFACT_TOTAL_MAX_BYTES, CONTROL_PLANE_READ_CAPABILITY,
+    CONTROL_PLANE_READ_FORMAT, READ_CURSOR_PREFIX, READ_PAGE_DEFAULT_LIMIT, READ_PAGE_MAX_BYTES,
+    READ_PAGE_MAX_ENTRIES, READ_PAGE_MAX_LIMIT,
 };
 
 // --- fixtures ---------------------------------------------------------------
@@ -1122,6 +1123,7 @@ fn browser_wire_property_round_trips_identity_u64() {
         descriptors: Vec::new(),
         entries: vec![envelope_stub(g, s)],
         next_cursor: None,
+        status: None,
     };
 
     let check = |g: u64, s: u64| {
@@ -1243,6 +1245,7 @@ fn page_bound_measures_browser_wire_not_canonical() {
             descriptors: Vec::new(),
             entries: vec![envelope],
             next_cursor: None,
+            status: None,
         }
     };
 
@@ -1284,6 +1287,7 @@ fn page_bound_measures_browser_wire_not_canonical() {
         completeness: Completeness::Complete,
         available: true,
         views: Vec::new(),
+        status: None,
     };
     let page = |pad: usize| ListComponents {
         metadata: metadata_stub(),
@@ -1327,6 +1331,7 @@ fn float_payload_page_is_valid_and_measured_on_browser_wire() {
             envelope
         }],
         next_cursor: None,
+        status: None,
     };
 
     record
@@ -1369,6 +1374,7 @@ fn float_payload_page_is_valid_and_measured_on_browser_wire() {
             envelope
         }],
         next_cursor: None,
+        status: None,
     };
     let base_len = padded(0).to_wire_json().unwrap().len();
     let pad = READ_PAGE_MAX_BYTES as usize + 1 - base_len;
@@ -1380,7 +1386,140 @@ fn float_payload_page_is_valid_and_measured_on_browser_wire() {
     assert_code(over.check_bounds().unwrap_err(), "InvalidRecord");
 }
 
-// --- 23. required-case counter ---------------------------------------------
+// --- 23. status MVP contract (agalma-51dg.12) ------------------------------
+
+fn status_stub() -> ComponentStatus {
+    ComponentStatus {
+        origin: ComponentStatusOrigin::Discovered,
+        generation: Some(ExactU64::from(u64::MAX)),
+        desired: Some(StatusDesired::Running),
+        lifecycle: Some(ComponentLifecycle::Failed),
+        lifecycle_source: LifecycleSource::LiveRegistry,
+        lifecycle_observed_at_unix_ms: Some(ExactU64::from((1u64 << 53) + 1)),
+        health: Some(HealthState::Ready),
+        health_observed_at_unix_ms: Some(ExactU64::from(u64::MAX)),
+        health_detail: Some("listener bound".to_string()),
+        last_error: Some("process exited".to_string()),
+        reporting: ReportingState::Stale,
+        incomplete: true,
+    }
+}
+
+#[test]
+fn component_status_mvp_round_trips_optional_status_and_exact_identities() {
+    tick();
+    let status = status_stub();
+    let summary = ComponentSummary {
+        plugin_id: "example.status".to_string(),
+        name: "Example Status".to_string(),
+        binding: binding_stub(u64::MAX),
+        generation: ExactU64::from(u64::MAX),
+        health: HealthState::Ready,
+        freshness: Freshness::Fresh,
+        completeness: Completeness::Complete,
+        available: true,
+        views: Vec::new(),
+        status: Some(status.clone()),
+    };
+    let wire = summary.to_wire_value().expect("summary projects");
+    assert_eq!(wire["status"]["origin"], json!("discovered"));
+    assert_eq!(wire["status"]["generation"], json!(u64::MAX.to_string()));
+    assert_eq!(
+        wire["status"]["lifecycle_observed_at_unix_ms"],
+        json!(((1u64 << 53) + 1).to_string())
+    );
+    assert_eq!(
+        wire["status"]["health_observed_at_unix_ms"],
+        json!(u64::MAX.to_string())
+    );
+    assert_eq!(wire["status"]["lifecycle"], json!("failed"));
+    assert_eq!(wire["status"]["reporting"], json!("stale"));
+    let decoded = ComponentSummary::from_wire_value(&wire).expect("summary decodes");
+    assert_eq!(decoded, summary);
+
+    // A missing `status` (old response) decodes as unknown, never as healthy.
+    let mut old = wire.clone();
+    old.as_object_mut().unwrap().remove("status");
+    let old_summary = ComponentSummary::from_wire_value(&old).expect("old summary decodes");
+    assert_eq!(old_summary.status, None);
+
+    // Explicit null is the same compatibility state.
+    let mut null = wire.clone();
+    null["status"] = Value::Null;
+    assert_eq!(
+        ComponentSummary::from_wire_value(&null).unwrap().status,
+        None
+    );
+
+    let detail = ReadComponent {
+        metadata: metadata_stub(),
+        binding: binding_stub(u64::MAX),
+        descriptors: Vec::new(),
+        entries: Vec::new(),
+        next_cursor: None,
+        status: Some(status.clone()),
+    };
+    let detail_wire = detail.to_wire_value().expect("detail projects");
+    assert_eq!(detail_wire["status"]["health"], json!("ready"));
+    assert_eq!(
+        ReadComponent::from_wire_value(&detail_wire).unwrap(),
+        detail
+    );
+    let mut old_detail = detail_wire;
+    old_detail.as_object_mut().unwrap().remove("status");
+    assert_eq!(
+        ReadComponent::from_wire_value(&old_detail).unwrap().status,
+        None
+    );
+}
+
+#[test]
+fn component_status_mvp_closed_vocabularies_refuse_unknown_values() {
+    tick();
+    let status = status_stub();
+    let summary = ComponentSummary {
+        plugin_id: "example.status".to_string(),
+        name: "Example Status".to_string(),
+        binding: binding_stub(1),
+        generation: ExactU64::from(1),
+        health: HealthState::Ready,
+        freshness: Freshness::Fresh,
+        completeness: Completeness::Complete,
+        available: true,
+        views: Vec::new(),
+        status: Some(status),
+    };
+    let base = summary.to_wire_value().expect("summary projects");
+
+    for (field, value) in [
+        ("origin", json!("builtin")),
+        ("desired", json!("paused")),
+        ("lifecycle", json!("healthy")),
+        ("lifecycle_source", json!("durable")),
+        ("health", json!("healthy")),
+        ("reporting", json!("ok")),
+    ] {
+        let mut wire = base.clone();
+        wire["status"][field] = value;
+        let error = ComponentSummary::from_wire_value(&wire)
+            .expect_err("unknown vocabulary value must be refused");
+        assert!(matches!(error, ContractError::KnownFailure(_)), "{field}: {error}");
+    }
+    for (field, value) in [
+        ("generation", json!(1.5)),
+        ("generation", json!("9007199254740993.0")),
+        ("lifecycle_observed_at_unix_ms", json!("-1")),
+        ("health_observed_at_unix_ms", json!("18446744073709551616")),
+        ("incomplete", json!("yes")),
+    ] {
+        let mut wire = base.clone();
+        wire["status"][field] = value;
+        ComponentSummary::from_wire_value(&wire)
+            .expect_err("non-closed or non-exact status value must be refused");
+    }
+}
+
+// --- 24. required-case counter ---------------------------------------------
 
 #[test]
 fn required_cases_executed_is_nonzero() {

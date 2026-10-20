@@ -29,6 +29,7 @@ pub mod asset_walk;
 pub mod config;
 pub mod inventory;
 pub mod plugin;
+pub mod reports;
 pub mod server;
 
 /// Stable plugin identity used by the package manifest, component binding and
@@ -41,6 +42,13 @@ pub const PLUGIN_PROTOCOL_MAJOR: u32 = agalma_ipc::PLUGIN_PROTOCOL_MAJOR;
 /// The single scoped capability the summary adapter requires.
 pub const READ_CAPABILITY: &str = agalma_contracts::CONTROL_PLANE_READ_CAPABILITY;
 
-pub use config::{DashboardConfig, ConfigError};
+pub use config::{ConfigError, DashboardConfig};
 pub use plugin::{DashboardHandler, RuntimeStatus, StatusSnapshot};
+pub use reports::{
+    report_schema_ref, report_state_path, status_payload, FilePublicationStore, ObservedReport,
+    ReportObservation,
+};
 pub use server::{DashboardError, DashboardServer, LaunchInputs};
+
+/// The separate per-launch publication capability.
+pub const REPORT_PUBLISH_CAPABILITY: &str = reports::REPORT_PUBLISH_CAPABILITY;

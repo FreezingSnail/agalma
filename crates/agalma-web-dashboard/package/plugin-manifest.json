@@ -13,7 +13,8 @@
   "requested_capabilities": [
     "control-plane.read/v1",
     "factory.read/v1",
-    "factory.control/v1"
+    "factory.control/v1",
+    "report.publish"
   ],
   "required_services": [],
   "optional_services": [],

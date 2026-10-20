@@ -28,11 +28,10 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use agalma_conductor::composition::{InMemoryInstallations, PluginHost};
 use agalma_conductor::config::PluginHostConfig;
@@ -40,18 +39,21 @@ use agalma_conductor::ledger_process::LedgerHandle;
 use agalma_conductor::plugin_manifest::{
     discover_plugins, package_inventory_digest, DiscoveredPackage, PluginRoot,
 };
-use agalma_conductor::plugin_router::{serve_hub, RpcHealthProbe};
 use agalma_conductor::plugin_registry::DesiredState;
+use agalma_conductor::plugin_router::{serve_hub, RpcHealthProbe};
 use agalma_conductor::plugin_supervisor::{Clock, SystemClock};
 use agalma_contracts::{
-    sha256_digest, HealthState, PluginHealth, PluginInstallation, PluginManifest,
+    canonical_digest, HealthState, PluginHealth, PluginInstallation, PluginManifest,
     FACTORY_CONTROL_CAPABILITY,
 };
 use agalma_ipc::PluginClient;
 use agalma_testkit::ScratchDir;
-use agalma_web_dashboard::{PACKAGE_VERSION, PLUGIN_ID, READ_CAPABILITY};
+use agalma_web_dashboard::reports::{REPORT_SCHEMA_NAMESPACE, REPORT_SCHEMA_VERSION};
+use agalma_web_dashboard::{
+    PACKAGE_VERSION, PLUGIN_ID, READ_CAPABILITY, REPORT_PUBLISH_CAPABILITY,
+};
 
-use browser_support::{chrome_version, resolve_chrome, run_browser};
+use browser_support::{capture_screenshot, chrome_version, resolve_chrome, run_browser};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
 const BROWSER_BUDGET_MS: u64 = 6000;
@@ -89,7 +91,11 @@ fn seal_dashboard_package(scratch: &Path) -> DiscoveredPackage {
         serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
     manifest.package_digest = format!("sha256:{}", "0".repeat(64));
     manifest.package_digest = package_inventory_digest(&package_dir, &manifest).unwrap();
-    fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
 
     discover_plugins(&[PluginRoot::required(&root)])
         .expect("sealed package discovers")
@@ -99,6 +105,10 @@ fn seal_dashboard_package(scratch: &Path) -> DiscoveredPackage {
 }
 
 fn installation_for(package: &DiscoveredPackage) -> PluginInstallation {
+    installation_with(package, &[READ_CAPABILITY, REPORT_PUBLISH_CAPABILITY])
+}
+
+fn installation_with(package: &DiscoveredPackage, capabilities: &[&str]) -> PluginInstallation {
     let mut installation = PluginInstallation {
         format: "PluginInstallation/v1".to_string(),
         plugin_id: PLUGIN_ID.to_string(),
@@ -106,8 +116,9 @@ fn installation_for(package: &DiscoveredPackage) -> PluginInstallation {
         configuration: package.manifest.default_configuration.clone(),
         launch_profile: package.manifest.entrypoint.launch_profile.clone(),
         // The operator-managed explicit installation pin approves exactly the
-        // observation-only read capability. No control capability is approved.
-        approved_capabilities: vec![READ_CAPABILITY.to_string()],
+        // observation-only read capability plus the separate publication
+        // authority. No control capability is approved.
+        approved_capabilities: capabilities.iter().map(|value| value.to_string()).collect(),
         installation_digest: String::new(),
     };
     installation.installation_digest = installation.recomputed_installation_digest().unwrap();
@@ -183,6 +194,68 @@ fn launch_production_dashboard(
     }
 }
 
+/// Launch the installed dashboard with only the separate publication grant.
+/// The listener is healthy, the read binding is intentionally unavailable, and
+/// the owner still publishes its true degraded readiness.
+fn launch_report_only_dashboard(
+    runtime: &tokio::runtime::Runtime,
+    scratch: &ScratchDir,
+    package: &DiscoveredPackage,
+) -> ProductionLaunch {
+    let state_dir = scratch.child("report-only-state");
+    fs::create_dir_all(&state_dir).unwrap();
+    let ledger = LedgerHandle::in_process(&state_dir).expect("establish isolated ledger");
+    let config = PluginHostConfig {
+        state_dir: state_dir.clone(),
+        plugin_roots: vec![PluginRoot::required(package.root.clone())],
+        once: false,
+    };
+    let mut installations = InMemoryInstallations::new();
+    installations.insert(installation_with(package, &[REPORT_PUBLISH_CAPABILITY]));
+    let clock: Arc<dyn Fn() -> u64 + Send + Sync> = Arc::new(|| SystemClock.now_ms());
+    let mut host = PluginHost::assemble_with_ledger(&config, &installations, ledger, clock)
+        .expect("assemble production hub for report-only launch");
+    let hub_socket = host.hub_socket.clone();
+    let router = host.router.clone();
+    let hub_task = runtime.spawn(async move {
+        let _ = agalma_conductor::plugin_router::serve_hub(&hub_socket, router).await;
+    });
+    wait_for_path(&host.hub_socket, "report-only hub socket");
+    host.set_desired(PLUGIN_ID, DesiredState::Running)
+        .expect("record desired running state");
+    let request = host
+        .launch_request(PLUGIN_ID)
+        .expect("production host builds the report-only launch request");
+    let plugin_socket = request.socket.clone();
+    host.supervisor
+        .spawn(&mut host.registry, &request)
+        .expect("report-only child passes the READY identity gate");
+    ProductionLaunch {
+        host,
+        plugin_socket,
+        hub_task,
+    }
+}
+
+fn wait_for_degraded_health(
+    runtime: &tokio::runtime::Runtime,
+    plugin_socket: &Path,
+) -> PluginHealth {
+    let deadline = Instant::now() + READY_TIMEOUT;
+    loop {
+        let (health, capabilities) = dashboard_health(runtime, plugin_socket);
+        if health.state == HealthState::Degraded {
+            assert_eq!(capabilities, vec![REPORT_PUBLISH_CAPABILITY.to_string()]);
+            return health;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "report-only dashboard never reported degraded: {health:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 fn wait_for_path(path: &Path, label: &str) {
     let deadline = Instant::now() + READY_TIMEOUT;
     while !path.exists() {
@@ -214,6 +287,65 @@ fn detail_field<'a>(health: &'a PluginHealth, name: &str) -> Option<&'a str> {
         .find_map(|field| field.strip_prefix(&format!("{name}=")))
 }
 
+/// Wait for the real producer publication to reach the real hub ingestor.
+fn wait_for_status_report(host: &PluginHost) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let reports = host
+            .reports
+            .as_ref()
+            .expect("real ledger-backed report ingestor");
+        let reports = reports
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(view) = reports.view(PLUGIN_ID) {
+            if let Some(entry) = view.entries.get(REPORT_SCHEMA_NAMESPACE) {
+                assert_eq!(entry.schema_version, REPORT_SCHEMA_VERSION);
+                return entry.payload.clone();
+            }
+        }
+        drop(reports);
+        assert!(
+            Instant::now() < deadline,
+            "the dashboard's real status publication never reached the hub"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Persistent evidence root outside any removable worktree.
+fn evidence_dir() -> PathBuf {
+    std::env::var_os("AGALMA_EVIDENCE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target/test-runs/agalma-51dg.4"))
+}
+
+fn capture_owner_screenshot(chrome: &Path, url: &str, name: &str) -> PathBuf {
+    let path = evidence_dir().join("screenshots").join(name);
+    let outcome = capture_screenshot(
+        chrome,
+        url,
+        &path,
+        BROWSER_BUDGET_MS,
+        name,
+        1280,
+        900,
+        "light",
+    );
+    assert!(
+        outcome.status.success(),
+        "screenshot {name} failed: {}",
+        outcome.stderr
+    );
+    let bytes = fs::read(&path).expect("captured screenshot bytes");
+    assert!(
+        bytes.len() > 1000 && bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "screenshot {name} is not a PNG"
+    );
+    eprintln!("first_launch_report: screenshot={}", path.display());
+    path
+}
+
 // ---------------------------------------------------------------------------
 // Direct HTTP (the dashboard listener is plain HTTP/1)
 // ---------------------------------------------------------------------------
@@ -226,8 +358,12 @@ struct HttpResponse {
 
 fn http_request(port: u16, method: &str, path: &str) -> HttpResponse {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect dashboard listener");
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    stream.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
     write!(
         stream,
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
@@ -300,20 +436,35 @@ fn first_launch_production_page_renders_real_data_and_zero_effects() {
         .build()
         .unwrap();
     let package = seal_dashboard_package(scratch.path());
-    let mut launched = launch_production_dashboard(&runtime, &scratch, &package);
+    let launched = launch_production_dashboard(&runtime, &scratch, &package);
 
     // The production child reported an actual loopback URL.
     let (health, capabilities) = dashboard_health(&runtime, &launched.plugin_socket);
-    assert_eq!(health.state, HealthState::Ready, "detail: {}", health.detail);
+    assert_eq!(
+        health.state,
+        HealthState::Ready,
+        "detail: {}",
+        health.detail
+    );
     assert_eq!(health.plugin_id, PLUGIN_ID);
     assert_eq!(health.binding.implementation_version, PACKAGE_VERSION);
-    let url = detail_field(&health, "url").expect("actual URL reported").to_string();
+    let url = detail_field(&health, "url")
+        .expect("actual URL reported")
+        .to_string();
     assert!(url.starts_with("http://127.0.0.1:"), "url={url}");
     let port: u16 = url.rsplit(':').next().unwrap().parse().expect("port");
     eprintln!("first_launch: installed dashboard URL={url}");
 
-    // Observation-only: exactly the read capability, no factory control.
-    assert_eq!(capabilities, vec![READ_CAPABILITY.to_string()], "capabilities={capabilities:?}");
+    // Observation-only: read plus the separate publication authority, no
+    // factory control and no unrelated capability.
+    assert_eq!(
+        capabilities,
+        vec![
+            READ_CAPABILITY.to_string(),
+            REPORT_PUBLISH_CAPABILITY.to_string()
+        ],
+        "capabilities={capabilities:?}"
+    );
     assert!(!capabilities.iter().any(|c| c == FACTORY_CONTROL_CAPABILITY));
 
     // Real production read routes answer with the real ledger projection.
@@ -334,6 +485,66 @@ fn first_launch_production_page_renders_real_data_and_zero_effects() {
         "the production page must show the real installed dashboard component: {components_body}"
     );
 
+    // The supervised child's own readiness observation reached the real hub
+    // ingestor through `hub.PublishReport`, and the generic component detail
+    // projection serves that canonical producer envelope.
+    let reported = wait_for_status_report(&launched.host);
+    assert_eq!(reported["listener"], "ready", "report={reported}");
+    assert_eq!(reported["binding"], "ready", "report={reported}");
+    assert_eq!(reported["url"], url.as_str(), "report={reported}");
+    let detail = component_detail_body(port, PLUGIN_ID);
+    let report_entries = detail["entries"].as_array().expect("detail entries");
+    let status_entry = report_entries
+        .iter()
+        .find(|entry| entry["schema_namespace"] == REPORT_SCHEMA_NAMESPACE)
+        .unwrap_or_else(|| panic!("no dashboard status report entry: {detail}"));
+    assert_eq!(status_entry["payload"], reported);
+    assert_eq!(
+        status_entry["payload_digest"],
+        canonical_digest(&status_entry["payload"]).unwrap()
+    );
+    assert_eq!(status_entry["plugin_id"], PLUGIN_ID);
+    assert_eq!(
+        status_entry["binding"]["generation"],
+        launched
+            .host
+            .pinned_binding(PLUGIN_ID)
+            .unwrap()
+            .generation
+            .to_string()
+    );
+    assert_eq!(status_entry["durability"], "durable");
+    assert!(report_entries
+        .iter()
+        .all(|entry| entry["plugin_id"] == PLUGIN_ID));
+
+    capture_owner_screenshot(
+        &chrome,
+        &format!("{url}#/components"),
+        "cw3-healthy-components.png",
+    );
+    let identity = serde_json::json!({
+        "plugin_id": PLUGIN_ID,
+        "package_version": PACKAGE_VERSION,
+        "package_digest": package.package_digest,
+        "manifest_report_schema": {
+            "namespace": REPORT_SCHEMA_NAMESPACE,
+            "version": REPORT_SCHEMA_VERSION,
+            "digest": agalma_web_dashboard::report_schema_ref().schema.digest,
+        },
+        "binding_generation": launched.host.pinned_binding(PLUGIN_ID).unwrap().generation,
+        "approved_capabilities": capabilities,
+        "acknowledged_report": reported,
+        "listener_url": url,
+        "healthy_screenshot": "screenshots/cw3-healthy-components.png",
+    });
+    fs::create_dir_all(evidence_dir()).unwrap();
+    fs::write(
+        evidence_dir().join("cw3-identity.json"),
+        serde_json::to_vec_pretty(&identity).unwrap(),
+    )
+    .unwrap();
+
     // No control route exists: viewing can never create a control intent.
     let pause = http_request(port, "POST", "/api/v1/factory/pause");
     assert!(
@@ -347,19 +558,32 @@ fn first_launch_production_page_renders_real_data_and_zero_effects() {
     // page, not merely listed in an API response.
     let components_url = format!("{url}#/components");
     let outcome = run_browser(&chrome, &components_url, BROWSER_BUDGET_MS, "first-launch");
-    assert!(outcome.status.success(), "browser failed: {}", outcome.stderr);
+    assert!(
+        outcome.status.success(),
+        "browser failed: {}",
+        outcome.stderr
+    );
     let dom = &outcome.dom;
     assert!(dom.contains("Agalma cockpit"), "page shell missing: {dom}");
-    assert!(dom.contains(PLUGIN_ID), "real component must render in the components page: {dom}");
+    assert!(
+        dom.contains(PLUGIN_ID),
+        "real component must render in the components page: {dom}"
+    );
     // The factory runtime endpoint is not part of M1, so the page says so
     // honestly and never claims Idle/Running.
     assert!(
         dom.contains("Unavailable (endpoint absent)") || dom.contains("Unknown"),
         "runtime must be explicit and unavailable: {dom}"
     );
-    assert!(!dom.contains("Idle") && !dom.contains("Running"), "runtime must not be fabricated: {dom}");
+    assert!(
+        !dom.contains("Idle") && !dom.contains("Running"),
+        "runtime must not be fabricated: {dom}"
+    );
     // Controls are disabled without a control binding.
-    assert!(dom.contains("controls disabled"), "controls must be disabled: {dom}");
+    assert!(
+        dom.contains("controls disabled"),
+        "controls must be disabled: {dom}"
+    );
 
     // The page performed only same-origin reads; a navigation/reload never POSTs.
     let page_again = http_request(port, "GET", "/");
@@ -370,8 +594,17 @@ fn first_launch_production_page_renders_real_data_and_zero_effects() {
     // the child holds no control or queue capability, and no factory-control
     // intent route exists. Checked after the browser runs.
     let (_, capabilities_after) = dashboard_health(&runtime, &launched.plugin_socket);
-    assert_eq!(capabilities_after, vec![READ_CAPABILITY.to_string()]);
-    assert!(launched.host.ledger().is_some(), "the real ledger stays attached and unmutated by viewing");
+    assert_eq!(
+        capabilities_after,
+        vec![
+            READ_CAPABILITY.to_string(),
+            REPORT_PUBLISH_CAPABILITY.to_string()
+        ]
+    );
+    assert!(
+        launched.host.ledger().is_some(),
+        "the real ledger stays attached and unmutated by viewing"
+    );
     let action_lookup = http_request(port, "GET", "/api/v1/factory/actions/ui-probe");
     assert!(
         action_lookup.status == 404 || action_lookup.status == 405,
@@ -393,19 +626,29 @@ fn first_launch_production_page_renders_real_data_and_zero_effects() {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    let read = unavailable.expect("the lost read source must surface as 503, never a healthy empty page");
+    let read =
+        unavailable.expect("the lost read source must surface as 503, never a healthy empty page");
     assert!(read.body.contains("read_unavailable"), "body={}", read.body);
 
     // A fresh page against the degraded source renders explicit unknown or
     // unavailable data rather than healthy/empty data.
     let degraded = run_browser(&chrome, &url, BROWSER_BUDGET_MS, "first-launch-degraded");
-    assert!(degraded.status.success(), "browser failed: {}", degraded.stderr);
-    assert!(degraded.dom.contains("Agalma cockpit"), "dom={}", degraded.dom);
+    assert!(
+        degraded.status.success(),
+        "browser failed: {}",
+        degraded.stderr
+    );
+    assert!(
+        degraded.dom.contains("Agalma cockpit"),
+        "dom={}",
+        degraded.dom
+    );
     assert!(
         degraded.dom.contains("Unavailable") || degraded.dom.contains("unknown"),
         "degraded page must be explicit: {}",
         degraded.dom
     );
+    capture_owner_screenshot(&chrome, &url, "cw3-degraded-read-source.png");
 
     eprintln!(
         "first_launch: ok url={url} capabilities={capabilities:?} ledger_state={}",
@@ -429,14 +672,28 @@ fn first_launch_production_component_detail_uses_real_hub_and_zero_effects() {
         .build()
         .unwrap();
     let package = seal_dashboard_package(scratch.path());
-    let mut launched = launch_production_dashboard(&runtime, &scratch, &package);
+    let launched = launch_production_dashboard(&runtime, &scratch, &package);
 
     let (health, capabilities) = dashboard_health(&runtime, &launched.plugin_socket);
-    assert_eq!(health.state, HealthState::Ready, "detail: {}", health.detail);
-    let url = detail_field(&health, "url").expect("actual URL reported").to_string();
+    assert_eq!(
+        health.state,
+        HealthState::Ready,
+        "detail: {}",
+        health.detail
+    );
+    let url = detail_field(&health, "url")
+        .expect("actual URL reported")
+        .to_string();
     assert!(url.starts_with("http://127.0.0.1:"), "url={url}");
     let port: u16 = url.rsplit(':').next().unwrap().parse().expect("port");
-    assert_eq!(capabilities, vec![READ_CAPABILITY.to_string()]);
+    assert_eq!(
+        capabilities,
+        vec![
+            READ_CAPABILITY.to_string(),
+            REPORT_PUBLISH_CAPABILITY.to_string()
+        ]
+    );
+    let reported = wait_for_status_report(&launched.host);
 
     // The installed dashboard and the conductor's built-in harness must both be
     // present in the real live registry projection before detail routing.
@@ -456,7 +713,9 @@ fn first_launch_production_component_detail_uses_real_hub_and_zero_effects() {
     let dashboard = component_detail_body(port, PLUGIN_ID);
     assert_eq!(dashboard["binding"]["binding_id"], PLUGIN_ID);
     assert!(
-        dashboard["descriptors"].as_array().is_some_and(|views| !views.is_empty()),
+        dashboard["descriptors"]
+            .as_array()
+            .is_some_and(|views| !views.is_empty()),
         "installed plugin declared views must project: {dashboard}"
     );
     assert!(
@@ -466,6 +725,21 @@ fn first_launch_production_component_detail_uses_real_hub_and_zero_effects() {
             .iter()
             .all(|source| source["state"] != "unreadable"),
         "real host sources must not be unreadable: {dashboard}"
+    );
+    let entries = dashboard["entries"].as_array().expect("detail entries");
+    let status_entry = entries
+        .iter()
+        .find(|entry| entry["schema_namespace"] == REPORT_SCHEMA_NAMESPACE)
+        .unwrap_or_else(|| panic!("dashboard detail has no owner report: {dashboard}"));
+    assert_eq!(status_entry["payload"], reported);
+    assert_eq!(
+        status_entry["binding"]["generation"],
+        launched
+            .host
+            .pinned_binding(PLUGIN_ID)
+            .unwrap()
+            .generation
+            .to_string()
     );
 
     // The conductor built-in `component:harness` is a first-class colon identity
@@ -496,13 +770,28 @@ fn first_launch_production_component_detail_uses_real_hub_and_zero_effects() {
 
     // Real browser: the encoded dashboard detail route renders production data.
     let dashboard_url = format!("{url}#/components/{}", encode_component_id(PLUGIN_ID));
-    let dashboard_browser = run_browser(&chrome, &dashboard_url, BROWSER_BUDGET_MS, "first-launch-detail");
-    assert!(dashboard_browser.status.success(), "browser failed: {}", dashboard_browser.stderr);
+    let dashboard_browser = run_browser(
+        &chrome,
+        &dashboard_url,
+        BROWSER_BUDGET_MS,
+        "first-launch-detail",
+    );
+    assert!(
+        dashboard_browser.status.success(),
+        "browser failed: {}",
+        dashboard_browser.stderr
+    );
     let dom = &dashboard_browser.dom;
-    assert!(dom.contains("Component detail"), "detail page missing: {dom}");
+    assert!(
+        dom.contains("Component detail"),
+        "detail page missing: {dom}"
+    );
     assert!(dom.contains(PLUGIN_ID), "detail id missing: {dom}");
     assert!(dom.contains("Binding"), "binding section missing: {dom}");
-    assert!(dom.contains("Declared views"), "declared views section missing: {dom}");
+    assert!(
+        dom.contains("Declared views"),
+        "declared views section missing: {dom}"
+    );
     assert!(
         !dom.contains("not registered in the hub registry"),
         "a registered dashboard must not render the not-registered state: {dom}"
@@ -511,12 +800,28 @@ fn first_launch_production_component_detail_uses_real_hub_and_zero_effects() {
         !dom.contains("detail read unavailable") && !dom.contains("read_unavailable"),
         "detail read must not be unavailable: {dom}"
     );
+    assert!(
+        dom.contains(REPORT_SCHEMA_NAMESPACE) && dom.contains("listener"),
+        "the generic component detail must render the owner report: {dom}"
+    );
 
     // The colon identity route must not collapse into the generic unavailable
     // error or an unknown-route notice.
-    let harness_url = format!("{url}#/components/{}", encode_component_id("component:harness"));
-    let harness_browser = run_browser(&chrome, &harness_url, BROWSER_BUDGET_MS, "first-launch-detail-harness");
-    assert!(harness_browser.status.success(), "browser failed: {}", harness_browser.stderr);
+    let harness_url = format!(
+        "{url}#/components/{}",
+        encode_component_id("component:harness")
+    );
+    let harness_browser = run_browser(
+        &chrome,
+        &harness_url,
+        BROWSER_BUDGET_MS,
+        "first-launch-detail-harness",
+    );
+    assert!(
+        harness_browser.status.success(),
+        "browser failed: {}",
+        harness_browser.stderr
+    );
     assert!(
         harness_browser.dom.contains("Component detail")
             && harness_browser.dom.contains("component:harness"),
@@ -532,7 +837,9 @@ fn first_launch_production_component_detail_uses_real_hub_and_zero_effects() {
         harness_browser.dom
     );
     assert!(
-        !harness_browser.dom.contains("not registered in the hub registry"),
+        !harness_browser
+            .dom
+            .contains("not registered in the hub registry"),
         "a registered builtin with no reports must not render absent: {}",
         harness_browser.dom
     );
@@ -548,10 +855,21 @@ fn first_launch_production_component_detail_uses_real_hub_and_zero_effects() {
         "{url}#/components/{}",
         encode_component_id("missing:valid.component")
     );
-    let unknown_browser = run_browser(&chrome, &unknown_url, BROWSER_BUDGET_MS, "first-launch-detail-unknown");
-    assert!(unknown_browser.status.success(), "browser failed: {}", unknown_browser.stderr);
+    let unknown_browser = run_browser(
+        &chrome,
+        &unknown_url,
+        BROWSER_BUDGET_MS,
+        "first-launch-detail-unknown",
+    );
     assert!(
-        unknown_browser.dom.contains("not registered in the hub registry"),
+        unknown_browser.status.success(),
+        "browser failed: {}",
+        unknown_browser.stderr
+    );
+    assert!(
+        unknown_browser
+            .dom
+            .contains("not registered in the hub registry"),
         "unknown id must render explicit missing state: {}",
         unknown_browser.dom
     );
@@ -566,8 +884,17 @@ fn first_launch_production_component_detail_uses_real_hub_and_zero_effects() {
     // Observation-only: browsing detail creates no control authority, intent,
     // task claim or second privilege.
     let (_, capabilities_after) = dashboard_health(&runtime, &launched.plugin_socket);
-    assert_eq!(capabilities_after, vec![READ_CAPABILITY.to_string()]);
-    assert!(launched.host.ledger().is_some(), "real ledger stays attached");
+    assert_eq!(
+        capabilities_after,
+        vec![
+            READ_CAPABILITY.to_string(),
+            REPORT_PUBLISH_CAPABILITY.to_string()
+        ]
+    );
+    assert!(
+        launched.host.ledger().is_some(),
+        "real ledger stays attached"
+    );
     let pause = http_request(port, "POST", "/api/v1/factory/pause");
     assert!(
         pause.status == 404 || pause.status == 405,
@@ -593,9 +920,8 @@ fn first_launch_production_component_detail_uses_real_hub_and_zero_effects() {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    let read = unavailable.expect(
-        "the lost hub source must make component detail 503, never a healthy empty page",
-    );
+    let read = unavailable
+        .expect("the lost hub source must make component detail 503, never a healthy empty page");
     assert!(read.body.contains("read_unavailable"), "body={}", read.body);
     assert!(
         !read.body.contains("ControlPlaneRead/v1"),
@@ -603,7 +929,49 @@ fn first_launch_production_component_detail_uses_real_hub_and_zero_effects() {
         read.body
     );
 
+    eprintln!("first_launch_detail: ok url={url} listed={listed:?} capabilities={capabilities:?}");
+}
+
+#[test]
+fn first_launch_production_degraded_status_publishes_without_faking_readiness() {
+    let chrome = resolve_chrome().expect("installed Chrome (CHROME_BIN) is required");
+    let scratch = ScratchDir::new("web-cw3-report-only");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let package = seal_dashboard_package(scratch.path());
+    let launched = launch_report_only_dashboard(&runtime, &scratch, &package);
+
+    let health = wait_for_degraded_health(&runtime, &launched.plugin_socket);
+    assert_eq!(detail_field(&health, "listener"), Some("ready"));
+    assert_eq!(detail_field(&health, "binding"), Some("unavailable"));
+    // The owner-derived report carries the factual listener URL even while the
+    // read binding is unavailable; `plugin.Health` deliberately withholds it
+    // until both readiness facts hold (unchanged compatibility).
+    assert_eq!(detail_field(&health, "url"), None);
+    let reported = wait_for_status_report(&launched.host);
+    assert_eq!(reported["listener"], "ready", "report={reported}");
+    assert_eq!(reported["binding"], "unavailable", "report={reported}");
+    let url = reported["url"]
+        .as_str()
+        .unwrap_or_else(|| panic!("degraded report must carry the actual listener URL: {reported}"))
+        .to_string();
+    assert!(url.starts_with("http://127.0.0.1:"), "url={url}");
+
+    // Publication never changes the owner's read readiness.
+    let (after, capabilities) = dashboard_health(&runtime, &launched.plugin_socket);
+    assert_eq!(after.state, HealthState::Degraded);
+    assert_eq!(detail_field(&after, "binding"), Some("unavailable"));
+    assert_eq!(
+        capabilities,
+        vec![REPORT_PUBLISH_CAPABILITY.to_string()],
+        "report authority must not imply read/control authority"
+    );
+
+    capture_owner_screenshot(&chrome, &url, "cw3-degraded-owner-status.png");
     eprintln!(
-        "first_launch_detail: ok url={url} listed={listed:?} capabilities={capabilities:?}"
+        "first_launch_report_only: ok url={url} report={reported} capabilities={capabilities:?}"
     );
 }

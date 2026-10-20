@@ -36,18 +36,22 @@ use serde_json::{json, Value};
 
 use agalma_contracts::digest::{canonical_digest, sha256_digest, FailureCode};
 use agalma_contracts::{
-    check_cursor, BindingPin, ComponentSummary, Completeness, ContractError, ControlReceipt,
-    DigestRecord, ExecutionEvent, ExecutionId, ExecutionRecord, ExactU64, FactoryStop, Freshness,
-    HealthState, ListComponents, PackageArtifactRef, ReadArtifactChunk, ReadArtifactChunkRequest,
-    ReadComponent, ReadCursor, ReadMetadata, ReadOverview, ReadPageRequest, ReportEnvelope,
-    BrowserWire, SourceAvailability, SourceState, TimelineEntry, View,
-    CONTROL_PLANE_READ_CAPABILITY, CONTROL_PLANE_READ_FORMAT, READ_PAGE_MAX_BYTES,
+    check_cursor, BindingPin, ComponentLifecycle, ComponentStatus, ComponentStatusOrigin,
+    ComponentSummary, Completeness, ContractError, ControlReceipt, DigestRecord, ExecutionEvent,
+    ExecutionId, ExecutionRecord, ExactU64, FactoryStop, Freshness, HealthState, LifecycleSource,
+    ListComponents, PackageArtifactRef, ReadArtifactChunk, ReadArtifactChunkRequest,
+    ReadComponent, ReadCursor, ReadMetadata, ReadOverview, ReadPageRequest, ReportingState,
+    ReportEnvelope, BrowserWire, SourceAvailability, SourceState, StatusDesired, TimelineEntry,
+    View, CONTROL_PLANE_READ_CAPABILITY, CONTROL_PLANE_READ_FORMAT, READ_PAGE_MAX_BYTES,
+    STATUS_TEXT_MAX_CHARS,
 };
 use agalma_ipc::plugin_server::METHOD_INVOKE_CAPABILITY;
 
 use crate::economics::{derive_bound, EconomicsInputs, SourceRead};
 use crate::ledger_process::LedgerHandle;
-use crate::plugin_registry::{ComponentOrigin, LifecycleState, PluginRegistry, RegistryEntry};
+use crate::plugin_registry::{
+    ComponentOrigin, DesiredState, LifecycleState, PluginRegistry, RegistryEntry,
+};
 use crate::plugin_reports::{
     Freshness as ReportFreshness, PluginReportView, ReportIngestor, REGISTRY_NAMESPACE,
 };
@@ -135,7 +139,16 @@ pub const OVERVIEW_MAX_TIMELINE: usize = 100;
 pub struct ProjectedComponent {
     pub plugin_id: String,
     pub origin: ComponentOrigin,
+    /// Legacy heartbeat-refined lifecycle; retained for legacy list fields.
     pub observed: LifecycleState,
+    /// Raw supervisor lifecycle observation. `None` when no live supervised
+    /// generation exists, so a durable fallback or builtin placeholder never
+    /// becomes observed.
+    pub raw_lifecycle: Option<LifecycleState>,
+    /// Raw supervisor observation time, only with actual live lifecycle.
+    pub lifecycle_observed_at_ms: Option<u64>,
+    pub desired: Option<DesiredState>,
+    pub last_error: Option<String>,
     pub generation: Option<u64>,
     pub implementation_version: String,
     pub config_digest: String,
@@ -252,6 +265,12 @@ impl ComponentProjection for DurableComponents {
                 plugin_id: source.plugin_id,
                 origin: source.origin,
                 observed,
+                // A durable registry snapshot is not a live observation: no
+                // lifecycle evidence or timestamp is invented here.
+                raw_lifecycle: None,
+                lifecycle_observed_at_ms: None,
+                desired: Some(source.desired),
+                last_error: source.last_error,
                 generation: source.generation,
                 implementation_version,
                 config_digest,
@@ -865,6 +884,7 @@ impl ControlPlaneReadService {
                     descriptors: Vec::new(),
                     entries: Vec::new(),
                     next_cursor: None,
+                    status: None,
                 });
             }
         };
@@ -892,6 +912,7 @@ impl ControlPlaneReadService {
                 descriptors: Vec::new(),
                 entries: Vec::new(),
                 next_cursor: None,
+                status: None,
             });
         };
 
@@ -918,6 +939,7 @@ impl ControlPlaneReadService {
                 descriptors,
                 entries: Vec::new(),
                 next_cursor: None,
+                status: Some(component_status(&projection, None)),
             });
         };
         let reports = reports.lock().unwrap_or_else(PoisonError::into_inner);
@@ -940,6 +962,7 @@ impl ControlPlaneReadService {
                 descriptors,
                 entries: Vec::new(),
                 next_cursor: None,
+                status: Some(component_status(&projection, Some(&reports))),
             });
         };
 
@@ -1002,6 +1025,7 @@ impl ControlPlaneReadService {
             Some(report_watermark),
             sources,
         );
+        let status = component_status(&projection, Some(&reports));
 
         let mut selected: Vec<ReportEnvelope> = Vec::new();
         for candidate in &candidates {
@@ -1015,6 +1039,7 @@ impl ControlPlaneReadService {
                 descriptors: descriptors.clone(),
                 entries: selected.clone(),
                 next_cursor: None,
+                status: Some(status.clone()),
             };
             if probe.check_bounds().is_err() {
                 selected.pop();
@@ -1049,6 +1074,7 @@ impl ControlPlaneReadService {
             descriptors,
             entries: selected,
             next_cursor,
+            status: Some(status),
         };
         page.check_bounds()?;
         Ok(page)
@@ -1347,10 +1373,19 @@ fn to_value<T: BrowserWire>(value: &T) -> Result<Value, ContractError> {
 fn project_live_entry(entry: &RegistryEntry) -> ProjectedComponent {
     let generation = entry.active_generation.or(entry.pending_generation);
     let installed = generation.and_then(|generation| entry.generations.get(&generation));
+    // Only an actual supervised generation supplies live lifecycle evidence. A
+    // generation-less builtin placeholder is represented but not observed.
+    let supervised = generation.is_some();
     ProjectedComponent {
         plugin_id: entry.plugin_id.clone(),
         origin: entry.origin,
         observed: entry.observed,
+        raw_lifecycle: supervised.then_some(entry.observed),
+        lifecycle_observed_at_ms: supervised
+            .then_some(entry.observed_at_ms)
+            .filter(|observed_at| *observed_at != 0),
+        desired: Some(entry.desired),
+        last_error: entry.last_error.clone(),
         generation,
         implementation_version: installed
             .map(|installed| installed.package_version.clone())
@@ -1389,6 +1424,7 @@ fn component_collection_revision(summaries: &[ComponentSummary]) -> Result<u64, 
                 "completeness": summary.completeness,
                 "available": summary.available,
                 "views": summary.views,
+                "status": summary.status,
             })
         })
         .collect();
@@ -1401,6 +1437,109 @@ fn component_collection_revision(summaries: &[ComponentSummary]) -> Result<u64, 
             format!("collection revision digest is not hex: {error}"),
         )
     })
+}
+
+/// Bound one actual status detail/error for the browser wire.
+fn bounded_status_text(text: &str) -> String {
+    let escaped = crate::components::escape_control(text);
+    if escaped.chars().count() <= STATUS_TEXT_MAX_CHARS {
+        return escaped;
+    }
+    let mut out: String = escaped
+        .chars()
+        .take(STATUS_TEXT_MAX_CHARS.saturating_sub(1))
+        .collect();
+    out.push('…');
+    out
+}
+
+/// The shared evidence-bearing status projection for list and detail.
+///
+/// It is deliberately a pure function of the neutral projection and the report
+/// ingestor so both read paths agree. It never infers health from lifecycle,
+/// never invents a timestamp/generation, and only reads a heartbeat from the
+/// view matching the selected generation.
+fn component_status(
+    projection: &ProjectedComponent,
+    reports: Option<&ReportIngestor>,
+) -> ComponentStatus {
+    let origin = match projection.origin {
+        ComponentOrigin::BuiltIn => ComponentStatusOrigin::BuiltIn,
+        ComponentOrigin::Discovered => ComponentStatusOrigin::Discovered,
+    };
+    let desired = projection.desired.map(|desired| match desired {
+        DesiredState::Running => StatusDesired::Running,
+        DesiredState::Stopped => StatusDesired::Stopped,
+    });
+    let lifecycle = projection.raw_lifecycle.map(|lifecycle| match lifecycle {
+        LifecycleState::Installed => ComponentLifecycle::Installed,
+        LifecycleState::Starting => ComponentLifecycle::Starting,
+        LifecycleState::Ready => ComponentLifecycle::Ready,
+        LifecycleState::Draining => ComponentLifecycle::Draining,
+        LifecycleState::Failed => ComponentLifecycle::Failed,
+        LifecycleState::Retired => ComponentLifecycle::Retired,
+    });
+    let lifecycle_source = if projection.raw_lifecycle.is_some() {
+        LifecycleSource::LiveRegistry
+    } else {
+        LifecycleSource::None
+    };
+    let lifecycle_observed_at_unix_ms = projection
+        .lifecycle_observed_at_ms
+        .filter(|observed_at| *observed_at != 0)
+        .map(ExactU64::from);
+
+    let view = reports.and_then(|reports| reports.view(&projection.plugin_id));
+    // Health belongs to one exact selected generation. A view for another
+    // generation (or a generation-less placeholder with no supervised process)
+    // cannot contribute current health.
+    let matching_view = view.filter(|view| {
+        projection
+            .generation
+            .is_some_and(|generation| generation == view.active_generation)
+    });
+    let health = matching_view.and_then(|view| view.health.as_ref());
+    let health_observed_at_unix_ms = health
+        .map(|health| ExactU64::from(health.observed_at_unix_ms));
+    let health_detail = health
+        .map(|health| bounded_status_text(&health.detail))
+        .filter(|detail| !detail.is_empty());
+    let incomplete = matching_view.is_some_and(PluginReportView::is_incomplete);
+
+    let reporting = match reports {
+        None => ReportingState::Unknown,
+        Some(reports) => match matching_view {
+            None => ReportingState::Unavailable,
+            Some(view) if view.entries.is_empty() && view.health.is_none() => {
+                ReportingState::Unavailable
+            }
+            Some(_) => match reports.freshness(&projection.plugin_id) {
+                ReportFreshness::Fresh => ReportingState::Fresh,
+                ReportFreshness::Stale => ReportingState::Stale,
+                ReportFreshness::Unavailable => ReportingState::Unavailable,
+                ReportFreshness::Unknown => ReportingState::Unknown,
+            },
+        },
+    };
+
+    ComponentStatus {
+        origin,
+        generation: projection.generation.map(ExactU64::from),
+        desired,
+        lifecycle,
+        lifecycle_source,
+        lifecycle_observed_at_unix_ms,
+        health: health.map(|health| health.state),
+        health_observed_at_unix_ms,
+        health_detail,
+        last_error: projection
+            .last_error
+            .as_deref()
+            .map(bounded_status_text)
+            .filter(|error| !error.is_empty()),
+        reporting,
+        incomplete,
+    }
 }
 
 /// Build one [`ComponentSummary`] from a component projection and the report
@@ -1453,6 +1592,7 @@ fn component_summary(
         completeness,
         available: (serving_lifecycle || serving_reports) && !disconnected,
         views: projection.views.clone(),
+        status: Some(component_status(projection, reports)),
     }
 }
 

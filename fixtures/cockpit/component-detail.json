@@ -83,5 +83,19 @@
       "payload_digest": "sha256:b2010f084d275155b6f20af4e255edf97ec72358c8460570bf2fef9baff3d39a"
     }
   ],
-  "next_cursor": null
+  "next_cursor": null,
+  "status": {
+    "origin": "discovered",
+    "generation": "9007199254740993",
+    "desired": "running",
+    "lifecycle": "ready",
+    "lifecycle_source": "live-registry",
+    "lifecycle_observed_at_unix_ms": "1791820800000",
+    "health": "ready",
+    "health_observed_at_unix_ms": "1791820800001",
+    "health_detail": "listener bound; hub read binding ready",
+    "last_error": null,
+    "reporting": "fresh",
+    "incomplete": false
+  }
 }

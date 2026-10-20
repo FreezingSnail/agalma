@@ -72,6 +72,80 @@ function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+const STATUS_ORIGINS = new Set(['built-in', 'discovered']);
+const STATUS_DESIRED = new Set(['running', 'stopped']);
+const STATUS_LIFECYCLES = new Set([
+  'installed', 'starting', 'ready', 'draining', 'failed', 'retired',
+]);
+const STATUS_COMPONENT_HEALTH = new Set(['ready', 'degraded', 'unavailable']);
+const STATUS_LIFECYCLE_SOURCES = new Set(['live-registry', 'none']);
+const STATUS_REPORTING = new Set(['fresh', 'stale', 'unavailable', 'unknown']);
+
+function boundedText(value, field) {
+  must(typeof value === 'string', `${field} is not a string`);
+  must(value.length <= TEXT_MAX_BYTES, `${field} exceeds the bounded text limit`);
+}
+
+/**
+ * Validate the optional evidence-bearing status object. `undefined`/`null`
+ * decode as `null` (unknown), preserving compatibility with older responses.
+ * Every discriminator is a closed vocabulary; generation/timestamps stay exact
+ * decimal strings and are never coerced.
+ */
+export function validateComponentStatus(status) {
+  if (status === undefined || status === null) return null;
+  must(isObject(status), 'component.status is not an object');
+  must(STATUS_ORIGINS.has(status.origin), `unknown status origin ${status.origin}`);
+  must(
+    status.generation === null || isExactU64(status.generation),
+    'status.generation is not null or an exact u64 string',
+  );
+  must(
+    status.desired === null || STATUS_DESIRED.has(status.desired),
+    `unknown status desired state ${status.desired}`,
+  );
+  must(
+    status.lifecycle === null || STATUS_LIFECYCLES.has(status.lifecycle),
+    `unknown status lifecycle ${status.lifecycle}`,
+  );
+  must(
+    STATUS_LIFECYCLE_SOURCES.has(status.lifecycle_source),
+    `unknown lifecycle source ${status.lifecycle_source}`,
+  );
+  must(
+    status.lifecycle_observed_at_unix_ms === null
+      || isExactU64(status.lifecycle_observed_at_unix_ms),
+    'status.lifecycle_observed_at_unix_ms is not null or an exact u64 string',
+  );
+  must(
+    status.health === null || STATUS_COMPONENT_HEALTH.has(status.health),
+    `unknown status health ${status.health}`,
+  );
+  must(
+    status.health_observed_at_unix_ms === null
+      || isExactU64(status.health_observed_at_unix_ms),
+    'status.health_observed_at_unix_ms is not null or an exact u64 string',
+  );
+  if (status.health_detail !== null) boundedText(status.health_detail, 'status.health_detail');
+  if (status.last_error !== null) boundedText(status.last_error, 'status.last_error');
+  must(STATUS_REPORTING.has(status.reporting), `unknown reporting state ${status.reporting}`);
+  must(typeof status.incomplete === 'boolean', 'status.incomplete is not a boolean');
+  return {
+    origin: status.origin,
+    generation: status.generation,
+    desired: status.desired,
+    lifecycle: status.lifecycle,
+    lifecycle_source: status.lifecycle_source,
+    lifecycle_observed_at_unix_ms: status.lifecycle_observed_at_unix_ms,
+    health: status.health,
+    health_observed_at_unix_ms: status.health_observed_at_unix_ms,
+    health_detail: status.health_detail,
+    last_error: status.last_error,
+    reporting: status.reporting,
+    incomplete: status.incomplete,
+  };
+}
+
 function sourceList(metadata) {
   must(isObject(metadata), 'response metadata is not an object');
   must(metadata.format === OVERVIEW_FORMAT, `unsupported read family ${metadata.format}`);
@@ -139,6 +213,7 @@ export function validateComponents(value) {
     must(typeof entry.health === 'string', 'component.health is not a string');
     must(typeof entry.available === 'boolean', 'component.available is not a boolean');
     must(Array.isArray(entry.views), 'component.views is not an array');
+    validateComponentStatus(entry.status);
     const binding = entry.binding;
     must(isObject(binding), 'component.binding is not an object');
     // The binding pin is descriptive identity metadata; the authoritative exact
@@ -272,6 +347,7 @@ export function validateComponentDetail(value) {
     descriptors,
     entries,
     next_cursor: value.next_cursor,
+    status: validateComponentStatus(value.status),
   };
 }
 

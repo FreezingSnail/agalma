@@ -28,7 +28,21 @@
       "available": true,
       "views": [
         { "view_id": "status", "schema_namespace": "example.reporter.status", "kind": "Status", "title": "Status", "schema_version": 1, "fields": ["ready"] }
-      ]
+      ],
+      "status": {
+        "origin": "discovered",
+        "generation": "9007199254740993",
+        "desired": "running",
+        "lifecycle": "ready",
+        "lifecycle_source": "live-registry",
+        "lifecycle_observed_at_unix_ms": "1791820800000",
+        "health": "ready",
+        "health_observed_at_unix_ms": "1791820800001",
+        "health_detail": "listener bound; hub read binding ready",
+        "last_error": null,
+        "reporting": "fresh",
+        "incomplete": false
+      }
     },
     {
       "plugin_id": "example.stopped-writer",
@@ -46,7 +60,21 @@
       "freshness": "stale",
       "completeness": "Unknown",
       "available": false,
-      "views": []
+      "views": [],
+      "status": {
+        "origin": "discovered",
+        "generation": "2",
+        "desired": "stopped",
+        "lifecycle": "failed",
+        "lifecycle_source": "live-registry",
+        "lifecycle_observed_at_unix_ms": "1791820790000",
+        "health": "ready",
+        "health_observed_at_unix_ms": "1791820780000",
+        "health_detail": "last heartbeat before exit",
+        "last_error": "process exited with status 1",
+        "reporting": "stale",
+        "incomplete": true
+      }
     }
   ],
   "next_cursor": "cp1:more"

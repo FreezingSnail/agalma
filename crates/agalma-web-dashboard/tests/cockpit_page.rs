@@ -253,6 +253,43 @@ fn run_driver_at_size(
     result
 }
 
+/// Run one driver page at an explicit viewport and budget.
+fn run_driver_at_size_budget(
+    server: &FixtureServer,
+    hash: &str,
+    body: &str,
+    label: &str,
+    width: u32,
+    height: u32,
+    budget_ms: u64,
+) -> serde_json::Value {
+    server.register(
+        "/harness.html",
+        Response::text(200, "text/html; charset=utf-8", driver_page(body)),
+    );
+    let url = format!("{}/harness.html{hash}", server.base_url());
+    let chrome = resolve_chrome().expect("installed Chrome (CHROME_BIN) is required");
+    let (outcome, result) = browser_support::run_browser_result_sized(
+        &chrome,
+        &url,
+        budget_ms,
+        label,
+        width,
+        height,
+    );
+    assert!(
+        outcome.status.success(),
+        "browser run {label} failed: status={:?} stderr={}",
+        outcome.status,
+        outcome.stderr
+    );
+    assert!(
+        result.get("harnessError").is_none(),
+        "driver {label} threw: {result}"
+    );
+    result
+}
+
 /// Run one driver page at an explicit viewport and emulated color scheme.
 fn run_driver_at_size_theme(
     server: &FixtureServer,
@@ -2307,7 +2344,7 @@ fn cockpit_information_component_identity_links() {
         r#"
     const expected = {expected};
     {prelude}
-    const links = [...document.querySelectorAll('a[data-focus-key^="component:"]')];
+    const links = [...document.querySelectorAll('a[data-focus-key^="component:"]:not([data-focus-key="component:back"])')];
     const hrefs = links.map((node) => node.getAttribute('href'));
     const decoded = hrefs.map((href) => parseHash(href).params.id);
     const mismatches = expected.filter((id, index) => decoded[index] !== id);
@@ -2332,7 +2369,7 @@ fn cockpit_information_component_identity_links() {
         prelude = NAVIGATE_PRELUDE,
     );
     let result = run_driver_at(&server, "#/components", &body, "component-links");
-    assert_eq!(result["count"].as_u64().unwrap(), 6);
+    assert_eq!(result["count"].as_u64().unwrap(), 6, "hrefs={:?}", result["hrefs"]);
     assert_eq!(result["mismatches"], serde_json::json!([]), "decoded={:?}", result["decoded"]);
     assert_eq!(result["injectionRoute"].as_str().unwrap(), ids[5]);
     assert_eq!(result["backText"].as_str().unwrap(), "← Components");
@@ -3902,7 +3939,7 @@ fn cockpit_component_views_layout_theme_stale_and_expansion_matrix() {
             assert_eq!(result["expandOpenAfter"].as_bool(), Some(true), "{width} {theme}: {result}");
             assert_eq!(result["timelineOpenAfter"].as_bool(), Some(true), "{width} {theme}: {result}");
             assert_eq!(result["focusBefore"].as_str(), result["focusAfter"].as_str(), "{width} {theme} focus");
-            assert_eq!(result["localStale"].as_u64(), Some(2), "{width} {theme} stale labels");
+            assert_eq!(result["localStale"].as_u64(), Some(2), "{width} {theme} stale labels: {result}");
             assert_eq!(result["topStale"].as_u64(), Some(1), "{width} {theme} top stale notice");
             assert_eq!(result["bindingCollapsed"].as_bool(), Some(true), "{width} {theme}");
             assert_eq!(result["technicalCollapsed"].as_bool(), Some(true), "{width} {theme}");
@@ -4245,4 +4282,950 @@ fn cockpit_component_views_injection_bounded_text_and_exact_identities() {
     assert_eq!(result["bounded"].as_bool(), Some(true));
     assert_eq!(server.post_count(), 0);
     assert!(server.requests().iter().all(|request| request.path.starts_with('/')));
+}
+
+// ---------------------------------------------------------------------------
+// Status MVP browser acceptance (agalma-51dg.12)
+// ---------------------------------------------------------------------------
+
+fn status_metadata(observed_at: i64) -> serde_json::Value {
+    serde_json::json!({
+        "format": "ControlPlaneRead/v1",
+        "collected_at_unix_ms": observed_at,
+        "registry_revision": "9007199254740993",
+        "report_watermark": null,
+        "sources": [
+            { "source": "registry", "state": "available", "detail": "", "observed_at_unix_ms": observed_at },
+            { "source": "reports", "state": "empty", "detail": "", "observed_at_unix_ms": observed_at }
+        ]
+    })
+}
+
+fn status_entry(
+    plugin_id: &str,
+    name: &str,
+    generation: &str,
+    status: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "plugin_id": plugin_id,
+        "name": name,
+        "binding": {
+            "binding_id": plugin_id,
+            "api": "plugin",
+            "api_version": 1,
+            "implementation_version": "status-fixture",
+            "generation": generation,
+            "config_digest": sha256_placeholder()
+        },
+        "generation": generation,
+        "health": "ready",
+        "freshness": "fresh",
+        "completeness": "Complete",
+        "available": true,
+        "views": [],
+        "status": status
+    })
+}
+
+fn status_components_page(entries: Vec<serde_json::Value>) -> String {
+    serde_json::json!({
+        "metadata": status_metadata(1791820800001),
+        "entries": entries,
+        "next_cursor": null
+    })
+    .to_string()
+}
+
+fn status_detail(
+    plugin_id: &str,
+    generation: &str,
+    status: serde_json::Value,
+    descriptor: bool,
+    reports_state: &str,
+) -> serde_json::Value {
+    let descriptors = if descriptor {
+        serde_json::json!([{
+            "view_id": "status",
+            "schema_namespace": format!("{plugin_id}.status"),
+            "kind": "Status",
+            "title": "Declared status",
+            "schema_version": 1,
+            "fields": ["ready"]
+        }])
+    } else {
+        serde_json::json!([])
+    };
+    serde_json::json!({
+        "metadata": {
+            "format": "ControlPlaneRead/v1",
+            "collected_at_unix_ms": 1791820800002i64,
+            "registry_revision": "9007199254740993",
+            "report_watermark": null,
+            "sources": [
+                { "source": "registry", "state": "available", "detail": "", "observed_at_unix_ms": 1791820800002i64 },
+                { "source": "reports", "state": reports_state, "detail": "status fixture", "observed_at_unix_ms": 1791820800002i64 }
+            ]
+        },
+        "binding": {
+            "binding_id": plugin_id,
+            "api": "plugin",
+            "api_version": 1,
+            "implementation_version": "status-fixture",
+            "generation": generation,
+            "config_digest": sha256_placeholder()
+        },
+        "descriptors": descriptors,
+        "entries": [],
+        "next_cursor": null,
+        "status": status
+    })
+}
+
+fn healthy_status() -> serde_json::Value {
+    serde_json::json!({
+        "origin": "discovered",
+        "generation": "9007199254740993",
+        "desired": "running",
+        "lifecycle": "ready",
+        "lifecycle_source": "live-registry",
+        "lifecycle_observed_at_unix_ms": "1791820800000",
+        "health": "ready",
+        "health_observed_at_unix_ms": "1791820800001",
+        "health_detail": "listener bound",
+        "last_error": null,
+        "reporting": "fresh",
+        "incomplete": false
+    })
+}
+
+#[test]
+fn cockpit_status_mvp_list_renders_evidence_not_legacy_health() {
+    let long_id = format!("example.{}", "long-identity-".repeat(12));
+    let builtin = status_entry(
+        "component:harness",
+        "Embedded Harness",
+        "0",
+        serde_json::json!({
+            "origin": "built-in",
+            "generation": null,
+            "desired": "stopped",
+            "lifecycle": null,
+            "lifecycle_source": "none",
+            "lifecycle_observed_at_unix_ms": null,
+            "health": null,
+            "health_observed_at_unix_ms": null,
+            "health_detail": null,
+            "last_error": null,
+            "reporting": "unavailable",
+            "incomplete": false
+        }),
+    );
+    let failed = status_entry(
+        "example.failed",
+        "Failed Component",
+        "2",
+        serde_json::json!({
+            "origin": "discovered",
+            "generation": "2",
+            "desired": "stopped",
+            "lifecycle": "failed",
+            "lifecycle_source": "live-registry",
+            "lifecycle_observed_at_unix_ms": "1791820790000",
+            "health": "ready",
+            "health_observed_at_unix_ms": "1791820780000",
+            "health_detail": "last heartbeat",
+            "last_error": "process exited with status 1",
+            "reporting": "stale",
+            "incomplete": true
+        }),
+    );
+    let page = status_components_page(vec![
+        status_entry(&long_id, "Long Reporter", "9007199254740993", healthy_status()),
+        failed,
+        builtin,
+    ]);
+    let (server, _) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(&page)],
+        ..Script::default()
+    });
+    let result = run_driver_at(
+        &server,
+        "#/components",
+        r#"
+    const cockpit = new Cockpit({ document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000 });
+    await cockpit.refresh();
+    const rows = [...document.querySelectorAll('#components tbody tr')].map((row) => ({
+      cells: [...row.querySelectorAll('td')].map((cell) => cell.textContent),
+      link: row.querySelector('a')?.getAttribute('href') ?? null,
+    }));
+    return { rows, page: document.getElementById('components').textContent };
+    "#,
+        "status-list",
+    );
+    assert!(result.get("harnessError").is_none(), "{result}");
+    let rows = result["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 3, "{result}");
+
+    let long = rows[0]["cells"].as_array().unwrap();
+    assert!(long[0].as_str().unwrap().contains("Long Reporter"));
+    assert_eq!(long[1], "Discovered");
+    assert_eq!(long[2], "9007199254740993");
+    assert_eq!(long[3], "ready");
+    assert_eq!(long[4], "ready");
+    assert_eq!(long[5], "fresh");
+    assert!(long[6].as_str().unwrap().contains("health"), "{long:?}");
+    assert_eq!(
+        rows[0]["link"].as_str().unwrap(),
+        format!("#/components/{}", long_id)
+    );
+
+    let failed = rows[1]["cells"].as_array().unwrap();
+    assert_eq!(failed[3], "failed");
+    assert!(
+        failed[4].as_str().unwrap().contains("stale observation"),
+        "a stale Ready heartbeat is not an unqualified healthy badge: {failed:?}"
+    );
+    assert!(failed[5].as_str().unwrap().contains("Stale"), "{failed:?}");
+    assert!(failed[5].as_str().unwrap().contains("incomplete"), "{failed:?}");
+    assert!(
+        failed[7].as_str().unwrap().contains("process exited with status 1"),
+        "{failed:?}"
+    );
+
+    let builtin = rows[2]["cells"].as_array().unwrap();
+    assert_eq!(builtin[1], "Built-in");
+    assert_eq!(builtin[2], "none (built-in)", "no synthetic installed generation");
+    assert!(builtin[3].as_str().unwrap().contains("Embedded component; lifecycle not observed"));
+    assert_eq!(builtin[4], "Unknown", "legacy Ready must not become health");
+    assert_eq!(builtin[5], "Not reporting");
+    assert_eq!(builtin[6], "Unknown");
+    assert_eq!(server.post_count(), 0, "status reads never mutate");
+}
+
+#[test]
+fn cockpit_status_mvp_detail_separates_lifecycle_health_and_missing_reports() {
+    let status = serde_json::json!({
+        "origin": "discovered",
+        "generation": "42",
+        "desired": "running",
+        "lifecycle": "failed",
+        "lifecycle_source": "live-registry",
+        "lifecycle_observed_at_unix_ms": "1791820790000",
+        "health": "ready",
+        "health_observed_at_unix_ms": "1791820780000",
+        "health_detail": "last heartbeat before exit",
+        "last_error": "process exited with status 1",
+        "reporting": "stale",
+        "incomplete": true
+    });
+    let detail = status_detail("example.status.failed", "42", status, true, "missing");
+    let (server, _) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(&status_components_page(vec![status_entry(
+            "example.status.failed",
+            "Failed Status",
+            "42",
+            serde_json::json!(null),
+        )]))],
+        detail: vec![ok_value(&detail)],
+        ..Script::default()
+    });
+    let result = run_driver_at(
+        &server,
+        "#/components/example.status.failed",
+        r#"
+    const cockpit = new Cockpit({ document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000 });
+    await cockpit.refresh();
+    const summary = document.querySelector('[data-status-source]');
+    return {
+      source: summary?.dataset.statusSource ?? null,
+      overall: summary?.dataset.overall ?? null,
+      text: summary?.textContent ?? '',
+      page: document.getElementById('component-detail').textContent,
+      disclosures: document.querySelectorAll('details[data-disclosure-key]').length,
+    };
+    "#,
+        "status-detail",
+    );
+    assert!(result.get("harnessError").is_none(), "{result}");
+    assert_eq!(result["source"], "detail");
+    assert_eq!(result["overall"], "attention");
+    let text = result["text"].as_str().unwrap();
+    assert!(text.contains("Identity"), "{text}");
+    assert!(text.contains("example.status.failed"), "{text}");
+    assert!(text.contains("Observed lifecycle"), "{text}");
+    assert!(text.contains("failed"), "{text}");
+    assert!(text.contains("Reported health"), "{text}");
+    assert!(
+        text.contains("ready (stale observation)"),
+        "health is kept but qualified: {text}"
+    );
+    assert!(text.contains("Not reporting") || text.contains("Stale"), "{text}");
+    assert!(text.contains("process exited with status 1"), "{text}");
+    assert!(
+        text.contains("not healthy even if an earlier heartbeat reported Ready"),
+        "{text}"
+    );
+    // Missing reports still retain the status summary and declared views.
+    let page = result["page"].as_str().unwrap();
+    assert!(page.contains("Declared status"), "{page}");
+    assert!(page.contains("Binding"), "binding diagnostics remain: {page}");
+    assert!(
+        result["disclosures"].as_u64().unwrap() >= 1,
+        "binding metadata stays collapsed in diagnostics"
+    );
+    assert_eq!(server.post_count(), 0);
+}
+
+#[test]
+fn cockpit_status_mvp_cold_failure_falls_back_only_to_exact_list_match() {
+    let status = serde_json::json!({
+        "origin": "discovered",
+        "generation": "7",
+        "desired": "running",
+        "lifecycle": "ready",
+        "lifecycle_source": "live-registry",
+        "lifecycle_observed_at_unix_ms": "1791820800000",
+        "health": "degraded",
+        "health_observed_at_unix_ms": "1791820800001",
+        "health_detail": "binding degraded",
+        "last_error": null,
+        "reporting": "fresh",
+        "incomplete": false
+    });
+    let components = status_components_page(vec![status_entry(
+        "example.list-only",
+        "List Only",
+        "7",
+        status,
+    )]);
+    let (server, _) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(&components)],
+        detail: vec![Response::unavailable("detail source lost")],
+        ..Script::default()
+    });
+    let matched = run_driver_at(
+        &server,
+        "#/components/example.list-only",
+        r#"
+    const cockpit = new Cockpit({ document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000 });
+    await cockpit.refresh();
+    await cockpit.refresh();
+    const summary = document.querySelector('[data-status-source]');
+    return {
+      source: summary?.dataset.statusSource ?? null,
+      text: summary?.textContent ?? '',
+      detail: document.getElementById('component-detail').textContent,
+    };
+    "#,
+        "status-cold-match",
+    );
+    assert!(matched.get("harnessError").is_none(), "{matched}");
+    assert_eq!(matched["source"], "list-fallback");
+    let text = matched["text"].as_str().unwrap();
+    assert!(text.contains("previous Components-page observation"), "{text}");
+    assert!(text.contains("example.list-only"), "{text}");
+    assert!(text.contains("degraded"), "{text}");
+    assert!(text.contains("unavailable"), "the actual read error is shown: {text}");
+
+    let unknown = run_driver_at(
+        &server,
+        "#/components/example.not-on-page",
+        r#"
+    const cockpit = new Cockpit({ document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000 });
+    await cockpit.refresh();
+    await cockpit.refresh();
+    const summary = document.querySelector('[data-status-source]');
+    return {
+      source: summary?.dataset.statusSource ?? null,
+      text: summary?.textContent ?? '',
+      page: document.getElementById('component-detail').textContent,
+    };
+    "#,
+        "status-cold-unknown",
+    );
+    assert!(unknown.get("harnessError").is_none(), "{unknown}");
+    assert_eq!(unknown["source"], "unknown");
+    let text = unknown["text"].as_str().unwrap();
+    assert!(text.contains("Status is unknown"), "{text}");
+    assert!(
+        !text.contains("degraded") && !text.contains("List Only"),
+        "another component's status must never be borrowed: {text}"
+    );
+    assert!(
+        unknown["page"].as_str().unwrap().contains("← Components"),
+        "navigation stays usable without any status source"
+    );
+}
+
+#[test]
+fn cockpit_status_mvp_retained_detail_is_labelled_stale() {
+    let status = healthy_status();
+    let detail = status_detail("example.retained", "1", status, true, "available");
+    let (server, _) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(&status_components_page(vec![status_entry(
+            "example.retained",
+            "Retained",
+            "1",
+            serde_json::json!(null),
+        )]))],
+        detail: vec![ok_value(&detail), Response::unavailable("detail source lost")],
+        ..Script::default()
+    });
+    let result = run_driver_at(
+        &server,
+        "#/components/example.retained",
+        r#"
+    const cockpit = new Cockpit({ document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000 });
+    await cockpit.refresh();
+    const first = cockpit.state.detail.page?.status?.health ?? null;
+    await cockpit.refresh();
+    const summary = document.querySelector('[data-status-source]');
+    return {
+      first,
+      source: summary?.dataset.statusSource ?? null,
+      page: document.getElementById('component-detail').textContent,
+      text: summary?.textContent ?? '',
+      subject: cockpit.state.detail.page?.binding?.binding_id ?? null,
+      generation: cockpit.state.detail.page?.status?.generation ?? null,
+    };
+    "#,
+        "status-retained",
+    );
+    assert!(result.get("harnessError").is_none(), "{result}");
+    assert_eq!(result["first"], "ready");
+    assert_eq!(result["subject"], "example.retained");
+    assert_eq!(result["generation"], "9007199254740993");
+    assert_eq!(result["source"], "retained-detail");
+    let text = result["text"].as_str().unwrap();
+    assert!(text.contains("last successful detail read"), "{text}");
+    assert!(text.contains("ready"), "{text}");
+    let page = result["page"].as_str().unwrap();
+    assert!(page.contains("Showing stale data"), "stale notice is visible: {page}");
+}
+
+#[test]
+fn cockpit_status_mvp_keyboard_navigation_and_long_identity() {
+    let long_id = format!("example.{}", "a-very-long-component-identity-".repeat(8));
+    let (server, _) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(&status_components_page(vec![status_entry(
+            &long_id,
+            "Long Name Reporter",
+            "9007199254740993",
+            healthy_status(),
+        )]))],
+        detail: vec![ok_value(&status_detail(
+            &long_id,
+            "9007199254740993",
+            healthy_status(),
+            true,
+            "available",
+        ))],
+        ..Script::default()
+    });
+    let result = run_driver_at(
+        &server,
+        "#/components",
+        &format!(r#"
+    const cockpit = new Cockpit({{ document, root: document.getElementById('app'), api: new DashboardApi(), intervalMs: 60000 }});
+    cockpit.start();
+    await cockpit.refresher.activeCycle;
+    const link = document.querySelector('#components tbody a');
+    link.focus();
+    const linkFocused = document.activeElement === link;
+    const href = link.getAttribute('href');
+    const changed = new Promise((resolve) => window.addEventListener('hashchange', resolve, {{ once: true }}));
+    location.hash = href;
+    await changed;
+    await cockpit.refresher.activeCycle;
+    cockpit.stop();
+    const status = document.querySelector('[data-status-source]');
+    const summary = document.querySelector('#component-detail details[data-disclosure-key] summary');
+    summary?.focus();
+    const summaryFocused = document.activeElement === summary;
+    const summaryKey = summary?.dataset.focusKey ?? null;
+    const details = document.querySelector('#component-detail details[data-disclosure-key]');
+    const initiallyOpen = details?.open ?? null;
+    summary?.click();
+    const opened = details?.open ?? null;
+    return {{
+      longId: {long_id:?},
+      linkFocused,
+      href,
+      summaryFocused,
+      summaryKey,
+      initiallyOpen,
+      opened,
+      pageText: document.getElementById('component-detail').textContent,
+      bodyOverflow: document.documentElement.scrollWidth - window.innerWidth,
+      statusText: status?.textContent ?? '',
+    }};
+    "#),
+        "status-keyboard",
+    );
+    assert!(result.get("harnessError").is_none(), "{result}");
+    assert_eq!(result["linkFocused"], true);
+    assert_eq!(
+        result["href"].as_str().unwrap(),
+        format!("#/components/{long_id}")
+    );
+    assert_eq!(result["summaryFocused"], true);
+    assert!(result["summaryKey"].as_str().unwrap().contains(&long_id));
+    assert_eq!(result["initiallyOpen"], false);
+    assert_eq!(result["opened"], true);
+    assert!(
+        result["pageText"].as_str().unwrap().contains(&long_id),
+        "long identity remains readable in the page"
+    );
+    assert!(
+        result["bodyOverflow"].as_i64().unwrap() <= 1,
+        "long identity does not force page-wide horizontal overflow"
+    );
+}
+
+fn status_evidence_dir(label: &str) -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
+    let leaf = format!("status-mvp-{label}-{stamp}-{}", std::process::id());
+    if let Ok(root) = std::env::var("RUN_ROOT") {
+        if !root.is_empty() {
+            let bead = std::env::var("BEAD").unwrap_or_else(|_| "agalma-51dg.12".to_string());
+            return Path::new(&root).join(bead).join(leaf);
+        }
+    }
+    let worktree = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("worktree root");
+    let primary_target = worktree
+        .parent()
+        .and_then(Path::parent)
+        .expect("primary target root");
+    primary_target
+        .join("test-runs")
+        .join("agalma-51dg.12")
+        .join(leaf)
+}
+
+#[test]
+fn cockpit_status_mvp_captures_four_status_screenshots() {
+    let chrome = resolve_chrome().expect("installed Chrome (CHROME_BIN) is required");
+    let dir = status_evidence_dir("screenshots");
+    fs::create_dir_all(&dir).expect("create status screenshot directory");
+
+    let list_page = status_components_page(vec![
+        status_entry(
+            "example.unfamiliar-reporter",
+            "Unfamiliar Reporter",
+            "9007199254740993",
+            healthy_status(),
+        ),
+        status_entry(
+            "example.failed",
+            "Failed Component",
+            "2",
+            serde_json::json!({
+                "origin": "discovered",
+                "generation": "2",
+                "desired": "stopped",
+                "lifecycle": "failed",
+                "lifecycle_source": "live-registry",
+                "lifecycle_observed_at_unix_ms": "1791820790000",
+                "health": "ready",
+                "health_observed_at_unix_ms": "1791820780000",
+                "health_detail": "last heartbeat",
+                "last_error": "process exited with status 1",
+                "reporting": "stale",
+                "incomplete": true
+            }),
+        ),
+        status_entry(
+            "component:harness",
+            "Embedded Harness",
+            "0",
+            serde_json::json!({
+                "origin": "built-in",
+                "generation": null,
+                "desired": "stopped",
+                "lifecycle": null,
+                "lifecycle_source": "none",
+                "lifecycle_observed_at_unix_ms": null,
+                "health": null,
+                "health_observed_at_unix_ms": null,
+                "health_detail": null,
+                "last_error": null,
+                "reporting": "unavailable",
+                "incomplete": false
+            }),
+        ),
+    ]);
+    let missing_status = serde_json::json!({
+        "origin": "discovered",
+        "generation": "3",
+        "desired": "running",
+        "lifecycle": "ready",
+        "lifecycle_source": "live-registry",
+        "lifecycle_observed_at_unix_ms": "1791820800000",
+        "health": null,
+        "health_observed_at_unix_ms": null,
+        "health_detail": null,
+        "last_error": null,
+        "reporting": "unavailable",
+        "incomplete": false
+    });
+    let failed_status = serde_json::json!({
+        "origin": "discovered",
+        "generation": "2",
+        "desired": "stopped",
+        "lifecycle": "failed",
+        "lifecycle_source": "live-registry",
+        "lifecycle_observed_at_unix_ms": "1791820790000",
+        "health": "ready",
+        "health_observed_at_unix_ms": "1791820780000",
+        "health_detail": "last heartbeat before exit",
+        "last_error": "process exited with status 1",
+        "reporting": "stale",
+        "incomplete": true
+    });
+
+    let (list_server, _) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(&list_page)],
+        ..Script::default()
+    });
+    let (missing_server, _) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(&list_page)],
+        detail: vec![ok_value(&status_detail(
+            "example.missing-reports",
+            "3",
+            missing_status,
+            true,
+            "missing",
+        ))],
+        ..Script::default()
+    });
+    let (failed_server, _) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        components: vec![ok_json(&list_page)],
+        detail: vec![ok_value(&status_detail(
+            "example.failed",
+            "2",
+            failed_status,
+            true,
+            "available",
+        ))],
+        ..Script::default()
+    });
+    let page = component_screenshot_page();
+    for server in [&list_server, &missing_server, &failed_server] {
+        server.register(
+            "/component-shot.html",
+            Response::text(200, "text/html; charset=utf-8", page.clone()),
+        );
+    }
+    missing_server.register(
+        "/component-shot-frame.html",
+        Response::text(
+            200,
+            "text/html; charset=utf-8",
+            component_screenshot_frame_page(
+                390,
+                844,
+                "?mode=populated#/components/example.missing-reports",
+            ),
+        ),
+    );
+
+    let mut shots = Vec::new();
+    for (name, server, hash, width, height) in [
+        (
+            "status-list-desktop-1280-dark.png",
+            &list_server,
+            "#/components",
+            1280u32,
+            900u32,
+        ),
+        (
+            "status-detail-missing-reports-desktop-1280-dark.png",
+            &missing_server,
+            "#/components/example.missing-reports",
+            1280,
+            900,
+        ),
+        (
+            "status-detail-failed-stale-desktop-1280-dark.png",
+            &failed_server,
+            "#/components/example.failed",
+            1280,
+            900,
+        ),
+    ] {
+        let path = dir.join(name);
+        let url = format!("{}/component-shot.html{hash}", server.base_url());
+        let outcome = browser_support::capture_screenshot(
+            &chrome,
+            &url,
+            &path,
+            BUDGET_MS,
+            name,
+            width,
+            height,
+            "dark",
+        );
+        assert!(outcome.status.success(), "screenshot {name} failed: {}", outcome.stderr);
+        assert_png(&path);
+        shots.push(path);
+    }
+    let path = dir.join("status-detail-missing-reports-mobile-390-dark.png");
+    let outcome = browser_support::capture_screenshot(
+        &chrome,
+        &format!("{}/component-shot-frame.html", missing_server.base_url()),
+        &path,
+        BUDGET_MS,
+        "status-mobile-detail",
+        390,
+        844,
+        "dark",
+    );
+    assert!(outcome.status.success(), "mobile screenshot failed: {}", outcome.stderr);
+    assert_png(&path);
+    shots.push(path);
+
+    assert_eq!(shots.len(), 4, "four required status screenshots");
+    let listing = shots
+        .iter()
+        .map(|path| format!("{}\n", path.display()))
+        .collect::<String>();
+    let listing_path = dir.join("screenshots.txt");
+    fs::write(&listing_path, &listing).expect("write screenshot listing");
+    for shot in &shots {
+        eprintln!("status MVP screenshot: {}", shot.display());
+    }
+    eprintln!("status MVP screenshot listing: {}", listing_path.display());
+    assert_eq!(list_server.post_count() + missing_server.post_count() + failed_server.post_count(), 0);
+}
+
+#[test]
+fn cockpit_status_mvp_navigation_failure_sequences() {
+    let subjects = ["seq.a", "seq.b", "seq.c"];
+    let components = status_components_page(
+        subjects
+            .iter()
+            .map(|id| {
+                status_entry(
+                    id,
+                    id,
+                    "1",
+                    serde_json::json!({
+                        "origin": "discovered",
+                        "generation": "1",
+                        "desired": "running",
+                        "lifecycle": "ready",
+                        "lifecycle_source": "live-registry",
+                        "lifecycle_observed_at_unix_ms": "1791820800000",
+                        "health": "ready",
+                        "health_observed_at_unix_ms": "1791820800001",
+                        "health_detail": "ok",
+                        "last_error": null,
+                        "reporting": "fresh",
+                        "incomplete": false
+                    }),
+                )
+            })
+            .collect(),
+    );
+    let router: Router = Arc::new(|_, _, _, _| None);
+    let server = FixtureServer::start(router).expect("start sequence server");
+    let body = r#"
+    const subjects = ['seq.a', 'seq.b', 'seq.c'];
+    const componentsPage = __COMPONENTS__;
+    const detailFor = (id) => ({
+      metadata: {
+        format: 'ControlPlaneRead/v1',
+        collected_at_unix_ms: 1791820800002,
+        registry_revision: '1',
+        report_watermark: null,
+        sources: [
+          { source: 'registry', state: 'available', detail: '', observed_at_unix_ms: 1791820800002 },
+          { source: 'reports', state: 'empty', detail: '', observed_at_unix_ms: 1791820800002 },
+        ],
+      },
+      binding: {
+        binding_id: id, api: 'plugin', api_version: 1, implementation_version: 'seq',
+        generation: '1', config_digest: 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+      },
+      descriptors: [],
+      entries: [],
+      next_cursor: null,
+      status: {
+        origin: 'discovered', generation: '1', desired: 'running', lifecycle: 'ready',
+        lifecycle_source: 'live-registry', lifecycle_observed_at_unix_ms: '1791820800000',
+        health: 'ready', health_observed_at_unix_ms: '1791820800001', health_detail: 'ok',
+        last_error: null, reporting: 'fresh', incomplete: false,
+      },
+    });
+    let failDetail = false;
+    const api = {
+      getOverview: () => Promise.reject(new ApiError('unsupported', 'sequence overview absent')),
+      getComponents: () => Promise.resolve(componentsPage),
+      getFactory: () => Promise.reject(new ApiError('unsupported', 'sequence factory absent')),
+      getStatus: () => Promise.reject(new ApiError('unsupported', 'sequence status absent')),
+      getComponentDetail: (id) => failDetail
+        ? Promise.reject(new ApiError('unavailable', 'injected detail failure'))
+        : Promise.resolve(detailFor(id)),
+    };
+    let seed = 0x51d6_0012;
+    const rand = () => {
+      seed ^= seed << 13; seed ^= seed >>> 7; seed ^= seed << 17;
+      return seed >>> 0;
+    };
+    const failures = [];
+    const trace = [];
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    location.hash = '#/components/seq.a';
+    const cockpit = new Cockpit({ document, root, api, intervalMs: 60000 });
+    cockpit.start();
+    await cockpit.refresh();
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const navigate = async (hash) => {
+      if (location.hash === hash) {
+        await cockpit.refresh();
+        return;
+      }
+      location.hash = hash;
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        await settle();
+        if (`#/${cockpit.state.route.name === 'component' ? `components/${cockpit.state.route.params.id}` : cockpit.state.route.name}` === hash) break;
+      }
+      await cockpit.refresh();
+    };
+    for (let seq = 0; seq < 64; seq += 1) {
+      const start = `#/components/${subjects[seq % subjects.length]}`;
+      if (location.hash !== start) await navigate(start);
+      cockpit.state.detail.page = null;
+      cockpit.state.detail.pluginId = null;
+      cockpit.state.detail.cursor = null;
+      cockpit.state.detail.epoch += 1;
+      await cockpit.refresh();
+      for (let step = 0; step < 12; step += 1) {
+        const op = rand() % 7;
+        if (op === 0 || op === 1 || op === 6) {
+          await navigate(`#/components/${subjects[rand() % subjects.length]}`);
+        } else if (op === 2) {
+          failDetail = false;
+          await cockpit.refresh();
+        } else if (op === 3) {
+          failDetail = true;
+          await cockpit.refresh();
+        } else if (op === 4) {
+          await navigate('#/components');
+        } else {
+          failDetail = rand() % 2 === 0;
+          await cockpit.refresh();
+        }
+        const route = cockpit.state.route;
+        const page = cockpit.state.detail.page;
+        const label = `seq${seq}:step${step}:${route.name}:${route.params?.id ?? ''}`;
+        trace.push(label);
+        if (page && route.name !== 'component') {
+          failures.push(`${label}: retained detail after leaving the route`);
+        }
+        if (page && route.name === 'component' && page.binding?.binding_id !== route.params.id) {
+          failures.push(`${label}: cross-subject detail ${page.binding?.binding_id}`);
+        }
+        if (route.name === 'component') {
+          const summary = document.querySelector('[data-status-source]');
+          const text = summary?.textContent ?? '';
+          if (!summary) failures.push(`${label}: no status summary`);
+          if (!text.includes(route.params.id)) failures.push(`${label}: current identity missing`);
+          for (const other of subjects) {
+            if (other !== route.params.id && text.includes(other)) {
+              failures.push(`${label}: borrowed ${other}`);
+            }
+          }
+          if (page && page.status?.generation !== '1') {
+            failures.push(`${label}: wrong generation ${page.status?.generation}`);
+          }
+          if (summary?.dataset.statusSource === 'list-fallback'
+              && !text.includes('previous Components-page observation')) {
+            failures.push(`${label}: unlabelled list fallback`);
+          }
+        }
+      }
+    }
+    cockpit.stop();
+    return {
+      sequences: 64,
+      steps: trace.length,
+      failureCount: failures.length,
+      failures: failures.slice(0, 8),
+    };
+    "#
+    .replace("__COMPONENTS__", &components);
+    let result = run_driver_at_size_budget(
+        &server,
+        "#/components/seq.a",
+        &body,
+        "status-sequences",
+        1280,
+        2000,
+        120_000,
+    );
+    assert!(result.get("harnessError").is_none(), "{result}");
+    assert_eq!(result["sequences"], 64, "{result}");
+    assert_eq!(result["steps"], 64 * 12, "at least 12 steps per sequence");
+    assert_eq!(result["failureCount"], 0, "{}", result["failures"]);
+    assert_eq!(server.post_count(), 0, "navigation and refresh never mutate");
+}
+
+#[test]
+fn cockpit_status_mvp_api_validator_rejects_unknown_status_vocabularies() {
+    let (server, _) = scripted_server(Script {
+        overview: vec![ok_json(OVERVIEW)],
+        ..Script::default()
+    });
+    let result = run_driver(
+        &server,
+        r#"
+    const status = {
+      origin: 'discovered', generation: '9007199254740993', desired: 'running',
+      lifecycle: 'ready', lifecycle_source: 'live-registry',
+      lifecycle_observed_at_unix_ms: '1791820800000', health: 'ready',
+      health_observed_at_unix_ms: '1791820800001', health_detail: 'ok', last_error: null,
+      reporting: 'fresh', incomplete: false,
+    };
+    const rejected = (mutate) => {
+      const candidate = structuredClone(status);
+      mutate(candidate);
+      try { validateComponentStatus(candidate); return null; }
+      catch (error) { return error.kind; }
+    };
+    return {
+      valid: validateComponentStatus(status),
+      missing: validateComponentStatus(undefined),
+      origin: rejected((value) => { value.origin = 'builtin'; }),
+      lifecycle: rejected((value) => { value.lifecycle = 'healthy'; }),
+      reporting: rejected((value) => { value.reporting = 'ok'; }),
+      generation: rejected((value) => { value.generation = 1.5; }),
+      timestamp: rejected((value) => { value.health_observed_at_unix_ms = '-1'; }),
+      incomplete: rejected((value) => { value.incomplete = 'yes'; }),
+    };
+    "#,
+        "status-validator",
+    );
+    assert!(result.get("harnessError").is_none(), "{result}");
+    assert_eq!(result["valid"]["generation"], "9007199254740993");
+    assert_eq!(result["missing"], serde_json::Value::Null);
+    for key in ["origin", "lifecycle", "reporting", "generation", "timestamp", "incomplete"] {
+        assert_eq!(result[key], "malformed", "status field {key} must be refused");
+    }
 }

@@ -386,10 +386,104 @@ pub enum Freshness {
     Unknown,
 }
 
+/// Maximum characters of one bounded status detail/error string.
+///
+/// The hub projection truncates status text to this bound; the browser also
+/// applies its own inert 4 KiB field bound.
+pub const STATUS_TEXT_MAX_CHARS: usize = 512;
+
+/// How a component became known to the selected hub.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComponentStatusOrigin {
+    /// A conductor built-in represented without an installed package.
+    BuiltIn,
+    /// A discovered and installed package generation.
+    Discovered,
+}
+
+/// Desired state, explicitly separate from any observed lifecycle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StatusDesired {
+    Running,
+    Stopped,
+}
+
+/// Closed lifecycle vocabulary of the hub registry observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComponentLifecycle {
+    Installed,
+    Starting,
+    Ready,
+    Draining,
+    Failed,
+    Retired,
+}
+
+/// Where the lifecycle observation came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LifecycleSource {
+    /// A live supervisor/registry observation for an actual generation.
+    LiveRegistry,
+    /// No live lifecycle evidence (for example a durable fallback or builtin).
+    None,
+}
+
+/// Report availability for the selected component generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReportingState {
+    /// A current report observation exists.
+    Fresh,
+    /// An observation exists but is behind the freshness threshold.
+    Stale,
+    /// Reports are absent or their observation is no longer usable.
+    Unavailable,
+    /// Report availability cannot be established.
+    Unknown,
+}
+
+/// Hub read projection of one component's observed status.
+///
+/// This is not a plugin report: it carries the hub's actual registry lifecycle
+/// observation and the actual matching heartbeat separately, with explicit
+/// unknowns. Missing evidence is `None`, never a fabricated healthy value.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentStatus {
+    pub origin: ComponentStatusOrigin,
+    /// The active/pending generation, or `null` when no generation exists.
+    /// Distinct from the legacy synthetic binding generation zero.
+    pub generation: Option<ExactU64>,
+    /// Desired state, explicitly labelled as desired by the renderer.
+    pub desired: Option<StatusDesired>,
+    /// Observed lifecycle, or `null` when no live evidence exists.
+    pub lifecycle: Option<ComponentLifecycle>,
+    pub lifecycle_source: LifecycleSource,
+    /// When the live lifecycle was observed; `null` when unknown.
+    pub lifecycle_observed_at_unix_ms: Option<ExactU64>,
+    /// Actual matching heartbeat health; `null` when there is no heartbeat.
+    pub health: Option<HealthState>,
+    /// When the matching heartbeat was observed; `null` when unknown.
+    pub health_observed_at_unix_ms: Option<ExactU64>,
+    /// Bounded heartbeat detail, when a matching heartbeat exists.
+    pub health_detail: Option<String>,
+    /// Bounded actual supervisor error, when recorded.
+    pub last_error: Option<String>,
+    pub reporting: ReportingState,
+    /// Whether the selected generation's report view has a visible gap.
+    pub incomplete: bool,
+}
+
 /// One registry-derived component entry for `ListComponents`.
 ///
 /// `available` is false for an installed-but-unavailable component; such an
-/// entry is still listed with its identity and declared views.
+/// entry is still listed with its identity and declared views. The optional
+/// `status` object is the evidence-bearing summary; absent `status` (an older
+/// response) decodes as unknown, never as healthy.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComponentSummary {
@@ -405,6 +499,10 @@ pub struct ComponentSummary {
     pub available: bool,
     /// Declared view descriptors.
     pub views: Vec<View>,
+    /// Evidence-bearing status projection; `None` for compatibility and
+    /// omitted from the wire so old fixtures/responses keep their shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<ComponentStatus>,
 }
 
 /// A bounded page of one projection.
@@ -445,6 +543,11 @@ pub struct ReadComponent {
     pub entries: Vec<ReportEnvelope>,
     /// Opaque continuation cursor, or `null` at the final page.
     pub next_cursor: Option<String>,
+    /// The same evidence-bearing status projection as `ListComponents`; `None`
+    /// for compatibility with older responses and omitted from the wire when
+    /// absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<ComponentStatus>,
 }
 
 impl ReadComponent {

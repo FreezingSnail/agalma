@@ -117,6 +117,45 @@ The page distinguishes unknown from healthy/zero/stopped:
   last success time and the current error. The first failure of a source with no
   prior success is `unknown`/unavailable.
 
+## Component status MVP (2026-10-19)
+
+The Components list and each generic component detail now lead with one shared
+evidence-bearing `status` projection. It reports the hub's actual observation
+rather than inferring a state from a successful HTTP read:
+
+- **Origin and generation.** A discovered package shows its exact installed
+  generation. A conductor built-in has no installed generation and shows
+  `none (built-in)`; the legacy synthetic binding generation zero is never
+  presented as an installed generation.
+- **Lifecycle and health are separate.** Lifecycle is the raw supervisor
+  registry observation (`installed`, `starting`, `ready`, `draining`, `failed`,
+  `retired`) with its observation time. Health comes only from an actual
+  heartbeat matching the selected plugin and generation; no heartbeat means
+  `Unknown`, not lifecycle-derived health. A failed/retired lifecycle stays
+  prominent even when an older heartbeat said Ready.
+- **Desired state is labelled as desired.** `Running (desired)` and
+  `Stopped (desired)` never imply the observed process state.
+- **Reports have their own availability.** `Fresh`, `Stale`, `Not reporting`, or
+  `Unknown` describe the selected generation's report view. Stale values keep
+  their original time and a visible stale label; they are never shown as a
+  current healthy badge, and an incomplete view is called out.
+- **Unknown stays neutral.** Absent reports, a cold detail failure with no
+  retained data, and a missing status object all render explicit unknown or
+  not-reporting text. A failed detail read keeps the route identity and shows
+  either retained same-subject detail or, only when it is already loaded, the
+  exact plugin-ID row from the Components page, labelled as a previous list
+  observation. No other component's status is borrowed.
+- **Diagnostics stay secondary.** Binding pins, schema descriptors and raw
+  report envelopes remain in the existing collapsed details section. Declared
+  generic views continue to render below the status summary.
+
+The status object is optional on the wire: a response without it decodes as
+unknown, so older fixtures and responses remain readable. Strict older Rust
+readers may reject the added fields, so the matching hub and dashboard builds
+must be deployed together; this increment makes no rolling-version compatibility
+claim. Merged source is not proof that a running cockpit changed; activation
+requires a separate coordinated restart of the matching hub and dashboard.
+
 ## Overview information hierarchy (UI.3)
 
 The shared header appears on every route. It names the repository/state identity

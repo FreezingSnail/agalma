@@ -9,7 +9,7 @@
 
 import {
   panel, table, pager, emptyState, staleNotice, kv, textNode, el, pill,
-  boundedText, disclosure, formatTimestamp,
+  boundedText, disclosure, formatTimestamp, componentStatusModel, timestampModel,
 } from '../ui.js';
 import {
   resolveComponentViews, exactU64, VIEW_DEFAULT_ROWS,
@@ -86,6 +86,134 @@ function sourceState(doc, label, source) {
     row.appendChild(textNode(doc, 'span', source.detail, 'note'));
   }
   return row;
+}
+
+function statusRow(doc, label, value) {
+  const row = el(doc, 'div', 'kv component-status-row');
+  row.appendChild(textNode(doc, 'span', label, 'key'));
+  row.appendChild(doc.createTextNode(': '));
+  if (value !== null && typeof value === 'object' && typeof value.nodeType === 'number') {
+    row.appendChild(value);
+  } else {
+    row.appendChild(textNode(doc, 'span', value, 'value'));
+  }
+  return row;
+}
+
+function observationText(model, now) {
+  if (!model.lastObservation) return 'time unknown';
+  const time = timestampModel(model.lastObservation.at, now);
+  return `${time.relative} (${time.exact ?? 'time unknown'}; ${model.lastObservation.source})`;
+}
+
+/**
+ * The shared generic status summary. It renders the evidence-bearing projection
+ * only; legacy inferred health/availability fields are never consulted.
+ */
+function renderStatusSummary(doc, root, model, options) {
+  const {
+    now, context, detailError = null, listSourceAt = null, pluginId = null,
+  } = options;
+  const section = el(doc, 'section', 'component-status-summary');
+  section.dataset.statusSource = context;
+  section.appendChild(el(doc, 'h3', null, 'Observed status'));
+
+  if (context === 'list-fallback') {
+    section.appendChild(textNode(
+      doc,
+      'p',
+      `Detail read failed. Showing the previous Components-page observation for this exact plugin ID (list source age: ${formatTimestamp(listSourceAt)}). This is not a current detail read.`,
+      'callout--stale',
+    ));
+  } else if (context === 'unknown') {
+    section.appendChild(textNode(
+      doc,
+      'p',
+      'Detail read failed and no matching component is on the loaded Components page. Status is unknown.',
+      'callout--stale',
+    ));
+  } else if (context === 'retained-detail') {
+    section.appendChild(textNode(
+      doc,
+      'p',
+      'Showing the last successful detail read. Values and observation times are retained; current status is unknown until a read succeeds.',
+      'callout--stale',
+    ));
+  } else if (!model.known) {
+    section.appendChild(textNode(
+      doc,
+      'p',
+      'This response has no evidence-bearing status object. Status is unknown; legacy inferred health is not used.',
+      'note',
+    ));
+  }
+
+  if (model.lifecycle === 'failed' || model.lifecycle === 'retired') {
+    section.dataset.overall = 'attention';
+    section.appendChild(textNode(
+      doc,
+      'p',
+      `Lifecycle is ${model.lifecycle}. This component is not healthy even if an earlier heartbeat reported Ready.`,
+      'callout--reload',
+    ));
+  }
+  if (model.stale) {
+    section.appendChild(textNode(
+      doc,
+      'p',
+      'Report observation is stale. The original values and times are shown; they are not a current health claim.',
+      'callout--stale',
+    ));
+  }
+
+  const healthText = model.health === null
+    ? 'Unknown'
+    : model.stale
+      ? `${model.health} (stale observation)`
+      : model.incomplete
+        ? `${model.health} (incomplete report)`
+        : model.reporting === 'unavailable'
+          ? `${model.health} (report unavailable)`
+          : model.health;
+  const rows = el(doc, 'div', 'component-status-rows');
+  if (pluginId !== null) rows.appendChild(statusRow(doc, 'Identity', pluginId));
+  rows.appendChild(statusRow(doc, 'Origin', model.originLabel));
+  rows.appendChild(statusRow(doc, 'Generation', model.generationLabel));
+  rows.appendChild(statusRow(doc, 'Desired', model.desiredLabel));
+  rows.appendChild(statusRow(doc, 'Observed lifecycle', model.lifecycleLabel));
+  rows.appendChild(statusRow(
+    doc,
+    'Lifecycle observed',
+    model.lifecycleAt === null ? 'time unknown' : formatTimestamp(model.lifecycleAt),
+  ));
+  rows.appendChild(statusRow(doc, 'Reported health', healthText));
+  rows.appendChild(statusRow(
+    doc,
+    'Health observed',
+    model.healthAt === null ? 'time unknown' : formatTimestamp(model.healthAt),
+  ));
+  rows.appendChild(statusRow(doc, 'Reporting', model.incomplete
+    ? `${model.reportingLabel} (incomplete)`
+    : model.reportingLabel));
+  rows.appendChild(statusRow(doc, 'Last known observation', observationText(model, now)));
+  if (model.healthDetail) rows.appendChild(statusRow(doc, 'Health detail', model.healthDetail));
+  rows.appendChild(statusRow(doc, 'Issue', model.lastError ?? model.issue ?? '—'));
+  if (detailError) {
+    rows.appendChild(statusRow(
+      doc,
+      'Detail error',
+      `${detailError.kind ?? 'error'}: ${detailError.message ?? String(detailError)}`,
+    ));
+  }
+  section.appendChild(rows);
+  root.appendChild(section);
+}
+
+/** The exact plugin-ID match on the already loaded Components page, if any. */
+function loadedListEntry(cockpit, pluginId) {
+  const entries = cockpit.state.components?.page?.entries;
+  if (!Array.isArray(entries)) return null;
+  return entries.find((entry) => entry.plugin_id === pluginId) ?? null;
 }
 
 function renderStatus(doc, section, view) {
@@ -346,21 +474,40 @@ export function render(cockpit) {
   page.appendChild(kv(doc, 'Plugin', pluginId));
 
   const source = snapshot.sources.detail ?? {};
+  const now = snapshot.renderNow ?? cockpit.renderNow ?? Date.now();
   // The page reads the route-pinned page retained by the loader, never the
   // refresher's generic last-success value; a late response for another target
   // is therefore unable to become this page's data.
   const data = cockpit.state.detail?.page ?? null;
-  if (source.error) {
-    if (data) {
-      page.appendChild(staleNotice(doc, source.lastSuccessAt));
+  if (source.error && !data) {
+    // Cold detail failure: keep the route identity and fall back only to an
+    // exact plugin-ID match on the already loaded Components page. Never search
+    // other pages, borrow another component, or invent a generation.
+    const fallback = loadedListEntry(cockpit, pluginId);
+    if (fallback) {
+      renderStatusSummary(doc, page, componentStatusModel(fallback.status), {
+        now,
+        context: 'list-fallback',
+        detailError: source.error,
+        listSourceAt: snapshot.sources.components?.lastSuccessAt ?? null,
+        pluginId,
+      });
     } else {
-      page.appendChild(textNode(doc, 'p', `detail read unavailable: ${source.error.kind}: ${source.error.message}`, 'callout--reload'));
-      return outer;
+      renderStatusSummary(doc, page, componentStatusModel(null), {
+        now,
+        context: 'unknown',
+        detailError: source.error,
+        pluginId,
+      });
     }
+    return outer;
   }
   if (!data) {
     page.appendChild(emptyState(doc, 'Component detail unknown.'));
     return outer;
+  }
+  if (source.error) {
+    page.appendChild(staleNotice(doc, source.lastSuccessAt));
   }
 
   // Registration is a registry fact only. Report-source availability does not
@@ -389,6 +536,13 @@ export function render(cockpit) {
     'component-scope',
   ));
   page.appendChild(hero);
+
+  renderStatusSummary(doc, page, componentStatusModel(data.status), {
+    now,
+    context: source.error ? 'retained-detail' : 'detail',
+    detailError: source.error ?? null,
+    pluginId,
+  });
 
   const model = resolveComponentViews({
     pluginId,

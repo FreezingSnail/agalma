@@ -596,10 +596,10 @@ pub fn driver_page(body: &str) -> String {
 <body><main id="app"></main><pre id="harness-result"></pre>
 <script type="module">
 import {{ startCockpit, Cockpit, boundedText, formatTimestamp, FIELD_TEXT_LIMIT, LIST_ROW_LIMIT, sourceFreshnessModel, runtimeModel, repositoryIdentity, summaryCards, currentWorkModel, costModel, componentPageModel, componentSeverity, deriveAttention, coverageGaps, timelineModel, formatComponentHash }} from '/app.js';
-import {{ DashboardApi, validateOverview, validateComponents, validateFactory, validateControl, ApiError, isExactU64, isAmount }} from '/api.js';
+import {{ DashboardApi, validateOverview, validateComponents, validateFactory, validateControl, validateComponentStatus, ApiError, isExactU64, isAmount }} from '/api.js';
 import {{ Refresher }} from '/refresh.js';
 import {{ ControlPanel, RESUME_CONFIRMATION }} from '/controls.js';
-import {{ timestampModel }} from '/ui.js';
+import {{ timestampModel, componentStatusModel }} from '/ui.js';
 import {{ parseHash, formatHash }} from '/router.js';
 const setResult = (value) => {{ document.getElementById('harness-result').textContent = JSON.stringify(value); }};
 try {{

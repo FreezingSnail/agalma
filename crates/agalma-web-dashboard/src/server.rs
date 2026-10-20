@@ -31,8 +31,9 @@ use agalma_contracts::{
 use agalma_ipc::{
     check_component_id, parse_capability_bindings, plugin_server_info, register_factory_routes,
     register_plugin, CapabilityBindings, ControlAuthority, ControlPlaneReadClient,
-    FactoryRuntimeClient, IpcError, LoopbackListener, RevocableControl, Server, SharedFactoryClient,
-    WebApp, WebHandler, WebRequest, WebResponse, PLUGIN_CAPABILITY_BINDINGS_ENV,
+    FactoryRuntimeClient, IpcError, LoopbackListener, RevocableControl, Server,
+    SharedFactoryClient, WebApp, WebHandler, WebRequest, WebResponse,
+    PLUGIN_CAPABILITY_BINDINGS_ENV,
 };
 use http::StatusCode;
 use serde::Serialize;
@@ -41,7 +42,8 @@ use tokio::sync::Mutex;
 use crate::config::{ConfigError, DashboardConfig};
 use crate::inventory::HEALTH_PAGE;
 use crate::plugin::{DashboardHandler, RuntimeStatus};
-use crate::{PACKAGE_VERSION, PLUGIN_ID, READ_CAPABILITY};
+use crate::reports::{self, ReportObservation, ReportingHandle};
+use crate::{PACKAGE_VERSION, PLUGIN_ID, READ_CAPABILITY, REPORT_PUBLISH_CAPABILITY};
 
 /// Private launch env: the hub capability RPC socket (HP.3 launch channel).
 pub const HUB_SOCKET_ENV: &str = "AGALMA_HUB_SOCKET";
@@ -55,6 +57,9 @@ pub const PLUGIN_CONFIG_PATH_ENV: &str = "AGALMA_PLUGIN_CONFIG_PATH";
 pub const PLUGIN_BINDING_GENERATION_ENV: &str = "AGALMA_PLUGIN_BINDING_GENERATION";
 /// Private launch env: exact installed configuration artifact digest.
 pub const PLUGIN_CONFIG_DIGEST_ENV: &str = "AGALMA_PLUGIN_CONFIG_DIGEST";
+/// Private launch env: the separate `hub.PublishReport` grant. It is never
+/// accepted as a read or control grant.
+pub const PLUGIN_REPORT_GRANT_ENV: &str = "AGALMA_PLUGIN_REPORT_GRANT";
 
 /// The read binding launch inputs. They are private: no value here is copied
 /// into a browser response, a log line, or a health detail.
@@ -66,6 +71,9 @@ pub struct LaunchInputs {
     pub grant: Option<String>,
     /// Capability the grant authorizes.
     pub capability: Option<String>,
+    /// Separate per-launch publication grant. Reporting authority only; it can
+    /// never enable a read or control route.
+    pub report_grant: Option<String>,
     /// Exact path to the hub-installed configuration artifact.
     pub config_path: Option<PathBuf>,
     /// Pinned generation carried by the capability call.
@@ -83,10 +91,11 @@ pub struct LaunchInputs {
 /// The capability families this process can announce. It only ever announces a
 /// subset of these, so an installation approval outside the set would fail the
 /// launcher identity gate rather than be silently dropped.
-const ANNOUNCEABLE_CAPABILITIES: [&str; 3] = [
+const ANNOUNCEABLE_CAPABILITIES: [&str; 4] = [
     CONTROL_PLANE_READ_CAPABILITY,
     FACTORY_READ_CAPABILITY,
     FACTORY_CONTROL_CAPABILITY,
+    REPORT_PUBLISH_CAPABILITY,
 ];
 
 /// Parse a present-but-malformed descriptor as absent (fail closed: no binding
@@ -120,6 +129,7 @@ impl LaunchInputs {
                 .map(PathBuf::from),
             grant: lookup(PLUGIN_GRANT_ENV).filter(|value| !value.is_empty()),
             capability: lookup(PLUGIN_GRANT_CAPABILITY_ENV).filter(|value| !value.is_empty()),
+            report_grant: lookup(PLUGIN_REPORT_GRANT_ENV).filter(|value| !value.is_empty()),
             config_path: lookup(PLUGIN_CONFIG_PATH_ENV)
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from),
@@ -271,8 +281,20 @@ impl ReadSlot {
     }
 }
 
+/// Private per-launch publication authority. Reporting only; it never widens
+/// the read/control capability set.
+#[derive(Clone, Debug)]
+struct ReportAuthority {
+    hub_socket: PathBuf,
+    grant: String,
+}
+
 struct Shared {
     status: Arc<RuntimeStatus>,
+    /// The acknowledged report boundary shared with `plugin.Snapshot`.
+    reporting: Arc<ReportObservation>,
+    /// Present only when the launcher issued the separate report grant.
+    report_authority: Option<ReportAuthority>,
     read: Mutex<ReadSlot>,
     /// The typed factory client (WEB.12), when the private descriptor grants a
     /// `factory.read/v1` binding. One serialized client is the sole path to the
@@ -344,8 +366,15 @@ impl DashboardServer {
         };
 
         let status = Arc::new(RuntimeStatus::new(generation, config_digest));
+        let report_authority = match (launch.hub_socket.clone(), launch.report_grant.clone()) {
+            (Some(hub_socket), Some(grant)) => Some(ReportAuthority { hub_socket, grant }),
+            _ => None,
+        };
+        let reporting = Arc::new(ReportObservation::new());
         let shared = Arc::new(Shared {
             status: status.clone(),
+            reporting,
+            report_authority,
             read: Mutex::new(ReadSlot::new(launch)),
             factory,
             control,
@@ -372,6 +401,31 @@ impl DashboardServer {
     /// The shared readiness observation.
     pub fn status(&self) -> Arc<RuntimeStatus> {
         self.status.clone()
+    }
+
+    /// The acknowledged report boundary shared with the plugin snapshot.
+    pub fn report_observation(&self) -> Arc<ReportObservation> {
+        self.shared.reporting.clone()
+    }
+
+    /// Start the dedicated reporting task when the launcher issued the separate
+    /// publication grant. Reporting failure is a degradation only; it never
+    /// blocks the listener or read path.
+    pub fn start_reporting(
+        &self,
+        socket: &std::path::Path,
+    ) -> Result<Option<ReportingHandle>, String> {
+        let Some(authority) = self.shared.report_authority.as_ref() else {
+            return Ok(None);
+        };
+        reports::start_reporting(
+            socket,
+            authority.hub_socket.clone(),
+            authority.grant.clone(),
+            self.status.clone(),
+            self.shared.reporting.clone(),
+        )
+        .map(Some)
     }
 
     /// Establish (or report the failure of) the hub read binding.
@@ -823,7 +877,22 @@ pub async fn run(
     let server = DashboardServer::start(config, launch).await?;
     server.warm_binding().await;
 
-    let handler = Arc::new(DashboardHandler::new(server.status(), announced.clone()));
+    // Reporting starts after the initial read-binding observation so the first
+    // sealed sample reflects the real listener/binding facts. A state or grant
+    // failure degrades reporting only and never blocks READY or serving.
+    let reporting = match server.start_reporting(&socket) {
+        Ok(reporting) => reporting,
+        Err(detail) => {
+            eprintln!("agalma-web-dashboard: reporting degraded: {detail}");
+            None
+        }
+    };
+
+    let handler = Arc::new(DashboardHandler::new(
+        server.status(),
+        announced.clone(),
+        server.report_observation(),
+    ));
     let mut plugin = Server::new(plugin_server_info(PLUGIN_ID, PACKAGE_VERSION, announced));
     register_plugin(&mut plugin, handler);
 
@@ -837,6 +906,9 @@ pub async fn run(
         server
             .status()
             .listener_unavailable("plugin RPC server unavailable");
+        if let Some(reporting) = reporting {
+            reporting.shutdown().await;
+        }
         server.shutdown().await;
         serve_task.abort();
         let _ = serve_task.await;
@@ -883,6 +955,11 @@ pub async fn run(
 
     match rpc_result {
         None => {
+            // Cancel and join the reporter first; any pending publication stays
+            // durable and is replayed by the next launch of this same binding.
+            if let Some(reporting) = reporting {
+                reporting.shutdown().await;
+            }
             server.shutdown().await;
             serve_task.abort();
             let _ = serve_task.await;
@@ -893,6 +970,9 @@ pub async fn run(
             server
                 .status()
                 .listener_unavailable("plugin RPC server unavailable");
+            if let Some(reporting) = reporting {
+                reporting.shutdown().await;
+            }
             server.shutdown().await;
             let _ = std::fs::remove_file(&socket);
             Err(DashboardError::RpcServe)

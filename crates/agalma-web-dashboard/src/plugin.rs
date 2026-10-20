@@ -21,6 +21,7 @@ use agalma_contracts::{
 use agalma_ipc::{PluginHandler, PluginIdentity, PLUGIN_API, PLUGIN_PROTOCOL_MAJOR};
 use serde_json::Value;
 
+use crate::reports::ReportObservation;
 use crate::{PACKAGE_VERSION, PLUGIN_ID};
 
 /// A point-in-time view of the two readiness facts.
@@ -172,18 +173,25 @@ impl RuntimeStatus {
 pub struct DashboardHandler {
     status: Arc<RuntimeStatus>,
     capabilities: Vec<String>,
+    reporting: Arc<ReportObservation>,
 }
 
 impl DashboardHandler {
-    /// Wrap the shared runtime status and the announced capability set.
+    /// Wrap the shared runtime status, the announced capability set and the
+    /// acknowledged report boundary shared with the reporting task.
     ///
     /// The announced set is the launcher-issued capability descriptor (or the
     /// legacy single grant). It never contains a capability the hub did not
     /// grant this launch.
-    pub fn new(status: Arc<RuntimeStatus>, capabilities: Vec<String>) -> Self {
+    pub fn new(
+        status: Arc<RuntimeStatus>,
+        capabilities: Vec<String>,
+        reporting: Arc<ReportObservation>,
+    ) -> Self {
         Self {
             status,
             capabilities,
+            reporting,
         }
     }
 }
@@ -218,12 +226,16 @@ impl PluginHandler for DashboardHandler {
     }
 
     fn snapshot(&self) -> Result<Value, ContractError> {
+        // Only the acknowledged boundary is observable. A sealed but
+        // unacknowledged sample never appears here, and a successful
+        // publication never changes listener/binding facts.
+        let observed = self.reporting.observed();
         let mut snapshot = PluginSnapshot {
             format: PLUGIN_SNAPSHOT_FORMAT.to_string(),
             plugin_id: PLUGIN_ID.to_string(),
             binding: self.status.binding_pin(),
-            watermark: 0,
-            snapshots: Vec::new(),
+            watermark: observed.watermark,
+            snapshots: observed.entry().into_iter().collect(),
             snapshot_digest: String::new(),
         };
         snapshot.snapshot_digest = snapshot.recomputed_snapshot_digest()?;

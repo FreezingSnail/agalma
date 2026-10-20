@@ -769,6 +769,114 @@ reasons, real queue pagination and historical spend charts. Those need separate
 scope and data-contract checks. This task introduces no new backend API, report
 payload semantics, plugin-specific UI integration or automatic factory behavior.
 
+## Existing-component status MVP (2026-10-19)
+
+The next delivery is `agalma-51dg.12`: useful status for components the hub
+already knows. The richer owner-reporting rollout below remains follow-up.
+Packaging every builtin, snapshot recovery, and per-owner payloads are not
+prerequisites for this milestone. Native bead fields own implementation details.
+
+### Product outcome
+
+The Components list shows name, observed lifecycle, reported health, reporting
+state, last known observation, and a short issue. Each name opens the same
+generic detail layout: identity, lifecycle and health separately, source/time,
+report availability, and error explanation. Binding/schema/raw-envelope material
+stays in an expandable diagnostics section. Existing declared views still render
+below the status summary; no custom component pages or collectors are added.
+
+Unknown health is neutral `Unknown`; absent report data says `Not reporting`.
+Stale observations show their original value/time with a visible stale label,
+never an unqualified healthy badge. A registered builtin without a supervised
+generation says `Embedded component; lifecycle not observed` when that is all
+the hub knows. A socket, configured desired state, placeholder `Ready`, or mere
+registration cannot establish health. No new Execution identity is invented.
+
+### Shared status projection
+
+Add an optional `status` object to both `ComponentSummary` and `ReadComponent`.
+It is a hub read projection, not a plugin report. Its fields are:
+
+- `origin`: `built-in` or `discovered`;
+- `generation`: nullable `ExactU64`, distinct from legacy synthetic binding zero;
+- `desired`: nullable `running` or `stopped`, explicitly labelled desired;
+- `lifecycle`: nullable existing registry lifecycle vocabulary;
+- `lifecycle_source`: `live-registry` or `none`;
+- `lifecycle_observed_at_unix_ms`: nullable `ExactU64`;
+- `health`: nullable existing `HealthState`, from an actual matching heartbeat;
+- `health_observed_at_unix_ms`: nullable `ExactU64`;
+- `health_detail` and `last_error`: nullable bounded text;
+- `reporting`: `fresh`, `stale`, `unavailable`, or `unknown`;
+- `incomplete`: boolean, from the report view when present.
+
+Use closed typed vocabularies for new discriminator fields. Missing `status`
+decodes as unknown for compatibility with old fixtures/responses. Existing
+health/availability fields retain their legacy wire semantics; the new UI uses
+the evidence-bearing status object and never falls back to legacy inferred
+health. Check all new fields in the browser API validator, preserving exact
+integer strings and existing text/page bounds. Strict older Rust readers may
+reject added fields: deploy the matching hub/dashboard build together; this
+increment makes no rolling-version compatibility claim.
+
+Carry raw supervisor observations, desired state, timestamps and error through
+`ProjectedComponent` before the existing heartbeat-to-lifecycle refinement.
+`project_live_entry` supplies that evidence only for an actual supervised
+generation; generation-less builtin placeholders have no lifecycle evidence.
+The durable fallback supplies identity/configuration/desired state, but no
+invented live lifecycle or timestamp. Report health remains independent of
+lifecycle. A live failed/retired lifecycle is prominent even if an earlier
+heartbeat said Ready; it never becomes an overall healthy component.
+
+Read report health only from the view matching the selected plugin and binding
+generation. A mismatched, incomplete or unavailable view cannot qualify as
+current healthy. No heartbeat means null health, not lifecycle-derived health.
+Preserve actual observation times; request time is not observation time.
+Use one status projection helper for list/detail so their semantics agree.
+Include status fields in collection revision identity so pagination cannot
+silently splice changed observations.
+
+### Production path and failure behavior
+
+Existing flow remains browser API -> dashboard same-origin adapter -> authorized
+ControlPlaneRead routing -> component snapshot/live overlay and ReportIngestor.
+`ReadComponent` returns its status even when report entries are missing. Keep
+registry/report source metadata independent and preserve HTTP errors for actual
+binding/transport failures. Do not turn a failed read into synthetic success.
+
+On a detail HTTP failure, keep the route identity, show the error and any last
+successful detail with its stale notice. Without retained detail, use only an
+exact plugin-ID match in the already loaded Components page, labelled as a
+previous list observation with its source freshness/time. Do not search all
+pages or add a second polling loop. With neither source, show status unknown
+and keep navigation usable. Never borrow another component's status. Explicit
+registry Missing means not registered; unreadable/unknown is not absence.
+Existing route epochs, cancellation and opaque cursor rules still apply.
+
+### Scope, verification and activation
+
+One implementation task owns the shared contract, hub projection, browser API
+validation and generic list/detail rendering, with affected fixtures and focused
+tests. No dependency on `agalma-z571`: the current live host overlay is already
+present. Durable fallback must remain honest about unknown lifecycle; if testing
+reveals an installed identity is actually hidden on the selected production
+path, stop and report that concrete projection defect before widening scope.
+
+Acceptance covers actual routed list/detail reads and actual compiled browser
+assets, healthy/degraded/failed/unknown states, absent and stale reports, exact
+generation identity, direct links, retained and cold failures, route races,
+inert bounded text, and desktop/mobile appearance. Deterministic generated
+cases cover evidence combinations and navigation/failure sequences. Save logs,
+commands, source identity and screenshots in the task's persistent artifact
+root. Rich unknown-plugin installation/restart/recovery acceptance remains in
+CW.10 and is not claimed by this increment.
+
+Planning does not dispatch implementation or restart the running cockpit.
+After code delivery, activation is a separate operational step: identify the
+running owner/launch command and pending activity, build through the root
+Makefile, and arrange an authorized coordinated restart of the matching hub and
+dashboard. Verify the displayed component statuses at the actual dashboard URL;
+merged source alone is not proof the running UI changed.
+
 ## Component views rollout (2026-10-19)
 
 Proposed design for epic `agalma-51dg`, requested after the operator inspected

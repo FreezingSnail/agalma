@@ -262,6 +262,21 @@ Delivery update: UI.3 `agalma-82f.8` merged at `c95a893`; production detail
 repair `agalma-82f.9` merged at `cc47696`. The former planned gate is resolved;
 both tasks are closed. Their native records retain review and evidence paths.
 
+## Status MVP priority amendment (2026-10-19)
+
+Next milestone: `agalma-51dg.12`, useful status from existing trustworthy hub
+observations. Specification: [Existing-component status MVP](web-dashboard-design.md#existing-component-status-mvp-2026-10-19).
+The native bead owns the bounded implementation handoff and acceptance.
+Planning is prepared; implementation is not dispatched by this amendment.
+
+CW.0-CW.3 (`agalma-51dg.1` through `.4`) are delivered. CW.4-CW.10 (`.5` through
+`.11`) remain richer reporting/recovery follow-up with their existing acceptance
+and dependencies. Packaging and snapshot recovery do not gate status MVP;
+`agalma-z571` is not a blanket prerequisite. The historical table below records
+the original rollout, not the next dispatch order or current gate status.
+The user's instruction to omit separate review sessions remains in force for
+this epic; implementation acceptance checks still apply.
+
 ## CW component views plan (2026-10-19)
 
 Epic `agalma-51dg` plans component-owned reports and a generic browser renderer.

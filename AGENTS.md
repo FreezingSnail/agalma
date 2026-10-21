@@ -41,8 +41,9 @@ factory's runtime routing table, task-release authority, or promotion policy.
   another attempt. Diagnosis does not waive acceptance or authorize extra spend.
 - For routine fixes, use one short handoff: outcome, owned files, acceptance
   checks, scope/effort limits, and stopping condition. Dispatch directly to an
-  explicitly selected, advertised implementation agent using Flash; no
-  coordinator, child agents, or decomposition for a single bounded fix. Keep
+  explicitly selected project agent `agalma` using Flash, after confirming it is
+  advertised; no coordinator, child agents, or decomposition for a single bounded
+  fix. Keep
   routine review in a separate Flash session. Use existing tools and fixtures;
   new harnesses, policy generators, and independent prerequisites require separate
   scope agreement. Mechanical fixture updates alone do not justify new tooling.

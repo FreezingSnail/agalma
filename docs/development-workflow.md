@@ -138,12 +138,18 @@ apply; this diagnosis is not a new automatic release gate.
 
 ### Gangway dispatch and resume
 
-`agents/opencode-worker.md` is the portable direct-worker prompt. Where the global
-OpenCode configuration loads `~/.config/opencode/agent/slugineer.md` as both default
-agent and global instructions, install this prompt at that path to remove the
-legacy coordinator and foreign-project rules. Keep provider/permission settings
-intact. Loaded sessions retain old instructions: reconcile outstanding operations
-before an operator reloads OpenCode, then select the advertised agent explicitly.
+`.opencode/agents/agalma.md` defines Agalma's direct Flash worker; the project
+`opencode.jsonc` selects `agalma` as its default. Dispatch with `agent: "agalma"`
+explicitly after checking availability. Preserve the global Slugineer agent and
+default for other projects; never install Agalma's prompt over Slugineer's file.
+
+If `~/.config/opencode/opencode.jsonc` lists
+`~/.config/opencode/agent/slugineer.md` in global `instructions`, remove only that
+entry. It injects Slugineer into every agent, including Agalma. Leave the Slugineer
+agent file, global `default_agent`, and provider/permission settings intact.
+Selecting a project agent alone does not eliminate global instruction injection.
+Loaded sessions retain old instructions: reconcile outstanding operations before
+an operator reloads OpenCode, then confirm the effective Agalma agent and prompt.
 Do not restart the factory as part of an instruction update.
 
 Use Gangway's advertised tool schemas; source installation alone does not prove

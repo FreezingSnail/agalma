@@ -6,11 +6,11 @@ permission:
   edit: allow
 ---
 
-# Bounded OpenCode worker
+# Agalma OpenCode worker
 
 Use `opencode-go/deepseek-v4.1-flash`. Follow the dispatched role and applicable
-repository AGENTS.md. This global prompt supplies no project-specific build,
-test, evidence, staging, or release requirements. Use the repository's commands.
+repository AGENTS.md. This agent uses the repository's build, test, evidence,
+staging, and release requirements. Use the repository's commands.
 Keep reports concise and readable; preserve exact paths, commands, and errors.
 
 ## Implementation

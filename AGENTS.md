@@ -16,7 +16,8 @@ factory's runtime routing table, task-release authority, or promotion policy.
   When authorized by the user, Luna Codex subagents may draft or revise bounded
   planning fields under Sol review. That delegation grants no implementation,
   release, spending, or promotion authority.
-- All code implementation goes to GPT-6 Luna or DeepSeek Flash through OpenCode.
+- All code implementation goes to `opencode-go/deepseek-v4.1-flash` through OpenCode.
+  Do not dispatch Luna through OpenCode.
   This includes source, implementation tests, scripts, build configuration,
   generated code, debugging helpers, and small fixes. Sol specifies the change;
   DeepSeek Flash reviews routine implementation work, while Sol reviews
@@ -26,7 +27,7 @@ factory's runtime routing table, task-release authority, or promotion policy.
 - Discuss architecture, scope, and tradeoffs with the user before implementation.
   Carry accepted decisions forward without repeatedly asking for confirmation.
   Do not expand the agreed scope or introduce a new framework during repair.
-- Use this cycle: discuss -> Sol prepares a bounded bead -> Luna/Flash implements
+- Use this cycle: discuss -> Sol prepares a bounded bead -> Flash implements
   and tests -> DeepSeek Flash reviews routine work (Sol reviews high-difficulty
   work) -> the implementer repairs findings -> close when the agreed acceptance
   is satisfied.
@@ -38,6 +39,23 @@ factory's runtime routing table, task-release authority, or promotion policy.
   accepted scope. After two unsuccessful repair rounds, Sol diagnoses missing
   design, missed requirements, implementation defects, or scope changes before
   another attempt. Diagnosis does not waive acceptance or authorize extra spend.
+- For routine fixes, use one short handoff: outcome, owned files, acceptance
+  checks, scope/effort limits, and stopping condition. Dispatch directly to an
+  explicitly selected, advertised implementation agent using Flash; no
+  coordinator, child agents, or decomposition for a single bounded fix. Keep
+  routine review in a separate Flash session. Use existing tools and fixtures;
+  new harnesses, policy generators, and independent prerequisites require separate
+  scope agreement. Mechanical fixture updates alone do not justify new tooling.
+- Reassess routine work at about 15 minutes of elapsed effort or after the first
+  repair round, whichever comes first. Identify the cause and a bounded next step
+  before continuing; stop expansion for scope agreement when needed. This is a
+  scope checkpoint, not permission to skip acceptance, grant spend, or retry
+  indefinitely. Carry the checkpoint across session resumes.
+- Reviews block on concrete acceptance failures, regressions, or contract
+  violations. Preferences and unrelated improvements are nonblocking follow-up
+  suggestions. After approval, the same Flash implementer owns commit, authorized
+  merge, clean worktree/cache removal, and bead closure; do not add a new planning
+  or verification phase. Report any unavailable delivery authority or route.
 - Update beads at meaningful transitions: started, blocked, ready for review,
   changes requested, and delivered. Ordinary tool calls stay in session/run
   logs. Keep one current handoff; reuse automatically retained test evidence.
@@ -66,7 +84,7 @@ factory's runtime routing table, task-release authority, or promotion policy.
   reviewed documentation and instructions.
 - Stamp bd authorship: a model session that creates or updates a bead passes
   `--actor <model-id>` (or exports `BEADS_ACTOR`), using its canonical model ID
-  such as `opencode-go/gpt-6-luna` or `opencode-go/deepseek-v4.1-flash`. The
+  such as `gpt-6-sol` or `opencode-go/deepseek-v4.1-flash`. The
   authoring model is the recorded author; never let the default git/shell
   identity stand in for it.
 - Stamp bd closure with the implementation model: the close reason includes
@@ -157,17 +175,17 @@ factory's runtime routing table, task-release authority, or promotion policy.
 - Required cases must execute; a missing executable, a skipped required case,
   or a zero-case selection is not a pass. Keep partial, interrupted, and complete
   results distinct. Claim only the behavior covered by the recorded evidence.
-- Every behavioral implementation or repair includes property tests for its
-  changed invariants, alongside concrete regression cases. Define the property
-  independently of the implementation and exercise generated inputs or operation
-  sequences, including invalid inputs and boundary cases. For durable execution,
-  cover applicable retry, duplicate delivery, cancellation, and restart invariants.
-  Save the generators and assertions as repository tests; record the case budget,
-  seed or deterministic generation scheme, and any failing/minimized input so it
-  can be replayed. Do not substitute random examples or assertions that duplicate
-  implementation logic. Reuse existing test infrastructure; a new dependency or
-  framework requires an explicit design decision. Documentation-only changes need
-  content review rather than executable property tests.
+- Scale verification to changed behavior and risk. Focused existing regressions
+  or table-driven precedence, fallback, and error cases normally suffice for a
+  local config/path change; do not require a new generator or fixed case quota.
+  Require property tests when a named changed invariant warrants generated inputs
+  or operation sequences, especially recovery, concurrency, accounting, or
+  authorization. Existing tests can satisfy that requirement. Define properties
+  independently of the implementation; retain required generators, replay seeds
+  or deterministic generation, case budgets, and failing inputs. Reuse existing
+  infrastructure; new frameworks or dependencies need explicit design agreement.
+  Frozen acceptance and protected promotion requirements remain mandatory.
+  Documentation-only changes need content review and whitespace checks.
 - Bound failure investigation to one reproducible example and a stated stopping
   condition. Turn a larger environment or build problem into a separate bounded
   implementation task instead of repeatedly sampling, rebuilding, or retrying.
@@ -178,7 +196,8 @@ factory's runtime routing table, task-release authority, or promotion policy.
   scheduled for removal, and include its absolute path in the handoff.
 - Save every new test, generator, and regression fixture in the task's reviewed
   repository changes. Retain raw logs, exact commands/environment, source revision
-  and pending change identity, seeds, results, and fixture data for every test run,
+  and pending change identity, results, and applicable replay seeds and fixture
+  data for every test run,
   including passing, failed, and interrupted runs. Keep run outputs separate so
   retries cannot overwrite earlier evidence. Use ScratchDir retention APIs where
   needed; automatic fixture cleanup must not discard required run evidence.
@@ -186,8 +205,10 @@ factory's runtime routing table, task-release authority, or promotion policy.
   artifacts remain at the recorded persistent root. Do not delete test evidence
   without explicit user direction.
 - Prefer existing tools and native commands. Recurring executable logic belongs
-  in a reusable repository tool implemented by Luna/Flash. Sol does not write
-  disposable Python or shell helpers for logging, counting, hashing, or handoffs.
+  in a reusable repository tool implemented by Flash. Do not turn a one-off
+  configuration or inspection step into a reusable tool merely to satisfy this
+  rule. Sol does not write disposable Python or shell helpers for logging,
+  counting, hashing, or handoffs.
 - Keep raw logs, exact commands, exit status, and one concise handoff. Do not
   create overlapping receipts for routine verification. Preserve stronger
   immutable evidence where a versioned acceptance or promotion contract requires

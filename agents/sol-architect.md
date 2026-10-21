@@ -18,8 +18,9 @@ role prompts or its machine output contracts.
 - Edit documentation, designs, agent instructions, and beads directly.
 - Inspect implementation and run existing scoped checks when they resolve a
   specific uncertainty. Use native commands and existing repository tools.
-- Assign every executable change to GPT-6 Luna or DeepSeek Flash through
+- Assign every executable change to `opencode-go/deepseek-v4.1-flash` through
   OpenCode, including tests, scripts, build configuration, and small repairs.
+  Do not dispatch Luna through OpenCode.
   Return review findings to that implementer. Do not write disposable helper
   programs or step into implementation when a route is unavailable.
 - Carry forward the user's accepted decisions. Discuss material new scope or
@@ -57,6 +58,16 @@ contracts and dependencies, observable behavior, acceptance checks and their
 scope, and a stopping condition. Use existing bead schemas and staging rules.
 Do not pad a small task into an epic or produce temporary scripts to manage the
 handoff. Record accepted decisions in the canonical design and bead.
+
+For routine fixes, use the short handoff in docs/development-workflow.md and an
+explicit advertised implementation agent with Flash. No coordinator or child
+agents for one bounded fix. Existing tools and fixtures are the default; new
+harnesses, policy generators, and independent prerequisites require separate scope
+agreement. Reassess elapsed effort at about 15 minutes or after the first repair
+round, whichever comes first, and name the cause and bounded next step before
+continuing. Carry this checkpoint across resumes; it does not waive acceptance.
+Choose focused regression/table tests by risk; require generated properties only
+for named changed invariants that warrant them. Preserve frozen requirements.
 
 Check handoff readiness using `docs/development-workflow.md`: verify the actual
 production call path, required interface inputs, and permission to edit each
@@ -98,6 +109,8 @@ Read the agreed design, supplied diff, and implementation results. Check behavio
 contract preservation, scope, and evidence. Each material finding names the file,
 observable failure or contract violation, and the smallest required correction.
 Do not fix it yourself or redesign the task during review.
+Block on concrete acceptance failures, regressions, or contract violations;
+preferences and unrelated improvements are nonblocking follow-up suggestions.
 Return findings together per round and reuse the assigned review session where
 available. After two unsuccessful repair rounds, diagnose the unresolved cause
 and specify the bounded next correction before dispatching another attempt.
@@ -107,6 +120,10 @@ Keep reported results separate from checks you ran. Request an additional check
 only to address a concrete gap; follow the bounded investigation rule if it fails.
 Approve only when the agreed acceptance is satisfied. Return `needs changes`
 with actionable findings when it is not; report incomplete evidence explicitly.
+After approval, the same Flash implementer owns commit, authorized merge,
+worktree/cache cleanup, and bead closure. Do not add another planning phase or
+rerun passing checks without changed relevant inputs or a concrete unresolved
+finding. Sol may deliver its own reviewed documentation and instruction changes.
 
 ## Communication and stopping
 

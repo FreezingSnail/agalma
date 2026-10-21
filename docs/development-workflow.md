@@ -6,7 +6,7 @@ original snapshots and hashes; this amendment does not reseal those inputs.
 
 ## Responsibilities
 
-| Work | Sol | GPT-6 Luna / DeepSeek Flash through OpenCode |
+| Work | Sol | DeepSeek Flash through OpenCode |
 |---|---|---|
 | Architecture | Discuss tradeoffs; define boundaries and contracts | Implement the accepted design |
 | Planning | Maintain designs and bounded beads with clear acceptance | Execute the assigned bead |
@@ -23,14 +23,43 @@ repository prompt, not a newly registered runtime model route.
 
 1. Discuss the outcome, architecture, and material tradeoffs with the user.
 2. Sol records the accepted design and prepares one bounded implementation bead.
-3. Luna or Flash implements through OpenCode and runs the agreed checks.
+3. `opencode-go/deepseek-v4.1-flash` implements through OpenCode and runs the
+   agreed checks. Do not dispatch Luna through OpenCode.
 4. DeepSeek Flash reviews routine work in an independent session; Sol reviews
    high-difficulty work or when explicitly requested. The assigned reviewer
    returns one consolidated blocking-findings list against accepted scope.
-5. After review approval, commit only the task's accepted files or hunks, close
-   when acceptance is satisfied, and leave one concise handoff including the
+5. After review approval, the same Flash implementer commits only the task's
+   accepted files or hunks, performs the authorized merge and clean worktree/cache
+   removal, and closes the bead when acceptance is satisfied. Leave one concise
+   handoff including the
    commit ID. Preserve unrelated and unreviewed edits; report an ownership overlap
    if it prevents a clean task commit. Sol may commit reviewed documentation.
+
+### Routine fixes
+
+Use one bead and a short handoff naming outcome, owned files, acceptance checks,
+scope/effort limits, and stopping condition. An explicit small-fix request supplies
+its scope; discuss only material new decisions. Select an advertised implementation
+agent explicitly and dispatch directly with Flash. Do not introduce a coordinator,
+child agents, or decomposition for a single bounded fix. Use a separate Flash
+session for a short review of the diff and existing evidence.
+
+Implement the requested behavior using existing tools and fixtures. New harnesses,
+policy generators, and independent prerequisites require separate scope agreement;
+do not bundle them into a repair. Updating affected existing fixtures is ordinary
+implementation, not a reason to build new tooling.
+
+At about 15 minutes of elapsed effort or after the first repair round, whichever
+comes first, reassess scope and identify the cause of delay and a bounded next
+step. Carry elapsed effort across resumes. Stop expansion for scope agreement when
+needed; the checkpoint does not waive correctness or authorize additional spending.
+
+Review findings must identify concrete acceptance failures, regressions, or contract
+violations and the smallest correction. Preferences and unrelated improvements are
+nonblocking follow-ups. After approval, continue delivery in the same implementer
+session without another planning phase or repeated passing checks unless relevant
+inputs changed. Report a missing delivery permission or route rather than silently
+transferring ownership. Documentation/instruction edits remain within Sol's remit.
 
 Each implementation handoff needs the goal and relevant context, owned files,
 contracts and dependencies, observable before/after behavior, acceptance scope,
@@ -65,14 +94,11 @@ Before review, the implementer maps each critical requirement to its code
 location and executed check, and identifies unresolved items in the existing
 concise handoff. Do not create a separate coverage receipt.
 
-Apply this preparation as tasks approach dispatch. Preserve active repair scope
-and existing ownership. For the next three implementation handoffs prepared this
-way, record repair round and finding category in existing bead notes: missing
-design, missed explicit requirement, implementation defect, or changed scope.
-Use existing session/run timestamps to report elapsed time only where available;
-session counts alone do not measure time spent.
-After the third handoff, summarize the observed repair patterns from those notes
-and whether further handoff or model-route changes are justified by the evidence.
+Apply preparation in proportion to the task's risk as it approaches dispatch;
+the short routine-fix handoff is sufficient when no material interface or authority
+decision is unresolved. Preserve active repair scope and existing ownership. Use
+existing session/run timestamps when reporting elapsed time; session counts alone
+do not measure time spent. No separate handoff metrics report is required.
 
 Implementation and repairs use a named Git worktree and task branch, retained
 across attempts. Record the bead, worktree path, branch, and base commit before
@@ -112,12 +138,25 @@ apply; this diagnosis is not a new automatic release gate.
 
 ### Gangway dispatch and resume
 
+`agents/opencode-worker.md` is the portable direct-worker prompt. Where the global
+OpenCode configuration loads `~/.config/opencode/agent/slugineer.md` as both default
+agent and global instructions, install this prompt at that path to remove the
+legacy coordinator and foreign-project rules. Keep provider/permission settings
+intact. Loaded sessions retain old instructions: reconcile outstanding operations
+before an operator reloads OpenCode, then select the advertised agent explicitly.
+Do not restart the factory as part of an instruction update.
+
 Use Gangway's advertised tool schemas; source installation alone does not prove
 the loaded endpoint exposes new fields. If `requestID` is absent, report the
 capability mismatch and arrange a safe plugin/client reload. Do not restart a
 service with active work or silently treat legacy dispatch as retry-safe.
 
-1. Dispatch with an explicit model, directory, and `requestID`. Make IDs unique
+1. Dispatch with an explicit advertised agent, model, directory, and `requestID`.
+   Inspect advertised capabilities and agent availability first; do not assume a
+   worker name exists or accept a coordinator default. Use Flash for implementation
+   and independent routine review. Check loaded global instructions for conflicting
+   delegation, verification, or delivery rules before dispatch; selecting another
+   agent does not remove global instructions. Make IDs unique
    across repositories, beads, roles, and operations, for example
    `agalma:<repo-key>:<bead>:builder:initial` and `...:builder:repair-1`.
    Retain the returned session/request handles in the current bead handoff.
@@ -313,18 +352,23 @@ Keep artifacts in established repository directories. Do not repeatedly create
 fresh temp checkouts, build caches, or disposable Python programs to repeat the
 same logging, counting, hashing, or handoff work. Use native commands for ordinary
 inspection; recurring executable logic belongs in a reusable repository tool
-implemented by Luna/Flash. Ephemeral data is not a reason to build another tool.
+implemented by Flash. Ephemeral data is not a reason to build another tool.
 
-Behavioral changes require property tests with independent invariant assertions,
-generated inputs or operation sequences, bounded case counts, and reproducible
-seeds or deterministic generation. Include applicable invalid/boundary inputs and
-recovery/idempotency properties. Persist failing inputs and retain concrete
-regression cases. Reuse existing infrastructure; dependency/framework additions
-require an explicit design decision. Documentation-only changes need content review.
+Choose tests by changed behavior and risk, following docs/testing-strategy.md.
+Focused existing regressions or table-driven cases normally suffice for local
+config/path changes. Require properties for named changed invariants that warrant
+generated inputs or sequences, especially recovery, concurrency, accounting, or
+authorization; do not impose a new generator or fixed quota on every fix. Reuse
+existing properties where sufficient. Required properties use independent
+assertions, bounded case budgets, and replayable seeds or deterministic generation.
+Persist failing inputs and concrete regressions. New dependencies/frameworks require
+explicit design agreement. Frozen acceptance and protected checks remain mandatory.
+Documentation-only changes need content review and whitespace checks.
 
 Retain evidence for every run under `target/test-runs/<bead-id>/<run-id>/` at a
 recorded persistent root: exact commands/environment, source identity, raw logs,
-exit status, case budgets/seeds, results, and fixture data. Passing and interrupted
+exit status, results, and applicable replay seeds, case budgets, and fixture data.
+Passing and interrupted
 runs are retained too. Use ScratchDir's retention APIs where necessary; never
 overwrite prior runs or delete evidence without explicit user direction. Delivery
 includes all new test sources, generators, and fixtures; worktree removal requires
@@ -334,6 +378,11 @@ Run focused checks first. Broaden to full acceptance once when the task requires
 it or a concrete integration risk justifies it. After checks pass, repeat only
 for relevant changes or unresolved concerns. Documentation-only amendments need
 link/content review and whitespace checks, not a Cargo suite.
+
+For routine work, existing runner/session logs, exit status, source identity, and
+one concise handoff are sufficient. Do not create custom receipt tools or duplicate
+reports; add metadata or retained fixture data only where needed for replay or a
+named acceptance contract. Preserve existing logs and stronger immutable evidence.
 
 Keep one handoff with the bead, files changed, commands, results, raw log paths,
 remaining uncertainty, and next action. Separate reported evidence from checks

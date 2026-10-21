@@ -18,25 +18,37 @@ Each bounded bead or handoff records:
 - The chosen scope, concurrency budget, and stopping condition.
 - A named implementation worktree/task branch, base commit, and persistent
   artifact root outside any worktree scheduled for removal.
-- Changed invariants, required property tests, generation/case budget, and replay
-  strategy. Property tests complement concrete regression and boundary tests.
+- For required property tests, name the changed invariant, generation/case budget,
+  and replay strategy. Use the routine-fix handoff in development-workflow.md for
+  small changes; record only applicable prerequisites and resource conflicts.
 
 Start with the regression test for the changed behavior, then affected consumer
 tests. A source filename alone is insufficient to decide coverage: changes to a
 shared contract can require tests in several consuming crates. Missing coverage
 requires a meaningful test in the implementation task.
 
-Every behavioral change includes saved property tests that assert independent
-invariants over generated inputs or operation sequences. Use reproducible seeds
-or deterministic generation and bounded case counts. Preserve failing/minimized
-inputs as regression fixtures. Reuse existing infrastructure; this requirement
-does not authorize a new test framework or dependency.
+Scale verification to changed behavior and risk. Focused existing regressions or
+table-driven precedence, fallback, and error cases normally suffice for a local
+config/path change. Add a meaningful regression where coverage is missing; do not
+require a new generator or fixed case quota for every behavioral change.
+
+Require property tests when a named changed invariant warrants generated inputs
+or operation sequences, especially recovery/idempotency, concurrency, accounting,
+or authorization. Existing properties can satisfy that requirement. Required
+properties assert independent invariants, use reproducible seeds or deterministic
+generation and bounded case budgets, and preserve failing/minimized inputs.
+Reuse existing infrastructure; new test frameworks or dependencies require an
+explicit design decision. Frozen acceptance and protected checks are unaffected.
 
 Implementation and repairs reuse a named Git worktree. Save all test sources,
 generators, and regression fixtures in the reviewed changes. Retain every run's
-logs, command/environment, source identity, seeds, results, and fixture data under
+logs, command/environment, source identity, results, and applicable replay seeds
+and fixture data under
 `target/test-runs/<bead-id>/<run-id>/` at the recorded persistent root, including
 passing and interrupted runs. Use existing ScratchDir retention APIs as needed.
+For routine tasks, use existing runner/session logs and one concise handoff;
+do not build custom receipts or duplicate reports. Retain additional fixture data
+and replay metadata when required for reproduction or a named acceptance contract.
 Evidence must survive worktree removal and is never deleted without explicit user
 direction. After reviewed task changes are committed and merged into `main`,
 remove the clean task worktree as part of delivery, following the evidence checks

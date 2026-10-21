@@ -876,6 +876,7 @@ fn watch_runtime_starts_supervises_and_drains_on_sigterm() {
         .env("AGALMA_ACTIVITY_MODE", "scripted")
         .env("AGALMA_LEDGER_TRANSPORT", "in-process")
         .env("AGALMA_TASKQUEUE_TRANSPORT", "in-process")
+        .env("XDG_CONFIG_HOME", config_home(&state))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -1313,6 +1314,7 @@ fn legacy_empty_work_once_still_succeeds_while_watch_is_rejected() {
         .env("AGALMA_ACTIVITY_MODE", "scripted")
         .env("AGALMA_LEDGER_TRANSPORT", "in-process")
         .env("AGALMA_TASKQUEUE_TRANSPORT", "in-process")
+        .env("XDG_CONFIG_HOME", config_home(&state))
         .output()
         .expect("work --once");
     assert!(
@@ -2394,15 +2396,20 @@ fn watch_protected_entry(task_id: &str, repository_root: &str, base_sha: &str) -
     }
 }
 
+/// Isolated XDG config base for a scratch fixture.
+fn config_home(state_dir: &Path) -> PathBuf {
+    state_dir.parent().expect("state parent").join("xdg-config")
+}
+
 fn write_watch_protected_inputs(state_dir: &Path, entries: Vec<ProtectedEntry>) {
     let inputs = ProtectedInputs {
         format: PROTECTED_INPUTS_FORMAT.to_string(),
         entries,
     };
     let bytes = serde_json::to_vec(&inputs).expect("serialize protected inputs");
-    std::fs::create_dir_all(state_dir).expect("state dir");
-    let state_dir = std::fs::canonicalize(state_dir).expect("canonical state dir");
-    std::fs::write(state_dir.join("protected-inputs.json"), bytes).expect("write protected inputs");
+    let dir = config_home(state_dir).join("agalma");
+    std::fs::create_dir_all(&dir).expect("config dir");
+    std::fs::write(dir.join("protected-inputs.json"), bytes).expect("write protected inputs");
 }
 
 #[test]
@@ -2486,6 +2493,7 @@ fn watch_signal_drains_at_a_cooperative_boundary_during_active_execution() {
         .env("AGALMA_SCRIPTED_BUILD_SLEEP_MS", "3000")
         .env("AGALMA_LEDGER_TRANSPORT", "in-process")
         .env("AGALMA_TASKQUEUE_TRANSPORT", "in-process")
+        .env("XDG_CONFIG_HOME", config_home(&state))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()

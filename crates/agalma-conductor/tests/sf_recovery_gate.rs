@@ -694,6 +694,11 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_agalma")
 }
 
+/// Isolated XDG config base for a scratch fixture.
+fn config_home(state_dir: &Path) -> PathBuf {
+    state_dir.parent().expect("state parent").join("xdg-config")
+}
+
 fn require_bd() {
     let ok = Command::new("bd")
         .arg("--version")
@@ -849,7 +854,9 @@ impl Prod {
                 "commands": ["sh -c 'true'"],
             },
         });
-        let path = self.state_dir.join("protected-inputs.json");
+        let path = config_home(&self.state_dir)
+            .join("agalma")
+            .join("protected-inputs.json");
         let mut entries: Vec<Value> = fs::read(&path)
             .ok()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
@@ -858,7 +865,7 @@ impl Prod {
             .unwrap_or_default();
         entries.retain(|e| e.get("task_id").and_then(Value::as_str) != Some(task_id));
         entries.push(entry);
-        fs::create_dir_all(&self.state_dir).expect("state dir");
+        fs::create_dir_all(path.parent().expect("manifest parent")).expect("config dir");
         let doc = json!({ "format": "ProtectedInputs/v1", "entries": entries });
         fs::write(&path, serde_json::to_vec_pretty(&doc).expect("json")).expect("write manifest");
     }
@@ -879,6 +886,7 @@ impl Prod {
             .env("AGALMA_LEDGER_TRANSPORT", "in-process")
             .env("AGALMA_WORKSPACE_TRANSPORT", "in-process")
             .env("AGALMA_TASKQUEUE_TRANSPORT", "in-process")
+            .env("XDG_CONFIG_HOME", config_home(&self.state_dir))
             .env("GIT_TERMINAL_PROMPT", "0");
         for (key, value) in extra {
             command.env(key, value);

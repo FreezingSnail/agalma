@@ -146,17 +146,32 @@ fn protected_entry(task_id: &str, repository_root: &str, base_sha: &str) -> Prot
     }
 }
 
-/// Write an operator `ProtectedInputs/v1` manifest into `state_dir`
-/// (canonicalized like `WorkArgs::state_dir`), the admission source production
-/// reads at `<state_dir>/protected-inputs.json`.
+/// Isolated XDG config base for a scratch fixture.
+fn config_home(state_dir: &Path) -> PathBuf {
+    state_dir.parent().expect("state parent").join("xdg-config")
+}
+
+/// Write an operator `ProtectedInputs/v1` manifest at the isolated XDG config
+/// path production reads.
 fn write_protected_inputs(state_dir: &Path, entries: Vec<ProtectedEntry>) {
     let inputs = ProtectedInputs {
         format: PROTECTED_INPUTS_FORMAT.to_string(),
         entries,
     };
     let bytes = serde_json::to_vec(&inputs).expect("serialize protected inputs");
+    let dir = config_home(state_dir).join("agalma");
+    std::fs::create_dir_all(&dir).expect("config dir");
+    std::fs::write(dir.join("protected-inputs.json"), bytes).expect("write protected inputs");
+}
+
+/// Low-level explicit-directory loader fixture (not the production source).
+fn write_low_level_inputs(state_dir: &Path, entries: Vec<ProtectedEntry>) {
+    let inputs = ProtectedInputs {
+        format: PROTECTED_INPUTS_FORMAT.to_string(),
+        entries,
+    };
+    let bytes = serde_json::to_vec(&inputs).expect("serialize protected inputs");
     std::fs::create_dir_all(state_dir).expect("state dir");
-    let state_dir = std::fs::canonicalize(state_dir).expect("canonical state dir");
     std::fs::write(state_dir.join("protected-inputs.json"), bytes).expect("write protected inputs");
 }
 
@@ -728,6 +743,11 @@ fn binary_scratch_inner(name: &str, seed: bool) -> (ScratchDir, PathBuf, PathBuf
 fn agalma(args: &[&str], scripted: bool) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_agalma"));
     command.args(args);
+    if let Some(index) = args.iter().position(|arg| *arg == "--state-dir") {
+        if let Some(state) = args.get(index + 1) {
+            command.env("XDG_CONFIG_HOME", config_home(Path::new(state)));
+        }
+    }
     if scripted {
         command.env("AGALMA_ACTIVITY_MODE", "scripted");
     }
@@ -836,7 +856,12 @@ fn binary_work_refuses_missing_or_mismatched_protected_inputs() {
     // Identity mismatch: a present manifest whose base_sha does not match the
     // resolved base refuses (task/repository/base identity is validated).
     let (_dir2, origin2, state2, _beads2) = binary_scratch("binary-refuse-mismatch");
-    let text = std::fs::read_to_string(state2.join("protected-inputs.json")).expect("manifest");
+    let text = std::fs::read_to_string(
+        config_home(&state2)
+            .join("agalma")
+            .join("protected-inputs.json"),
+    )
+    .expect("manifest");
     let inputs = ProtectedInputs::parse(text.as_bytes()).expect("parse manifest");
     let id = inputs.entries[0].task_id.clone();
     let canonical = std::fs::canonicalize(&origin2)
@@ -976,7 +1001,7 @@ fn rebind_protected_fixture_seeding_property_over_generated_cases() {
             "freeze must round-trip"
         );
 
-        write_protected_inputs(&state_dir, vec![entry.clone()]);
+        write_low_level_inputs(&state_dir, vec![entry.clone()]);
         let inputs = ProtectedInputs::load(&state_dir).expect("generated manifest loads");
         let selected = inputs
             .select(&entry.task_id, &entry.repository_root, &entry.base_sha)

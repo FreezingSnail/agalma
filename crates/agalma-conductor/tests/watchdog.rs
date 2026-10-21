@@ -426,17 +426,32 @@ fn protected_entry(task_id: &str, repository_root: &str, base_sha: &str) -> Prot
     }
 }
 
-/// Write an operator `ProtectedInputs/v1` manifest into `state_dir`
-/// (canonicalized like `WorkArgs::state_dir`), the admission source production
-/// reads at `<state_dir>/protected-inputs.json`.
+/// Isolated XDG config base for a scratch fixture.
+fn config_home(state_dir: &Path) -> PathBuf {
+    state_dir.parent().expect("state parent").join("xdg-config")
+}
+
+/// Write an operator `ProtectedInputs/v1` manifest at the isolated XDG config
+/// path production reads.
 fn write_protected_inputs(state_dir: &Path, entries: Vec<ProtectedEntry>) {
     let inputs = ProtectedInputs {
         format: PROTECTED_INPUTS_FORMAT.to_string(),
         entries,
     };
     let bytes = serde_json::to_vec(&inputs).expect("serialize protected inputs");
+    let dir = config_home(state_dir).join("agalma");
+    fs::create_dir_all(&dir).expect("config dir");
+    fs::write(dir.join("protected-inputs.json"), bytes).expect("write protected inputs");
+}
+
+/// Low-level explicit-directory loader fixture (not the production source).
+fn write_low_level_inputs(state_dir: &Path, entries: Vec<ProtectedEntry>) {
+    let inputs = ProtectedInputs {
+        format: PROTECTED_INPUTS_FORMAT.to_string(),
+        entries,
+    };
+    let bytes = serde_json::to_vec(&inputs).expect("serialize protected inputs");
     fs::create_dir_all(state_dir).expect("state dir");
-    let state_dir = fs::canonicalize(state_dir).expect("canonical state dir");
     fs::write(state_dir.join("protected-inputs.json"), bytes).expect("write protected inputs");
 }
 
@@ -590,6 +605,7 @@ fn parked_task_projects_blocked_status_and_label() {
             "--once",
         ])
         .env("AGALMA_ACTIVITY_MODE", "scripted")
+        .env("XDG_CONFIG_HOME", config_home(&scratch.state_dir))
         .output()
         .expect("run agalma work");
     assert!(
@@ -771,6 +787,7 @@ fn watchdog_work_refuses_missing_or_mismatched_protected_inputs() {
                 "--once",
             ])
             .env("AGALMA_ACTIVITY_MODE", "scripted")
+            .env("XDG_CONFIG_HOME", config_home(&scratch.state_dir))
             .output()
             .expect("run agalma work")
     }
@@ -918,7 +935,7 @@ fn watchdog_protected_fixture_seeding_property_over_generated_cases() {
             "freeze must round-trip"
         );
 
-        write_protected_inputs(&state_dir, vec![entry.clone()]);
+        write_low_level_inputs(&state_dir, vec![entry.clone()]);
         let inputs = ProtectedInputs::load(&state_dir).expect("generated manifest loads");
         let selected = inputs
             .select(&entry.task_id, &entry.repository_root, &entry.base_sha)

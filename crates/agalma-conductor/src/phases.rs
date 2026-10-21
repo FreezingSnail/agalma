@@ -414,8 +414,10 @@ struct CandidateGuard {
 /// missing recorded package, an invalid/unenforced policy, or a missing/opaque
 /// baseline all refuse (park) rather than running an unprotected judge. The
 /// admission source for these inputs is the operator `ProtectedInputs/v1`
-/// manifest (`<state_dir>/protected-inputs.json`) frozen whole into the
-/// package's `scope.oracle`; M0 fixture mode (`repo == None`) does not reach
+/// manifest (`$XDG_CONFIG_HOME/agalma/protected-inputs.json`, or
+/// `$HOME/.config/agalma/protected-inputs.json`) frozen whole into the
+/// package's `scope.oracle`; recovery judges the recorded package bytes, never
+/// the current config file. M0 fixture mode (`repo == None`) does not reach
 /// this seam and stays a separate path.
 ///
 /// - an **invalid recorded policy** refuses (no fail-open);

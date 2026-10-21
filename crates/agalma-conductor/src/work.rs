@@ -62,7 +62,6 @@ use crate::phases::{
 };
 use crate::provider_proxy::{ProviderProxy, ProxyConfig};
 use crate::routing::{self, RouteSelection};
-use crate::scope_guard::ProtectedInputs;
 use crate::stop::{BoundStopControl, StopControl};
 use crate::task_package::{
     build_package, gather_admission_context, legacy_park, load_admitted_package,
@@ -1464,11 +1463,13 @@ fn admit_task(
     let context = gather_admission_context(repo, &definitions, &definition)?;
     let base_sha = resolve_base_sha(repo, &task.base_ref)?;
     // SF.6: the protected verification inputs are operator-supplied in
-    // `<state_dir>/protected-inputs.json` and frozen whole as `scope.oracle`.
-    // Missing/mismatched inputs stop repository work; a repository file or task
-    // text never authorizes an unprotected repository execution.
+    // `$XDG_CONFIG_HOME/agalma/protected-inputs.json` (or
+    // `$HOME/.config/agalma/protected-inputs.json`) and frozen whole as
+    // `scope.oracle`. Missing/mismatched inputs stop repository work; a
+    // repository file, task text, or legacy state-directory manifest never
+    // authorizes an unprotected repository execution.
     let repository_root = repo.to_string_lossy().into_owned();
-    let protected = ProtectedInputs::load(state_dir)?;
+    let protected = crate::scope_guard::load_config()?;
     let entry = protected.select(task.task_id.as_str(), &repository_root, &base_sha)?;
     let oracle_bytes = entry.freeze()?;
     let allowed_paths = entry.allowed_paths.clone();

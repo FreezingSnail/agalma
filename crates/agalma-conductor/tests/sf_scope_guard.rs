@@ -23,6 +23,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -36,8 +37,9 @@ use agalma_conductor::phases::{
     RepoMode, RunState,
 };
 use agalma_conductor::scope_guard::{
-    self, BaselineFile, CandidatePin, ProtectedBaseline, ProtectedEntry, ProtectedInputs,
-    ScopePolicy, PROTECTED_BASELINE_FORMAT, PROTECTED_INPUTS_FORMAT,
+    self, load_config_from, resolve_config_path_from, BaselineFile, CandidatePin, ProtectedBaseline,
+    ProtectedEntry, ProtectedInputs, ScopePolicy, PROTECTED_BASELINE_FORMAT, PROTECTED_CONFIG_DIR,
+    PROTECTED_INPUTS_FILE, PROTECTED_INPUTS_FORMAT,
 };
 use agalma_conductor::stop::FileStopControl;
 use agalma_conductor::task_package::{
@@ -1635,6 +1637,397 @@ const PATHS: [&str; 6] = [
 
 fn under(path: &str, prefix: &str) -> bool {
     path == prefix || path.starts_with(&format!("{prefix}/"))
+}
+
+#[cfg(unix)]
+mod xdg_config {
+    use super::*;
+    use std::os::unix::ffi::OsStringExt;
+
+    fn non_unicode_path() -> OsString {
+        OsString::from_vec(b"/config/\xff".to_vec())
+    }
+
+    fn xdg_states() -> Vec<Option<OsString>> {
+        vec![
+            None,
+            Some(OsString::new()),
+            Some(OsString::from("relative/config")),
+            Some(OsString::from("/xdg/config")),
+            Some(OsString::from("/xdg/config with space")),
+            Some(non_unicode_path()),
+        ]
+    }
+
+    fn home_states() -> Vec<Option<OsString>> {
+        vec![
+            None,
+            Some(OsString::new()),
+            Some(OsString::from("relative/home")),
+            Some(OsString::from("/home/operator")),
+            Some(OsString::from("/home/operator with space")),
+            Some(non_unicode_path()),
+        ]
+    }
+
+    /// Contract predicate, not a path oracle: a base is usable only when it is
+    /// non-empty, valid Unicode, and absolute.
+    fn usable_abs(value: Option<&OsStr>) -> Option<&str> {
+        let text = value?.to_str()?;
+        if text.is_empty() || !Path::new(text).is_absolute() {
+            return None;
+        }
+        Some(text)
+    }
+
+    /// A non-empty, non-Unicode XDG value is a hard refusal even when HOME is
+    /// usable; it is never guessed or silently ignored.
+    fn xdg_non_unicode(value: Option<&OsStr>) -> bool {
+        value
+            .filter(|raw| !raw.is_empty())
+            .map(|raw| raw.to_str().is_none())
+            .unwrap_or(false)
+    }
+
+    fn config_file_under(base: &Path) -> PathBuf {
+        base.join(PROTECTED_CONFIG_DIR)
+            .join(PROTECTED_INPUTS_FILE)
+    }
+
+    fn manifest_bytes() -> Vec<u8> {
+        serde_json::to_vec(&ProtectedInputs {
+            format: PROTECTED_INPUTS_FORMAT.to_string(),
+            entries: vec![entry()],
+        })
+        .expect("manifest bytes")
+    }
+
+    /// Explicit 6x6 contract truth table over the representative XDG/HOME
+    /// states. Expectations are literals; this is not a reimplementation of the
+    /// resolver branches.
+    #[test]
+    fn config_path_contract_truth_table() {
+        let xdg = xdg_states();
+        let home = home_states();
+        let xdg_path = "/xdg/config/agalma/protected-inputs.json";
+        let xdg_space = "/xdg/config with space/agalma/protected-inputs.json";
+        let home_path = "/home/operator/.config/agalma/protected-inputs.json";
+        let home_space = "/home/operator with space/.config/agalma/protected-inputs.json";
+
+        // (xdg index, home index, expected literal or None for refusal)
+        let table: &[(usize, usize, Option<&str>)] = &[
+            (0, 0, None),
+            (0, 1, None),
+            (0, 2, None),
+            (0, 3, Some(home_path)),
+            (0, 4, Some(home_space)),
+            (0, 5, None),
+            (1, 0, None),
+            (1, 1, None),
+            (1, 2, None),
+            (1, 3, Some(home_path)),
+            (1, 4, Some(home_space)),
+            (1, 5, None),
+            (2, 0, None),
+            (2, 1, None),
+            (2, 2, None),
+            (2, 3, Some(home_path)),
+            (2, 4, Some(home_space)),
+            (2, 5, None),
+            (3, 0, Some(xdg_path)),
+            (3, 1, Some(xdg_path)),
+            (3, 2, Some(xdg_path)),
+            (3, 3, Some(xdg_path)),
+            (3, 4, Some(xdg_path)),
+            (3, 5, Some(xdg_path)),
+            (4, 0, Some(xdg_space)),
+            (4, 1, Some(xdg_space)),
+            (4, 2, Some(xdg_space)),
+            (4, 3, Some(xdg_space)),
+            (4, 4, Some(xdg_space)),
+            (4, 5, Some(xdg_space)),
+            (5, 0, None),
+            (5, 1, None),
+            (5, 2, None),
+            (5, 3, None),
+            (5, 4, None),
+            (5, 5, None),
+        ];
+        assert_eq!(table.len(), 36, "complete 6x6 state table");
+        for &(xi, hi, want) in table {
+            let got = resolve_config_path_from(xdg[xi].as_deref(), home[hi].as_deref());
+            match (want, got) {
+                (Some(want), Ok(got)) => assert_eq!(got, PathBuf::from(want)),
+                (None, Err(err)) => {
+                    assert_eq!(failure_code(&err), Some(FailureCode::ScopeDenied));
+                    assert!(format!("{err}").contains(PROTECTED_INPUTS_FILE));
+                }
+                (want, got) => {
+                    panic!("truth-table mismatch xdg={xi} home={hi}: want={want:?} got={got:?}")
+                }
+            }
+        }
+    }
+
+    /// Independent generated metamorphic checks over 160 fixed-seed states.
+    /// No expected-path clone: success is classified by the contract predicates
+    /// (XDG dominance, HOME fallback) and each class is checked for invariance.
+    #[test]
+    fn config_path_metamorphic_generated() {
+        const CASES: usize = 160;
+        let xdg = xdg_states();
+        let home = home_states();
+        let invalid_xdg: [Option<&OsStr>; 3] =
+            [None, Some(OsStr::new("")), Some(OsStr::new("relative"))];
+        let mut rng = Rng(0x5f6_7864_6700);
+        let mut xdg_hits = 0usize;
+        let mut home_hits = 0usize;
+        let mut refused = 0usize;
+
+        for case in 0..CASES {
+            let x = &xdg[rng.below(xdg.len() as u64) as usize];
+            let h = &home[rng.below(home.len() as u64) as usize];
+            let got = resolve_config_path_from(x.as_deref(), h.as_deref());
+            match got {
+                Ok(path) => {
+                    assert!(path.is_absolute(), "case {case}: resolved path is absolute");
+                    assert_eq!(path.file_name(), Some(OsStr::new(PROTECTED_INPUTS_FILE)));
+                    assert_eq!(
+                        path.parent().and_then(|parent| parent.file_name()),
+                        Some(OsStr::new(PROTECTED_CONFIG_DIR))
+                    );
+
+                    if let Some(base) = usable_abs(x.as_deref()) {
+                        // XDG dominance: the result is exactly the XDG config
+                        // path and cannot depend on any HOME value.
+                        assert_eq!(path, config_file_under(Path::new(base)));
+                        for alt in &home {
+                            assert_eq!(
+                                resolve_config_path_from(x.as_deref(), alt.as_deref())
+                                    .expect("XDG dominance keeps resolution valid"),
+                                path,
+                                "case {case}: HOME must not affect a valid XDG"
+                            );
+                        }
+                        xdg_hits += 1;
+                    } else {
+                        // HOME fallback: only an absolute HOME can reach here.
+                        let base = usable_abs(h.as_deref()).expect("fallback has usable HOME");
+                        assert_eq!(
+                            path,
+                            Path::new(base)
+                                .join(".config")
+                                .join(PROTECTED_CONFIG_DIR)
+                                .join(PROTECTED_INPUTS_FILE)
+                        );
+                        for alt in invalid_xdg {
+                            assert_eq!(
+                                resolve_config_path_from(alt, h.as_deref())
+                                    .expect("invalid XDG falls back to usable HOME"),
+                                path,
+                                "case {case}: invalid XDG cannot change HOME fallback"
+                            );
+                        }
+                        home_hits += 1;
+                    }
+                }
+                Err(err) => {
+                    assert_eq!(failure_code(&err), Some(FailureCode::ScopeDenied));
+                    assert!(
+                        format!("{err}").contains(PROTECTED_INPUTS_FILE),
+                        "case {case}: refusal names the config file"
+                    );
+                    assert!(
+                        xdg_non_unicode(x.as_deref())
+                            || (usable_abs(x.as_deref()).is_none()
+                                && usable_abs(h.as_deref()).is_none()),
+                        "case {case}: only unusable bases refuse (xdg={x:?}, home={h:?})"
+                    );
+                    refused += 1;
+                }
+            }
+        }
+        assert!(xdg_hits > 0, "generated cases exercise XDG dominance");
+        assert!(home_hits > 0, "generated cases exercise HOME fallback");
+        assert!(refused > 0, "generated cases exercise fail-closed");
+    }
+
+    #[test]
+    fn explicit_config_path_cases() {
+        let abs = OsStr::new("/xdg/config with space");
+        let home = OsStr::new("/home/operator");
+        assert_eq!(
+            resolve_config_path_from(Some(abs), None).unwrap(),
+            PathBuf::from("/xdg/config with space/agalma/protected-inputs.json")
+        );
+        assert_eq!(
+            resolve_config_path_from(Some(OsStr::new("")), Some(home)).unwrap(),
+            PathBuf::from("/home/operator/.config/agalma/protected-inputs.json")
+        );
+        assert_eq!(
+            resolve_config_path_from(Some(OsStr::new("relative")), Some(home)).unwrap(),
+            PathBuf::from("/home/operator/.config/agalma/protected-inputs.json")
+        );
+        assert!(resolve_config_path_from(None, None).is_err());
+        assert!(resolve_config_path_from(Some(OsStr::new("relative")), None).is_err());
+        assert!(resolve_config_path_from(None, Some(OsStr::new(""))).is_err());
+        assert!(resolve_config_path_from(None, Some(OsStr::new("relative"))).is_err());
+        assert!(
+            resolve_config_path_from(Some(non_unicode_path().as_os_str()), Some(home)).is_err()
+        );
+        assert!(resolve_config_path_from(Some(abs), Some(non_unicode_path().as_os_str())).is_ok());
+    }
+
+    #[test]
+    fn config_policy_never_falls_back_or_merges_generated() {
+        const CASES: usize = 144;
+        let dir = ScratchDir::new("sf6-xdg-policy");
+        let good = manifest_bytes();
+        let bad = b"{ not a protected manifest".to_vec();
+        let mut rng = Rng(0x5f6_7864_706f);
+
+        for case in 0..CASES {
+            let root = dir.child(&format!("case-{case}"));
+            let config_home = root.join("xdg");
+            let state_dir = root.join("state");
+            fs::create_dir_all(&config_home).expect("config home");
+            fs::create_dir_all(&state_dir).expect("state dir");
+            let config_file = config_home
+                .join(PROTECTED_CONFIG_DIR)
+                .join(PROTECTED_INPUTS_FILE);
+            let legacy_file = state_dir.join(PROTECTED_INPUTS_FILE);
+
+            // Independently choose config/legacy states; a valid config must
+            // win, and the legacy file must never change that outcome.
+            let config_valid = rng.below(3) == 0;
+            let config_malformed = rng.below(3) == 0;
+            let legacy_valid = rng.below(3) != 0;
+            let legacy_malformed = !legacy_valid && rng.below(2) == 0;
+            if config_valid {
+                fs::create_dir_all(config_file.parent().unwrap()).expect("config dir");
+                fs::write(&config_file, &good).expect("write config");
+            } else if config_malformed {
+                fs::create_dir_all(config_file.parent().unwrap()).expect("config dir");
+                fs::write(&config_file, &bad).expect("write malformed config");
+            }
+            if legacy_valid {
+                fs::write(&legacy_file, &good).expect("write legacy");
+            } else if legacy_malformed {
+                fs::write(&legacy_file, &bad).expect("write malformed legacy");
+            }
+
+            let loaded = load_config_from(
+                Some(config_home.as_os_str()),
+                Some(OsStr::new("/unused-home")),
+            );
+            if config_valid {
+                assert_eq!(
+                    loaded.as_ref().expect("valid config loads").entries,
+                    vec![entry()]
+                );
+            } else {
+                assert!(
+                    loaded.is_err(),
+                    "missing/malformed selected config must refuse (legacy_valid={legacy_valid})"
+                );
+            }
+
+            // Independent no-state-fallback metamorph: removing the legacy
+            // state manifest cannot change the selected-config outcome.
+            let _ = fs::remove_file(&legacy_file);
+            let after = load_config_from(
+                Some(config_home.as_os_str()),
+                Some(OsStr::new("/unused-home")),
+            );
+            assert_eq!(
+                loaded.is_ok(),
+                after.is_ok(),
+                "case {case}: legacy state file is inert"
+            );
+            if let Ok(before) = loaded {
+                assert_eq!(before.entries, after.expect("same config still loads").entries);
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_state_manifest_is_context_only() {
+        let dir = ScratchDir::new("sf6-xdg-legacy");
+        let config_home = dir.child("xdg");
+        let state_dir = dir.child("state");
+        fs::create_dir_all(&config_home).expect("config home");
+        fs::create_dir_all(&state_dir).expect("state dir");
+        fs::write(state_dir.join(PROTECTED_INPUTS_FILE), manifest_bytes())
+            .expect("legacy manifest");
+
+        // A valid legacy state manifest alone does not admit work.
+        assert!(load_config_from(Some(config_home.as_os_str()), None).is_err());
+
+        // A malformed selected config refuses even with a valid legacy file.
+        let config_file = config_home
+            .join(PROTECTED_CONFIG_DIR)
+            .join(PROTECTED_INPUTS_FILE);
+        fs::create_dir_all(config_file.parent().unwrap()).expect("config dir");
+        fs::write(&config_file, b"not json").expect("malformed config");
+        assert!(load_config_from(Some(config_home.as_os_str()), None).is_err());
+
+        // Replacing it with a valid selected config admits exactly that policy.
+        fs::write(&config_file, manifest_bytes()).expect("valid config");
+        let loaded = load_config_from(Some(config_home.as_os_str()), None).expect("config loads");
+        assert_eq!(loaded.entries.len(), 1);
+    }
+}
+
+/// Validate the generated `agalma-dns` bootstrap draft through the existing
+/// Rust contract. The artifact intentionally lives under the persistent primary
+/// `target/test-runs/<bead>/` root, outside any worktree, so the path is passed
+/// explicitly and the case is opt-in.
+#[test]
+#[ignore = "requires AGALMA_DNS_DRAFT_MANIFEST, AGALMA_DNS_MANIFEST_REPO, AGALMA_DNS_MANIFEST_BASE"]
+fn dns_draft_manifest_parses_and_selects_pending_main() {
+    let path = std::env::var("AGALMA_DNS_DRAFT_MANIFEST")
+        .expect("AGALMA_DNS_DRAFT_MANIFEST must name the generated draft");
+    let repository = std::env::var("AGALMA_DNS_MANIFEST_REPO")
+        .expect("AGALMA_DNS_MANIFEST_REPO must name the canonical repository root");
+    let base = std::env::var("AGALMA_DNS_MANIFEST_BASE")
+        .expect("AGALMA_DNS_MANIFEST_BASE must name the pinned base SHA");
+    let bytes = fs::read(&path).expect("read generated draft");
+    let inputs = ProtectedInputs::parse(&bytes).expect("generated draft parses");
+    let entry = inputs
+        .select("agalma-dns", &repository, &base)
+        .expect("generated draft selects the pinned identity");
+    assert_eq!(entry.task_id, "agalma-dns");
+    assert_eq!(
+        entry.allowed_paths,
+        vec![
+            "scripts/test.sh".to_string(),
+            "scripts/tests/runner-properties.sh".to_string(),
+            "scripts/tests/runner-focused.sh".to_string()
+        ]
+    );
+    assert_eq!(
+        entry.protected_paths,
+        vec!["fixtures/protected/agalma-dns".to_string()]
+    );
+    assert_eq!(entry.baseline.files.len(), 1);
+    assert_eq!(entry.baseline.files[0].path, "agalma-dns/judge.sh");
+    assert_eq!(entry.baseline.files[0].mode, "100755");
+    assert_eq!(entry.baseline.commands.len(), 1);
+    let command = &entry.baseline.commands[0];
+    let evidence_base = Path::new(&repository).join("target/test-runs/agalma-dns");
+    let quoted_evidence = format!(
+        "'{}'",
+        evidence_base
+            .to_string_lossy()
+            .replace('\'', "'\\''")
+    );
+    let expected = format!(
+        "AGALMA_JUDGE_EVIDENCE_BASE={quoted_evidence} bash \"$AGALMA_PROTECTED_DIR/agalma-dns/judge.sh\""
+    );
+    assert_eq!(
+        command, &expected,
+        "emitted command must shell-quote the evidence base and runtime protected path"
+    );
 }
 
 #[test]

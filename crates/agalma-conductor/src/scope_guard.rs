@@ -3,10 +3,13 @@
 //! Per `docs/sf6-protected-inputs.md` (human decision, 2026-10-15):
 //!
 //! - The **admission source** is the operator-supplied
-//!   `<state_dir>/protected-inputs.json` (`ProtectedInputs/v1`). It stays
-//!   outside candidate writable roots. A repository file, task text, absent
-//!   manifest, or empty scope never authorizes an unprotected repository
-//!   execution; missing required inputs stop repository work. M0 fixture mode
+//!   `$XDG_CONFIG_HOME/agalma/protected-inputs.json` (`ProtectedInputs/v1`),
+//!   falling back to `$HOME/.config/agalma/protected-inputs.json` when
+//!   `XDG_CONFIG_HOME` is unset, empty, or relative. It stays outside candidate
+//!   writable roots. A repository file, task text, absent manifest, or empty
+//!   scope never authorizes an unprotected repository execution; missing
+//!   required inputs stop repository work. There is deliberately **no** fallback
+//!   to a state-directory manifest and no policy merging. M0 fixture mode
 //!   (`repo == None`) is a separate path.
 //! - Each entry binds `task_id`, `repository_root` (canonical origin path),
 //!   `base_sha`, `allowed_paths`, `protected_paths`, and a `baseline`. The
@@ -21,6 +24,7 @@
 //! it opens no database and discovers no peer sockets. It reuses the canonical
 //! SHA-256 helper and `FailureDetail/v1` codes.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use agalma_contracts::digest::{sha256_digest, FailureCode};
@@ -31,8 +35,10 @@ use serde::{Deserialize, Serialize};
 pub const PROTECTED_BASELINE_FORMAT: &str = "ProtectedBaseline/v1";
 /// The operator protected-inputs manifest format.
 pub const PROTECTED_INPUTS_FORMAT: &str = "ProtectedInputs/v1";
-/// The operator manifest file under the state directory.
+/// The operator manifest file under the XDG config base.
 pub const PROTECTED_INPUTS_FILE: &str = "protected-inputs.json";
+/// The application directory under the XDG config base.
+pub const PROTECTED_CONFIG_DIR: &str = "agalma";
 
 /// A path segment that marks a nested repository (never an authorized change).
 const NESTED_REPO_SEGMENT: &str = ".git";
@@ -562,20 +568,11 @@ impl ProtectedInputs {
         Ok(inputs)
     }
 
-    /// Load the manifest from a state directory. A missing file refuses (an
-    /// absent manifest never authorizes unprotected repository work).
-    pub fn load(state_dir: &Path) -> Result<ProtectedInputs, ContractError> {
-        let path = state_dir.join(PROTECTED_INPUTS_FILE);
-        let bytes = std::fs::read(&path).map_err(|e| {
-            FailureCode::ScopeDenied.failure(
-                PROTECTED_INPUTS_FILE,
-                format!(
-                    "no readable operator protected inputs at {}; refusing repository work: {e}",
-                    path.display()
-                ),
-            )
-        })?;
-        ProtectedInputs::parse(&bytes)
+    /// Load the manifest from an explicit directory. This is the low-level
+    /// fixture/file loader; production admission uses [`load_config`] so a
+    /// state-directory manifest can never stand in for operator config.
+    pub fn load(dir: &Path) -> Result<ProtectedInputs, ContractError> {
+        load_config_file(&dir.join(PROTECTED_INPUTS_FILE))
     }
 
     /// Select the entry for `task_id`, verifying repository/base identity. A
@@ -616,6 +613,108 @@ impl ProtectedInputs {
         }
         Ok(entry)
     }
+}
+
+/// Resolve the operator protected-inputs path from explicit environment values.
+///
+/// Precedence follows standard XDG absolute-directory semantics:
+///
+/// 1. `XDG_CONFIG_HOME` when it is non-empty, valid Unicode, and absolute;
+///    a valid absolute value needs no `HOME`.
+/// 2. `HOME/.config` when `XDG_CONFIG_HOME` is unset, empty, or relative.
+///
+/// A non-Unicode `XDG_CONFIG_HOME` or `HOME`, a relative `HOME`, an empty
+/// `HOME`, or no usable base at all fails closed instead of guessing a path.
+/// The returned path is absolute in every successful case.
+pub fn resolve_config_path_from(
+    xdg_config_home: Option<&OsStr>,
+    home: Option<&OsStr>,
+) -> Result<PathBuf, ContractError> {
+    if let Some(xdg) = xdg_config_home.filter(|value| !value.is_empty()) {
+        let xdg = xdg.to_str().ok_or_else(|| {
+            protected_config_error(
+                "XDG_CONFIG_HOME is not valid Unicode; refusing to guess a protected-inputs path",
+            )
+        })?;
+        let base = Path::new(xdg);
+        if base.is_absolute() {
+            return Ok(base
+                .join(PROTECTED_CONFIG_DIR)
+                .join(PROTECTED_INPUTS_FILE));
+        }
+        // A relative XDG base is not usable; standard semantics fall back to
+        // HOME/.config rather than interpreting it against the current cwd.
+    }
+
+    let home = home.ok_or_else(|| {
+        protected_config_error(
+            "neither an absolute XDG_CONFIG_HOME nor HOME is set; refusing repository work",
+        )
+    })?;
+    let home = home.to_str().ok_or_else(|| {
+        protected_config_error(
+            "HOME is not valid Unicode; refusing to guess a protected-inputs path",
+        )
+    })?;
+    if home.is_empty() {
+        return Err(protected_config_error(
+            "HOME is empty; refusing repository work without a usable config base",
+        ));
+    }
+    let base = Path::new(home);
+    if !base.is_absolute() {
+        return Err(protected_config_error(
+            "HOME is not an absolute path; refusing repository work without a usable config base",
+        ));
+    }
+    Ok(base
+        .join(".config")
+        .join(PROTECTED_CONFIG_DIR)
+        .join(PROTECTED_INPUTS_FILE))
+}
+
+/// Resolve the operator protected-inputs path from the process environment.
+pub fn resolve_config_path() -> Result<PathBuf, ContractError> {
+    resolve_config_path_from(
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    )
+}
+
+/// Production admission loader: read the selected operator config file.
+///
+/// Exactly one file is chosen by [`resolve_config_path`]; a missing, unreadable,
+/// or malformed file refuses even when a legacy state-directory manifest exists.
+/// No policy merging and no legacy fallback occur.
+pub fn load_config() -> Result<ProtectedInputs, ContractError> {
+    load_config_file(&resolve_config_path()?)
+}
+
+/// Testable config loader with explicit XDG/HOME inputs (never mutates process
+/// environment).
+pub fn load_config_from(
+    xdg_config_home: Option<&OsStr>,
+    home: Option<&OsStr>,
+) -> Result<ProtectedInputs, ContractError> {
+    load_config_file(&resolve_config_path_from(xdg_config_home, home)?)
+}
+
+/// Read and validate an exact protected-inputs file path.
+pub fn load_config_file(path: &Path) -> Result<ProtectedInputs, ContractError> {
+    let bytes = std::fs::read(path).map_err(|e| {
+        FailureCode::ScopeDenied.failure(
+            PROTECTED_INPUTS_FILE,
+            format!(
+                "no readable operator protected inputs at {}; refusing repository work: {e}",
+                path.display()
+            ),
+        )
+    })?;
+    ProtectedInputs::parse(&bytes)
+}
+
+fn protected_config_error(detail: impl AsRef<str>) -> ContractError {
+    FailureCode::ScopeDenied.failure(PROTECTED_INPUTS_FILE, detail)
 }
 
 /// A dummy artifact used only to build a [`Scope`] for entry validation.

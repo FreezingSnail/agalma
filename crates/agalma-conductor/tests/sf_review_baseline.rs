@@ -106,6 +106,11 @@ fn scratch(name: &str) -> ScratchDir {
     dir
 }
 
+/// Isolated XDG config base for a scratch fixture.
+fn config_home(state_dir: &Path) -> PathBuf {
+    state_dir.parent().expect("state parent").join("xdg-config")
+}
+
 fn stderr_of(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).trim().to_string()
 }
@@ -448,10 +453,14 @@ impl Prod {
                 })
             })
             .collect();
-        fs::create_dir_all(&self.state_dir).expect("state dir");
+        let dir = config_home(&self.state_dir).join("agalma");
+        fs::create_dir_all(&dir).expect("config dir");
         let doc = json!({ "format": "ProtectedInputs/v1", "entries": entries });
-        let path = self.state_dir.join("protected-inputs.json");
-        fs::write(&path, serde_json::to_vec_pretty(&doc).expect("json")).expect("write manifest");
+        fs::write(
+            dir.join("protected-inputs.json"),
+            serde_json::to_vec_pretty(&doc).expect("json"),
+        )
+        .expect("write manifest");
     }
 
     /// Run `agalma work --once` against the scratch origin in scripted mode.
@@ -475,6 +484,7 @@ impl Prod {
         .env("AGALMA_LEDGER_TRANSPORT", "in-process")
         .env("AGALMA_WORKSPACE_TRANSPORT", "in-process")
         .env("AGALMA_TASKQUEUE_TRANSPORT", "in-process")
+        .env("XDG_CONFIG_HOME", config_home(&self.state_dir))
         .env("GIT_TERMINAL_PROMPT", "0")
         .env_remove("AGALMA_ALLOW_PAID")
         .env_remove("AGALMA_MODEL")

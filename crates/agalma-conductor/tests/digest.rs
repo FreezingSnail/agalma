@@ -28,6 +28,11 @@ fn fresh(name: &str) -> ScratchDir {
     ScratchDir::new(name)
 }
 
+/// Isolated XDG config base for a scratch fixture.
+fn config_home(state_dir: &Path) -> PathBuf {
+    state_dir.parent().expect("state parent").join("xdg-config")
+}
+
 fn stderr_of(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).trim().to_string()
 }
@@ -224,17 +229,17 @@ impl Scratch {
         protected_entry(task_id, &self.canonical_origin(), &self.base_sha())
     }
 
-    /// Write the operator `ProtectedInputs/v1` manifest into the isolated state
-    /// directory production reads (canonicalized like `WorkArgs::state_dir`).
+    /// Write the operator `ProtectedInputs/v1` manifest at the isolated XDG
+    /// config path production reads.
     fn write_manifest(&self, entries: Vec<ProtectedEntry>) {
         let inputs = ProtectedInputs {
             format: PROTECTED_INPUTS_FORMAT.to_string(),
             entries,
         };
         let bytes = serde_json::to_vec(&inputs).expect("serialize protected inputs");
-        fs::create_dir_all(&self.state_dir).expect("state dir");
-        let state_dir = std::fs::canonicalize(&self.state_dir).expect("canonical state dir");
-        fs::write(state_dir.join("protected-inputs.json"), bytes).expect("write protected inputs");
+        let dir = config_home(&self.state_dir).join("agalma");
+        fs::create_dir_all(&dir).expect("config dir");
+        fs::write(dir.join("protected-inputs.json"), bytes).expect("write protected inputs");
     }
 
     /// Seed a valid manifest whose identity matches the created task.
@@ -253,6 +258,7 @@ impl Scratch {
                 "--once",
             ])
             .env("AGALMA_ACTIVITY_MODE", "scripted")
+            .env("XDG_CONFIG_HOME", config_home(&self.state_dir))
             .output()
             .expect("run agalma work")
     }

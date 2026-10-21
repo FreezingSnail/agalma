@@ -687,6 +687,11 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_agalma")
 }
 
+/// Isolated XDG config base for a scratch fixture.
+fn config_home(state_dir: &Path) -> PathBuf {
+    state_dir.parent().expect("state parent").join("xdg-config")
+}
+
 fn stderr_of(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).trim().to_string()
 }
@@ -866,7 +871,7 @@ impl Prod {
     }
 
     /// Write/merge the operator `ProtectedInputs/v1` entry for `task_id` into
-    /// `<state_dir>/protected-inputs.json` (SF.6), mirroring production
+    /// the isolated XDG config (SF.6), mirroring production
     /// admission: canonical repository root, resolved base SHA, a nonempty
     /// allow/protect scope, and a `ProtectedBaseline/v1` with one file + command.
     fn protect(&self, task_id: &str) {
@@ -890,7 +895,9 @@ impl Prod {
                 "commands": ["sh -c 'true'"],
             },
         });
-        let path = self.state_dir.join(PROTECTED_INPUTS_FILE);
+        let path = config_home(&self.state_dir)
+            .join("agalma")
+            .join(PROTECTED_INPUTS_FILE);
         let mut entries: Vec<Value> = fs::read(&path)
             .ok()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
@@ -899,7 +906,7 @@ impl Prod {
             .unwrap_or_default();
         entries.retain(|e| e.get("task_id").and_then(Value::as_str) != Some(task_id));
         entries.push(entry);
-        fs::create_dir_all(&self.state_dir).expect("state dir");
+        fs::create_dir_all(path.parent().expect("manifest parent")).expect("config dir");
         let doc = json!({ "format": PROTECTED_INPUTS_FORMAT, "entries": entries });
         let bytes = serde_json::to_vec_pretty(&doc).expect("json");
         // Validate through the production contract before persisting.
@@ -927,6 +934,7 @@ impl Prod {
             .env("AGALMA_LEDGER_TRANSPORT", "in-process")
             .env("AGALMA_WORKSPACE_TRANSPORT", "in-process")
             .env("AGALMA_TASKQUEUE_TRANSPORT", "in-process")
+            .env("XDG_CONFIG_HOME", config_home(&self.state_dir))
             .env("GIT_TERMINAL_PROMPT", "0")
             .env_remove("AGALMA_ALLOW_PAID")
             .env_remove("AGALMA_MODEL")

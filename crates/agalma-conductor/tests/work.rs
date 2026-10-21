@@ -107,10 +107,31 @@ fn protected_entry(task_id: &str, repository_root: &str, base_sha: &str) -> Prot
     }
 }
 
-/// Write an operator `ProtectedInputs/v1` manifest into `state_dir`
-/// (canonicalized like `WorkArgs::state_dir`), the admission source production
-/// reads at `<state_dir>/protected-inputs.json`.
-fn write_protected_inputs(state_dir: &Path, entries: Vec<ProtectedEntry>) {
+/// Isolated XDG config base for a scratch fixture. Production admission reads
+/// `<config_home>/agalma/protected-inputs.json`.
+fn config_home(state_dir: &Path) -> PathBuf {
+    state_dir
+        .parent()
+        .expect("state_dir parent")
+        .join("xdg-config")
+}
+
+/// Write the operator `ProtectedInputs/v1` manifest at the isolated XDG config
+/// path production admission reads.
+fn write_protected_config(state_dir: &Path, entries: Vec<ProtectedEntry>) {
+    let inputs = ProtectedInputs {
+        format: PROTECTED_INPUTS_FORMAT.to_string(),
+        entries,
+    };
+    let bytes = serde_json::to_vec(&inputs).expect("serialize protected inputs");
+    let dir = config_home(state_dir).join("agalma");
+    fs::create_dir_all(&dir).expect("config dir");
+    fs::write(dir.join("protected-inputs.json"), bytes).expect("write protected inputs");
+}
+
+/// Write a legacy state-directory manifest. Kept only to prove it is not an
+/// admission fallback.
+fn write_legacy_state_inputs(state_dir: &Path, entries: Vec<ProtectedEntry>) {
     let inputs = ProtectedInputs {
         format: PROTECTED_INPUTS_FORMAT.to_string(),
         entries,
@@ -118,7 +139,13 @@ fn write_protected_inputs(state_dir: &Path, entries: Vec<ProtectedEntry>) {
     let bytes = serde_json::to_vec(&inputs).expect("serialize protected inputs");
     fs::create_dir_all(state_dir).expect("state dir");
     let state_dir = fs::canonicalize(state_dir).expect("canonical state dir");
-    fs::write(state_dir.join("protected-inputs.json"), bytes).expect("write protected inputs");
+    fs::write(state_dir.join("protected-inputs.json"), bytes)
+        .expect("write legacy protected inputs");
+}
+
+/// Low-level explicit-directory loader fixture (not the production source).
+fn write_low_level_inputs(state_dir: &Path, entries: Vec<ProtectedEntry>) {
+    write_legacy_state_inputs(state_dir, entries);
 }
 
 /// A scratch origin repo (git + isolated bd store) with one task issue.
@@ -257,6 +284,7 @@ impl Scratch {
         }
         command
             .env("AGALMA_ACTIVITY_MODE", "scripted")
+            .env("XDG_CONFIG_HOME", config_home(&self.state_dir))
             .output()
             .expect("run agalma work")
     }
@@ -297,10 +325,15 @@ impl Scratch {
         protected_entry(task_id, &self.canonical_origin(), &self.base_sha())
     }
 
-    /// Write an operator `ProtectedInputs/v1` manifest into the isolated state
-    /// directory production reads.
+    /// Write an operator `ProtectedInputs/v1` manifest into the isolated XDG
+    /// config directory production reads.
     fn write_manifest(&self, entries: Vec<ProtectedEntry>) {
-        write_protected_inputs(&self.state_dir, entries);
+        write_protected_config(&self.state_dir, entries);
+    }
+
+    /// Write a legacy state-directory manifest (never an admission fallback).
+    fn write_legacy_manifest(&self, entries: Vec<ProtectedEntry>) {
+        write_legacy_state_inputs(&self.state_dir, entries);
     }
 
     /// Seed a valid manifest covering every task id that may be admitted.
@@ -535,13 +568,13 @@ fn generation_increments_on_rerun() {
     );
 }
 
-/// Missing and identity-mismatched operator protected inputs continue to refuse
-/// repository work over the real `agalma work --once` path (SF.6 fail-closed):
-/// an absent manifest never authorizes repository work, and a present manifest
-/// whose task/repository/base identity does not match the fixture refuses.
+/// Missing, legacy-only, malformed, and identity-mismatched operator protected
+/// inputs refuse repository work over the real `agalma work --once` path
+/// (SF.6 fail-closed). The selected XDG config is the only admission source.
 #[test]
 fn work_refuses_missing_or_mismatched_protected_inputs() {
-    // Missing manifest: an absent operator manifest never authorizes work.
+    // Missing selected config: an absent operator config never authorizes work,
+    // even though the isolated XDG base is present and empty.
     let (missing, _id) = Scratch::new_raw("refuse-missing", "  - sh -c 'true'", 1);
     let out = missing.work(true);
     assert!(
@@ -556,7 +589,41 @@ fn work_refuses_missing_or_mismatched_protected_inputs() {
     );
     assert!(err.contains("ScopeDenied"), "refusal is a scope denial: {err}");
 
-    // Identity mismatch: a present manifest whose base_sha does not match the
+    // Legacy-only: a valid state-directory manifest is not a fallback.
+    let (legacy, legacy_id) = Scratch::new_raw("refuse-legacy", "  - sh -c 'true'", 1);
+    legacy.write_legacy_manifest(vec![legacy.matching_entry(&legacy_id)]);
+    let out = legacy.work(true);
+    assert!(
+        !out.status.success(),
+        "legacy state manifest must not admit work: {}",
+        stderr_of(&out)
+    );
+    let err = stderr_of(&out);
+    assert!(
+        err.contains("protected-inputs.json") && err.contains("ScopeDenied"),
+        "legacy-only refusal is a scope denial: {err}"
+    );
+
+    // Malformed selected config refuses even with a valid legacy state file.
+    let (malformed, malformed_id) =
+        Scratch::new_raw("refuse-malformed", "  - sh -c 'true'", 1);
+    malformed.write_legacy_manifest(vec![malformed.matching_entry(&malformed_id)]);
+    let config_dir = config_home(&malformed.state_dir).join("agalma");
+    fs::create_dir_all(&config_dir).expect("config dir");
+    fs::write(config_dir.join("protected-inputs.json"), b"{ not json").expect("bad config");
+    let out = malformed.work(true);
+    assert!(
+        !out.status.success(),
+        "malformed selected config must refuse repository work: {}",
+        stderr_of(&out)
+    );
+    let err = stderr_of(&out);
+    assert!(
+        err.contains("protected-inputs.json"),
+        "malformed config refusal names the manifest: {err}"
+    );
+
+    // Identity mismatch: a present config whose base_sha does not match the
     // resolved base refuses (task/repository/base identity is validated).
     let (mismatch, id) = Scratch::new_raw("refuse-mismatch", "  - sh -c 'true'", 1);
     let wrong = protected_entry(&id, &mismatch.canonical_origin(), &"0".repeat(40));
@@ -681,7 +748,7 @@ fn work_protected_fixture_seeding_property_over_generated_cases() {
             "freeze must round-trip"
         );
 
-        write_protected_inputs(&state_dir, vec![entry.clone()]);
+        write_low_level_inputs(&state_dir, vec![entry.clone()]);
         let inputs = ProtectedInputs::load(&state_dir).expect("generated manifest loads");
         let selected = inputs
             .select(&entry.task_id, &entry.repository_root, &entry.base_sha)

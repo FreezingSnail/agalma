@@ -7,11 +7,23 @@ It does not reseal historical design receipts or release successors.
 
 ## Source and authority
 
-Use `<state_dir>/protected-inputs.json` as the bootstrap operator input. The
-operator already selects the state directory; no new CLI/environment selector
-is required. This file stays outside candidate writable roots. A repository
-file, task-authored text, absent manifest or empty scope never authorizes an
-unprotected repository execution. M0 fixture mode remains a separate path.
+Amendment 2026-10-20 (superseding the state-directory location only): use the
+operator XDG configuration file
+`$XDG_CONFIG_HOME/agalma/protected-inputs.json`, or
+`$HOME/.config/agalma/protected-inputs.json` when `XDG_CONFIG_HOME` is unset,
+empty, or relative. A valid absolute `XDG_CONFIG_HOME` needs no `HOME`; a
+non-Unicode or relative `HOME`, an empty `HOME`, or no usable config base fails
+closed. The production resolver and loader are the distinctly named
+`scope_guard::resolve_config_path` and `scope_guard::load_config`; the existing
+explicit-directory `ProtectedInputs::load(dir)` remains only as a low-level
+fixture/file loader.
+
+There is no fallback to `<state_dir>/protected-inputs.json` and no policy
+merging: a missing or malformed selected config refuses even when a legacy
+state-directory manifest is present. This file stays outside candidate writable
+roots. A repository file, task-authored text, absent manifest or empty scope
+never authorizes an unprotected repository execution. M0 fixture mode remains a
+separate path.
 
 Strict UTF-8 JSON has `format: "ProtectedInputs/v1"` and an `entries` list.
 Each entry contains `task_id`, `repository_root` (canonical origin path),
